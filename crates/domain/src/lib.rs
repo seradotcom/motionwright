@@ -253,12 +253,47 @@ pub struct Marker {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Asset {
     pub id: Uuid,
     pub name: String,
     pub media_type: String,
     pub content_sha256: Option<String>,
     pub source_revision: Option<String>,
+}
+
+impl Asset {
+    fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() || self.name.len() > 512 {
+            return Err(DomainError::Invalid("asset name is out of bounds".into()));
+        }
+        if self.media_type.trim().is_empty()
+            || self.media_type.len() > 255
+            || self.media_type.chars().any(char::is_whitespace)
+        {
+            return Err(DomainError::Invalid(
+                "asset media type is out of bounds".into(),
+            ));
+        }
+        if let Some(digest) = &self.content_sha256
+            && (digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        {
+            return Err(DomainError::Invalid("asset digest is invalid".into()));
+        }
+        if self
+            .source_revision
+            .as_ref()
+            .is_some_and(|value| value.len() > 512 || value.chars().any(char::is_control))
+        {
+            return Err(DomainError::Invalid(
+                "asset source revision is out of bounds".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -404,6 +439,13 @@ impl Project {
             if !marker_ids.insert(marker.id) || !non_negative(marker.at) || marker.label.len() > 160
             {
                 return Err(DomainError::Invalid("invalid marker".into()));
+            }
+        }
+        let mut asset_ids = HashSet::new();
+        for asset in &self.assets {
+            asset.validate()?;
+            if !asset_ids.insert(asset.id) {
+                return Err(DomainError::Invalid("duplicate asset id".into()));
             }
         }
         let mut lock_ids = BTreeSet::new();
@@ -886,6 +928,38 @@ impl Project {
                     label: label.clone(),
                 });
             }
+            Change::AddAsset { asset } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                asset.validate()?;
+                if self.assets.iter().any(|candidate| candidate.id == asset.id) {
+                    return Err(DomainError::Invalid("duplicate asset id".into()));
+                }
+                self.assets.push(asset.clone());
+            }
+            Change::RemoveAsset { asset_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self
+                    .audio
+                    .voice_tracks
+                    .iter()
+                    .any(|track| track.asset_id == *asset_id)
+                    || self.brief.claims.iter().any(|claim| {
+                        matches!(
+                            claim.source.as_ref(),
+                            Some(SourceReference::Asset { asset_id: referenced }) if referenced == asset_id
+                        )
+                    })
+                {
+                    return Err(DomainError::Invalid(
+                        "asset is still referenced by project state".into(),
+                    ));
+                }
+                let before = self.assets.len();
+                self.assets.retain(|asset| asset.id != *asset_id);
+                if self.assets.len() == before {
+                    return Err(DomainError::NotFound(format!("asset:{asset_id}")));
+                }
+            }
             Change::AddVoiceTrack { track } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 self.audio.voice_tracks.push(track.clone());
@@ -1099,6 +1173,12 @@ pub enum Change {
     AddMarker {
         at: RationalTime,
         label: String,
+    },
+    AddAsset {
+        asset: Asset,
+    },
+    RemoveAsset {
+        asset_id: Uuid,
     },
     AddVoiceTrack {
         track: VoiceTrack,
@@ -1323,6 +1403,49 @@ mod tests {
                 .iter()
                 .all(|node| node.id != parent_id)
         );
+    }
+
+    #[test]
+    fn asset_registration_validates_digest_and_protects_references() {
+        let mut project = Project::new("Assets").unwrap();
+        let asset_id = Uuid::now_v7();
+        project
+            .apply_change(&Change::AddAsset {
+                asset: Asset {
+                    id: asset_id,
+                    name: "voice.wav".into(),
+                    media_type: "audio/wav".into(),
+                    content_sha256: Some("ab".repeat(32)),
+                    source_revision: Some("import-r1".into()),
+                },
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::AddClaim {
+                text: "Claim".into(),
+                source: Some(SourceReference::Asset { asset_id }),
+                context: "asset-backed".into(),
+                source_revision: None,
+            })
+            .unwrap();
+        let error = project
+            .apply_change(&Change::RemoveAsset { asset_id })
+            .unwrap_err();
+        assert!(matches!(error, DomainError::Invalid(_)));
+
+        let invalid = Change::AddAsset {
+            asset: Asset {
+                id: Uuid::now_v7(),
+                name: "bad.bin".into(),
+                media_type: "application/octet-stream".into(),
+                content_sha256: Some("NOT-A-DIGEST".into()),
+                source_revision: None,
+            },
+        };
+        assert!(matches!(
+            project.apply_change(&invalid),
+            Err(DomainError::Invalid(_))
+        ));
     }
 
     #[test]

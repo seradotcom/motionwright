@@ -53,6 +53,16 @@ struct ExportBundleRequest {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ImportAssetRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    path: String,
+    name: Option<String>,
+    media_type: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct BundlePlanResponse {
     project_id: Uuid,
@@ -99,6 +109,58 @@ fn project_history(
     state
         .service
         .history(request.project_id, request.after_revision, request.limit)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
+fn import_asset_file(
+    state: State<'_, AppState>,
+    request: ImportAssetRequest,
+) -> Result<Project, String> {
+    let source = absolute_asset_path(&request.path)?;
+    if !source.is_file() {
+        return Err("Asset source must be an existing local file.".into());
+    }
+    let name = request
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| "Asset file name is unavailable.".to_string())?;
+    let media_type = request
+        .media_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| infer_media_type(&source).to_owned());
+    let current = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let expected = RevisionStamp {
+        resource: current.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    state
+        .service
+        .import_asset_file(
+            request.project_id,
+            &expected,
+            &Uuid::now_v7().to_string(),
+            &source,
+            name,
+            media_type,
+        )
+        .map(|outcome| outcome.project)
         .map_err(sanitized)
 }
 
@@ -181,6 +243,48 @@ fn apply_change(state: State<'_, AppState>, request: ApplyRequest) -> Result<Pro
         .map_err(sanitized)
 }
 
+fn absolute_asset_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an absolute asset file path.".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("Asset file paths must be absolute.".into());
+    }
+    Ok(path)
+}
+
+fn infer_media_type(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
+        "json" => "application/json",
+        "srt" => "application/x-subrip",
+        "vtt" => "text/vtt",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
 fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -247,6 +351,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             project_history,
+            import_asset_file,
             export_project_bundle,
             inspect_project_bundle,
             import_project_bundle,

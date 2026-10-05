@@ -28,6 +28,27 @@ export async function bootstrap(): Promise<Bootstrap> {
   return structuredClone(browserState);
 }
 
+export async function importAssetFile(
+  project: Project,
+  path: string,
+  name?: string,
+  mediaType?: string,
+): Promise<Project> {
+  if (!isTauri()) {
+    throw new Error("Local asset import requires the Motionwright desktop runtime.");
+  }
+  return invoke<Project>("import_asset_file", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      path,
+      name: name ?? null,
+      media_type: mediaType ?? null,
+    },
+  });
+}
+
 export async function exportProjectBundle(
   project: Project,
   destination: string,
@@ -283,6 +304,27 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       assertUnlocked(next, projectResource(next), ["timing"]);
       next.markers.push({ id: crypto.randomUUID(), at: change.at, label: change.label });
       break;
+    case "add_asset":
+      assertUnlocked(next, projectResource(next), ["content"]);
+      if (next.assets.some((asset) => asset.id === change.asset.id)) {
+        throw new Error("duplicate asset id");
+      }
+      next.assets.push(structuredClone(change.asset));
+      break;
+    case "remove_asset": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      if (
+        next.audio.voice_tracks.some((track) => track.asset_id === change.asset_id) ||
+        next.brief.claims.some((claim) => claim.source?.kind === "asset" && claim.source.asset_id === change.asset_id)
+      ) {
+        throw new Error("asset is still referenced by project state");
+      }
+      if (!next.assets.some((asset) => asset.id === change.asset_id)) {
+        throw new Error("resource not found: asset:" + change.asset_id);
+      }
+      next.assets = next.assets.filter((asset) => asset.id !== change.asset_id);
+      break;
+    }
     case "set_visual_language":
       assertUnlocked(next, projectResource(next), ["style"]);
       next.visual_language = structuredClone(change.visual_language);

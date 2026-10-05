@@ -277,6 +277,22 @@ impl Store {
         Ok(BlobDescriptor { sha256, size_bytes })
     }
 
+    pub fn verify_blob(&self, digest: &str) -> Result<BlobDescriptor> {
+        let path = self.blob_path(digest)?;
+        if !path.is_file() {
+            return Err(StorageError::BlobMissing {
+                digest: digest.to_owned(),
+            });
+        }
+        let descriptor = hash_file(&path)?;
+        if descriptor.sha256 != digest {
+            return Err(StorageError::InvalidBackup(
+                "content-addressed blob failed digest verification".into(),
+            ));
+        }
+        Ok(descriptor)
+    }
+
     pub fn read_blob(&self, digest: &str, limit: u64) -> Result<Vec<u8>> {
         let path = self.blob_path(digest)?;
         if !path.is_file() {
@@ -288,7 +304,7 @@ impl Store {
         if size > limit {
             return Err(StorageError::BlobTooLarge { size, limit });
         }
-        let bytes = fs::read(&path)?;
+        let bytes = fs::read(path)?;
         let actual = hex::encode(Sha256::digest(&bytes));
         if actual != digest {
             return Err(StorageError::InvalidBackup(
@@ -761,6 +777,13 @@ impl Store {
                 "invalid request id".into(),
             )));
         }
+        let required_blob = match change {
+            Change::AddAsset { asset } => match asset.content_sha256.as_deref() {
+                Some(digest) => Some((digest.to_owned(), self.blob_path(digest)?)),
+                None => None,
+            },
+            _ => None,
+        };
         let request_sha = request_digest(id, change)?;
         let tx = self
             .conn
@@ -804,6 +827,18 @@ impl Store {
                 expected: expected.revision,
                 actual: project.revision,
             });
+        }
+
+        if let Some((digest, path)) = required_blob {
+            if !path.is_file() {
+                return Err(StorageError::BlobMissing { digest });
+            }
+            let descriptor = hash_file(&path)?;
+            if descriptor.sha256 != digest {
+                return Err(StorageError::InvalidBackup(
+                    "asset blob failed content-address verification".into(),
+                ));
+            }
         }
 
         let previous_revision = project.revision;
@@ -1099,6 +1134,58 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, StorageError::RequestReuse));
+    }
+
+    #[test]
+    fn asset_change_requires_verified_blob_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let project = store.create_named_project("Assets").unwrap();
+        let missing_digest = "ab".repeat(32);
+        let missing = Change::AddAsset {
+            asset: Asset {
+                id: Uuid::now_v7(),
+                name: "missing.bin".into(),
+                media_type: "application/octet-stream".into(),
+                content_sha256: Some(missing_digest.clone()),
+                source_revision: None,
+            },
+        };
+        let error = store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "asset-missing",
+                &missing,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageError::BlobMissing { digest } if digest == missing_digest
+        ));
+
+        let source = temp.path().join("asset.bin");
+        fs::write(&source, b"verified-asset").unwrap();
+        let descriptor = store.ingest_blob_file(&source).unwrap();
+        let change = Change::AddAsset {
+            asset: Asset {
+                id: Uuid::now_v7(),
+                name: "asset.bin".into(),
+                media_type: "application/octet-stream".into(),
+                content_sha256: Some(descriptor.sha256),
+                source_revision: Some("test-import".into()),
+            },
+        };
+        let outcome = store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "asset-present",
+                &change,
+            )
+            .unwrap();
+        assert_eq!(outcome.project.assets.len(), 1);
+        assert_eq!(outcome.project.revision, 1);
     }
 
     #[test]
