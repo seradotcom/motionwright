@@ -43,3 +43,28 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
   await expect(page.getByRole("heading", { name: "Dependencies" })).toBeVisible();
   await expect(page.getByText("NOT ADMITTED").first()).toBeVisible();
 });
+
+
+test("canvas edits and stored alternatives use project revisions rather than local-only UI state", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Semantic canvas" })).toBeVisible();
+  await page.getByRole("button", { name: "Reasoning headline", exact: true }).click();
+
+  const x = page.getByLabel("Canvas X");
+  await expect(x).toHaveValue("160");
+  await x.fill("196");
+  await page.getByRole("button", { name: "Commit transform" }).click();
+  await expect(page.getByText("r13", { exact: true }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Storyboard", exact: true }).click();
+  await page.getByRole("button", { name: /Pixels are brittle/ }).click();
+  await page.getByRole("button", { name: "Alternatives", exact: true }).click();
+  await expect(page.getByText("Candidate budget")).toBeVisible();
+  await expect(page.getByText("Contrast cut", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Select for review" }).nth(1).click();
+  await expect(page.getByText("Selected", { exact: true })).toBeVisible();
+  await expect(page.getByText("r14", { exact: true }).first()).toBeVisible();
+});

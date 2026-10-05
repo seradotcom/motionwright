@@ -1,7 +1,46 @@
-import type { Bootstrap, Project } from "./types";
+import type { Bootstrap, CanvasNode, Project } from "./types";
 
 const now = new Date().toISOString();
 const id = (suffix: string) => "018f0000-0000-7000-8000-" + suffix.padStart(12, "0");
+const camera = { center_x: 960, center_y: 540, zoom: 1, rotation_deg: 0, safe_margin: 0.05 };
+
+const node = (
+  suffix: string,
+  name: string,
+  kind: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  text: string | null = null,
+  zIndex = 0,
+): CanvasNode => ({
+  id: id(suffix),
+  name,
+  kind,
+  parent_id: null,
+  x,
+  y,
+  width,
+  height,
+  rotation_deg: 0,
+  opacity: 1,
+  text,
+  coordinate_space: "project_pixels",
+  z_index: zIndex,
+  style: {
+    fill: kind === "text" ? "#F5F5F2" : "#1D242C",
+    stroke: kind === "text" ? null : "#5A6570",
+    stroke_width: kind === "text" ? 0 : 1,
+    font_family: kind === "text" ? "system-ui" : null,
+    font_size: kind === "text" ? 72 : null,
+    font_weight: kind === "text" ? 700 : null,
+    line_height: kind === "text" ? 1.05 : null,
+    blend_mode: "normal",
+  },
+  relations: [],
+  property_locks: [],
+});
 
 export const fixtureProject: Project = {
   schema_version: 1,
@@ -26,9 +65,10 @@ export const fixtureProject: Project = {
       status: "approved",
       beats: [],
       nodes: [
-        { id: id("111"), name: "Reasoning headline", kind: "text", parent_id: null, x: 160, y: 160, width: 920, height: 120, rotation_deg: 0, opacity: 1, text: "AI agents can reason." },
-        { id: id("112"), name: "Agent trace", kind: "shape", parent_id: null, x: 180, y: 360, width: 860, height: 170, rotation_deg: 0, opacity: 0.82, text: null }
-      ]
+        node("111", "Reasoning headline", "text", 160, 160, 920, 120, "AI agents can reason.", 2),
+        { ...node("112", "Agent trace", "shape", 180, 360, 860, 170, null, 1), opacity: 0.82 }
+      ],
+      camera: { ...camera },
     },
     {
       id: id("12"),
@@ -40,9 +80,10 @@ export const fixtureProject: Project = {
       status: "review",
       beats: [],
       nodes: [
-        { id: id("121"), name: "Pixel grid", kind: "grid", parent_id: null, x: 180, y: 170, width: 520, height: 420, rotation_deg: 0, opacity: 0.55, text: null },
-        { id: id("122"), name: "Semantic tree", kind: "tree", parent_id: null, x: 760, y: 170, width: 520, height: 420, rotation_deg: 0, opacity: 1, text: null }
-      ]
+        { ...node("121", "Pixel grid", "grid", 180, 170, 520, 420, null, 1), opacity: 0.55 },
+        node("122", "Semantic tree", "tree", 760, 170, 520, 420, null, 2)
+      ],
+      camera: { ...camera },
     },
     {
       id: id("13"),
@@ -54,8 +95,9 @@ export const fixtureProject: Project = {
       status: "draft",
       beats: [],
       nodes: [
-        { id: id("131"), name: "Pipeline", kind: "diagram", parent_id: null, x: 120, y: 190, width: 1120, height: 300, rotation_deg: 0, opacity: 1, text: null }
-      ]
+        node("131", "Pipeline", "diagram", 120, 190, 1120, 300, null, 1)
+      ],
+      camera: { ...camera, zoom: 1.05 },
     },
     {
       id: id("14"),
@@ -66,7 +108,8 @@ export const fixtureProject: Project = {
       renderer: "manim-community",
       status: "draft",
       beats: [],
-      nodes: []
+      nodes: [],
+      camera: { ...camera },
     }
   ],
   markers: [
@@ -74,9 +117,9 @@ export const fixtureProject: Project = {
     { id: id("22"), at: { num: "28", den: "1" }, label: "Close" }
   ],
   assets: [
-    { id: id("31"), name: "voiceover.wav", media_type: "audio/wav", content_sha256: "5f".repeat(32), source_revision: "voice-r3" },
-    { id: id("32"), name: "semwright-mark.svg", media_type: "image/svg+xml", content_sha256: "a1".repeat(32), source_revision: "brand-r1" },
-    { id: id("33"), name: "native-demo.glb", media_type: "model/gltf-binary", content_sha256: "0c".repeat(32), source_revision: "scene-r8" }
+    { id: id("31"), name: "voiceover.wav", media_type: "audio/wav", content_sha256: "5f".repeat(32), source_revision: "fixture-r3" },
+    { id: id("32"), name: "semwright-mark.svg", media_type: "image/svg+xml", content_sha256: "a1".repeat(32), source_revision: "fixture-r1" },
+    { id: id("33"), name: "native-demo.glb", media_type: "model/gltf-binary", content_sha256: "0c".repeat(32), source_revision: "fixture-r8" }
   ],
   locks: [
     { id: id("41"), resource: "scene:" + id("11"), kind: "timing", note: "Approved VO sync" }
@@ -86,6 +129,77 @@ export const fixtureProject: Project = {
     { id: id("52"), name: "Vertical 9:16", width: 1080, height: 1920, language: "en", captions: true },
     { id: id("53"), name: "Square 1:1", width: 1080, height: 1080, language: "en", captions: true }
   ],
+  brief: {
+    objective: "Explain why native semantic software control is a stronger substrate for agentic creative work than pixel-only automation.",
+    audience: "Technical product builders evaluating reliable AI-assisted creative workflows.",
+    constraints: ["Preserve Native SDK authority boundaries", "Do not imply evidence that has not been measured"],
+    exclusions: ["No fake waveform", "No fabricated renderer PASS"],
+    claims: [],
+  },
+  narrative: {
+    premise: "Agents already reason well; the hard part is applying intent safely and repeatably inside real software.",
+    beats: [],
+    protected_sections: [],
+  },
+  audio: {
+    voice_tracks: [],
+    transcript: [],
+    cues: [],
+    mix: {
+      voice_gain_db: 0,
+      music_gain_db: -12,
+      target_lufs: null,
+      target_true_peak_dbfs: null,
+    },
+  },
+  visual_language: {
+    version: 1,
+    name: "Cut Room Ledger",
+    palette: [
+      { name: "ink", value: "#F2F4F3" },
+      { name: "review", value: "#F5B84A" },
+      { name: "surface", value: "#0F1216" },
+    ],
+    type_tokens: [],
+    motion_grammar: [
+      { name: "splice", meaning: "Commit a timing or selection change without decorative motion.", duration_ms: 180, reduced_motion: "static_equivalent" },
+    ],
+    anti_slop_rules: ["No glassmorphism", "No decorative KPI cards", "Never use color as the only state signal"],
+    fonts: [],
+  },
+  proposal_sets: [
+    {
+      id: id("61"),
+      base_revision: 11,
+      scope: { kind: "scene", scene_id: id("12") },
+      search_budget: { candidates: 3, model_calls: 0, max_tokens: 0 },
+      proposals: [
+        {
+          id: id("611"),
+          title: "Direct proof",
+          rationale: "Fastest path from fragility to native authority.",
+          structure: ["Pixel action", "Semantic target", "Revision receipt"],
+          edits: [{ kind: "scene_objective", scene_id: id("12"), objective: "Show brittle pixel targeting, then replace it with a native semantic target and revision receipt." }],
+        },
+        {
+          id: id("612"),
+          title: "Contrast cut",
+          rationale: "Makes the mechanism difference legible at a glance.",
+          structure: ["Screenshot uncertainty", "Native semantic control", "Verified state"],
+          edits: [{ kind: "scene_objective", scene_id: id("12"), objective: "Contrast screenshot uncertainty with native semantic control and explicit verified state." }],
+        },
+        {
+          id: id("613"),
+          title: "Artifact trail",
+          rationale: "Emphasizes provenance and maintenance across revisions.",
+          structure: ["Intent", "Broker", "Driver", "Readback", "Revision"],
+          edits: [{ kind: "scene_objective", scene_id: id("12"), objective: "Follow one intent through Broker, Driver, readback and the resulting revision artifact." }],
+        }
+      ],
+      selected: null,
+    }
+  ],
+  model_invocations: [],
   updated_at: now
 };
 

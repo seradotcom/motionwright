@@ -1,9 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
-import type { Bootstrap, Change, Project } from "./types";
+import type { Bootstrap, Change, LockKind, Project } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
+
+const projectResource = (project: Project) => "project:" + project.id;
+const sceneResource = (sceneId: string) => "scene:" + sceneId;
+
+function assertUnlocked(project: Project, resource: string, kinds: LockKind[]) {
+  const hit = project.locks.find((lock) => lock.resource === resource && kinds.includes(lock.kind));
+  if (hit) throw new Error(`resource is locked: ${resource} (${hit.kind})`);
+}
 
 export async function bootstrap(): Promise<Bootstrap> {
   if (isTauri()) return invoke<Bootstrap>("bootstrap");
@@ -27,9 +35,25 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
   const next = structuredClone(project);
   switch (change.type) {
     case "rename_project":
+      assertUnlocked(next, projectResource(next), ["content"]);
       next.title = change.title;
       break;
+    case "set_brief":
+      assertUnlocked(next, projectResource(next), ["content"]);
+      next.brief = {
+        ...next.brief,
+        objective: change.objective,
+        audience: change.audience,
+        constraints: change.constraints,
+        exclusions: change.exclusions,
+      };
+      break;
+    case "set_narrative_premise":
+      assertUnlocked(next, projectResource(next), ["content"]);
+      next.narrative.premise = change.premise;
+      break;
     case "add_scene": {
+      assertUnlocked(next, projectResource(next), ["content", "timing"]);
       const start = next.scenes.reduce((total, scene) => total + Number(scene.duration.num) / Number(scene.duration.den), 0);
       next.scenes.push({
         id: crypto.randomUUID(),
@@ -40,11 +64,13 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         renderer: "motion-canvas",
         status: "draft",
         beats: [],
-        nodes: []
+        nodes: [],
+        camera: { center_x: 960, center_y: 540, zoom: 1, rotation_deg: 0, safe_margin: 0.05 },
       });
       break;
     }
     case "move_scene": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
       const from = next.scenes.findIndex((scene) => scene.id === change.scene_id);
       if (from >= 0 && change.to_index >= 0 && change.to_index < next.scenes.length) {
         const [scene] = next.scenes.splice(from, 1);
@@ -58,22 +84,95 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       break;
     }
     case "update_scene_objective": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       if (scene) scene.objective = change.objective;
       break;
     }
     case "set_scene_renderer": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["renderer"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       if (scene) scene.renderer = change.renderer;
       break;
     }
+    case "set_scene_status": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (scene) scene.status = change.status;
+      break;
+    }
+    case "transform_canvas_node": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      const node = scene?.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      const changesPosition = node.x !== change.transform.x || node.y !== change.transform.y;
+      const changesSize = node.width !== change.transform.width || node.height !== change.transform.height;
+      const changesRotation = node.rotation_deg !== change.transform.rotation_deg;
+      const changesOpacity = node.opacity !== change.transform.opacity;
+      if (
+        (changesPosition && node.property_locks.includes("position")) ||
+        (changesSize && node.property_locks.includes("size")) ||
+        (changesRotation && node.property_locks.includes("rotation")) ||
+        (changesOpacity && node.property_locks.includes("opacity"))
+      ) throw new Error("resource is locked: node transform property");
+      Object.assign(node, change.transform);
+      break;
+    }
+    case "update_canvas_text": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
+      const node = next.scenes.find((entry) => entry.id === change.scene_id)?.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      if (node.property_locks.includes("text")) throw new Error("resource is locked: node text");
+      node.text = change.text;
+      break;
+    }
+    case "set_node_property_lock": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
+      const node = next.scenes.find((entry) => entry.id === change.scene_id)?.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      if (change.locked && !node.property_locks.includes(change.property)) node.property_locks.push(change.property);
+      if (!change.locked) node.property_locks = node.property_locks.filter((property) => property !== change.property);
+      break;
+    }
+    case "set_camera": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      scene.camera = structuredClone(change.camera);
+      break;
+    }
     case "add_marker":
+      assertUnlocked(next, projectResource(next), ["timing"]);
       next.markers.push({ id: crypto.randomUUID(), at: change.at, label: change.label });
       break;
+    case "set_visual_language":
+      assertUnlocked(next, projectResource(next), ["style"]);
+      next.visual_language = structuredClone(change.visual_language);
+      break;
+    case "add_proposal_set":
+      if (change.proposal_set.base_revision !== next.revision) {
+        throw new Error("proposal set base does not match current project revision");
+      }
+      next.proposal_sets.push(structuredClone(change.proposal_set));
+      break;
+    case "select_proposal": {
+      const set = next.proposal_sets.find((entry) => entry.id === change.proposal_set_id);
+      if (!set) throw new Error("resource not found: proposal-set:" + change.proposal_set_id);
+      if (set.base_revision + 1 !== next.revision) throw new Error("proposal set is stale for current project revision");
+      if (!set.proposals.some((proposal) => proposal.id === change.proposal_id)) {
+        throw new Error("resource not found: proposal:" + change.proposal_id);
+      }
+      set.selected = change.proposal_id;
+      break;
+    }
     case "set_lock":
-      next.locks.push({ id: crypto.randomUUID(), resource: change.resource, kind: change.kind, note: change.note });
+      if (!next.locks.some((lock) => lock.resource === change.resource && lock.kind === change.kind)) {
+        next.locks.push({ id: crypto.randomUUID(), resource: change.resource, kind: change.kind, note: change.note });
+      }
       break;
     case "remove_lock":
+      if (!next.locks.some((lock) => lock.id === change.lock_id)) throw new Error("resource not found: lock:" + change.lock_id);
       next.locks = next.locks.filter((lock) => lock.id !== change.lock_id);
       break;
   }

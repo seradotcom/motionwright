@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { applyChange, bootstrap } from "./api";
+import CanvasWorkspace from "./CanvasWorkspace";
+import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import type {
   Bootstrap,
   Change,
@@ -727,6 +729,22 @@ function Inspector({
             <option key={value} value={value}>{label}</option>
           ))}
         </select>
+        <label className="field-label" htmlFor="scene-status">Review state</label>
+        <select
+          id="scene-status"
+          aria-label="Scene status"
+          value={scene.status}
+          onChange={(event) => commit({
+            type: "set_scene_status",
+            scene_id: scene.id,
+            status: event.target.value as Scene["status"],
+          })}
+        >
+          <option value="draft">Draft</option>
+          <option value="review">Review</option>
+          <option value="approved">Approved</option>
+          <option value="needs_work">Needs work</option>
+        </select>
         <div className="renderer-note">
           <CircleDashed size={13} />
           Capability loss is evaluated before a renderer swap is executed.
@@ -940,16 +958,17 @@ export default function App() {
   const renderWorkspace = () => {
     switch (workspace) {
       case "Brief":
-        return <BriefView project={project} commit={commit} />;
+        return <RichBriefView project={project} commit={commit} />;
       case "Narrative":
-        return <NarrativeView scene={selectedScene} commit={commit} />;
+        return <RichNarrativeView project={project} scene={selectedScene} commit={commit} />;
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={setSelectedSceneId} />;
       case "Canvas":
+        return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} />;
       case "Timeline":
         return <PreviewSurface scene={selectedScene} project={project} playhead={playhead} />;
       case "Alternatives":
-        return <AlternativesView scene={selectedScene} />;
+        return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
       case "Changes":
         return <ChangesView project={project} />;
       case "Dependencies":
