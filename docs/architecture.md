@@ -42,7 +42,19 @@ A preflight observation is useful for UX but never substitutes for the commit-ti
 
 Project resource version is `generation + revision`. Generation changes when a resource is intentionally recreated/imported as a new authority. Revision is monotonically increasing inside one generation and is serialized as a string at the Native SDK boundary so it remains exact across Rust/JavaScript.
 
-Undo and restore create new changes. They do not rewrite history or resurrect old grants.
+Undo creates a new change rather than rewriting history. Portable restore preserves the source journal but rotates the resource generation before accepting any new write, so callers must observe a fresh base. Request receipts are execution-local and are deliberately excluded from portable backups; restoring an old package therefore cannot resurrect consumed deduplication keys.
+
+## Storage evolution, paging and portable project state
+
+SQLite uses `PRAGMA user_version` as an explicit storage-schema gate. A database whose schema version is newer than this binary supports is rejected before Motionwright creates or migrates application tables. Project documents also carry their own domain schema version and must validate before they enter the service boundary.
+
+Project discovery has a summary projection with bounded keyset pagination over `(updated_at, id)`. Listing projects does not require deserializing every complete creative document.
+
+The portable backup envelope is created from one `IMMEDIATE` SQLite transaction and contains the validated project document plus its complete committed change journal, format/schema metadata and a SHA-256 digest. Import supports a dry-run plan, verifies the digest and contiguous journal, rejects duplicate logical project IDs, preserves logical history, rotates `generation`, and does not import request receipts.
+
+Asset bytes live outside SQLite in an immutable content-addressed store at `blobs/sha256/<prefix>/<digest>`. File ingestion streams through a private staging path, hashes while writing, syncs the staged bytes, and only then renames into the canonical digest path. Reusing a digest verifies the existing bytes rather than overwriting them. Reads are digest-verified and explicitly size-bounded.
+
+A self-contained project bundle is a directory with `manifest.json` plus the exact content-addressed blobs referenced by project assets. Export is staged into a new directory, copies and re-hashes every blob, writes the manifest last, then atomically renames the directory into its requested destination. Import has a dry-run that verifies canonical blob paths, unique digest membership, byte sizes, hashes, backup integrity and exact equality between the manifest blob set and project asset digests. Imported blobs are admitted before the project transaction; any interrupted import can therefore leave only unreferenced immutable blobs, never a project referencing missing bytes.
 
 ## Renderer model
 

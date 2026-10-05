@@ -73,8 +73,25 @@ fn storage_error(error: StorageError) -> Error {
             "Request id was already used for different input",
         ),
         StorageError::Domain(error) => Error::new(ErrorCode::InvalidArgument, error.to_string()),
-        StorageError::Serde(_) => Error::new(ErrorCode::InvalidArgument, "Malformed project value"),
-        StorageError::Sql(_) => Error::new(ErrorCode::BackendFailed, "Motionwright storage failed"),
+        StorageError::Serde(_)
+        | StorageError::InvalidBackup(_)
+        | StorageError::InvalidBlobDigest
+        | StorageError::BlobTooLarge { .. } => {
+            Error::new(ErrorCode::InvalidArgument, "Malformed project value")
+        }
+        StorageError::ProjectExists | StorageError::DestinationExists => {
+            Error::new(ErrorCode::Conflict, "Motionwright resource already exists")
+        }
+        StorageError::BlobMissing { .. } => {
+            Error::new(ErrorCode::NotFound, "Motionwright asset blob not found")
+        }
+        StorageError::UnsupportedSchemaVersion { .. } => Error::new(
+            ErrorCode::BackendFailed,
+            "Motionwright storage schema is newer than this application",
+        ),
+        StorageError::Sql(_) | StorageError::Io(_) => {
+            Error::new(ErrorCode::BackendFailed, "Motionwright storage failed")
+        }
     }
 }
 

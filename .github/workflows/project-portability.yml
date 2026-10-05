@@ -1,0 +1,45 @@
+name: Project Portability
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "docs/architecture.md"
+      - "docs/testing.md"
+      - ".github/workflows/project-portability.yml"
+  pull_request:
+    paths:
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "docs/architecture.md"
+      - "docs/testing.md"
+      - ".github/workflows/project-portability.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  storage-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Source policy
+        run: python3 tooling/source_policy.py
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Storage and service tests
+        run: cargo test -p motionwright-storage -p motionwright-service --all-targets
+      - name: Storage and service clippy
+        run: cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings

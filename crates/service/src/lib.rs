@@ -1,6 +1,9 @@
 use motionwright_domain::{Change, Project, RevisionStamp};
-pub use motionwright_storage::ProjectEvent;
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
+pub use motionwright_storage::{
+    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProjectBackup,
+    ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+};
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
 use uuid::Uuid;
@@ -37,6 +40,49 @@ impl StudioService {
 
     pub fn projects(&self, limit: usize) -> StorageResult<Vec<Project>> {
         self.store.lock().list_projects(limit)
+    }
+
+    pub fn project_summaries(
+        &self,
+        cursor: Option<&ProjectCursor>,
+        limit: usize,
+    ) -> StorageResult<ProjectPage> {
+        self.store.lock().list_project_summaries(cursor, limit)
+    }
+
+    pub fn export_project(&self, id: Uuid) -> StorageResult<ProjectBackup> {
+        self.store.lock().export_project(id)
+    }
+
+    pub fn inspect_import(&self, backup: &ProjectBackup) -> StorageResult<ImportPlan> {
+        self.store.lock().inspect_import(backup)
+    }
+
+    pub fn import_project(&self, backup: &ProjectBackup) -> StorageResult<Project> {
+        self.store.lock().import_project(backup)
+    }
+
+    pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> StorageResult<BlobDescriptor> {
+        self.store.lock().ingest_blob_file(source)
+    }
+
+    pub fn export_project_bundle(
+        &self,
+        id: Uuid,
+        destination: impl AsRef<Path>,
+    ) -> StorageResult<ProjectBundleManifest> {
+        self.store.lock().export_project_bundle(id, destination)
+    }
+
+    pub fn inspect_project_bundle(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> StorageResult<BundleImportPlan> {
+        self.store.lock().inspect_project_bundle(source)
+    }
+
+    pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
+        self.store.lock().import_project_bundle(source)
     }
 
     pub fn history(

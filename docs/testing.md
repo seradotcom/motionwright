@@ -3,7 +3,7 @@
 The test pyramid separates evidence rather than counting raw test totals.
 
 1. **Domain/schema** — closed parsing, IDs/revisions, canonical Semwright rational time, locks, canvas relations/property locks, creative proposal budgets, change validation, serialization and migrations.
-2. **Storage/service** — transactional CAS, request deduplication, wrong-base rejection, crash/reopen, concurrent writers and event replay.
+2. **Storage/service** — transactional CAS, request deduplication, wrong-base rejection, crash/reopen, concurrent writers, event replay, future-schema rejection, keyset pagination, backup digest verification, dry-run import, restore generation rotation without receipt resurrection, immutable content-addressed blob admission, bounded digest-verified reads, portable bundle round-trip and tamper rejection.
 3. **Integrated UI** — keyboard/pointer editing, shared revision updates, semantic Canvas transforms, stored alternative selection, stale/conflict states, offline/error recovery and accessibility.
 4. **Native E2E** — external client → Semwright Core/Host/Native SDK → Motionwright → persisted state, including observation scopes and bounded creative commands.
 5. **Render E2E** — project intent → Semwright renderer capabilities → artifact → readback → Effects/Graph.
