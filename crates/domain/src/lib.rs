@@ -1,3 +1,8 @@
+mod canvas;
+mod creative;
+pub use canvas::*;
+pub use creative::*;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
@@ -19,11 +24,6 @@ pub enum DomainError {
 pub type Result<T> = std::result::Result<T, DomainError>;
 
 pub use semwright_media_time::Rational as RationalTime;
-
-fn time(num: i64, den: i64) -> Result<RationalTime> {
-    RationalTime::new(num, den)
-        .map_err(|error| DomainError::Invalid(format!("invalid media time: {error}")))
-}
 
 fn whole_seconds(value: i64) -> RationalTime {
     RationalTime { num: value, den: 1 }
@@ -101,6 +101,16 @@ pub struct CanvasNode {
     pub rotation_deg: f64,
     pub opacity: f64,
     pub text: Option<String>,
+    #[serde(default)]
+    pub coordinate_space: CoordinateSpace,
+    #[serde(default)]
+    pub z_index: i32,
+    #[serde(default)]
+    pub style: NodeStyle,
+    #[serde(default)]
+    pub relations: Vec<NodeRelation>,
+    #[serde(default)]
+    pub property_locks: BTreeSet<NodeProperty>,
 }
 
 impl CanvasNode {
@@ -110,24 +120,34 @@ impl CanvasNode {
                 "canvas node name is out of bounds".into(),
             ));
         }
-        for value in [
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            self.rotation_deg,
-            self.opacity,
-        ] {
-            if !value.is_finite() {
+        CanvasTransform {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+            rotation_deg: self.rotation_deg,
+            opacity: self.opacity,
+        }
+        .validate()?;
+        self.style.validate()?;
+        if self
+            .text
+            .as_ref()
+            .is_some_and(|value| value.len() > 100_000)
+            || self.relations.len() > 128
+            || self.property_locks.len() > 8
+        {
+            return Err(DomainError::Invalid(
+                "canvas node content exceeds bounded limits".into(),
+            ));
+        }
+        let mut relation_ids = HashSet::new();
+        for relation in &self.relations {
+            if relation.target_id == self.id || !relation_ids.insert(relation.id) {
                 return Err(DomainError::Invalid(
-                    "canvas node contains non-finite geometry".into(),
+                    "canvas relation is self-referential or duplicated".into(),
                 ));
             }
-        }
-        if self.width < 0.0 || self.height < 0.0 || !(0.0..=1.0).contains(&self.opacity) {
-            return Err(DomainError::Invalid(
-                "canvas node geometry is invalid".into(),
-            ));
         }
         Ok(())
     }
@@ -144,6 +164,8 @@ pub struct Scene {
     pub status: SceneStatus,
     pub beats: Vec<Beat>,
     pub nodes: Vec<CanvasNode>,
+    #[serde(default)]
+    pub camera: CameraState,
 }
 
 impl Scene {
@@ -172,7 +194,40 @@ impl Scene {
                     "canvas hierarchy contains an invalid parent".into(),
                 ));
             }
+            if node
+                .relations
+                .iter()
+                .any(|relation| !ids.contains(&relation.target_id))
+            {
+                return Err(DomainError::Invalid(
+                    "canvas relation target is outside the scene".into(),
+                ));
+            }
+
+            let mut parent = node.parent_id;
+            let mut visited = HashSet::new();
+            for _ in 0..self.nodes.len() {
+                let Some(parent_id) = parent else {
+                    break;
+                };
+                if !visited.insert(parent_id) {
+                    return Err(DomainError::Invalid(
+                        "canvas hierarchy contains a cycle".into(),
+                    ));
+                }
+                parent = self
+                    .nodes
+                    .iter()
+                    .find(|candidate| candidate.id == parent_id)
+                    .and_then(|candidate| candidate.parent_id);
+            }
+            if parent.is_some() {
+                return Err(DomainError::Invalid(
+                    "canvas hierarchy exceeds bounded traversal".into(),
+                ));
+            }
         }
+        self.camera.validate()?;
         let mut beat_ids = HashSet::new();
         for beat in &self.beats {
             if !beat_ids.insert(beat.id) || beat.duration.num <= 0 || !non_negative(beat.start) {
@@ -232,6 +287,18 @@ pub struct Project {
     pub assets: Vec<Asset>,
     pub locks: Vec<ProjectLock>,
     pub deliverables: Vec<DeliverableProfile>,
+    #[serde(default)]
+    pub brief: Brief,
+    #[serde(default)]
+    pub narrative: Narrative,
+    #[serde(default)]
+    pub audio: AudioState,
+    #[serde(default)]
+    pub visual_language: VisualLanguage,
+    #[serde(default)]
+    pub proposal_sets: Vec<ProposalSet>,
+    #[serde(default)]
+    pub model_invocations: Vec<ModelInvocationReceipt>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -289,6 +356,12 @@ impl Project {
                     captions: true,
                 },
             ],
+            brief: Brief::default(),
+            narrative: Narrative::default(),
+            audio: AudioState::default(),
+            visual_language: VisualLanguage::default(),
+            proposal_sets: vec![],
+            model_invocations: vec![],
             updated_at: now,
         };
         project.validate()?;
@@ -343,6 +416,33 @@ impl Project {
                 ));
             }
         }
+        self.brief.validate()?;
+        self.narrative.validate()?;
+        let claim_ids: HashSet<_> = self.brief.claims.iter().map(|claim| claim.id).collect();
+        if self
+            .narrative
+            .beats
+            .iter()
+            .flat_map(|beat| beat.claim_ids.iter())
+            .any(|claim_id| !claim_ids.contains(claim_id))
+        {
+            return Err(DomainError::Invalid(
+                "narrative beat references an unknown claim".into(),
+            ));
+        }
+        self.audio.validate()?;
+        self.visual_language.validate()?;
+        if self.proposal_sets.len() > 512 || self.model_invocations.len() > 10_000 {
+            return Err(DomainError::Invalid(
+                "creative project collection is too large".into(),
+            ));
+        }
+        for set in &self.proposal_sets {
+            set.validate()?;
+        }
+        for receipt in &self.model_invocations {
+            receipt.validate()?;
+        }
         Ok(())
     }
 
@@ -370,6 +470,57 @@ impl Project {
                     ));
                 }
                 self.title = title.clone();
+            }
+            Change::SetBrief {
+                objective,
+                audience,
+                constraints,
+                exclusions,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.brief.objective = objective.clone();
+                self.brief.audience = audience.clone();
+                self.brief.constraints = constraints.clone();
+                self.brief.exclusions = exclusions.clone();
+                self.brief.validate()?;
+            }
+            Change::AddClaim {
+                text,
+                source,
+                context,
+                source_revision,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.brief.claims.push(Claim {
+                    id: Uuid::now_v7(),
+                    text: text.clone(),
+                    source: source.clone(),
+                    context: context.clone(),
+                    source_revision: source_revision.clone(),
+                });
+                self.brief.validate()?;
+            }
+            Change::SetNarrativePremise { premise } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.narrative.premise = premise.clone();
+                self.narrative.validate()?;
+            }
+            Change::AddNarrativeBeat {
+                label,
+                objective,
+                audience_takeaway,
+                claim_ids,
+                preferred_duration,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                self.narrative.beats.push(NarrativeBeat {
+                    id: Uuid::now_v7(),
+                    label: label.clone(),
+                    objective: objective.clone(),
+                    audience_takeaway: audience_takeaway.clone(),
+                    claim_ids: claim_ids.clone(),
+                    preferred_duration: *preferred_duration,
+                });
             }
             Change::AddScene {
                 name,
@@ -404,6 +555,7 @@ impl Project {
                     status: SceneStatus::Draft,
                     beats: vec![],
                     nodes: vec![],
+                    camera: CameraState::default(),
                 });
             }
             Change::MoveScene { scene_id, to_index } => {
@@ -449,6 +601,225 @@ impl Project {
                     .ok_or(DomainError::NotFound(resource))?;
                 scene.renderer = renderer.clone();
             }
+            Change::SetSceneStatus { scene_id, status } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content])?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                scene.status = status.clone();
+            }
+            Change::AddCanvasNode { scene_id, node } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Position])?;
+                node.validate()?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if scene.nodes.iter().any(|existing| existing.id == node.id) {
+                    return Err(DomainError::Invalid(
+                        "canvas node identity already exists in scene".into(),
+                    ));
+                }
+                scene.nodes.push(node.clone());
+            }
+            Change::TransformCanvasNode {
+                scene_id,
+                node_id,
+                transform,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                transform.validate()?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                let mut affected = Vec::new();
+                if node.x != transform.x || node.y != transform.y {
+                    affected.push(NodeProperty::Position);
+                }
+                if node.width != transform.width || node.height != transform.height {
+                    affected.push(NodeProperty::Size);
+                }
+                if node.rotation_deg != transform.rotation_deg {
+                    affected.push(NodeProperty::Rotation);
+                }
+                if node.opacity != transform.opacity {
+                    affected.push(NodeProperty::Opacity);
+                }
+                if property_locked(&node.property_locks, &affected) {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} has a locked transform property"
+                    )));
+                }
+                node.x = transform.x;
+                node.y = transform.y;
+                node.width = transform.width;
+                node.height = transform.height;
+                node.rotation_deg = transform.rotation_deg;
+                node.opacity = transform.opacity;
+            }
+            Change::UpdateCanvasText {
+                scene_id,
+                node_id,
+                text,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content])?;
+                if text.as_ref().is_some_and(|value| value.len() > 100_000) {
+                    return Err(DomainError::Invalid("canvas text is too long".into()));
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if node.property_locks.contains(&NodeProperty::Text) {
+                    return Err(DomainError::Locked(format!("node:{node_id} text")));
+                }
+                node.text = text.clone();
+            }
+            Change::UpdateCanvasStyle {
+                scene_id,
+                node_id,
+                style,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Style])?;
+                style.validate()?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if node.property_locks.contains(&NodeProperty::Style) {
+                    return Err(DomainError::Locked(format!("node:{node_id} style")));
+                }
+                node.style = style.clone();
+            }
+            Change::ReparentCanvasNode {
+                scene_id,
+                node_id,
+                parent_id,
+                z_index,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Position])?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if parent_id.is_some_and(|parent| {
+                    parent == *node_id || !scene.nodes.iter().any(|node| node.id == parent)
+                }) {
+                    return Err(DomainError::Invalid(
+                        "canvas parent must be another node in the scene".into(),
+                    ));
+                }
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if property_locked(
+                    &node.property_locks,
+                    &[NodeProperty::Parent, NodeProperty::Order],
+                ) {
+                    return Err(DomainError::Locked(format!("node:{node_id} hierarchy")));
+                }
+                node.parent_id = *parent_id;
+                node.z_index = *z_index;
+            }
+            Change::SetCanvasRelations {
+                scene_id,
+                node_id,
+                relations,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                if relations.len() > 128 {
+                    return Err(DomainError::Invalid("too many canvas relations".into()));
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                let ids: HashSet<_> = scene.nodes.iter().map(|node| node.id).collect();
+                if relations.iter().any(|relation| {
+                    relation.target_id == *node_id || !ids.contains(&relation.target_id)
+                }) {
+                    return Err(DomainError::Invalid(
+                        "canvas relation target is invalid".into(),
+                    ));
+                }
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if node.property_locks.contains(&NodeProperty::Position) {
+                    return Err(DomainError::Locked(format!("node:{node_id} relations")));
+                }
+                node.relations = relations.clone();
+            }
+            Change::SetNodePropertyLock {
+                scene_id,
+                node_id,
+                property,
+                locked,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content])?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if *locked {
+                    node.property_locks.insert(*property);
+                } else {
+                    node.property_locks.remove(property);
+                }
+            }
+            Change::SetCamera { scene_id, camera } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                camera.validate()?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                scene.camera = camera.clone();
+            }
             Change::AddMarker { at, label } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
                 if !non_negative(*at) || label.trim().is_empty() || label.len() > 160 {
@@ -459,6 +830,74 @@ impl Project {
                     at: *at,
                     label: label.clone(),
                 });
+            }
+            Change::AddVoiceTrack { track } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                self.audio.voice_tracks.push(track.clone());
+                self.audio.validate()?;
+            }
+            Change::AddTranscriptSegment { segment } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                self.audio.transcript.push(segment.clone());
+                self.audio.validate()?;
+            }
+            Change::AddAudioCue { cue } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
+                self.audio.cues.push(cue.clone());
+                self.audio.validate()?;
+            }
+            Change::SetMixIntent { mix } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.audio.mix = mix.clone();
+                self.audio.validate()?;
+            }
+            Change::SetVisualLanguage { visual_language } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Style])?;
+                visual_language.validate()?;
+                self.visual_language = visual_language.clone();
+            }
+            Change::AddProposalSet { proposal_set } => {
+                if proposal_set.base_revision != self.revision {
+                    return Err(DomainError::Invalid(
+                        "proposal set base does not match the current project revision".into(),
+                    ));
+                }
+                proposal_set.validate()?;
+                self.proposal_sets.push(proposal_set.clone());
+            }
+            Change::SelectProposal {
+                proposal_set_id,
+                proposal_id,
+            } => {
+                let set = self
+                    .proposal_sets
+                    .iter_mut()
+                    .find(|set| set.id == *proposal_set_id)
+                    .ok_or_else(|| {
+                        DomainError::NotFound(format!("proposal-set:{proposal_set_id}"))
+                    })?;
+                if set.base_revision.saturating_add(1) != self.revision {
+                    return Err(DomainError::Invalid(
+                        "proposal set is stale for the current project revision".into(),
+                    ));
+                }
+                if !set
+                    .proposals
+                    .iter()
+                    .any(|proposal| proposal.id == *proposal_id)
+                {
+                    return Err(DomainError::NotFound(format!("proposal:{proposal_id}")));
+                }
+                set.selected = Some(*proposal_id);
+            }
+            Change::RecordModelInvocation { receipt } => {
+                if receipt.base_revision > self.revision {
+                    return Err(DomainError::Invalid(
+                        "model invocation references a future project revision".into(),
+                    ));
+                }
+                receipt.validate()?;
+                self.model_invocations.push(receipt.clone());
             }
             Change::SetLock {
                 resource,
@@ -511,6 +950,28 @@ pub enum Change {
     RenameProject {
         title: String,
     },
+    SetBrief {
+        objective: String,
+        audience: String,
+        constraints: Vec<String>,
+        exclusions: Vec<String>,
+    },
+    AddClaim {
+        text: String,
+        source: Option<SourceReference>,
+        context: String,
+        source_revision: Option<String>,
+    },
+    SetNarrativePremise {
+        premise: String,
+    },
+    AddNarrativeBeat {
+        label: String,
+        objective: String,
+        audience_takeaway: String,
+        claim_ids: Vec<Uuid>,
+        preferred_duration: Option<RationalTime>,
+    },
     AddScene {
         name: String,
         objective: String,
@@ -528,9 +989,78 @@ pub enum Change {
         scene_id: Uuid,
         renderer: RendererKind,
     },
+    SetSceneStatus {
+        scene_id: Uuid,
+        status: SceneStatus,
+    },
+    AddCanvasNode {
+        scene_id: Uuid,
+        node: CanvasNode,
+    },
+    TransformCanvasNode {
+        scene_id: Uuid,
+        node_id: Uuid,
+        transform: CanvasTransform,
+    },
+    UpdateCanvasText {
+        scene_id: Uuid,
+        node_id: Uuid,
+        text: Option<String>,
+    },
+    UpdateCanvasStyle {
+        scene_id: Uuid,
+        node_id: Uuid,
+        style: NodeStyle,
+    },
+    ReparentCanvasNode {
+        scene_id: Uuid,
+        node_id: Uuid,
+        parent_id: Option<Uuid>,
+        z_index: i32,
+    },
+    SetCanvasRelations {
+        scene_id: Uuid,
+        node_id: Uuid,
+        relations: Vec<NodeRelation>,
+    },
+    SetNodePropertyLock {
+        scene_id: Uuid,
+        node_id: Uuid,
+        property: NodeProperty,
+        locked: bool,
+    },
+    SetCamera {
+        scene_id: Uuid,
+        camera: CameraState,
+    },
     AddMarker {
         at: RationalTime,
         label: String,
+    },
+    AddVoiceTrack {
+        track: VoiceTrack,
+    },
+    AddTranscriptSegment {
+        segment: TranscriptSegment,
+    },
+    AddAudioCue {
+        cue: AudioCue,
+    },
+    SetMixIntent {
+        mix: MixIntent,
+    },
+    SetVisualLanguage {
+        visual_language: VisualLanguage,
+    },
+    AddProposalSet {
+        proposal_set: ProposalSet,
+    },
+    SelectProposal {
+        proposal_set_id: Uuid,
+        proposal_id: Uuid,
+    },
+    RecordModelInvocation {
+        receipt: ModelInvocationReceipt,
     },
     SetLock {
         resource: String,
