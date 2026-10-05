@@ -128,6 +128,31 @@ impl ObservationProvider for MotionwrightObserver {
                 })
                 .take(usize::from(query.limit))
                 .collect(),
+            "brief" => vec![serde_json::to_value(&project.brief).unwrap_or(Value::Null)],
+            "narrative" => vec![serde_json::to_value(&project.narrative).unwrap_or(Value::Null)],
+            "audio" => vec![serde_json::to_value(&project.audio).unwrap_or(Value::Null)],
+            "visual-language" => {
+                vec![serde_json::to_value(&project.visual_language).unwrap_or(Value::Null)]
+            }
+            "canvas" => project
+                .scenes
+                .iter()
+                .take(usize::from(query.limit))
+                .map(|scene| {
+                    json!({
+                        "scene_id": scene.id.to_string(),
+                        "scene_name": scene.name,
+                        "camera": scene.camera,
+                        "nodes": scene.nodes
+                    })
+                })
+                .collect(),
+            "alternatives" => project
+                .proposal_sets
+                .iter()
+                .take(usize::from(query.limit))
+                .map(|set| serde_json::to_value(set).unwrap_or(Value::Null))
+                .collect(),
             "locks" => project
                 .locks
                 .iter()
@@ -163,11 +188,21 @@ struct ApplyHandler {
 #[derive(Clone, Copy)]
 enum OperationKind {
     RenameProject,
+    SetBrief,
+    SetNarrativePremise,
     AddScene,
     MoveScene,
     UpdateSceneObjective,
     SetSceneRenderer,
+    SetSceneStatus,
+    TransformCanvasNode,
+    UpdateCanvasText,
+    SetNodePropertyLock,
+    SetCamera,
     AddMarker,
+    SetVisualLanguage,
+    AddProposalSet,
+    SelectProposal,
     SetLock,
     RemoveLock,
 }
@@ -231,10 +266,46 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         Uuid::parse_str(&string(args, name, 64)?)
             .map_err(|_| Error::invalid(format!("{name} is not a UUID")))
     }
+    fn bounded_string(args: &Value, name: &str, max: usize) -> NativeResult<String> {
+        let value = args
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::invalid(format!("{name} is required")))?;
+        if value.len() > max {
+            return Err(Error::invalid(format!("{name} is out of bounds")));
+        }
+        Ok(value.to_owned())
+    }
+    fn strings(
+        args: &Value,
+        name: &str,
+        max_items: usize,
+        max_item: usize,
+    ) -> NativeResult<Vec<String>> {
+        let values: Vec<String> = serde_json::from_value(
+            args.get(name)
+                .cloned()
+                .ok_or_else(|| Error::invalid(format!("{name} is required")))?,
+        )
+        .map_err(|_| Error::invalid(format!("{name} must be a string array")))?;
+        if values.len() > max_items || values.iter().any(|value| value.len() > max_item) {
+            return Err(Error::invalid(format!("{name} is out of bounds")));
+        }
+        Ok(values)
+    }
 
     match kind {
         OperationKind::RenameProject => Ok(Change::RenameProject {
             title: string(args, "title", 200)?,
+        }),
+        OperationKind::SetBrief => Ok(Change::SetBrief {
+            objective: bounded_string(args, "objective", 8_000)?,
+            audience: bounded_string(args, "audience", 2_000)?,
+            constraints: strings(args, "constraints", 128, 1_000)?,
+            exclusions: strings(args, "exclusions", 128, 1_000)?,
+        }),
+        OperationKind::SetNarrativePremise => Ok(Change::SetNarrativePremise {
+            premise: bounded_string(args, "premise", 12_000)?,
         }),
         OperationKind::AddScene => {
             let duration_seconds = args
@@ -278,6 +349,77 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 renderer,
             })
         }
+        OperationKind::SetSceneStatus => {
+            let status = serde_json::from_value(
+                args.get("status")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("status is required"))?,
+            )
+            .map_err(|_| Error::invalid("scene status is invalid"))?;
+            Ok(Change::SetSceneStatus {
+                scene_id: uuid(args, "scene_id")?,
+                status,
+            })
+        }
+        OperationKind::TransformCanvasNode => {
+            let transform = serde_json::from_value(
+                args.get("transform")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("transform is required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas transform is invalid"))?;
+            Ok(Change::TransformCanvasNode {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                transform,
+            })
+        }
+        OperationKind::UpdateCanvasText => {
+            let text: Option<String> = serde_json::from_value(
+                args.get("text")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("text is required, null clears it"))?,
+            )
+            .map_err(|_| Error::invalid("text must be a string or null"))?;
+            if text.as_ref().is_some_and(|value| value.len() > 100_000) {
+                return Err(Error::invalid("text is out of bounds"));
+            }
+            Ok(Change::UpdateCanvasText {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                text,
+            })
+        }
+        OperationKind::SetNodePropertyLock => {
+            let property = serde_json::from_value(
+                args.get("property")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("property is required"))?,
+            )
+            .map_err(|_| Error::invalid("node property is invalid"))?;
+            let locked = args
+                .get("locked")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| Error::invalid("locked is required"))?;
+            Ok(Change::SetNodePropertyLock {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                property,
+                locked,
+            })
+        }
+        OperationKind::SetCamera => {
+            let camera = serde_json::from_value(
+                args.get("camera")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("camera is required"))?,
+            )
+            .map_err(|_| Error::invalid("camera is invalid"))?;
+            Ok(Change::SetCamera {
+                scene_id: uuid(args, "scene_id")?,
+                camera,
+            })
+        }
         OperationKind::AddMarker => {
             let at = serde_json::from_value(
                 args.get("at")
@@ -290,6 +432,28 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 label: string(args, "label", 160)?,
             })
         }
+        OperationKind::SetVisualLanguage => {
+            let visual_language = serde_json::from_value(
+                args.get("visual_language")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("visual_language is required"))?,
+            )
+            .map_err(|_| Error::invalid("visual language is invalid"))?;
+            Ok(Change::SetVisualLanguage { visual_language })
+        }
+        OperationKind::AddProposalSet => {
+            let proposal_set = serde_json::from_value(
+                args.get("proposal_set")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("proposal_set is required"))?,
+            )
+            .map_err(|_| Error::invalid("proposal set is invalid"))?;
+            Ok(Change::AddProposalSet { proposal_set })
+        }
+        OperationKind::SelectProposal => Ok(Change::SelectProposal {
+            proposal_set_id: uuid(args, "proposal_set_id")?,
+            proposal_id: uuid(args, "proposal_id")?,
+        }),
         OperationKind::SetLock => {
             let kind = serde_json::from_value(
                 args.get("kind")
@@ -382,6 +546,37 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::SetBrief,
+            descriptor(
+                "brief.set",
+                "Replace the bounded project brief while preserving revision history",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "objective": {"type":"string","maxLength":8000},
+                        "audience": {"type":"string","maxLength":2000},
+                        "constraints": {"type":"array","maxItems":128,"items":{"type":"string","maxLength":1000}},
+                        "exclusions": {"type":"array","maxItems":128,"items":{"type":"string","maxLength":1000}}
+                    }),
+                    &["ref", "objective", "audience", "constraints", "exclusions"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetNarrativePremise,
+            descriptor(
+                "narrative.premise.set",
+                "Update the project narrative premise without replacing scene realizations",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "premise": {"type":"string","maxLength":12000}
+                    }),
+                    &["ref", "premise"],
+                ),
+            ),
+        ),
+        (
             OperationKind::AddScene,
             descriptor(
                 "scene.add",
@@ -443,6 +638,108 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::SetSceneStatus,
+            descriptor(
+                "scene.status.set",
+                "Set the explicit review status of one persistent scene",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "status": {"type":"string","enum":["draft","review","approved","needs_work"]}
+                    }),
+                    &["ref", "scene_id", "status"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::TransformCanvasNode,
+            descriptor(
+                "canvas.node.transform",
+                "Apply a bounded transform to one semantic canvas object",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64},
+                        "transform": {
+                            "type":"object",
+                            "properties":{
+                                "x":{"type":"number"},
+                                "y":{"type":"number"},
+                                "width":{"type":"number","minimum":0},
+                                "height":{"type":"number","minimum":0},
+                                "rotation_deg":{"type":"number"},
+                                "opacity":{"type":"number","minimum":0,"maximum":1}
+                            },
+                            "required":["x","y","width","height","rotation_deg","opacity"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "scene_id", "node_id", "transform"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpdateCanvasText,
+            descriptor(
+                "canvas.node.text.set",
+                "Set or clear the text realization of one semantic canvas object",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64},
+                        "text": {"anyOf":[{"type":"string","maxLength":100000},{"type":"null"}]}
+                    }),
+                    &["ref", "scene_id", "node_id", "text"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetNodePropertyLock,
+            descriptor(
+                "canvas.node.property-lock.set",
+                "Set or clear an explicit property lock on one semantic canvas object",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64},
+                        "property": {"type":"string","enum":["position","size","rotation","opacity","text","style","parent","order"]},
+                        "locked": {"type":"boolean"}
+                    }),
+                    &["ref", "scene_id", "node_id", "property", "locked"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetCamera,
+            descriptor(
+                "canvas.camera.set",
+                "Update semantic camera state for one scene",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "camera": {
+                            "type":"object",
+                            "properties":{
+                                "center_x":{"type":"number"},
+                                "center_y":{"type":"number"},
+                                "zoom":{"type":"number","exclusiveMinimum":0,"maximum":100},
+                                "rotation_deg":{"type":"number"},
+                                "safe_margin":{"type":"number","minimum":0,"maximum":0.49}
+                            },
+                            "required":["center_x","center_y","zoom","rotation_deg","safe_margin"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "scene_id", "camera"],
+                ),
+            ),
+        ),
+        (
             OperationKind::AddMarker,
             descriptor(
                 "marker.add",
@@ -459,6 +756,49 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "label": {"type":"string","minLength":1,"maxLength":160}
                     }),
                     &["ref", "at", "label"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetVisualLanguage,
+            descriptor(
+                "visual-language.set",
+                "Replace the bounded versioned visual language for this project",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "visual_language": {"type":"object"}
+                    }),
+                    &["ref", "visual_language"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::AddProposalSet,
+            descriptor(
+                "alternatives.add",
+                "Add a bounded proposal set against the exact current project revision",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "proposal_set": {"type":"object"}
+                    }),
+                    &["ref", "proposal_set"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SelectProposal,
+            descriptor(
+                "alternatives.select",
+                "Select one stored proposal without executing its edits",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "proposal_set_id": {"type":"string","maxLength":64},
+                        "proposal_id": {"type":"string","maxLength":64}
+                    }),
+                    &["ref", "proposal_set_id", "proposal_id"],
                 ),
             ),
         ),
@@ -535,7 +875,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.project.rename"));
         assert!(names.contains(&"driver.motionwright.scene.add"));
         assert!(names.contains(&"driver.motionwright.scene.renderer.set"));
-        assert_eq!(capabilities.len(), 9);
+        assert!(names.contains(&"driver.motionwright.brief.set"));
+        assert!(names.contains(&"driver.motionwright.canvas.node.transform"));
+        assert!(names.contains(&"driver.motionwright.alternatives.select"));
+        assert_eq!(capabilities.len(), 19);
     }
 
     #[tokio::test]
@@ -566,6 +909,69 @@ mod tests {
             assert_eq!(contract.descriptor.backends, vec!["driver:motionwright"]);
             assert!(contract.atomic_revision_cas);
             assert_eq!(contract.retry, RetrySemantics::DurableRequestKey);
+        }
+    }
+    #[test]
+    fn creative_operation_arguments_remain_typed_and_bounded() {
+        let brief = change_from_args(
+            OperationKind::SetBrief,
+            &json!({
+                "ref": "project:ignored-by-parser",
+                "objective": "Explain native semantic control",
+                "audience": "technical creators",
+                "constraints": ["preserve evidence"],
+                "exclusions": ["no fabricated PASS"]
+            }),
+        )
+        .unwrap();
+        assert!(matches!(brief, Change::SetBrief { .. }));
+
+        let transform = change_from_args(
+            OperationKind::TransformCanvasNode,
+            &json!({
+                "scene_id": Uuid::now_v7().to_string(),
+                "node_id": Uuid::now_v7().to_string(),
+                "transform": {
+                    "x": 10.0,
+                    "y": 20.0,
+                    "width": 300.0,
+                    "height": 120.0,
+                    "rotation_deg": 4.0,
+                    "opacity": 0.8
+                }
+            }),
+        )
+        .unwrap();
+        assert!(matches!(transform, Change::TransformCanvasNode { .. }));
+    }
+
+    #[tokio::test]
+    async fn creative_observation_scopes_read_application_owned_state() {
+        let (service, project) = fixture();
+        let observer = MotionwrightObserver::new(service);
+        for scope in [
+            "brief",
+            "narrative",
+            "audio",
+            "visual-language",
+            "canvas",
+            "alternatives",
+        ] {
+            let query = Query {
+                resource: project.resource_key(),
+                scope: scope.into(),
+                limit: 8,
+                cursor: None,
+            };
+            let page = observer
+                .observe(
+                    &query,
+                    &CallContext::application_local("creative-read").unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.scope, scope);
+            assert_eq!(page.version.revision.as_str(), "0");
         }
     }
 }

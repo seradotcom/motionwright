@@ -1,17 +1,40 @@
 # Semwright Native SDK integration
 
-Motionwright pins the Semwright revision recorded in `SOURCE_LOCK.json`.
+Motionwright pins the Semwright revision recorded in `SOURCE_LOCK.json` and consumes the public `semwright-native-sdk` crate from that immutable Git revision.
 
 The integration follows the Native SDK public contracts:
 
 - `Application::new("motionwright", ...)` describes the cooperation surface.
-- `ObservationProvider` enumerates bounded project projections.
-- `OperationHandler` executes only registered bounded operations.
+- `ObservationProvider` enumerates bounded application-owned projections.
+- `OperationHandler` executes only registered typed operations.
 - the application-owned SQLite transaction checks `CallContext::expected()` at commit time;
-- opaque revisions are strings, never lossy JavaScript counters;
+- opaque revisions are strings at the SDK boundary, never lossy JavaScript counters;
+- durable request IDs make retry behavior explicit;
 - uncertain completion remains uncertain;
 - Native SDK Graph and Effects features adapt into canonical authorities rather than creating local verdict engines.
 
-Initial registered operations are intentionally small and composable rather than one unrestricted “apply arbitrary patch” command. The UI may expose richer gestures, but they are decomposed into typed service commands with exact affected resources.
+## Observation scopes
 
-Operation discovery never authorizes an invocation. Broker/Policy/Driver Host remain responsible for capability/consent/session/runtime authority.
+The current provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `visual-language`, `canvas`, `alternatives` and `locks` scopes. Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels.
+
+## Typed operations
+
+The provider intentionally exposes composable commands instead of an unrestricted patch endpoint:
+
+- project: rename and set brief;
+- narrative: set premise;
+- scene: add, move, set objective, renderer and review status;
+- canvas: transform node, set/clear node text, set property locks and set camera;
+- timeline: add marker;
+- creative system: set visual language, add a bounded proposal set and select one proposal;
+- authority hints owned by the app: set and remove explicit project/resource locks.
+
+Together with `driver.motionwright.observe`, this is currently 19 Native SDK capabilities.
+
+Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries.
+
+## Shared UI and agent state
+
+The React/Tauri editor calls the same application service and `Change` domain used by the Native SDK adapter. Browser-only development fixtures mirror those change contracts for UI tests, but are not runtime evidence.
+
+Operation discovery never authorizes an invocation. Broker/Policy/Driver Host remain responsible for capability, consent, session and runtime authority.
