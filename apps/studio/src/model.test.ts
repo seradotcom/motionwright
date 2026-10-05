@@ -52,4 +52,10 @@ describe("creative project fixture", () => {
     expect(() => rationalSeconds(Number.NaN)).toThrow("time must be finite");
   });
 
+  it("keeps visual language policy explicit and versioned", () => {
+    expect(fixtureProject.visual_language.version).toBe(1);
+    expect(fixtureProject.visual_language.anti_slop_rules).toContain("No glassmorphism");
+    expect(fixtureProject.visual_language.motion_grammar[0].reduced_motion).toBe("static_equivalent");
+  });
+
 });

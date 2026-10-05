@@ -90,3 +90,24 @@ test("scene duration ripple reflows the shared timeline and journals one change"
   await page.getByRole("button", { name: "Changes", exact: true }).click();
   await expect(page.getByText("set scene duration", { exact: true })).toBeVisible();
 });
+
+test("visual system commits a new version and project style lock is enforceable", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+
+  const systemName = page.getByLabel("Visual system name");
+  await expect(systemName).toHaveValue("Cut Room Ledger");
+  await systemName.fill("Cut Room Ledger Review");
+  await page.getByRole("button", { name: "Commit visual system", exact: true }).click();
+
+  await expect(page.getByText("v2", { exact: true })).toBeVisible();
+  await expect(systemName).toHaveValue("Cut Room Ledger Review");
+
+  await page.getByRole("button", { name: "Protect style", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Unlock style", exact: true })).toBeVisible();
+  await expect(systemName).toBeDisabled();
+
+  await page.getByRole("button", { name: "Unlock style", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Protect style", exact: true })).toBeVisible();
+  await expect(systemName).toBeEnabled();
+});

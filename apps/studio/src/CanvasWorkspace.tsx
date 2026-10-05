@@ -1,6 +1,7 @@
 import { Camera, CircleDashed, LockKeyhole, Move, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CanvasNode, CanvasTransform, Change, NodeProperty, Project, Scene } from "./types";
+import VisualLanguageEditor from "./VisualLanguageEditor";
 
 type Commit = (change: Change) => Promise<void>;
 
@@ -388,6 +389,7 @@ export default function CanvasWorkspace({
               </div>
             </>
           )}
+          <VisualLanguageEditor project={project} commit={commit} />
         </aside>
       </div>
     </div>
