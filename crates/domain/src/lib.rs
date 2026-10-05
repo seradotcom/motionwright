@@ -18,52 +18,19 @@ pub enum DomainError {
 
 pub type Result<T> = std::result::Result<T, DomainError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RationalTime {
-    pub num: i64,
-    pub den: i64,
+pub use semwright_media_time::Rational as RationalTime;
+
+fn time(num: i64, den: i64) -> Result<RationalTime> {
+    RationalTime::new(num, den)
+        .map_err(|error| DomainError::Invalid(format!("invalid media time: {error}")))
 }
 
-impl RationalTime {
-    pub fn new(num: i64, den: i64) -> Result<Self> {
-        if den == 0 {
-            return Err(DomainError::Invalid(
-                "time denominator must be non-zero".into(),
-            ));
-        }
-        let sign = if den < 0 { -1 } else { 1 };
-        let mut n = num.saturating_mul(sign);
-        let mut d = den.saturating_mul(sign);
-        let g = gcd(n.unsigned_abs(), d as u64).max(1) as i64;
-        n /= g;
-        d /= g;
-        Ok(Self { num: n, den: d })
-    }
-
-    pub fn zero() -> Self {
-        Self { num: 0, den: 1 }
-    }
-
-    pub fn seconds(value: i64) -> Self {
-        Self { num: value, den: 1 }
-    }
-
-    pub fn is_non_negative(self) -> bool {
-        self.num >= 0 && self.den > 0
-    }
-
-    pub fn as_f64(self) -> f64 {
-        self.num as f64 / self.den as f64
-    }
+fn whole_seconds(value: i64) -> RationalTime {
+    RationalTime { num: value, den: 1 }
 }
 
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let r = a % b;
-        a = b;
-        b = r;
-    }
-    a
+fn non_negative(value: RationalTime) -> bool {
+    value.validate().is_ok() && value >= RationalTime::ZERO
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,7 +151,7 @@ impl Scene {
         if self.name.trim().is_empty() || self.name.len() > 160 {
             return Err(DomainError::Invalid("scene name is out of bounds".into()));
         }
-        if !self.start.is_non_negative() || self.duration.num <= 0 || self.duration.den <= 0 {
+        if !non_negative(self.start) || self.duration.num <= 0 || self.duration.den <= 0 {
             return Err(DomainError::Invalid(format!(
                 "scene {} has invalid time",
                 self.id
@@ -198,18 +165,17 @@ impl Scene {
             }
         }
         for node in &self.nodes {
-            if let Some(parent) = node.parent_id {
-                if parent == node.id || !ids.contains(&parent) {
-                    return Err(DomainError::Invalid(
-                        "canvas hierarchy contains an invalid parent".into(),
-                    ));
-                }
+            if let Some(parent) = node.parent_id
+                && (parent == node.id || !ids.contains(&parent))
+            {
+                return Err(DomainError::Invalid(
+                    "canvas hierarchy contains an invalid parent".into(),
+                ));
             }
         }
         let mut beat_ids = HashSet::new();
         for beat in &self.beats {
-            if !beat_ids.insert(beat.id) || beat.duration.num <= 0 || !beat.start.is_non_negative()
-            {
+            if !beat_ids.insert(beat.id) || beat.duration.num <= 0 || !non_negative(beat.start) {
                 return Err(DomainError::Invalid("invalid or duplicate beat".into()));
             }
         }
@@ -355,9 +321,7 @@ impl Project {
         }
         let mut marker_ids = HashSet::new();
         for marker in &self.markers {
-            if !marker_ids.insert(marker.id)
-                || !marker.at.is_non_negative()
-                || marker.label.len() > 160
+            if !marker_ids.insert(marker.id) || !non_negative(marker.at) || marker.label.len() > 160
             {
                 return Err(DomainError::Invalid("invalid marker".into()));
             }
@@ -422,19 +386,20 @@ impl Project {
                     .scenes
                     .last()
                     .map(|s| {
-                        RationalTime::new(
-                            s.start.num * s.duration.den + s.duration.num * s.start.den,
-                            s.start.den * s.duration.den,
-                        )
-                        .unwrap_or(RationalTime::zero())
+                        s.start
+                            .checked_add(s.duration)
+                            .map_err(|error| {
+                                DomainError::Invalid(format!("scene time overflow: {error}"))
+                            })
+                            .unwrap_or(RationalTime::ZERO)
                     })
-                    .unwrap_or(RationalTime::zero());
+                    .unwrap_or(RationalTime::ZERO);
                 self.scenes.push(Scene {
                     id: Uuid::now_v7(),
                     name: name.clone(),
                     objective: objective.clone(),
                     start,
-                    duration: RationalTime::seconds(*duration_seconds),
+                    duration: whole_seconds(*duration_seconds),
                     renderer: RendererKind::MotionCanvas,
                     status: SceneStatus::Draft,
                     beats: vec![],
@@ -468,7 +433,7 @@ impl Project {
                     .scenes
                     .iter_mut()
                     .find(|s| s.id == *scene_id)
-                    .ok_or_else(|| DomainError::NotFound(resource))?;
+                    .ok_or(DomainError::NotFound(resource))?;
                 if objective.len() > 4000 {
                     return Err(DomainError::Invalid("scene objective is too long".into()));
                 }
@@ -481,12 +446,12 @@ impl Project {
                     .scenes
                     .iter_mut()
                     .find(|s| s.id == *scene_id)
-                    .ok_or_else(|| DomainError::NotFound(resource))?;
+                    .ok_or(DomainError::NotFound(resource))?;
                 scene.renderer = renderer.clone();
             }
             Change::AddMarker { at, label } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
-                if !at.is_non_negative() || label.trim().is_empty() || label.len() > 160 {
+                if !non_negative(*at) || label.trim().is_empty() || label.len() > 160 {
                     return Err(DomainError::Invalid("invalid marker".into()));
                 }
                 self.markers.push(Marker {
@@ -529,13 +494,12 @@ impl Project {
     }
 
     fn reflow_scene_starts(&mut self) -> Result<()> {
-        let mut cursor = RationalTime::zero();
+        let mut cursor = RationalTime::ZERO;
         for scene in &mut self.scenes {
             scene.start = cursor;
-            cursor = RationalTime::new(
-                cursor.num * scene.duration.den + scene.duration.num * cursor.den,
-                cursor.den * scene.duration.den,
-            )?;
+            cursor = cursor
+                .checked_add(scene.duration)
+                .map_err(|error| DomainError::Invalid(format!("scene time overflow: {error}")))?;
         }
         Ok(())
     }
@@ -601,7 +565,7 @@ mod tests {
 
     #[test]
     fn rational_time_is_reduced() {
-        assert_eq!(RationalTime::new(48, 24).unwrap(), RationalTime::seconds(2));
+        assert_eq!(RationalTime::new(48, 24).unwrap(), whole_seconds(2));
         assert_eq!(
             RationalTime::new(-10, -20).unwrap(),
             RationalTime::new(1, 2).unwrap()
@@ -633,8 +597,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(project.scenes[0].name, "B");
-        assert_eq!(project.scenes[0].start, RationalTime::zero());
-        assert_eq!(project.scenes[1].start, RationalTime::seconds(3));
+        assert_eq!(project.scenes[0].start, RationalTime::ZERO);
+        assert_eq!(project.scenes[1].start, whole_seconds(3));
     }
 
     #[test]

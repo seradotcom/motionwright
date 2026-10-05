@@ -29,3 +29,4 @@ parking_lot = "0.12"
 async-trait = "0.1"
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync"] }
 semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-native-sdk" }
+semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-media-time" }

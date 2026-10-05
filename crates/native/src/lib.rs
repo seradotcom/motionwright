@@ -452,7 +452,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "ref": {"type":"string","maxLength":512},
                         "at": {
                             "type":"object",
-                            "properties":{"num":{"type":"integer"},"den":{"type":"integer"}},
+                            "properties":{"num":{"type":"string","pattern":"^-?(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},
                             "required":["num","den"],
                             "additionalProperties":false
                         },

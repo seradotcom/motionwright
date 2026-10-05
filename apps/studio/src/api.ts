@@ -30,13 +30,13 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       next.title = change.title;
       break;
     case "add_scene": {
-      const start = next.scenes.reduce((total, scene) => total + scene.duration.num / scene.duration.den, 0);
+      const start = next.scenes.reduce((total, scene) => total + Number(scene.duration.num) / Number(scene.duration.den), 0);
       next.scenes.push({
         id: crypto.randomUUID(),
         name: change.name,
         objective: change.objective,
-        start: { num: start, den: 1 },
-        duration: { num: change.duration_seconds, den: 1 },
+        start: { num: String(start), den: "1" },
+        duration: { num: String(change.duration_seconds), den: "1" },
         renderer: "motion-canvas",
         status: "draft",
         beats: [],
@@ -51,8 +51,8 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         next.scenes.splice(change.to_index, 0, scene);
         let cursor = 0;
         next.scenes.forEach((entry) => {
-          entry.start = { num: cursor, den: 1 };
-          cursor += entry.duration.num / entry.duration.den;
+          entry.start = { num: String(cursor), den: "1" };
+          cursor += Number(entry.duration.num) / Number(entry.duration.den);
         });
       }
       break;

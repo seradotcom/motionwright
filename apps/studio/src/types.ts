@@ -9,7 +9,7 @@ export type RendererKind =
   | "manim-gl";
 export type LockKind = "content" | "timing" | "position" | "style" | "renderer";
 
-export interface RationalTime { num: number; den: number; }
+export interface RationalTime { num: string; den: string; }
 export interface Beat {
   id: string; label: string; objective: string;
   start: RationalTime; duration: RationalTime;
@@ -63,4 +63,4 @@ export interface Bootstrap {
     mode: "tauri" | "browser-demo";
   };
 }
-export const seconds = (time: RationalTime): number => time.num / time.den;
+export const seconds = (time: RationalTime): number => Number(time.num) / Number(time.den);
