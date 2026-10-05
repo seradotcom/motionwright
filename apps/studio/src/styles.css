@@ -570,9 +570,9 @@ kbd {
 }
 
 .asset-row {
-  min-height: 29px;
+  min-height: 34px;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 8px;
+  grid-template-columns: 18px minmax(0, 1fr) 22px;
   align-items: center;
   gap: 4px;
   padding: 0 9px;
@@ -580,10 +580,71 @@ kbd {
   font-size: 11px;
 }
 
-.asset-row span:nth-child(2) {
+.asset-row > span:nth-child(2) {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.asset-row-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.asset-row-copy span,
+.asset-row-copy small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.asset-row-copy small {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.asset-remove {
+  opacity: 0;
+}
+
+.asset-row:hover .asset-remove,
+.asset-remove:focus-visible {
+  opacity: 1;
+}
+
+.rail-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.asset-import-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+  padding: 0 8px 8px;
+}
+
+.asset-import-form input {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.asset-import-error {
+  grid-column: 1 / -1;
+  color: var(--danger);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.rail-runtime-note {
+  display: block;
+  padding: 5px 10px 2px;
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .add-scene-form {

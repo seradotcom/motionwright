@@ -230,6 +230,8 @@ enum OperationKind {
     SetNodePropertyLock,
     SetCamera,
     AddMarker,
+    AddAsset,
+    RemoveAsset,
     SetVisualLanguage,
     AddProposalSet,
     SelectProposal,
@@ -540,6 +542,18 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 label: string(args, "label", 160)?,
             })
         }
+        OperationKind::AddAsset => {
+            let asset = serde_json::from_value(
+                args.get("asset")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("asset is required"))?,
+            )
+            .map_err(|_| Error::invalid("asset is invalid"))?;
+            Ok(Change::AddAsset { asset })
+        }
+        OperationKind::RemoveAsset => Ok(Change::RemoveAsset {
+            asset_id: uuid(args, "asset_id")?,
+        }),
         OperationKind::SetVisualLanguage => {
             let visual_language = serde_json::from_value(
                 args.get("visual_language")
@@ -1019,6 +1033,45 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::AddAsset,
+            descriptor(
+                "asset.register",
+                "Register one already-ingested content-addressed asset in project history",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "asset": {
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","maxLength":64},
+                                "name":{"type":"string","minLength":1,"maxLength":512},
+                                "media_type":{"type":"string","minLength":1,"maxLength":255},
+                                "content_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "source_revision":{"anyOf":[{"type":"string","maxLength":512},{"type":"null"}]}
+                            },
+                            "required":["id","name","media_type","content_sha256","source_revision"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "asset"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveAsset,
+            descriptor(
+                "asset.remove",
+                "Remove an unreferenced project asset without deleting immutable blob bytes",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "asset_id": {"type":"string","maxLength":64}
+                    }),
+                    &["ref", "asset_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetVisualLanguage,
             descriptor(
                 "visual-language.set",
@@ -1142,8 +1195,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.canvas.node.reparent"));
         assert!(names.contains(&"driver.motionwright.canvas.node.relations.set"));
         assert!(names.contains(&"driver.motionwright.scene.duration.set"));
+        assert!(names.contains(&"driver.motionwright.asset.register"));
+        assert!(names.contains(&"driver.motionwright.asset.remove"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
-        assert_eq!(capabilities.len(), 25);
+        assert_eq!(capabilities.len(), 27);
     }
 
     #[tokio::test]
@@ -1190,6 +1245,27 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(brief, Change::SetBrief { .. }));
+
+        let asset_id = Uuid::now_v7();
+        let asset = change_from_args(
+            OperationKind::AddAsset,
+            &json!({
+                "asset": {
+                    "id": asset_id.to_string(),
+                    "name": "voice.wav",
+                    "media_type": "audio/wav",
+                    "content_sha256": "ab".repeat(32),
+                    "source_revision": "import-r1"
+                }
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            asset,
+            Change::AddAsset {
+                asset: motionwright_domain::Asset { id, .. }
+            } if id == asset_id
+        ));
 
         let transform = change_from_args(
             OperationKind::TransformCanvasNode,

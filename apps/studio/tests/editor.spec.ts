@@ -150,6 +150,9 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
 
 test("portable project delivery is truthful in browser demo mode", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByRole("button", { name: "Import local asset" })).toBeDisabled();
+  await expect(page.getByText("Local asset import is available in the desktop runtime.")).toBeVisible();
+
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
 
   await expect(page.getByRole("region", { name: "Portable project" })).toBeVisible();

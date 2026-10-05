@@ -28,10 +28,11 @@ The provider intentionally exposes composable commands instead of an unrestricte
 - scene: add, move, set objective, renderer, review status and rational duration with explicit ripple;
 - canvas: add/remove nodes, transform, set/clear text, replace validated style, reparent/z-order, replace semantic relations, set property locks and set camera;
 - timeline: add marker;
+- assets: register an already-ingested SHA-256-addressed blob and remove an unreferenced project asset; registration fails if the app-owned blob store cannot verify the bytes;
 - creative system: set visual language, add a bounded proposal set and select one proposal;
 - authority hints owned by the app: set and remove explicit project/resource locks.
 
-Together with `driver.motionwright.observe`, this is currently 25 Native SDK capabilities.
+Together with `driver.motionwright.observe`, this is currently 27 Native SDK capabilities.
 
 Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries. Scene-duration ripple changes presentation timing and later scene starts; it does not silently retime measured audio.
 

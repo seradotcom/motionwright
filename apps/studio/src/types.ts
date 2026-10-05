@@ -174,6 +174,8 @@ export type Change =
   | { type: "set_node_property_lock"; scene_id: string; node_id: string; property: NodeProperty; locked: boolean }
   | { type: "set_camera"; scene_id: string; camera: CameraState }
   | { type: "add_marker"; at: RationalTime; label: string }
+  | { type: "add_asset"; asset: Asset }
+  | { type: "remove_asset"; asset_id: string }
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }

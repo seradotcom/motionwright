@@ -38,6 +38,7 @@ import {
   applyChange,
   bootstrap,
   exportProjectBundle,
+  importAssetFile,
   importProjectBundle,
   inspectProjectBundle,
   projectHistory,
@@ -832,6 +833,8 @@ function ProjectRail({
   selectedSceneId,
   selectScene,
   commit,
+  ingestAsset,
+  desktopMode,
   collapsed,
   setCollapsed,
 }: {
@@ -839,11 +842,17 @@ function ProjectRail({
   selectedSceneId: string | null;
   selectScene: (id: string) => void;
   commit: (change: Change) => Promise<void>;
+  ingestAsset: (path: string) => Promise<void>;
+  desktopMode: boolean;
   collapsed: boolean;
   setCollapsed: (value: boolean) => void;
 }) {
   const [addingScene, setAddingScene] = useState(false);
   const [newName, setNewName] = useState("New scene");
+  const [addingAsset, setAddingAsset] = useState(false);
+  const [assetPath, setAssetPath] = useState("");
+  const [assetBusy, setAssetBusy] = useState(false);
+  const [assetError, setAssetError] = useState<string | null>(null);
 
   if (collapsed) {
     return (
@@ -929,15 +938,85 @@ function ProjectRail({
       </div>
 
       <div className="rail-section">
-        <div className="rail-section-title"><span>Assets</span><span>{project.assets.length}</span></div>
+        <div className="rail-section-title">
+          <span>Assets</span>
+          <div className="rail-section-actions">
+            <span>{project.assets.length}</span>
+            <button
+              type="button"
+              className="plain-icon"
+              aria-label="Import local asset"
+              disabled={!desktopMode}
+              title={desktopMode ? "Import a local file into the content-addressed project store" : "Asset import requires the desktop runtime"}
+              onClick={() => {
+                setAddingAsset((value) => !value);
+                setAssetError(null);
+              }}
+            >
+              {addingAsset ? <X size={14} /> : <Plus size={14} />}
+            </button>
+          </div>
+        </div>
+        {addingAsset && (
+          <form
+            className="asset-import-form"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const path = assetPath.trim();
+              if (!path || assetBusy) return;
+              setAssetBusy(true);
+              setAssetError(null);
+              try {
+                await ingestAsset(path);
+                setAssetPath("");
+                setAddingAsset(false);
+              } catch (reason) {
+                setAssetError(reason instanceof Error ? reason.message : String(reason));
+              } finally {
+                setAssetBusy(false);
+              }
+            }}
+          >
+            <input
+              aria-label="Local asset path"
+              value={assetPath}
+              disabled={assetBusy}
+              placeholder="/absolute/path/to/asset"
+              onChange={(event) => setAssetPath(event.target.value)}
+            />
+            <button
+              className="button button-primary compact"
+              type="submit"
+              disabled={!assetPath.trim() || assetBusy}
+            >
+              {assetBusy ? "Importing…" : "Import"}
+            </button>
+            {assetError && <span className="asset-import-error" role="alert">{assetError}</span>}
+          </form>
+        )}
         <div className="asset-list">
           {project.assets.map((asset) => (
             <div className="asset-row" key={asset.id}>
               <Layers3 size={14} />
-              <span>{asset.name}</span>
+              <div className="asset-row-copy">
+                <span>{asset.name}</span>
+                <small>{asset.media_type}</small>
+              </div>
+              <button
+                type="button"
+                className="plain-icon asset-remove"
+                aria-label={"Remove asset " + asset.name}
+                title="Remove project reference; immutable blob bytes are retained"
+                onClick={() => void commit({ type: "remove_asset", asset_id: asset.id })}
+              >
+                <X size={12} />
+              </button>
             </div>
           ))}
         </div>
+        {!desktopMode && (
+          <span className="rail-runtime-note">Local asset import is available in the desktop runtime.</span>
+        )}
       </div>
 
       <div className="rail-section">
@@ -1287,6 +1366,13 @@ export default function App() {
     }
   }, [boot, busy, selectedSceneId]);
 
+  const ingestAsset = useCallback(async (path: string) => {
+    if (!boot) throw new Error("Project is not ready.");
+    if (busy) throw new Error("Finish the current project change before importing an asset.");
+    const next = await importAssetFile(boot.project, path);
+    setBoot({ ...boot, project: next });
+  }, [boot, busy]);
+
   if (!project || !boot) {
     return (
       <main className="boot-screen">
@@ -1389,6 +1475,8 @@ export default function App() {
           selectedSceneId={selectedSceneId}
           selectScene={setSelectedSceneId}
           commit={commit}
+          ingestAsset={ingestAsset}
+          desktopMode={boot.native_sdk.mode === "tauri"}
           collapsed={railCollapsed}
           setCollapsed={setRailCollapsed}
         />

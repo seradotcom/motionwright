@@ -1,4 +1,4 @@
-use motionwright_domain::{Change, Project, RevisionStamp};
+use motionwright_domain::{Asset, Change, Project, RevisionStamp};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
     BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProjectBackup,
@@ -64,6 +64,29 @@ impl StudioService {
 
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> StorageResult<BlobDescriptor> {
         self.store.lock().ingest_blob_file(source)
+    }
+
+    pub fn import_asset_file(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: impl AsRef<Path>,
+        name: String,
+        media_type: String,
+    ) -> StorageResult<ApplyOutcome> {
+        let mut store = self.store.lock();
+        let blob = store.ingest_blob_file(source)?;
+        let change = Change::AddAsset {
+            asset: Asset {
+                id: Uuid::now_v7(),
+                name,
+                media_type,
+                content_sha256: Some(blob.sha256),
+                source_revision: Some("local-import".into()),
+            },
+        };
+        store.apply(project_id, expected, request_id, &change)
     }
 
     pub fn export_project_bundle(
