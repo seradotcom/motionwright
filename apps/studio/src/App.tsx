@@ -34,12 +34,20 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { applyChange, bootstrap, projectHistory } from "./api";
+import {
+  applyChange,
+  bootstrap,
+  exportProjectBundle,
+  importProjectBundle,
+  inspectProjectBundle,
+  projectHistory,
+} from "./api";
 import CanvasWorkspace from "./CanvasWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import type {
   Bootstrap,
   Change,
+  PortableBundlePlan,
   Project,
   ProjectEvent,
   ProjectState,
@@ -573,7 +581,93 @@ function ReviewView({ project, scene }: { project: Project; scene: Scene | null 
   );
 }
 
-function DeliverView({ project }: { project: Project }) {
+function formatByteCount(value: string) {
+  let bytes: bigint;
+  try {
+    bytes = BigInt(value);
+  } catch {
+    return value + " B";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let unit = 0;
+  let display = bytes;
+  while (display >= 1024n && unit < units.length - 1) {
+    display /= 1024n;
+    unit += 1;
+  }
+  return display.toString() + " " + units[unit];
+}
+
+function DeliverView({
+  project,
+  desktopMode,
+  onImported,
+}: {
+  project: Project;
+  desktopMode: boolean;
+  onImported: (project: Project) => void;
+}) {
+  const [exportPath, setExportPath] = useState("");
+  const [importPath, setImportPath] = useState("");
+  const [bundlePlan, setBundlePlan] = useState<PortableBundlePlan | null>(null);
+  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | null>(null);
+  const [portableStatus, setPortableStatus] = useState<string | null>(null);
+  const [portableError, setPortableError] = useState<string | null>(null);
+
+  const inspectBundle = async () => {
+    if (!desktopMode || !importPath.trim()) return;
+    setPortableBusy("inspect");
+    setPortableStatus(null);
+    setPortableError(null);
+    try {
+      const plan = await inspectProjectBundle(importPath.trim());
+      setBundlePlan(plan);
+    } catch (reason) {
+      setBundlePlan(null);
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
+
+  const exportBundle = async () => {
+    if (!desktopMode || !exportPath.trim()) return;
+    setPortableBusy("export");
+    setPortableStatus(null);
+    setPortableError(null);
+    try {
+      const result = await exportProjectBundle(project, exportPath.trim());
+      setPortableStatus(
+        "Portable bundle written to " + result.destination +
+        " · " + result.blob_count + " blobs · " + formatByteCount(result.total_blob_bytes),
+      );
+    } catch (reason) {
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
+
+  const importBundle = async () => {
+    if (!desktopMode || !bundlePlan || !importPath.trim()) return;
+    setPortableBusy("import");
+    setPortableStatus(null);
+    setPortableError(null);
+    try {
+      const imported = await importProjectBundle(importPath.trim());
+      onImported(imported);
+      setPortableStatus(
+        "Imported " + imported.title + " at revision " + imported.revision +
+        " with a fresh execution generation.",
+      );
+      setBundlePlan(null);
+    } catch (reason) {
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
+
   return (
     <div className="workspace-scroll deliver-view">
       <header className="workspace-heading">
@@ -583,6 +677,7 @@ function DeliverView({ project }: { project: Project }) {
         </div>
         <span className="count-label">{project.deliverables.length} profiles</span>
       </header>
+
       <div className="deliver-list">
         {project.deliverables.map((profile) => (
           <div className="deliver-row" key={profile.id}>
@@ -598,11 +693,116 @@ function DeliverView({ project }: { project: Project }) {
           </div>
         ))}
       </div>
+
+      <section className="portable-project" aria-label="Portable project">
+        <header className="portable-heading">
+          <div>
+            <strong>Portable project</strong>
+            <span>Project state, journal and content-addressed asset bytes.</span>
+          </div>
+          <span className="status-pill status-current">SELF-CONTAINED</span>
+        </header>
+
+        <div className="portable-operation">
+          <div className="portable-operation-copy">
+            <strong>Export active project</strong>
+            <span>Creates a new directory and refuses to overwrite an existing destination.</span>
+          </div>
+          <label>
+            <span className="field-label">Destination · absolute path</span>
+            <input
+              aria-label="Portable export path"
+              value={exportPath}
+              disabled={!desktopMode || portableBusy !== null}
+              placeholder="/absolute/path/project.motionwright"
+              onChange={(event) => setExportPath(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={!desktopMode || !exportPath.trim() || portableBusy !== null}
+            onClick={() => void exportBundle()}
+          >
+            {portableBusy === "export" ? "Exporting…" : "Export bundle"}
+          </button>
+        </div>
+
+        <div className="portable-operation import-operation">
+          <div className="portable-operation-copy">
+            <strong>Inspect and import</strong>
+            <span>Preflight verifies project history, manifest and every referenced blob before any project state is admitted.</span>
+          </div>
+          <label>
+            <span className="field-label">Source · absolute path</span>
+            <input
+              aria-label="Portable import path"
+              value={importPath}
+              disabled={!desktopMode || portableBusy !== null}
+              placeholder="/absolute/path/project.motionwright"
+              onChange={(event) => {
+                setImportPath(event.target.value);
+                setBundlePlan(null);
+                setPortableStatus(null);
+              }}
+            />
+          </label>
+          <div className="portable-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={!desktopMode || !importPath.trim() || portableBusy !== null}
+              onClick={() => void inspectBundle()}
+            >
+              {portableBusy === "inspect" ? "Inspecting…" : "Inspect bundle"}
+            </button>
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!desktopMode || !bundlePlan || portableBusy !== null}
+              onClick={() => void importBundle()}
+            >
+              {portableBusy === "import" ? "Importing…" : "Import verified bundle"}
+            </button>
+          </div>
+        </div>
+
+        {!desktopMode && (
+          <div className="portable-runtime-note">
+            <CircleDashed size={15} />
+            <span>Desktop filesystem capability is required. Browser demo mode never fabricates a portable bundle.</span>
+          </div>
+        )}
+
+        {bundlePlan && (
+          <div className="portable-plan" aria-label="Portable bundle preflight">
+            <div><span>Project</span><strong>{bundlePlan.title}</strong></div>
+            <div><span>Revision</span><strong className="mono">r{bundlePlan.revision}</strong></div>
+            <div><span>Journal</span><strong>{bundlePlan.event_count} events</strong></div>
+            <div><span>Assets</span><strong>{bundlePlan.blob_count} blobs · {formatByteCount(bundlePlan.total_blob_bytes)}</strong></div>
+            <div><span>Authority</span><strong>{bundlePlan.rotates_generation ? "New generation on import" : "Unchanged"}</strong></div>
+          </div>
+        )}
+
+        {portableError && (
+          <div className="portable-message error" role="alert">
+            <strong>Portable operation blocked.</strong>
+            <span>{portableError}</span>
+          </div>
+        )}
+        {portableStatus && (
+          <div className="portable-message success" role="status">
+            <CircleCheck size={15} />
+            <span>{portableStatus}</span>
+          </div>
+        )}
+      </section>
+
       <div className="evidence-callout">
         <FileOutput size={18} />
         <div>
-          <strong>No false export</strong>
-          <span>Export stays disabled until a real render artifact is associated with the active revision.</span>
+          <strong>No false media export</strong>
+          <span>Render-profile export stays disabled until a real artifact is associated with the active revision. Portable project export is a separate, verified project-state operation.</span>
         </div>
       </div>
     </div>
@@ -1118,7 +1318,17 @@ export default function App() {
       case "Review":
         return <ReviewView project={project} scene={selectedScene} />;
       case "Deliver":
-        return <DeliverView project={project} />;
+        return (
+          <DeliverView
+            project={project}
+            desktopMode={boot.native_sdk.mode === "tauri"}
+            onImported={(imported) => {
+              setBoot({ ...boot, project: imported });
+              setSelectedSceneId(imported.scenes[0]?.id ?? null);
+              setPlayhead(0);
+            }}
+          />
+        );
     }
   };
 

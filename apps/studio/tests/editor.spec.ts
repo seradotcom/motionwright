@@ -147,3 +147,15 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
   await page.getByRole("button", { name: "Remove object", exact: true }).click();
   await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toHaveCount(0);
 });
+
+test("portable project delivery is truthful in browser demo mode", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Portable project" })).toBeVisible();
+  await expect(page.getByLabel("Portable export path")).toBeDisabled();
+  await expect(page.getByLabel("Portable import path")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Export bundle", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Inspect bundle", exact: true })).toBeDisabled();
+  await expect(page.getByText(/Desktop filesystem capability is required/)).toBeVisible();
+});
