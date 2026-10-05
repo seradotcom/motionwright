@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
-import type { Bootstrap, Change, LockKind, Project, ProjectEvent } from "./types";
+import type {
+  Bootstrap,
+  Change,
+  LockKind,
+  PortableBundleExport,
+  PortableBundlePlan,
+  Project,
+  ProjectEvent,
+} from "./types";
 import { rationalSeconds } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -18,6 +26,39 @@ function assertUnlocked(project: Project, resource: string, kinds: LockKind[]) {
 export async function bootstrap(): Promise<Bootstrap> {
   if (isTauri()) return invoke<Bootstrap>("bootstrap");
   return structuredClone(browserState);
+}
+
+export async function exportProjectBundle(
+  project: Project,
+  destination: string,
+): Promise<PortableBundleExport> {
+  if (!isTauri()) {
+    throw new Error("Portable project bundles require the Motionwright desktop runtime.");
+  }
+  return invoke<PortableBundleExport>("export_project_bundle", {
+    request: {
+      project_id: project.id,
+      path: destination,
+    },
+  });
+}
+
+export async function inspectProjectBundle(path: string): Promise<PortableBundlePlan> {
+  if (!isTauri()) {
+    throw new Error("Portable project bundles require the Motionwright desktop runtime.");
+  }
+  return invoke<PortableBundlePlan>("inspect_project_bundle", {
+    request: { path },
+  });
+}
+
+export async function importProjectBundle(path: string): Promise<Project> {
+  if (!isTauri()) {
+    throw new Error("Portable project bundles require the Motionwright desktop runtime.");
+  }
+  return invoke<Project>("import_project_bundle", {
+    request: { path },
+  });
 }
 
 export async function projectHistory(

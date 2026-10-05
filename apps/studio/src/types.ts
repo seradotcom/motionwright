@@ -194,6 +194,23 @@ export interface Bootstrap {
     mode: "tauri" | "browser-demo";
   };
 }
+
+export interface PortableBundlePlan {
+  project_id: string;
+  title: string;
+  source_generation: string;
+  revision: string;
+  event_count: number;
+  blob_count: number;
+  total_blob_bytes: string;
+  rotates_generation: boolean;
+}
+
+export interface PortableBundleExport {
+  destination: string;
+  blob_count: number;
+  total_blob_bytes: string;
+}
 export const seconds = (time: RationalTime): number => Number(time.num) / Number(time.den);
 
 const gcd = (left: number, right: number): number => {

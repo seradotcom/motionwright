@@ -2,6 +2,7 @@ use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::build_application;
 use motionwright_service::{ProjectEvent, StudioService};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -41,6 +42,36 @@ struct HistoryRequest {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct BundlePathRequest {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportBundleRequest {
+    project_id: Uuid,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BundlePlanResponse {
+    project_id: Uuid,
+    title: String,
+    source_generation: Uuid,
+    revision: String,
+    event_count: usize,
+    blob_count: usize,
+    total_blob_bytes: String,
+    rotates_generation: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct BundleExportResponse {
+    destination: String,
+    blob_count: usize,
+    total_blob_bytes: String,
+}
+
 #[tauri::command]
 fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
     let project = state
@@ -72,6 +103,62 @@ fn project_history(
 }
 
 #[tauri::command]
+fn export_project_bundle(
+    state: State<'_, AppState>,
+    request: ExportBundleRequest,
+) -> Result<BundleExportResponse, String> {
+    let destination = absolute_bundle_path(&request.path)?;
+    let manifest = state
+        .service
+        .export_project_bundle(request.project_id, &destination)
+        .map_err(sanitized)?;
+    let total_blob_bytes = manifest
+        .blobs
+        .iter()
+        .map(|blob| blob.size_bytes)
+        .sum::<u64>();
+    Ok(BundleExportResponse {
+        destination: destination.display().to_string(),
+        blob_count: manifest.blobs.len(),
+        total_blob_bytes: total_blob_bytes.to_string(),
+    })
+}
+
+#[tauri::command]
+fn inspect_project_bundle(
+    state: State<'_, AppState>,
+    request: BundlePathRequest,
+) -> Result<BundlePlanResponse, String> {
+    let source = absolute_bundle_path(&request.path)?;
+    let plan = state
+        .service
+        .inspect_project_bundle(&source)
+        .map_err(sanitized)?;
+    Ok(BundlePlanResponse {
+        project_id: plan.project.project_id,
+        title: plan.project.title,
+        source_generation: plan.project.source_generation,
+        revision: plan.project.revision.to_string(),
+        event_count: plan.project.event_count,
+        blob_count: plan.blob_count,
+        total_blob_bytes: plan.total_blob_bytes.to_string(),
+        rotates_generation: plan.project.rotates_generation,
+    })
+}
+
+#[tauri::command]
+fn import_project_bundle(
+    state: State<'_, AppState>,
+    request: BundlePathRequest,
+) -> Result<Project, String> {
+    let source = absolute_bundle_path(&request.path)?;
+    state
+        .service
+        .import_project_bundle(&source)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
 fn apply_change(state: State<'_, AppState>, request: ApplyRequest) -> Result<Project, String> {
     let current = state
         .service
@@ -94,6 +181,18 @@ fn apply_change(state: State<'_, AppState>, request: ApplyRequest) -> Result<Pro
         .map_err(sanitized)
 }
 
+fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an absolute portable bundle path.".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("Portable bundle paths must be absolute.".into());
+    }
+    Ok(path)
+}
+
 fn sanitized(error: impl std::fmt::Display) -> String {
     let text = error.to_string();
     if text.contains("stale project base")
@@ -102,7 +201,16 @@ fn sanitized(error: impl std::fmt::Display) -> String {
     {
         return text;
     }
-    if text.contains("locked") || text.contains("invalid project") || text.contains("not found") {
+    if text.contains("locked")
+        || text.contains("invalid project")
+        || text.contains("not found")
+        || text.contains("project already exists")
+        || text.contains("invalid project backup")
+        || text.contains("invalid blob digest")
+        || text.contains("blob ")
+        || text.contains("export destination already exists")
+        || text.contains("storage schema")
+    {
         return text;
     }
     "Motionwright could not complete the local operation".into()
@@ -139,6 +247,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             project_history,
+            export_project_bundle,
+            inspect_project_bundle,
+            import_project_bundle,
             apply_change
         ])
         .run(tauri::generate_context!())
