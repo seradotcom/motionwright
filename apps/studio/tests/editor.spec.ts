@@ -56,7 +56,7 @@ test("canvas edits and stored alternatives use project revisions rather than loc
 
   const beforeSelection = await page.locator(".revision-chip").first().innerText();
   await page.getByRole("button", { name: "Select for review" }).nth(1).click();
-  await expect(page.getByText("Selected", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Selected", exact: true })).toBeVisible();
   await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(beforeSelection);
 
   const beforeTransform = await page.locator(".revision-chip").first().innerText();
