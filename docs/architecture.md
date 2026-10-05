@@ -50,9 +50,11 @@ SQLite uses `PRAGMA user_version` as an explicit storage-schema gate. A database
 
 Project discovery has a summary projection with bounded keyset pagination over `(updated_at, id)`. Listing projects does not require deserializing every complete creative document.
 
-The current portable backup envelope is created from one `IMMEDIATE` SQLite transaction and contains the validated project document plus its complete committed change journal, format/schema metadata and a SHA-256 digest. Import supports a dry-run plan, verifies the digest and contiguous journal, rejects duplicate logical project IDs, preserves logical history, rotates `generation`, and does not import request receipts.
+The portable backup envelope is created from one `IMMEDIATE` SQLite transaction and contains the validated project document plus its complete committed change journal, format/schema metadata and a SHA-256 digest. Import supports a dry-run plan, verifies the digest and contiguous journal, rejects duplicate logical project IDs, preserves logical history, rotates `generation`, and does not import request receipts.
 
-This envelope is the metadata/journal foundation, **not yet the final self-contained media package**. Asset bytes still need the content-addressed blob store and portable manifest before full cross-machine backup acceptance can be claimed.
+Asset bytes live outside SQLite in an immutable content-addressed store at `blobs/sha256/<prefix>/<digest>`. File ingestion streams through a private staging path, hashes while writing, syncs the staged bytes, and only then renames into the canonical digest path. Reusing a digest verifies the existing bytes rather than overwriting them. Reads are digest-verified and explicitly size-bounded.
+
+A self-contained project bundle is a directory with `manifest.json` plus the exact content-addressed blobs referenced by project assets. Export is staged into a new directory, copies and re-hashes every blob, writes the manifest last, then atomically renames the directory into its requested destination. Import has a dry-run that verifies canonical blob paths, unique digest membership, byte sizes, hashes, backup integrity and exact equality between the manifest blob set and project asset digests. Imported blobs are admitted before the project transaction; any interrupted import can therefore leave only unreferenced immutable blobs, never a project referencing missing bytes.
 
 ## Renderer model
 

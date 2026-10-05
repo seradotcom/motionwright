@@ -3,6 +3,9 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -15,6 +18,8 @@ pub enum StorageError {
     Sql(#[from] rusqlite::Error),
     #[error("serialization: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("filesystem: {0}")]
+    Io(#[from] std::io::Error),
     #[error("domain: {0}")]
     Domain(#[from] DomainError),
     #[error("project not found")]
@@ -31,12 +36,22 @@ pub enum StorageError {
     ProjectExists,
     #[error("invalid project backup: {0}")]
     InvalidBackup(String),
+    #[error("invalid blob digest")]
+    InvalidBlobDigest,
+    #[error("blob {digest} is missing")]
+    BlobMissing { digest: String },
+    #[error("blob exceeds read budget: {size} bytes > {limit} bytes")]
+    BlobTooLarge { size: u64, limit: u64 },
+    #[error("export destination already exists")]
+    DestinationExists,
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
 pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
+pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
+const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectSummary {
@@ -80,6 +95,34 @@ pub struct ImportPlan {
     pub rotates_generation: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlobDescriptor {
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortableBlob {
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectBundleManifest {
+    pub format_version: u32,
+    pub created_at: String,
+    pub backup: ProjectBackup,
+    pub blobs: Vec<PortableBlob>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BundleImportPlan {
+    pub project: ImportPlan,
+    pub blob_count: usize,
+    pub total_blob_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApplyOutcome {
     pub project: Project,
@@ -98,14 +141,24 @@ pub struct ProjectEvent {
 pub struct Store {
     conn: Connection,
     path: PathBuf,
+    blob_root: PathBuf,
 }
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        Self::open_with_blob_root(&path, parent.join("blobs"))
+    }
+
+    pub fn open_with_blob_root(
+        path: impl AsRef<Path>,
+        blob_root: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let blob_root = blob_root.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|_| rusqlite::Error::InvalidPath(parent.into()))?;
+            fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(&path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -160,11 +213,250 @@ impl Store {
         if observed_schema < STORAGE_SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
-        Ok(Self { conn, path })
+        fs::create_dir_all(&blob_root)?;
+        Ok(Self {
+            conn,
+            path,
+            blob_root,
+        })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn blob_root(&self) -> &Path {
+        &self.blob_root
+    }
+
+    pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> Result<BlobDescriptor> {
+        let source = source.as_ref();
+        let staging_root = self.blob_root.join(".staging");
+        fs::create_dir_all(&staging_root)?;
+        let staging_path = staging_root.join(format!("{}.part", Uuid::now_v7()));
+
+        let mut input = File::open(source)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging_path)?;
+        let mut hasher = Sha256::new();
+        let mut size_bytes = 0_u64;
+        let mut buffer = [0_u8; 128 * 1024];
+        loop {
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buffer[..read])?;
+            hasher.update(&buffer[..read]);
+            size_bytes = size_bytes.saturating_add(read as u64);
+        }
+        output.flush()?;
+        output.sync_all()?;
+        drop(output);
+
+        let sha256 = hex::encode(hasher.finalize());
+        let destination = self.blob_path(&sha256)?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if destination.exists() {
+            let existing = hash_file(&destination)?;
+            if existing.sha256 != sha256 || existing.size_bytes != size_bytes {
+                return Err(StorageError::InvalidBackup(
+                    "content-addressed blob path contains different bytes".into(),
+                ));
+            }
+            fs::remove_file(&staging_path)?;
+        } else {
+            fs::rename(&staging_path, &destination)?;
+        }
+
+        Ok(BlobDescriptor { sha256, size_bytes })
+    }
+
+    pub fn read_blob(&self, digest: &str, limit: u64) -> Result<Vec<u8>> {
+        let path = self.blob_path(digest)?;
+        if !path.is_file() {
+            return Err(StorageError::BlobMissing {
+                digest: digest.to_owned(),
+            });
+        }
+        let size = fs::metadata(&path)?.len();
+        if size > limit {
+            return Err(StorageError::BlobTooLarge { size, limit });
+        }
+        let bytes = fs::read(&path)?;
+        let actual = hex::encode(Sha256::digest(&bytes));
+        if actual != digest {
+            return Err(StorageError::InvalidBackup(
+                "content-addressed blob failed digest verification".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub fn export_project_bundle(
+        &mut self,
+        id: Uuid,
+        destination: impl AsRef<Path>,
+    ) -> Result<ProjectBundleManifest> {
+        let destination = destination.as_ref();
+        if destination.exists() {
+            return Err(StorageError::DestinationExists);
+        }
+        let backup = self.export_project(id)?;
+        let mut digests = BTreeSet::new();
+        for asset in &backup.project.assets {
+            let digest = asset.content_sha256.as_deref().ok_or_else(|| {
+                StorageError::InvalidBackup(format!("asset {} has no content digest", asset.id))
+            })?;
+            validate_digest(digest)?;
+            digests.insert(digest.to_owned());
+        }
+
+        let mut blobs = Vec::with_capacity(digests.len());
+        for digest in digests {
+            let source = self.blob_path(&digest)?;
+            if !source.is_file() {
+                return Err(StorageError::BlobMissing { digest });
+            }
+            let descriptor = hash_file(&source)?;
+            if descriptor.sha256 != digest {
+                return Err(StorageError::InvalidBackup(
+                    "stored blob digest differs from its content-addressed path".into(),
+                ));
+            }
+            blobs.push(PortableBlob {
+                relative_path: blob_relative_path(&digest)?,
+                sha256: digest,
+                size_bytes: descriptor.size_bytes,
+            });
+        }
+
+        let manifest = ProjectBundleManifest {
+            format_version: PROJECT_BUNDLE_FORMAT_VERSION,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            backup,
+            blobs,
+        };
+
+        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
+        fs::create_dir(&staging)?;
+
+        for blob in &manifest.blobs {
+            let source = self.blob_path(&blob.sha256)?;
+            let target = staging.join(&blob.relative_path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&source, &target)?;
+            let copied = hash_file(&target)?;
+            if copied.sha256 != blob.sha256 || copied.size_bytes != blob.size_bytes {
+                return Err(StorageError::InvalidBackup(
+                    "exported blob failed readback verification".into(),
+                ));
+            }
+        }
+
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+        let manifest_path = staging.join("manifest.json");
+        let mut manifest_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&manifest_path)?;
+        manifest_file.write_all(&manifest_bytes)?;
+        manifest_file.flush()?;
+        manifest_file.sync_all()?;
+        fs::rename(&staging, destination)?;
+        Ok(manifest)
+    }
+
+    pub fn inspect_project_bundle(&self, source: impl AsRef<Path>) -> Result<BundleImportPlan> {
+        let manifest = load_bundle_manifest(source.as_ref())?;
+        self.validate_bundle(source.as_ref(), &manifest)
+    }
+
+    pub fn import_project_bundle(&mut self, source: impl AsRef<Path>) -> Result<Project> {
+        let source = source.as_ref();
+        let manifest = load_bundle_manifest(source)?;
+        self.validate_bundle(source, &manifest)?;
+
+        for blob in &manifest.blobs {
+            let path = source.join(&blob.relative_path);
+            let descriptor = self.ingest_blob_file(&path)?;
+            if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
+                return Err(StorageError::InvalidBackup(
+                    "imported blob differs from bundle manifest".into(),
+                ));
+            }
+        }
+        self.import_project(&manifest.backup)
+    }
+
+    fn validate_bundle(
+        &self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+    ) -> Result<BundleImportPlan> {
+        if manifest.format_version != PROJECT_BUNDLE_FORMAT_VERSION {
+            return Err(StorageError::InvalidBackup(format!(
+                "unsupported bundle format version {}",
+                manifest.format_version
+            )));
+        }
+        let project_plan = self.inspect_import(&manifest.backup)?;
+        let mut expected = BTreeSet::new();
+        for asset in &manifest.backup.project.assets {
+            let digest = asset.content_sha256.as_deref().ok_or_else(|| {
+                StorageError::InvalidBackup(format!("asset {} has no content digest", asset.id))
+            })?;
+            validate_digest(digest)?;
+            expected.insert(digest.to_owned());
+        }
+
+        let mut observed = BTreeSet::new();
+        let mut total_blob_bytes = 0_u64;
+        for blob in &manifest.blobs {
+            validate_digest(&blob.sha256)?;
+            let expected_relative = blob_relative_path(&blob.sha256)?;
+            if blob.relative_path != expected_relative || !observed.insert(blob.sha256.clone()) {
+                return Err(StorageError::InvalidBackup(
+                    "bundle blob manifest is duplicate or has a non-canonical path".into(),
+                ));
+            }
+            let descriptor = hash_file(&source.join(&blob.relative_path))?;
+            if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
+                return Err(StorageError::InvalidBackup(
+                    "bundle blob failed digest or size verification".into(),
+                ));
+            }
+            total_blob_bytes = total_blob_bytes.saturating_add(blob.size_bytes);
+        }
+        if observed != expected {
+            return Err(StorageError::InvalidBackup(
+                "bundle blob set does not match project asset digests".into(),
+            ));
+        }
+
+        Ok(BundleImportPlan {
+            project: project_plan,
+            blob_count: manifest.blobs.len(),
+            total_blob_bytes,
+        })
+    }
+
+    fn blob_path(&self, digest: &str) -> Result<PathBuf> {
+        validate_digest(digest)?;
+        Ok(self
+            .blob_root
+            .join("sha256")
+            .join(&digest[..2])
+            .join(digest))
     }
 
     pub fn create_project(&mut self, project: &Project) -> Result<()> {
@@ -678,10 +970,58 @@ fn validate_backup(backup: &ProjectBackup) -> Result<()> {
     Ok(())
 }
 
+fn validate_digest(digest: &str) -> Result<()> {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(StorageError::InvalidBlobDigest);
+    }
+    Ok(())
+}
+
+fn blob_relative_path(digest: &str) -> Result<String> {
+    validate_digest(digest)?;
+    Ok(format!("blobs/sha256/{}/{}", &digest[..2], digest))
+}
+
+fn hash_file(path: &Path) -> Result<BlobDescriptor> {
+    let mut input = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut size_bytes = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size_bytes = size_bytes.saturating_add(read as u64);
+    }
+    Ok(BlobDescriptor {
+        sha256: hex::encode(hasher.finalize()),
+        size_bytes,
+    })
+}
+
+fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
+    let path = source.join("manifest.json");
+    let size = fs::metadata(&path)?.len();
+    if size > MAX_BUNDLE_MANIFEST_BYTES {
+        return Err(StorageError::BlobTooLarge {
+            size,
+            limit: MAX_BUNDLE_MANIFEST_BYTES,
+        });
+    }
+    let bytes = fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use motionwright_domain::Change;
+    use motionwright_domain::{Asset, Change};
 
     #[test]
     fn save_reopen_and_replay_are_exact() {
@@ -758,6 +1098,110 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, StorageError::RequestReuse));
+    }
+
+    #[test]
+    fn blob_store_is_content_addressed_verified_and_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let source = temp.path().join("voice.bin");
+        fs::write(&source, b"semantic voice bytes").unwrap();
+
+        let first = store.ingest_blob_file(&source).unwrap();
+        let second = store.ingest_blob_file(&source).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            store.read_blob(&first.sha256, 1024).unwrap(),
+            b"semantic voice bytes"
+        );
+        let error = store.read_blob(&first.sha256, 4).unwrap_err();
+        assert!(matches!(error, StorageError::BlobTooLarge { .. }));
+        assert!(matches!(
+            store.read_blob("../not-a-digest", 1024).unwrap_err(),
+            StorageError::InvalidBlobDigest
+        ));
+    }
+
+    #[test]
+    fn portable_bundle_round_trip_preserves_history_and_verified_assets() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let mut source = Store::open(source_dir.path().join("source.sqlite3")).unwrap();
+        let blob_source = source_dir.path().join("voice.wav");
+        fs::write(&blob_source, b"measured-voice-payload").unwrap();
+        let descriptor = source.ingest_blob_file(&blob_source).unwrap();
+
+        let mut project = Project::new("Portable media").unwrap();
+        project.assets.push(Asset {
+            id: Uuid::now_v7(),
+            name: "voice.wav".into(),
+            media_type: "audio/wav".into(),
+            content_sha256: Some(descriptor.sha256.clone()),
+            source_revision: Some("import-r1".into()),
+        });
+        source.create_project(&project).unwrap();
+        let changed = source
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "rename-portable",
+                &Change::RenameProject {
+                    title: "Portable media v2".into(),
+                },
+            )
+            .unwrap();
+
+        let bundle = source_dir.path().join("portable.motionwright");
+        let manifest = source.export_project_bundle(project.id, &bundle).unwrap();
+        assert_eq!(manifest.blobs.len(), 1);
+        assert!(bundle.join("manifest.json").is_file());
+
+        let destination_dir = tempfile::tempdir().unwrap();
+        let mut destination =
+            Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
+        let plan = destination.inspect_project_bundle(&bundle).unwrap();
+        assert_eq!(plan.blob_count, 1);
+        assert_eq!(plan.total_blob_bytes, descriptor.size_bytes);
+
+        let imported = destination.import_project_bundle(&bundle).unwrap();
+        assert_eq!(imported.id, project.id);
+        assert_eq!(imported.revision, changed.project.revision);
+        assert_ne!(imported.generation, changed.project.generation);
+        assert_eq!(
+            destination.read_blob(&descriptor.sha256, 1024).unwrap(),
+            b"measured-voice-payload"
+        );
+        assert_eq!(
+            destination.events_since(project.id, 0, 10).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn portable_bundle_rejects_tampered_blob_bytes() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let mut source = Store::open(source_dir.path().join("source.sqlite3")).unwrap();
+        let blob_source = source_dir.path().join("asset.bin");
+        fs::write(&blob_source, b"original").unwrap();
+        let descriptor = source.ingest_blob_file(&blob_source).unwrap();
+
+        let mut project = Project::new("Tamper test").unwrap();
+        project.assets.push(Asset {
+            id: Uuid::now_v7(),
+            name: "asset.bin".into(),
+            media_type: "application/octet-stream".into(),
+            content_sha256: Some(descriptor.sha256.clone()),
+            source_revision: None,
+        });
+        source.create_project(&project).unwrap();
+
+        let bundle = source_dir.path().join("bundle");
+        let manifest = source.export_project_bundle(project.id, &bundle).unwrap();
+        fs::write(bundle.join(&manifest.blobs[0].relative_path), b"tampered").unwrap();
+
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination = Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
+        let error = destination.inspect_project_bundle(&bundle).unwrap_err();
+        assert!(matches!(error, StorageError::InvalidBackup(_)));
     }
 
     #[test]

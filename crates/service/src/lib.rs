@@ -1,7 +1,8 @@
 use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
-    ImportPlan, ProjectBackup, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProjectBackup,
+    ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
@@ -59,6 +60,29 @@ impl StudioService {
 
     pub fn import_project(&self, backup: &ProjectBackup) -> StorageResult<Project> {
         self.store.lock().import_project(backup)
+    }
+
+    pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> StorageResult<BlobDescriptor> {
+        self.store.lock().ingest_blob_file(source)
+    }
+
+    pub fn export_project_bundle(
+        &self,
+        id: Uuid,
+        destination: impl AsRef<Path>,
+    ) -> StorageResult<ProjectBundleManifest> {
+        self.store.lock().export_project_bundle(id, destination)
+    }
+
+    pub fn inspect_project_bundle(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> StorageResult<BundleImportPlan> {
+        self.store.lock().inspect_project_bundle(source)
+    }
+
+    pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
+        self.store.lock().import_project_bundle(source)
     }
 
     pub fn history(
