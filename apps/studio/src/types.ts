@@ -54,7 +54,33 @@ export interface DeliverableProfile {
   id: string; name: string; width: number; height: number;
   language: string; captions: boolean;
 }
-export interface Branch { id: string; name: string; base_revision: number; created_at: string; }
+export interface Branch {
+  id: string; name: string; parent_branch: string | null;
+  base_revision: number; head_revision: number; protected: boolean; created_at: string;
+}
+export interface BranchState {
+  scenes: Scene[]; markers: Marker[]; locks: ProjectLock[]; deliverables: DeliverableProfile[];
+  brief: Brief; narrative: Narrative; audio: AudioState; visual_language: VisualLanguage;
+  proposal_sets: ProposalSet[]; model_invocations: ModelInvocationReceipt[];
+}
+export interface BranchWorkspace {
+  branch_id: string; base_revision: number; base_state: BranchState; current_state: BranchState;
+}
+export type ReviewKind = "technical" | "creative" | "editorial";
+export type ReviewStatus = "open" | "resolved" | "dismissed" | "needs_recheck";
+export interface ReviewAnchor {
+  resource: string; branch_id: string; revision: number;
+  start: RationalTime | null; end: RationalTime | null;
+  locale: string | null; profile_id: string | null;
+}
+export interface CreativeReview {
+  id: string; kind: ReviewKind; anchor: ReviewAnchor; body: string;
+  status: ReviewStatus; resolution: string | null; created_at: string; resolved_at: string | null;
+}
+export interface MergeRecord {
+  id: string; source_branch: string; target_branch: string;
+  base_revision: number; committed_revision: number | null; merged_at: string;
+}
 export interface Asset {
   id: string; name: string; media_type: string;
   content_sha256: string | null; source_revision: string | null;
@@ -147,7 +173,9 @@ export interface ModelInvocationReceipt {
 export interface Project {
   schema_version: number; id: string; generation: string; revision: number;
   title: string; state: ProjectState; active_branch: string;
-  branches: Branch[]; scenes: Scene[]; markers: Marker[]; assets: Asset[];
+  branches: Branch[]; branch_workspaces: BranchWorkspace[];
+  reviews: CreativeReview[]; merges: MergeRecord[];
+  scenes: Scene[]; markers: Marker[]; assets: Asset[];
   locks: ProjectLock[]; deliverables: DeliverableProfile[];
   brief: Brief; narrative: Narrative; audio: AudioState;
   visual_language: VisualLanguage; proposal_sets: ProposalSet[];
@@ -179,6 +207,16 @@ export type Change =
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }
+  | { type: "create_branch"; name: string }
+  | { type: "checkout_branch"; branch_id: string }
+  | { type: "merge_branch"; source_branch_id: string }
+  | {
+      type: "add_review"; kind: ReviewKind; resource: string; body: string;
+      start: RationalTime | null; end: RationalTime | null;
+      locale: string | null; profile_id: string | null;
+    }
+  | { type: "resolve_review"; review_id: string; resolution: string }
+  | { type: "reopen_review"; review_id: string }
   | { type: "set_lock"; resource: string; kind: LockKind; note: string }
   | { type: "remove_lock"; lock_id: string };
 

@@ -302,16 +302,6 @@ impl CreativeReview {
         {
             return Err(DomainError::Invalid("invalid creative review".into()));
         }
-        if let Some(profile_id) = self.anchor.profile_id
-            && !project
-                .deliverables
-                .iter()
-                .any(|profile| profile.id == profile_id)
-        {
-            return Err(DomainError::Invalid(
-                "review references an unknown deliverable profile".into(),
-            ));
-        }
         match (self.anchor.start, self.anchor.end) {
             (Some(start), Some(end))
                 if non_negative(start) && non_negative(end) && end >= start => {}
@@ -393,12 +383,17 @@ impl Project {
         let mut names = HashSet::new();
         let branch_ids: HashSet<_> = self.branches.iter().map(|branch| branch.id).collect();
         for branch in &self.branches {
+            let effective_head = if branch.head_revision == 0 {
+                branch.base_revision
+            } else {
+                branch.head_revision
+            };
             if branch.name.trim().is_empty()
                 || branch.name.len() > 120
                 || branch.name.chars().any(char::is_control)
                 || !names.insert(branch.name.to_ascii_lowercase())
-                || branch.base_revision > branch.head_revision
-                || branch.head_revision > self.revision
+                || branch.base_revision > effective_head
+                || effective_head > self.revision
                 || branch
                     .parent_branch
                     .is_some_and(|parent| !branch_ids.contains(&parent))
@@ -552,6 +547,16 @@ impl Project {
                 locale,
                 profile_id,
             } => {
+                if let Some(profile_id) = profile_id
+                    && !self
+                        .deliverables
+                        .iter()
+                        .any(|profile| profile.id == *profile_id)
+                {
+                    return Err(DomainError::NotFound(format!(
+                        "deliverable-profile:{profile_id}"
+                    )));
+                }
                 let review = CreativeReview {
                     id: Uuid::now_v7(),
                     kind: kind.clone(),

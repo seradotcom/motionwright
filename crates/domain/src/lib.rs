@@ -382,7 +382,7 @@ impl Project {
                 parent_branch: None,
                 base_revision: 0,
                 head_revision: 0,
-                protected: true,
+                protected: false,
                 created_at: now,
             }],
             branch_workspaces: vec![],

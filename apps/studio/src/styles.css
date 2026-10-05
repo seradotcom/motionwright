@@ -1988,7 +1988,7 @@ select:focus {
   pointer-events: none;
   background: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
-  transition: left 100ms linear, width 160ms ease-out;
+  transition: left 100ms linear;
 }
 
 .splice-line span {

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
 import type {
   Bootstrap,
+  BranchState,
   Change,
   LockKind,
   PortableBundleExport,
@@ -21,6 +22,77 @@ const sceneResource = (sceneId: string) => "scene:" + sceneId;
 function assertUnlocked(project: Project, resource: string, kinds: LockKind[]) {
   const hit = project.locks.find((lock) => lock.resource === resource && kinds.includes(lock.kind));
   if (hit) throw new Error(`resource is locked: ${resource} (${hit.kind})`);
+}
+
+function captureBranchState(project: Project): BranchState {
+  return structuredClone({
+    scenes: project.scenes,
+    markers: project.markers,
+    locks: project.locks,
+    deliverables: project.deliverables,
+    brief: project.brief,
+    narrative: project.narrative,
+    audio: project.audio,
+    visual_language: project.visual_language,
+    proposal_sets: project.proposal_sets,
+    model_invocations: project.model_invocations,
+  });
+}
+
+function restoreBranchState(project: Project, state: BranchState) {
+  project.scenes = structuredClone(state.scenes);
+  project.markers = structuredClone(state.markers);
+  project.locks = structuredClone(state.locks);
+  project.deliverables = structuredClone(state.deliverables);
+  project.brief = structuredClone(state.brief);
+  project.narrative = structuredClone(state.narrative);
+  project.audio = structuredClone(state.audio);
+  project.visual_language = structuredClone(state.visual_language);
+  project.proposal_sets = structuredClone(state.proposal_sets);
+  project.model_invocations = structuredClone(state.model_invocations);
+}
+
+function saveActiveWorkspace(project: Project) {
+  const state = captureBranchState(project);
+  const branch = project.branches.find((candidate) => candidate.id === project.active_branch);
+  if (!branch) throw new Error("active branch is missing");
+  const existing = project.branch_workspaces.find((workspace) => workspace.branch_id === branch.id);
+  if (existing) {
+    existing.current_state = state;
+  } else {
+    project.branch_workspaces.push({
+      branch_id: branch.id,
+      base_revision: branch.base_revision,
+      base_state: structuredClone(state),
+      current_state: state,
+    });
+  }
+}
+
+function branchStateEqual(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function mergeBranchState(base: BranchState, target: BranchState, source: BranchState): BranchState {
+  const fields: Array<keyof BranchState> = [
+    "scenes", "markers", "locks", "deliverables", "brief", "narrative",
+    "audio", "visual_language", "proposal_sets", "model_invocations",
+  ];
+  const result = structuredClone(target);
+  const conflicts: string[] = [];
+  for (const field of fields) {
+    const baseValue = base[field];
+    const targetValue = target[field];
+    const sourceValue = source[field];
+    if (branchStateEqual(sourceValue, baseValue) || branchStateEqual(sourceValue, targetValue)) continue;
+    if (branchStateEqual(targetValue, baseValue)) {
+      Object.assign(result, { [field]: structuredClone(sourceValue) });
+    } else {
+      conflicts.push(field);
+    }
+  }
+  if (conflicts.length) throw new Error("semantic merge conflict in: " + conflicts.join(", "));
+  return result;
 }
 
 export async function bootstrap(): Promise<Bootstrap> {
@@ -118,6 +190,9 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
   }
 
   const next = structuredClone(project);
+  next.branch_workspaces ??= [];
+  next.reviews ??= [];
+  next.merges ??= [];
   switch (change.type) {
     case "rename_project":
       assertUnlocked(next, projectResource(next), ["content"]);
@@ -345,6 +420,103 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       set.selected = change.proposal_id;
       break;
     }
+    case "create_branch": {
+      const name = change.name.trim();
+      if (!name || name.length > 120 || next.branches.some((branch) => branch.name.toLowerCase() === name.toLowerCase())) {
+        throw new Error("branch name is invalid or already used");
+      }
+      saveActiveWorkspace(next);
+      const branchId = crypto.randomUUID();
+      const state = captureBranchState(next);
+      next.branches.push({
+        id: branchId,
+        name,
+        parent_branch: next.active_branch,
+        base_revision: next.revision,
+        head_revision: next.revision,
+        protected: false,
+        created_at: new Date().toISOString(),
+      });
+      next.branch_workspaces.push({
+        branch_id: branchId,
+        base_revision: next.revision,
+        base_state: structuredClone(state),
+        current_state: state,
+      });
+      break;
+    }
+    case "checkout_branch": {
+      if (change.branch_id === next.active_branch) break;
+      saveActiveWorkspace(next);
+      const workspace = next.branch_workspaces.find((entry) => entry.branch_id === change.branch_id);
+      if (!workspace) throw new Error("resource not found: branch:" + change.branch_id);
+      restoreBranchState(next, workspace.current_state);
+      next.active_branch = change.branch_id;
+      break;
+    }
+    case "merge_branch": {
+      if (change.source_branch_id === next.active_branch) throw new Error("cannot merge a branch into itself");
+      saveActiveWorkspace(next);
+      const sourceBranch = next.branches.find((branch) => branch.id === change.source_branch_id);
+      if (!sourceBranch) throw new Error("resource not found: branch:" + change.source_branch_id);
+      if (sourceBranch.parent_branch !== next.active_branch) {
+        throw new Error("first-party merge currently requires the source branch to descend directly from the active target");
+      }
+      const sourceWorkspace = next.branch_workspaces.find((entry) => entry.branch_id === change.source_branch_id);
+      if (!sourceWorkspace) throw new Error("resource not found: branch:" + change.source_branch_id);
+      const merged = mergeBranchState(
+        sourceWorkspace.base_state,
+        captureBranchState(next),
+        sourceWorkspace.current_state,
+      );
+      restoreBranchState(next, merged);
+      next.merges.push({
+        id: crypto.randomUUID(),
+        source_branch: change.source_branch_id,
+        target_branch: next.active_branch,
+        base_revision: sourceWorkspace.base_revision,
+        committed_revision: null,
+        merged_at: new Date().toISOString(),
+      });
+      break;
+    }
+    case "add_review":
+      next.reviews.push({
+        id: crypto.randomUUID(),
+        kind: change.kind,
+        anchor: {
+          resource: change.resource,
+          branch_id: next.active_branch,
+          revision: next.revision,
+          start: structuredClone(change.start),
+          end: structuredClone(change.end),
+          locale: change.locale,
+          profile_id: change.profile_id,
+        },
+        body: change.body,
+        status: "open",
+        resolution: null,
+        created_at: new Date().toISOString(),
+        resolved_at: null,
+      });
+      break;
+    case "resolve_review": {
+      const review = next.reviews.find((entry) => entry.id === change.review_id);
+      if (!review) throw new Error("resource not found: review:" + change.review_id);
+      if (!change.resolution.trim()) throw new Error("review resolution is out of bounds");
+      review.status = "resolved";
+      review.resolution = change.resolution;
+      review.resolved_at = new Date().toISOString();
+      break;
+    }
+    case "reopen_review": {
+      const review = next.reviews.find((entry) => entry.id === change.review_id);
+      if (!review) throw new Error("resource not found: review:" + change.review_id);
+      review.status = "needs_recheck";
+      review.resolution = null;
+      review.resolved_at = null;
+      break;
+    }
     case "set_lock":
       if (!next.locks.some((lock) => lock.resource === change.resource && lock.kind === change.kind)) {
         next.locks.push({ id: crypto.randomUUID(), resource: change.resource, kind: change.kind, note: change.note });
@@ -356,6 +528,40 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       break;
   }
   next.revision += 1;
+  const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
+  if (!activeBranch) throw new Error("active branch is missing");
+  activeBranch.head_revision = next.revision;
+
+  if (change.type === "merge_branch") {
+    const pending = [...next.merges].reverse().find(
+      (merge) => merge.target_branch === next.active_branch && merge.committed_revision === null,
+    );
+    if (pending) pending.committed_revision = next.revision;
+  }
+
+  const reviewPreservingChanges = new Set<Change["type"]>([
+    "create_branch",
+    "checkout_branch",
+    "add_review",
+    "resolve_review",
+    "reopen_review",
+    "set_lock",
+    "remove_lock",
+  ]);
+  if (!reviewPreservingChanges.has(change.type)) {
+    next.reviews.forEach((review) => {
+      if (
+        review.anchor.branch_id === next.active_branch &&
+        review.anchor.revision < next.revision &&
+        review.status === "resolved"
+      ) {
+        review.status = "needs_recheck";
+        review.resolution = null;
+        review.resolved_at = null;
+      }
+    });
+  }
+
   next.updated_at = new Date().toISOString();
   browserEvents.push({
     revision: next.revision,
