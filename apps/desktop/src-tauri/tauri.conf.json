@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "appimage"],
+    "icon": ["icons/icon.png"],
     "category": "Video",
     "shortDescription": "Semwright-native creative production studio",
     "longDescription": "Motionwright is a local-first creative production studio for semantic audiovisual projects."

@@ -15,7 +15,7 @@ test("editor exposes real workspaces and browser-demo mutations", async ({ page 
 
   await page.getByRole("button", { name: "Storyboard", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Storyboard" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Pixels are brittle/ })).toBeVisible();
+  await expect(page.locator(".story-card").filter({ hasText: "Pixels are brittle" })).toBeVisible();
 
   await page.screenshot({ path: "test-results/motionwright-editor.png", fullPage: true });
 });
@@ -49,20 +49,19 @@ test("canvas edits and stored alternatives use project revisions rather than loc
   await page.goto("/");
 
   await page.getByRole("button", { name: "Storyboard", exact: true }).click();
-  await page.getByRole("button", { name: /Pixels are brittle/ }).click();
+  await page.locator(".story-card").filter({ hasText: "Pixels are brittle" }).click();
   await page.getByRole("button", { name: "Alternatives", exact: true }).click();
   await expect(page.getByText("Candidate budget")).toBeVisible();
   await expect(page.getByText("Contrast cut", { exact: true })).toBeVisible();
 
   const beforeSelection = await page.locator(".revision-chip").first().innerText();
   await page.getByRole("button", { name: "Select for review" }).nth(1).click();
-  await expect(page.getByText("Selected", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Selected", exact: true })).toBeVisible();
   await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(beforeSelection);
 
   const beforeTransform = await page.locator(".revision-chip").first().innerText();
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await expect(page.getByRole("region", { name: "Semantic canvas" })).toBeVisible();
-  await page.getByRole("button", { name: "Semantic tree", exact: true }).click();
 
   const x = page.getByLabel("Canvas X");
   await x.fill("796");
@@ -78,10 +77,13 @@ test("canvas edits and stored alternatives use project revisions rather than loc
 test("scene duration ripple reflows the shared timeline and journals one change", async ({ page }) => {
   await page.goto("/");
 
+  await page.locator(".tree-row").filter({ hasText: "Pixels are brittle" }).click();
+
   const secondClip = page.locator(".timeline-clip").nth(1);
   const before = await secondClip.getAttribute("style");
 
   const duration = page.getByLabel("Scene duration seconds");
+  await expect(duration).toBeEnabled();
   await duration.fill("8");
   await page.getByRole("button", { name: "Ripple", exact: true }).click();
 
@@ -120,7 +122,7 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
   await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toBeVisible();
 
   await page.getByRole("button", { name: "shape", exact: true }).click();
-  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 1" })).toBeVisible();
+  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 2" })).toBeVisible();
 
   await page.getByLabel("Canvas parent").selectOption({ label: "Group 1" });
   await page.getByLabel("Canvas z order").fill("7");
@@ -137,9 +139,9 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
   await page.getByRole("button", { name: "Remove object", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("children");
 
-  await page.locator(".canvas-tree-row").filter({ hasText: "Shape 1" }).click();
+  await page.locator(".canvas-tree-row").filter({ hasText: "Shape 2" }).click();
   await page.getByRole("button", { name: "Remove object", exact: true }).click();
-  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 1" })).toHaveCount(0);
+  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 2" })).toHaveCount(0);
 
   await page.locator(".canvas-tree-row").filter({ hasText: "Group 1" }).click();
   await page.getByRole("button", { name: "Remove object", exact: true }).click();
