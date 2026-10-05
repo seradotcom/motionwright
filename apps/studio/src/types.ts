@@ -164,8 +164,13 @@ export type Change =
   | { type: "set_scene_renderer"; scene_id: string; renderer: RendererKind }
   | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
   | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
+  | { type: "add_canvas_node"; scene_id: string; node: CanvasNode }
+  | { type: "remove_canvas_node"; scene_id: string; node_id: string }
   | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }
   | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
+  | { type: "update_canvas_style"; scene_id: string; node_id: string; style: NodeStyle }
+  | { type: "reparent_canvas_node"; scene_id: string; node_id: string; parent_id: string | null; z_index: number }
+  | { type: "set_canvas_relations"; scene_id: string; node_id: string; relations: NodeRelation[] }
   | { type: "set_node_property_lock"; scene_id: string; node_id: string; property: NodeProperty; locked: boolean }
   | { type: "set_camera"; scene_id: string; camera: CameraState }
   | { type: "add_marker"; at: RationalTime; label: string }

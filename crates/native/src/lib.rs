@@ -203,8 +203,13 @@ enum OperationKind {
     SetSceneRenderer,
     SetSceneStatus,
     SetSceneDuration,
+    AddCanvasNode,
+    RemoveCanvasNode,
     TransformCanvasNode,
     UpdateCanvasText,
+    UpdateCanvasStyle,
+    ReparentCanvasNode,
+    SetCanvasRelations,
     SetNodePropertyLock,
     SetCamera,
     AddMarker,
@@ -381,6 +386,22 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 duration,
             })
         }
+        OperationKind::AddCanvasNode => {
+            let node = serde_json::from_value(
+                args.get("node")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("node is required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas node is invalid"))?;
+            Ok(Change::AddCanvasNode {
+                scene_id: uuid(args, "scene_id")?,
+                node,
+            })
+        }
+        OperationKind::RemoveCanvasNode => Ok(Change::RemoveCanvasNode {
+            scene_id: uuid(args, "scene_id")?,
+            node_id: uuid(args, "node_id")?,
+        }),
         OperationKind::TransformCanvasNode => {
             let transform = serde_json::from_value(
                 args.get("transform")
@@ -408,6 +429,56 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 scene_id: uuid(args, "scene_id")?,
                 node_id: uuid(args, "node_id")?,
                 text,
+            })
+        }
+        OperationKind::UpdateCanvasStyle => {
+            let style = serde_json::from_value(
+                args.get("style")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("style is required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas style is invalid"))?;
+            Ok(Change::UpdateCanvasStyle {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                style,
+            })
+        }
+        OperationKind::ReparentCanvasNode => {
+            let parent_id = match args.get("parent_id") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    Uuid::parse_str(
+                        value
+                            .as_str()
+                            .ok_or_else(|| Error::invalid("parent_id must be a UUID or null"))?,
+                    )
+                    .map_err(|_| Error::invalid("parent_id must be a UUID or null"))?,
+                ),
+            };
+            let z_index = args
+                .get("z_index")
+                .and_then(Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+                .ok_or_else(|| Error::invalid("z_index is required"))?;
+            Ok(Change::ReparentCanvasNode {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                parent_id,
+                z_index,
+            })
+        }
+        OperationKind::SetCanvasRelations => {
+            let relations = serde_json::from_value(
+                args.get("relations")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("relations are required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas relations are invalid"))?;
+            Ok(Change::SetCanvasRelations {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                relations,
             })
         }
         OperationKind::SetNodePropertyLock => {
@@ -696,6 +767,58 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::AddCanvasNode,
+            descriptor(
+                "canvas.node.add",
+                "Add one bounded semantic canvas object with a stable identity",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node": {
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","maxLength":64},
+                                "name":{"type":"string","minLength":1,"maxLength":160},
+                                "kind":{"type":"string","minLength":1,"maxLength":128},
+                                "parent_id":{"anyOf":[{"type":"string","maxLength":64},{"type":"null"}]},
+                                "x":{"type":"number"},
+                                "y":{"type":"number"},
+                                "width":{"type":"number","minimum":0},
+                                "height":{"type":"number","minimum":0},
+                                "rotation_deg":{"type":"number"},
+                                "opacity":{"type":"number","minimum":0,"maximum":1},
+                                "text":{"anyOf":[{"type":"string","maxLength":100000},{"type":"null"}]},
+                                "coordinate_space":{"type":"string","enum":["project_pixels","normalized","scene_local"]},
+                                "z_index":{"type":"integer"},
+                                "style":{"type":"object"},
+                                "relations":{"type":"array","maxItems":128},
+                                "property_locks":{"type":"array","maxItems":8,"items":{"type":"string","enum":["position","size","rotation","opacity","text","style","parent","order"]}}
+                            },
+                            "required":["id","name","kind","parent_id","x","y","width","height","rotation_deg","opacity","text","coordinate_space","z_index","style","relations","property_locks"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "scene_id", "node"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveCanvasNode,
+            descriptor(
+                "canvas.node.remove",
+                "Remove an unreferenced semantic canvas object without leaving dangling hierarchy or relation references",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64}
+                    }),
+                    &["ref", "scene_id", "node_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::TransformCanvasNode,
             descriptor(
                 "canvas.node.transform",
@@ -736,6 +859,82 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "text": {"anyOf":[{"type":"string","maxLength":100000},{"type":"null"}]}
                     }),
                     &["ref", "scene_id", "node_id", "text"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpdateCanvasStyle,
+            descriptor(
+                "canvas.node.style.set",
+                "Replace the validated semantic style of one canvas object",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64},
+                        "style": {
+                            "type":"object",
+                            "properties":{
+                                "fill":{"anyOf":[{"type":"string","maxLength":512},{"type":"null"}]},
+                                "stroke":{"anyOf":[{"type":"string","maxLength":512},{"type":"null"}]},
+                                "stroke_width":{"type":"number","minimum":0,"maximum":1000},
+                                "font_family":{"anyOf":[{"type":"string","maxLength":512},{"type":"null"}]},
+                                "font_size":{"anyOf":[{"type":"number","minimum":1,"maximum":2048},{"type":"null"}]},
+                                "font_weight":{"anyOf":[{"type":"integer","minimum":1,"maximum":1000},{"type":"null"}]},
+                                "line_height":{"anyOf":[{"type":"number","minimum":0.1,"maximum":20},{"type":"null"}]},
+                                "blend_mode":{"type":"string","enum":["normal","multiply","screen","add"]}
+                            },
+                            "required":["fill","stroke","stroke_width","font_family","font_size","font_weight","line_height","blend_mode"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "scene_id", "node_id", "style"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ReparentCanvasNode,
+            descriptor(
+                "canvas.node.reparent",
+                "Change one canvas object's parent and z-order under hierarchy locks",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64},
+                        "parent_id": {"anyOf":[{"type":"string","maxLength":64},{"type":"null"}]},
+                        "z_index": {"type":"integer","minimum":-2147483648,"maximum":2147483647}
+                    }),
+                    &["ref", "scene_id", "node_id", "parent_id", "z_index"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetCanvasRelations,
+            descriptor(
+                "canvas.node.relations.set",
+                "Replace bounded semantic alignment/follow/attach relations for one canvas object",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "node_id": {"type":"string","maxLength":64},
+                        "relations": {
+                            "type":"array",
+                            "maxItems":128,
+                            "items":{
+                                "type":"object",
+                                "properties":{
+                                    "id":{"type":"string","maxLength":64},
+                                    "kind":{"type":"string","enum":["align_left","align_center_x","align_right","align_top","align_center_y","align_bottom","follow","attach"]},
+                                    "target_id":{"type":"string","maxLength":64}
+                                },
+                                "required":["id","kind","target_id"],
+                                "additionalProperties":false
+                            }
+                        }
+                    }),
+                    &["ref", "scene_id", "node_id", "relations"],
                 ),
             ),
         ),
@@ -919,10 +1118,15 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.scene.add"));
         assert!(names.contains(&"driver.motionwright.scene.renderer.set"));
         assert!(names.contains(&"driver.motionwright.brief.set"));
+        assert!(names.contains(&"driver.motionwright.canvas.node.add"));
+        assert!(names.contains(&"driver.motionwright.canvas.node.remove"));
         assert!(names.contains(&"driver.motionwright.canvas.node.transform"));
+        assert!(names.contains(&"driver.motionwright.canvas.node.style.set"));
+        assert!(names.contains(&"driver.motionwright.canvas.node.reparent"));
+        assert!(names.contains(&"driver.motionwright.canvas.node.relations.set"));
         assert!(names.contains(&"driver.motionwright.scene.duration.set"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
-        assert_eq!(capabilities.len(), 20);
+        assert_eq!(capabilities.len(), 25);
     }
 
     #[tokio::test]

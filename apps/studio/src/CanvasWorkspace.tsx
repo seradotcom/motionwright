@@ -1,5 +1,6 @@
-import { Camera, CircleDashed, LockKeyhole, Move, Unlock } from "lucide-react";
+import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import CanvasStructureEditor from "./CanvasStructureEditor";
 import type { CanvasNode, CanvasTransform, Change, NodeProperty, Project, Scene } from "./types";
 import VisualLanguageEditor from "./VisualLanguageEditor";
 
@@ -22,6 +23,43 @@ function nodeTransform(node: CanvasNode): CanvasTransform {
 function numberValue(value: string, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode {
+  const count = scene.nodes.filter((node) => node.kind === kind).length + 1;
+  const zIndex = scene.nodes.reduce((highest, node) => Math.max(highest, node.z_index), 0) + 1;
+  const dimensions = kind === "text"
+    ? { width: 520, height: 120 }
+    : kind === "group"
+      ? { width: 640, height: 360 }
+      : { width: 360, height: 220 };
+  return {
+    id: crypto.randomUUID(),
+    name: kind[0].toUpperCase() + kind.slice(1) + " " + count,
+    kind,
+    parent_id: null,
+    x: 240 + (count % 4) * 34,
+    y: 220 + (count % 4) * 34,
+    width: dimensions.width,
+    height: dimensions.height,
+    rotation_deg: 0,
+    opacity: 1,
+    text: kind === "text" ? "Text" : null,
+    coordinate_space: "project_pixels",
+    z_index: zIndex,
+    style: {
+      fill: kind === "text" || kind === "group" ? null : "#1D242C",
+      stroke: kind === "text" ? null : "#5A6570",
+      stroke_width: kind === "text" ? 0 : 1,
+      font_family: kind === "text" ? "system-ui" : null,
+      font_size: kind === "text" ? 64 : null,
+      font_weight: kind === "text" ? 700 : null,
+      line_height: kind === "text" ? 1.05 : null,
+      blend_mode: "normal",
+    },
+    relations: [],
+    property_locks: [],
+  };
 }
 
 export default function CanvasWorkspace({
@@ -90,6 +128,17 @@ export default function CanvasWorkspace({
   const scenePositionLocked = project.locks.some(
     (lock) => lock.resource === "scene:" + scene.id && lock.kind === "position",
   );
+  const sceneContentLocked = project.locks.some(
+    (lock) => lock.resource === "scene:" + scene.id && lock.kind === "content",
+  );
+
+  const addNode = async (kind: "text" | "shape" | "group") => {
+    const node = createNode(scene, kind);
+    await commit({ type: "add_canvas_node", scene_id: scene.id, node });
+    setSelectedNodeId(node.id);
+    setFormTransform(nodeTransform(node));
+    setTextValue(node.text ?? "");
+  };
 
   const selectNode = (node: CanvasNode) => {
     setSelectedNodeId(node.id);
@@ -186,6 +235,20 @@ export default function CanvasWorkspace({
       <div className="canvas-body">
         <aside className="canvas-object-tree" aria-label="Canvas object tree">
           <div className="canvas-panel-heading">Objects</div>
+          <div className="canvas-create-row" aria-label="Create canvas object">
+            {(["text", "shape", "group"] as const).map((kind) => (
+              <button
+                type="button"
+                className="canvas-create-button"
+                key={kind}
+                disabled={sceneContentLocked || scenePositionLocked}
+                onClick={() => void addNode(kind)}
+              >
+                <Plus size={10} />
+                {kind}
+              </button>
+            ))}
+          </div>
           {scene.nodes.length === 0 ? (
             <div className="canvas-empty-note">This scene has no semantic canvas objects yet.</div>
           ) : (
@@ -343,7 +406,7 @@ export default function CanvasWorkspace({
 
               <div className="property-locks">
                 <span className="field-label">Property locks</span>
-                {(["position", "size", "rotation", "opacity", "text"] as NodeProperty[]).map((property) => {
+                {(["position", "size", "rotation", "opacity", "text", "style", "parent", "order"] as NodeProperty[]).map((property) => {
                   const locked = selectedNode.property_locks.includes(property);
                   return (
                     <button type="button" className={"lock-toggle" + (locked ? " active" : "")} key={property} onClick={() => toggleLock(property)}>
@@ -387,6 +450,8 @@ export default function CanvasWorkspace({
                   />
                 </label>
               </div>
+
+              <CanvasStructureEditor scene={scene} node={selectedNode} commit={commit} />
             </>
           )}
           <VisualLanguageEditor project={project} commit={commit} />

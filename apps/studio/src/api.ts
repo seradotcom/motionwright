@@ -140,6 +140,27 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       });
       break;
     }
+    case "add_canvas_node": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content", "position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      if (!change.node.name.trim() || !change.node.kind.trim()) throw new Error("canvas node identity is invalid");
+      if (scene.nodes.some((node) => node.id === change.node.id)) throw new Error("canvas node identity already exists in scene");
+      scene.nodes.push(structuredClone(change.node));
+      break;
+    }
+    case "remove_canvas_node": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content", "position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      if (!scene.nodes.some((node) => node.id === change.node_id)) throw new Error("resource not found: node:" + change.node_id);
+      if (scene.nodes.some((node) => node.parent_id === change.node_id)) throw new Error("canvas node still has children; reparent them before removal");
+      if (scene.nodes.some((node) => node.relations.some((relation) => relation.target_id === change.node_id))) {
+        throw new Error("canvas node still has incoming relations; remove them before removal");
+      }
+      scene.nodes = scene.nodes.filter((node) => node.id !== change.node_id);
+      break;
+    }
     case "transform_canvas_node": {
       assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
@@ -164,6 +185,42 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       if (!node) throw new Error("resource not found: node:" + change.node_id);
       if (node.property_locks.includes("text")) throw new Error("resource is locked: node text");
       node.text = change.text;
+      break;
+    }
+    case "update_canvas_style": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["style"]);
+      const node = next.scenes.find((entry) => entry.id === change.scene_id)?.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      if (node.property_locks.includes("style")) throw new Error("resource is locked: node style");
+      node.style = structuredClone(change.style);
+      break;
+    }
+    case "reparent_canvas_node": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content", "position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      if (change.parent_id && (change.parent_id === change.node_id || !scene.nodes.some((node) => node.id === change.parent_id))) {
+        throw new Error("canvas parent must be another node in the scene");
+      }
+      const node = scene.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      if (node.property_locks.includes("parent") || node.property_locks.includes("order")) throw new Error("resource is locked: node hierarchy");
+      node.parent_id = change.parent_id;
+      node.z_index = change.z_index;
+      break;
+    }
+    case "set_canvas_relations": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      if (change.relations.length > 128) throw new Error("too many canvas relations");
+      if (change.relations.some((relation) => relation.target_id === change.node_id || !scene.nodes.some((node) => node.id === relation.target_id))) {
+        throw new Error("canvas relation target is invalid");
+      }
+      const node = scene.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      if (node.property_locks.includes("position")) throw new Error("resource is locked: node relations");
+      node.relations = structuredClone(change.relations);
       break;
     }
     case "set_node_property_lock": {

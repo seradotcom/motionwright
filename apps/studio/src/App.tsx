@@ -1087,7 +1087,7 @@ export default function App() {
     }
   }, [boot, busy, selectedSceneId]);
 
-  if (!project) {
+  if (!project || !boot) {
     return (
       <main className="boot-screen">
         <div className="brand-mark">MW</div>

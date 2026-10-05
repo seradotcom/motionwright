@@ -2687,3 +2687,162 @@ select:focus {
     grid-column: 1 / -1;
   }
 }
+
+/* Semantic object creation, hierarchy, style and relations */
+.canvas-create-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.canvas-create-button {
+  min-width: 0;
+  min-height: 27px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--dim);
+  font: inherit;
+  font-size: 8px;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.canvas-create-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--dim);
+}
+
+.canvas-create-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.canvas-structure-editor {
+  margin-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.canvas-editor-section {
+  padding: 10px;
+  display: grid;
+  gap: 7px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.canvas-editor-section > label {
+  display: grid;
+  gap: 4px;
+  color: var(--dim);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.canvas-editor-section input,
+.canvas-editor-section select {
+  min-width: 0;
+  min-height: 28px;
+  font-size: 9px;
+}
+
+.semantic-footnote {
+  color: var(--dim);
+  font-size: 8px;
+  line-height: 1.4;
+  text-transform: capitalize;
+}
+
+.semantic-footnote strong {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.canvas-style-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.canvas-style-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: var(--dim);
+  font-size: 8px;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.typography-grid {
+  padding-top: 2px;
+}
+
+.relation-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1fr) 26px;
+  gap: 4px;
+  align-items: center;
+}
+
+.relation-list {
+  display: grid;
+  gap: 4px;
+}
+
+.relation-row {
+  min-height: 27px;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 5px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  color: var(--dim);
+  font-size: 8px;
+}
+
+.relation-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+
+.relation-row strong {
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.destructive-section {
+  align-items: start;
+  background: color-mix(in srgb, var(--surface-1) 90%, #7a3030 10%);
+}
+
+.destructive-section > span {
+  color: var(--dim);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.button.destructive {
+  justify-self: start;
+  border-color: rgba(208, 99, 99, 0.42);
+  color: #e09a9a;
+}
+
+.button.destructive:hover {
+  border-color: rgba(226, 119, 119, 0.7);
+  color: #f0b0b0;
+}

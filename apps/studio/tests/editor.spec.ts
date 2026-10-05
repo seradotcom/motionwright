@@ -111,3 +111,37 @@ test("visual system commits a new version and project style lock is enforceable"
   await expect(page.getByRole("button", { name: "Protect style", exact: true })).toBeVisible();
   await expect(systemName).toBeEnabled();
 });
+
+test("canvas hierarchy style relations and safe removal are versioned", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+
+  await page.getByRole("button", { name: "group", exact: true }).click();
+  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toBeVisible();
+
+  await page.getByRole("button", { name: "shape", exact: true }).click();
+  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 1" })).toBeVisible();
+
+  await page.getByLabel("Canvas parent").selectOption({ label: "Group 1" });
+  await page.getByLabel("Canvas z order").fill("7");
+  await page.getByRole("button", { name: "Commit hierarchy", exact: true }).click();
+
+  await page.getByLabel("Canvas fill").fill("#38424d");
+  await page.getByRole("button", { name: "Commit style", exact: true }).click();
+
+  await page.getByLabel("Canvas relation target").selectOption({ label: "Group 1" });
+  await page.getByRole("button", { name: "Add canvas relation", exact: true }).click();
+  await expect(page.locator(".relation-row").filter({ hasText: "Group 1" })).toBeVisible();
+
+  await page.locator(".canvas-tree-row").filter({ hasText: "Group 1" }).click();
+  await page.getByRole("button", { name: "Remove object", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("children");
+
+  await page.locator(".canvas-tree-row").filter({ hasText: "Shape 1" }).click();
+  await page.getByRole("button", { name: "Remove object", exact: true }).click();
+  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 1" })).toHaveCount(0);
+
+  await page.locator(".canvas-tree-row").filter({ hasText: "Group 1" }).click();
+  await page.getByRole("button", { name: "Remove object", exact: true }).click();
+  await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toHaveCount(0);
+});

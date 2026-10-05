@@ -89,6 +89,7 @@ pub struct Beat {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanvasNode {
     pub id: Uuid,
     pub name: String,
@@ -118,6 +119,11 @@ impl CanvasNode {
         if self.name.trim().is_empty() || self.name.len() > 160 {
             return Err(DomainError::Invalid(
                 "canvas node name is out of bounds".into(),
+            ));
+        }
+        if self.kind.trim().is_empty() || self.kind.len() > 128 {
+            return Err(DomainError::Invalid(
+                "canvas node kind is out of bounds".into(),
             ));
         }
         CanvasTransform {
@@ -154,6 +160,7 @@ impl CanvasNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scene {
     pub id: Uuid,
     pub name: String,
@@ -643,6 +650,38 @@ impl Project {
                 }
                 scene.nodes.push(node.clone());
             }
+            Change::RemoveCanvasNode { scene_id, node_id } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Position])?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if !scene.nodes.iter().any(|node| node.id == *node_id) {
+                    return Err(DomainError::NotFound(format!("node:{node_id}")));
+                }
+                if scene
+                    .nodes
+                    .iter()
+                    .any(|node| node.parent_id == Some(*node_id))
+                {
+                    return Err(DomainError::Invalid(
+                        "canvas node still has children; reparent them before removal".into(),
+                    ));
+                }
+                if scene.nodes.iter().any(|node| {
+                    node.relations
+                        .iter()
+                        .any(|relation| relation.target_id == *node_id)
+                }) {
+                    return Err(DomainError::Invalid(
+                        "canvas node still has incoming relations; remove them before removal"
+                            .into(),
+                    ));
+                }
+                scene.nodes.retain(|node| node.id != *node_id);
+            }
             Change::TransformCanvasNode {
                 scene_id,
                 node_id,
@@ -1017,6 +1056,10 @@ pub enum Change {
         scene_id: Uuid,
         node: CanvasNode,
     },
+    RemoveCanvasNode {
+        scene_id: Uuid,
+        node_id: Uuid,
+    },
     TransformCanvasNode {
         scene_id: Uuid,
         node_id: Uuid,
@@ -1113,6 +1156,27 @@ impl From<&Project> for RevisionStamp {
 mod tests {
     use super::*;
 
+    fn canvas_node(name: &str) -> CanvasNode {
+        CanvasNode {
+            id: Uuid::now_v7(),
+            name: name.into(),
+            kind: "shape".into(),
+            parent_id: None,
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: None,
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 0,
+            style: NodeStyle::default(),
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+        }
+    }
+
     #[test]
     fn rational_time_is_reduced() {
         assert_eq!(RationalTime::new(48, 24).unwrap(), whole_seconds(2));
@@ -1168,6 +1232,99 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, DomainError::Locked(_)));
     }
+    #[test]
+    fn canvas_removal_requires_reference_cleanup() {
+        let mut project = Project::new("Canvas").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Scene".into(),
+                objective: "edit".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let parent = canvas_node("Parent");
+        let child = canvas_node("Child");
+        let parent_id = parent.id;
+        let child_id = child.id;
+        project
+            .apply_change(&Change::AddCanvasNode {
+                scene_id,
+                node: parent,
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::AddCanvasNode {
+                scene_id,
+                node: child,
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::ReparentCanvasNode {
+                scene_id,
+                node_id: child_id,
+                parent_id: Some(parent_id),
+                z_index: 2,
+            })
+            .unwrap();
+
+        let error = project
+            .apply_change(&Change::RemoveCanvasNode {
+                scene_id,
+                node_id: parent_id,
+            })
+            .unwrap_err();
+        assert!(matches!(error, DomainError::Invalid(_)));
+
+        project
+            .apply_change(&Change::ReparentCanvasNode {
+                scene_id,
+                node_id: child_id,
+                parent_id: None,
+                z_index: 2,
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::SetCanvasRelations {
+                scene_id,
+                node_id: child_id,
+                relations: vec![NodeRelation {
+                    id: Uuid::now_v7(),
+                    kind: RelationKind::Follow,
+                    target_id: parent_id,
+                }],
+            })
+            .unwrap();
+        assert!(
+            project
+                .apply_change(&Change::RemoveCanvasNode {
+                    scene_id,
+                    node_id: parent_id,
+                })
+                .is_err()
+        );
+
+        project
+            .apply_change(&Change::SetCanvasRelations {
+                scene_id,
+                node_id: child_id,
+                relations: vec![],
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::RemoveCanvasNode {
+                scene_id,
+                node_id: parent_id,
+            })
+            .unwrap();
+        assert!(
+            project.scenes[0]
+                .nodes
+                .iter()
+                .all(|node| node.id != parent_id)
+        );
+    }
+
     #[test]
     fn duration_change_ripples_following_scene_starts() {
         let mut project = Project::new("Ripple").unwrap();
