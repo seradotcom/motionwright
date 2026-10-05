@@ -37,6 +37,13 @@ pub struct ApplyOutcome {
     pub replayed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectEvent {
+    pub revision: u64,
+    pub change: Change,
+    pub created_at: String,
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -273,28 +280,51 @@ impl Store {
         Ok(outcome)
     }
 
+    pub fn event_records_since(
+        &self,
+        id: Uuid,
+        revision: u64,
+        limit: usize,
+    ) -> Result<Vec<ProjectEvent>> {
+        let limit = limit.clamp(1, 256);
+        let mut stmt = self.conn.prepare(
+            "SELECT revision,payload_json,created_at FROM events
+             WHERE project_id=?1 AND revision>?2
+             ORDER BY revision ASC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![id.to_string(), revision as i64, limit as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (revision, json, created_at) = row?;
+            events.push(ProjectEvent {
+                revision,
+                change: serde_json::from_str(&json)?,
+                created_at,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn events_since(
         &self,
         id: Uuid,
         revision: u64,
         limit: usize,
     ) -> Result<Vec<(u64, Change)>> {
-        let limit = limit.clamp(1, 256);
-        let mut stmt = self.conn.prepare(
-            "SELECT revision,payload_json FROM events
-             WHERE project_id=?1 AND revision>?2
-             ORDER BY revision ASC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(
-            params![id.to_string(), revision as i64, limit as i64],
-            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
-        )?;
-        let mut events = Vec::new();
-        for row in rows {
-            let (revision, json) = row?;
-            events.push((revision, serde_json::from_str(&json)?));
-        }
-        Ok(events)
+        Ok(self
+            .event_records_since(id, revision, limit)?
+            .into_iter()
+            .map(|event| (event.revision, event.change))
+            .collect())
     }
 }
 
@@ -415,8 +445,13 @@ mod tests {
             )
             .unwrap();
 
+        let records = store.event_records_since(project.id, 0, 10).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].revision, 1);
+        assert_eq!(records[1].revision, 2);
+        assert!(!records[0].created_at.is_empty());
+
         let events = store.events_since(project.id, 0, 10).unwrap();
-        assert_eq!(events.len(), 2);
         assert_eq!(events[0].0, 1);
         assert_eq!(events[1].0, 2);
     }

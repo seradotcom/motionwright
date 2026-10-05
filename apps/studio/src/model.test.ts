@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./fixture";
-import { seconds } from "./types";
+import { rationalSeconds, seconds } from "./types";
 
 describe("creative project fixture", () => {
   it("uses stable unique scene identities and monotonic timeline positions", () => {
@@ -43,6 +43,13 @@ describe("creative project fixture", () => {
     expect(fixtureProject.audio.voice_tracks).toEqual([]);
     expect(fixtureProject.audio.transcript).toEqual([]);
     expect(fixtureProject.audio.cues).toEqual([]);
+  });
+
+  it("reduces UI time values before they cross the application boundary", () => {
+    expect(rationalSeconds(8)).toEqual({ num: "8", den: "1" });
+    expect(rationalSeconds(1.5)).toEqual({ num: "3", den: "2" });
+    expect(rationalSeconds(0)).toEqual({ num: "0", den: "1" });
+    expect(() => rationalSeconds(Number.NaN)).toThrow("time must be finite");
   });
 
 });

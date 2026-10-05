@@ -48,23 +48,45 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
 test("canvas edits and stored alternatives use project revisions rather than local-only UI state", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Canvas", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Semantic canvas" })).toBeVisible();
-  await page.getByRole("button", { name: "Reasoning headline", exact: true }).click();
-
-  const x = page.getByLabel("Canvas X");
-  await expect(x).toHaveValue("160");
-  await x.fill("196");
-  await page.getByRole("button", { name: "Commit transform" }).click();
-  await expect(page.getByText("r13", { exact: true }).first()).toBeVisible();
-
   await page.getByRole("button", { name: "Storyboard", exact: true }).click();
   await page.getByRole("button", { name: /Pixels are brittle/ }).click();
   await page.getByRole("button", { name: "Alternatives", exact: true }).click();
   await expect(page.getByText("Candidate budget")).toBeVisible();
   await expect(page.getByText("Contrast cut", { exact: true })).toBeVisible();
 
+  const beforeSelection = await page.locator(".revision-chip").first().innerText();
   await page.getByRole("button", { name: "Select for review" }).nth(1).click();
   await expect(page.getByText("Selected", { exact: true })).toBeVisible();
-  await expect(page.getByText("r14", { exact: true }).first()).toBeVisible();
+  await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(beforeSelection);
+
+  const beforeTransform = await page.locator(".revision-chip").first().innerText();
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Semantic canvas" })).toBeVisible();
+  await page.getByRole("button", { name: "Semantic tree", exact: true }).click();
+
+  const x = page.getByLabel("Canvas X");
+  await x.fill("796");
+  await page.getByRole("button", { name: "Commit transform" }).click();
+  await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(beforeTransform);
+
+  await page.getByRole("button", { name: "Changes", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Project event journal" })).toBeVisible();
+  await expect(page.getByText("select proposal", { exact: true })).toBeVisible();
+  await expect(page.getByText("transform canvas node", { exact: true })).toBeVisible();
+});
+
+test("scene duration ripple reflows the shared timeline and journals one change", async ({ page }) => {
+  await page.goto("/");
+
+  const secondClip = page.locator(".timeline-clip").nth(1);
+  const before = await secondClip.getAttribute("style");
+
+  const duration = page.getByLabel("Scene duration seconds");
+  await duration.fill("8");
+  await page.getByRole("button", { name: "Ripple", exact: true }).click();
+
+  await expect.poll(async () => secondClip.getAttribute("style")).not.toBe(before);
+
+  await page.getByRole("button", { name: "Changes", exact: true }).click();
+  await expect(page.getByText("set scene duration", { exact: true })).toBeVisible();
 });

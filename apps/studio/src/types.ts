@@ -163,6 +163,7 @@ export type Change =
   | { type: "update_scene_objective"; scene_id: string; objective: string }
   | { type: "set_scene_renderer"; scene_id: string; renderer: RendererKind }
   | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
+  | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
   | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }
   | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
   | { type: "set_node_property_lock"; scene_id: string; node_id: string; property: NodeProperty; locked: boolean }
@@ -174,6 +175,12 @@ export type Change =
   | { type: "set_lock"; resource: string; kind: LockKind; note: string }
   | { type: "remove_lock"; lock_id: string };
 
+export interface ProjectEvent {
+  revision: number;
+  change: { type: string; [key: string]: unknown };
+  created_at: string;
+}
+
 export interface Bootstrap {
   project: Project;
   native_sdk: {
@@ -183,4 +190,25 @@ export interface Bootstrap {
   };
 }
 export const seconds = (time: RationalTime): number => Number(time.num) / Number(time.den);
-export const rationalSeconds = (value: number): RationalTime => ({ num: String(Math.round(value * 1000)), den: "1000" });
+
+const gcd = (left: number, right: number): number => {
+  let a = Math.abs(Math.trunc(left));
+  let b = Math.abs(Math.trunc(right));
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a || 1;
+};
+
+export const rationalSeconds = (value: number): RationalTime => {
+  if (!Number.isFinite(value)) throw new Error("time must be finite");
+  const numerator = Math.round(value * 1000);
+  if (numerator === 0) return { num: "0", den: "1" };
+  const divisor = gcd(numerator, 1000);
+  return {
+    num: String(numerator / divisor),
+    den: String(1000 / divisor),
+  };
+};

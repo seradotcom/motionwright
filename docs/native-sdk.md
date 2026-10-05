@@ -15,7 +15,9 @@ The integration follows the Native SDK public contracts:
 
 ## Observation scopes
 
-The current provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `visual-language`, `canvas`, `alternatives` and `locks` scopes. Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels.
+The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `visual-language`, `canvas`, `alternatives`, `history` and `locks` scopes.
+
+Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels. History returns only application-owned committed journal rows. It is not a reconstruction of private model reasoning.
 
 ## Typed operations
 
@@ -23,15 +25,15 @@ The provider intentionally exposes composable commands instead of an unrestricte
 
 - project: rename and set brief;
 - narrative: set premise;
-- scene: add, move, set objective, renderer and review status;
+- scene: add, move, set objective, renderer, review status and rational duration with explicit ripple;
 - canvas: transform node, set/clear node text, set property locks and set camera;
 - timeline: add marker;
 - creative system: set visual language, add a bounded proposal set and select one proposal;
 - authority hints owned by the app: set and remove explicit project/resource locks.
 
-Together with `driver.motionwright.observe`, this is currently 19 Native SDK capabilities.
+Together with `driver.motionwright.observe`, this is currently 20 Native SDK capabilities.
 
-Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries.
+Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries. Scene-duration ripple changes presentation timing and later scene starts; it does not silently retime measured audio.
 
 ## Shared UI and agent state
 

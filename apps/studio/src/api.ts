@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
-import type { Bootstrap, Change, LockKind, Project } from "./types";
+import type { Bootstrap, Change, LockKind, Project, ProjectEvent } from "./types";
+import { rationalSeconds } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
+const browserEvents: ProjectEvent[] = [];
 
 const projectResource = (project: Project) => "project:" + project.id;
 const sceneResource = (sceneId: string) => "scene:" + sceneId;
@@ -16,6 +18,27 @@ function assertUnlocked(project: Project, resource: string, kinds: LockKind[]) {
 export async function bootstrap(): Promise<Bootstrap> {
   if (isTauri()) return invoke<Bootstrap>("bootstrap");
   return structuredClone(browserState);
+}
+
+export async function projectHistory(
+  project: Project,
+  afterRevision = 0,
+  limit = 100,
+): Promise<ProjectEvent[]> {
+  if (isTauri()) {
+    return invoke<ProjectEvent[]>("project_history", {
+      request: {
+        project_id: project.id,
+        after_revision: afterRevision,
+        limit,
+      },
+    });
+  }
+  return structuredClone(
+    browserEvents
+      .filter((event) => event.revision > afterRevision)
+      .slice(0, Math.max(1, Math.min(limit, 256))),
+  );
 }
 
 export async function applyChange(project: Project, change: Change): Promise<Project> {
@@ -101,6 +124,22 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       if (scene) scene.status = change.status;
       break;
     }
+    case "set_scene_duration": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["timing"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      const duration = Number(change.duration.num) / Number(change.duration.den);
+      if (!Number.isFinite(duration) || duration <= 0 || duration > 86_400) {
+        throw new Error("scene duration is out of bounds");
+      }
+      scene.duration = structuredClone(change.duration);
+      let cursor = 0;
+      next.scenes.forEach((entry) => {
+        entry.start = rationalSeconds(cursor);
+        cursor += Number(entry.duration.num) / Number(entry.duration.den);
+      });
+      break;
+    }
     case "transform_canvas_node": {
       assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
@@ -178,6 +217,11 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
   }
   next.revision += 1;
   next.updated_at = new Date().toISOString();
+  browserEvents.push({
+    revision: next.revision,
+    change: structuredClone(change),
+    created_at: next.updated_at,
+  });
   browserState.project = structuredClone(next);
   return next;
 }

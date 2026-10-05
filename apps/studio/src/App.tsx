@@ -34,18 +34,19 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { applyChange, bootstrap } from "./api";
+import { applyChange, bootstrap, projectHistory } from "./api";
 import CanvasWorkspace from "./CanvasWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import type {
   Bootstrap,
   Change,
   Project,
+  ProjectEvent,
   ProjectState,
   RendererKind,
   Scene,
 } from "./types";
-import { seconds } from "./types";
+import { rationalSeconds, seconds } from "./types";
 
 type Workspace =
   | "Brief"
@@ -399,33 +400,105 @@ function AlternativesView({ scene }: { scene: Scene | null }) {
 }
 
 function ChangesView({ project }: { project: Project }) {
+  const [events, setEvents] = useState<ProjectEvent[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    projectHistory(project, 0, 100)
+      .then((next) => {
+        if (!cancelled) setEvents(next);
+      })
+      .catch((reason) => {
+        if (!cancelled) setHistoryError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingHistory(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, project.revision]);
+
+  const targetFor = (event: ProjectEvent) => {
+    const sceneId = typeof event.change.scene_id === "string" ? event.change.scene_id : null;
+    const nodeId = typeof event.change.node_id === "string" ? event.change.node_id : null;
+    if (nodeId) return "node:" + nodeId.slice(0, 8);
+    if (sceneId) return "scene:" + sceneId.slice(0, 8);
+    return "project";
+  };
+
   return (
     <div className="workspace-scroll table-view">
       <header className="workspace-heading">
         <div>
           <h2>Changes</h2>
-          <p>Branches have explicit bases. Restores create new changes instead of rewriting history.</p>
+          <p>Branches have explicit bases. The journal below is loaded from application-owned committed events.</p>
         </div>
         <span className="revision-chip">r{project.revision}</span>
       </header>
-      <div className="data-table" role="table" aria-label="Project branches">
-        <div className="data-row data-head" role="row">
-          <span>Branch</span><span>Base</span><span>Head</span><span>State</span>
+
+      <section className="changes-section">
+        <div className="section-title-row">
+          <span className="section-label">Branches</span>
+          <span className="count-label">{project.branches.length}</span>
         </div>
-        {project.branches.map((branch) => (
-          <div className="data-row" role="row" key={branch.id}>
-            <span><GitBranch size={14} /> {branch.name}</span>
-            <span className="mono">r{branch.base_revision}</span>
-            <span className="mono">{branch.id === project.active_branch ? "r" + project.revision : "—"}</span>
-            <span>{branch.id === project.active_branch ? <span className="status-pill status-current">ACTIVE</span> : <span className="muted">stored base</span>}</span>
+        <div className="data-table" role="table" aria-label="Project branches">
+          <div className="data-row data-head" role="row">
+            <span>Branch</span><span>Base</span><span>Head</span><span>State</span>
           </div>
-        ))}
-      </div>
+          {project.branches.map((branch) => (
+            <div className="data-row" role="row" key={branch.id}>
+              <span><GitBranch size={14} /> {branch.name}</span>
+              <span className="mono">r{branch.base_revision}</span>
+              <span className="mono">{branch.id === project.active_branch ? "r" + project.revision : "—"}</span>
+              <span>{branch.id === project.active_branch ? <span className="status-pill status-current">ACTIVE</span> : <span className="muted">stored base</span>}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="changes-section">
+        <div className="section-title-row">
+          <span className="section-label">Committed event journal</span>
+          <span className="count-label">{loadingHistory ? "loading" : events.length + " loaded"}</span>
+        </div>
+        {historyError ? (
+          <div className="error-banner inline-error" role="alert">
+            <strong>History unavailable.</strong>
+            <span>{historyError}</span>
+          </div>
+        ) : (
+          <div className="data-table" role="table" aria-label="Project event journal">
+            <div className="data-row event-row data-head" role="row">
+              <span>Revision</span><span>Change</span><span>Target</span><span>Committed</span>
+            </div>
+            {[...events].reverse().map((event) => (
+              <div className="data-row event-row" role="row" key={event.revision}>
+                <span className="mono">r{event.revision}</span>
+                <span>{event.change.type.replaceAll("_", " ")}</span>
+                <span className="mono">{targetFor(event)}</span>
+                <span>{new Date(event.created_at).toLocaleString()}</span>
+              </div>
+            ))}
+            {!loadingHistory && events.length === 0 && (
+              <div className="journal-empty">
+                <Braces size={16} />
+                <span>No committed changes are stored for this project yet.</span>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       <div className="evidence-callout">
         <Braces size={18} />
         <div>
-          <strong>Event journal is application-owned</strong>
-          <span>The current UI does not fabricate historical rows that have not been loaded from storage.</span>
+          <strong>Journal rows are storage evidence</strong>
+          <span>Browser demo rows only reflect changes committed during the current demo session; Tauri rows come from SQLite.</span>
         </div>
       </div>
     </div>
@@ -691,7 +764,9 @@ function Inspector({
   commit: (change: Change) => Promise<void>;
 }) {
   const [objective, setObjective] = useState(scene?.objective ?? "");
+  const [durationSeconds, setDurationSeconds] = useState(scene ? seconds(scene.duration) : 0);
   useEffect(() => setObjective(scene?.objective ?? ""), [scene?.id, scene?.objective]);
+  useEffect(() => setDurationSeconds(scene ? seconds(scene.duration) : 0), [scene?.id, scene?.duration.num, scene?.duration.den]);
 
   if (!scene) {
     return (
@@ -704,6 +779,7 @@ function Inspector({
 
   const resource = "scene:" + scene.id;
   const locks = project.locks.filter((lock) => lock.resource === resource);
+  const timingLocked = locks.some((lock) => lock.kind === "timing");
   return (
     <aside className="inspector">
       <div className="inspector-heading">
@@ -745,6 +821,32 @@ function Inspector({
           <option value="approved">Approved</option>
           <option value="needs_work">Needs work</option>
         </select>
+        <label className="field-label" htmlFor="scene-duration">Duration · seconds</label>
+        <div className="inline-save-field compact-inline">
+          <input
+            id="scene-duration"
+            aria-label="Scene duration seconds"
+            type="number"
+            min="0.001"
+            max="86400"
+            step="0.1"
+            value={durationSeconds}
+            disabled={timingLocked}
+            onChange={(event) => setDurationSeconds(Number(event.target.value))}
+          />
+          <button
+            type="button"
+            className="button compact"
+            disabled={timingLocked || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 86400 || Math.abs(durationSeconds - seconds(scene.duration)) < 0.0005}
+            onClick={() => commit({ type: "set_scene_duration", scene_id: scene.id, duration: rationalSeconds(durationSeconds) })}
+          >
+            Ripple
+          </button>
+        </div>
+        <div className="renderer-note">
+          <Clock3 size={13} />
+          Duration ripple reflows later scene starts. It does not stretch or infer voice timing.
+        </div>
         <div className="renderer-note">
           <CircleDashed size={13} />
           Capability loss is evaluated before a renderer swap is executed.
@@ -805,19 +907,29 @@ function Timeline({
   setSelectedSceneId,
   playhead,
   setPlayhead,
+  commit,
 }: {
   project: Project;
   selectedSceneId: string | null;
   setSelectedSceneId: (id: string) => void;
   playhead: number;
   setPlayhead: (value: number) => void;
+  commit: (change: Change) => Promise<void>;
 }) {
   const duration = Math.max(
     1,
     ...project.scenes.map((scene) => seconds(scene.start) + seconds(scene.duration)),
     ...project.markers.map((marker) => seconds(marker.at)),
+    ...project.audio.voice_tracks.map((track) => seconds(track.measured_duration)),
+    ...project.audio.transcript.map((segment) => seconds(segment.end)),
+    ...project.audio.cues.map((cue) => seconds(cue.at)),
   );
   const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
+  const measuredVoice = project.audio.voice_tracks;
+  const measuredAssetIds = new Set(measuredVoice.map((track) => track.asset_id));
+  const pendingAudio = project.assets.filter(
+    (asset) => asset.media_type.startsWith("audio/") && !measuredAssetIds.has(asset.id),
+  );
 
   return (
     <section className="timeline-panel" aria-label="Timeline">
@@ -828,12 +940,23 @@ function Timeline({
           <span className="muted">shared clock</span>
         </div>
         <div className="timeline-transport">
+          <button
+            type="button"
+            className="button compact"
+            onClick={() => commit({
+              type: "add_marker",
+              at: rationalSeconds(playhead),
+              label: "Marker " + (project.markers.length + 1),
+            })}
+          >
+            <Plus size={12} /> Marker
+          </button>
           <span className="timecode">{formatTime(playhead)}</span>
         </div>
       </div>
       <div className="timeline-body">
         <div className="track-labels" aria-hidden="true">
-          <div className="ruler-label">24 fps</div>
+          <div className="ruler-label">time</div>
           <div><span>VO</span><span className="track-type">audio</span></div>
           <div><span>Scenes</span><span className="track-type">semantic</span></div>
           <div><span>Markers</span><span className="track-type">review</span></div>
@@ -854,10 +977,29 @@ function Timeline({
             ))}
           </div>
           <div className="track voice-track">
-            <div className="audio-presence" aria-label="Voice asset attached to project">
-              <span>voiceover.wav</span>
-              <small>audio present · waveform not measured</small>
-            </div>
+            {measuredVoice.map((track) => (
+              <div
+                className="audio-presence measured"
+                key={track.id}
+                aria-label={"Measured voice track " + track.label}
+                style={{ width: Math.min(100, (seconds(track.measured_duration) / duration) * 100) + "%" }}
+              >
+                <span>{track.label}</span>
+                <small>{track.sample_rate_hz} Hz · {track.channels} ch · measured duration</small>
+              </div>
+            ))}
+            {measuredVoice.length === 0 && pendingAudio.length > 0 && (
+              <div className="audio-pending" aria-label="Audio source awaiting measurement">
+                <span>{pendingAudio[0].name}</span>
+                <small>source attached · duration unmeasured</small>
+              </div>
+            )}
+            {measuredVoice.length === 0 && pendingAudio.length === 0 && (
+              <div className="audio-pending empty" aria-label="No measured voice track">
+                <span>No measured voice</span>
+                <small>timeline duration is not inferred from text</small>
+              </div>
+            )}
           </div>
           <div className="track scene-track">
             {project.scenes.map((scene, index) => (
@@ -1052,6 +1194,7 @@ export default function App() {
         setSelectedSceneId={setSelectedSceneId}
         playhead={playhead}
         setPlayhead={setPlayhead}
+        commit={commit}
       />
     </main>
   );

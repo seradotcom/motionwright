@@ -1,6 +1,6 @@
 use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::build_application;
-use motionwright_service::StudioService;
+use motionwright_service::{ProjectEvent, StudioService};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -34,6 +34,13 @@ struct ApplyRequest {
     change: Change,
 }
 
+#[derive(Debug, Deserialize)]
+struct HistoryRequest {
+    project_id: Uuid,
+    after_revision: u64,
+    limit: usize,
+}
+
 #[tauri::command]
 fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
     let project = state
@@ -51,6 +58,17 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
             mode: "tauri",
         },
     })
+}
+
+#[tauri::command]
+fn project_history(
+    state: State<'_, AppState>,
+    request: HistoryRequest,
+) -> Result<Vec<ProjectEvent>, String> {
+    state
+        .service
+        .history(request.project_id, request.after_revision, request.limit)
+        .map_err(sanitized)
 }
 
 #[tauri::command]
@@ -118,7 +136,11 @@ fn main() {
             app.manage(AppState { service });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![bootstrap, apply_change])
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            project_history,
+            apply_change
+        ])
         .run(tauri::generate_context!())
         .expect("Motionwright desktop runtime failed");
 }

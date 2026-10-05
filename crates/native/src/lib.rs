@@ -153,6 +153,13 @@ impl ObservationProvider for MotionwrightObserver {
                 .take(usize::from(query.limit))
                 .map(|set| serde_json::to_value(set).unwrap_or(Value::Null))
                 .collect(),
+            "history" => self
+                .service
+                .history(project_id, 0, usize::from(query.limit))
+                .map_err(storage_error)?
+                .into_iter()
+                .map(|event| serde_json::to_value(event).unwrap_or(Value::Null))
+                .collect(),
             "locks" => project
                 .locks
                 .iter()
@@ -195,6 +202,7 @@ enum OperationKind {
     UpdateSceneObjective,
     SetSceneRenderer,
     SetSceneStatus,
+    SetSceneDuration,
     TransformCanvasNode,
     UpdateCanvasText,
     SetNodePropertyLock,
@@ -359,6 +367,18 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             Ok(Change::SetSceneStatus {
                 scene_id: uuid(args, "scene_id")?,
                 status,
+            })
+        }
+        OperationKind::SetSceneDuration => {
+            let duration = serde_json::from_value(
+                args.get("duration")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("duration is required"))?,
+            )
+            .map_err(|_| Error::invalid("scene duration is invalid"))?;
+            Ok(Change::SetSceneDuration {
+                scene_id: uuid(args, "scene_id")?,
+                duration,
             })
         }
         OperationKind::TransformCanvasNode => {
@@ -653,6 +673,29 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::SetSceneDuration,
+            descriptor(
+                "scene.duration.set",
+                "Set one scene duration and ripple subsequent scene starts on the shared rational clock",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","maxLength":64},
+                        "duration": {
+                            "type":"object",
+                            "properties":{
+                                "num":{"type":"string","pattern":"^[1-9][0-9]*$"},
+                                "den":{"type":"string","pattern":"^[1-9][0-9]*$"}
+                            },
+                            "required":["num","den"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "scene_id", "duration"],
+                ),
+            ),
+        ),
+        (
             OperationKind::TransformCanvasNode,
             descriptor(
                 "canvas.node.transform",
@@ -877,8 +920,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.scene.renderer.set"));
         assert!(names.contains(&"driver.motionwright.brief.set"));
         assert!(names.contains(&"driver.motionwright.canvas.node.transform"));
+        assert!(names.contains(&"driver.motionwright.scene.duration.set"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
-        assert_eq!(capabilities.len(), 19);
+        assert_eq!(capabilities.len(), 20);
     }
 
     #[tokio::test]
@@ -956,6 +1000,7 @@ mod tests {
             "visual-language",
             "canvas",
             "alternatives",
+            "history",
         ] {
             let query = Query {
                 resource: project.resource_key(),

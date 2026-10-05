@@ -611,6 +611,22 @@ impl Project {
                     .ok_or(DomainError::NotFound(resource))?;
                 scene.status = status.clone();
             }
+            Change::SetSceneDuration { scene_id, duration } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Timing])?;
+                if duration.num <= 0 || *duration > whole_seconds(86_400) {
+                    return Err(DomainError::Invalid(
+                        "scene duration is out of bounds".into(),
+                    ));
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                scene.duration = *duration;
+                self.reflow_scene_starts()?;
+            }
             Change::AddCanvasNode { scene_id, node } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Position])?;
@@ -993,6 +1009,10 @@ pub enum Change {
         scene_id: Uuid,
         status: SceneStatus,
     },
+    SetSceneDuration {
+        scene_id: Uuid,
+        duration: RationalTime,
+    },
     AddCanvasNode {
         scene_id: Uuid,
         node: CanvasNode,
@@ -1147,5 +1167,32 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(error, DomainError::Locked(_)));
+    }
+    #[test]
+    fn duration_change_ripples_following_scene_starts() {
+        let mut project = Project::new("Ripple").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "A".into(),
+                objective: "a".into(),
+                duration_seconds: 4,
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "B".into(),
+                objective: "b".into(),
+                duration_seconds: 6,
+            })
+            .unwrap();
+        let first = project.scenes[0].id;
+        project
+            .apply_change(&Change::SetSceneDuration {
+                scene_id: first,
+                duration: whole_seconds(7),
+            })
+            .unwrap();
+        assert_eq!(project.scenes[0].duration, whole_seconds(7));
+        assert_eq!(project.scenes[1].start, whole_seconds(7));
     }
 }
