@@ -698,6 +698,7 @@ impl Store {
         self.inspect_import(backup)?;
         let mut project = backup.project.clone();
         project.generation = Uuid::now_v7();
+        project.updated_at = chrono::Utc::now();
         project.validate()?;
         let project_json = serde_json::to_string(&project)?;
 
