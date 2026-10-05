@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  source-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify public source boundary and Semwright pin
+        run: python3 tooling/source_policy.py
+
+  rust-core:
+    needs: source-policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Core and Native SDK consumer tests
+        run: cargo test -p motionwright-domain -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets
+      - name: Clippy
+        run: cargo clippy -p motionwright-domain -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+      - name: Materialize dependency lock
+        run: cargo generate-lockfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-lockfile
+          path: Cargo.lock
+          if-no-files-found: error
+
+  studio:
+    needs: source-policy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Unit contracts
+        run: npm test
+      - name: Typecheck and production build
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-dist
+          path: apps/studio/dist
+          if-no-files-found: error
+
+  browser-acceptance:
+    needs: studio
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Browser acceptance
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-acceptance-evidence
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore
+
+  desktop-linux:
+    needs: [rust-core, studio]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - run: npm --prefix apps/studio ci --no-audit --no-fund
+      - run: npm --prefix apps/studio run build
+      - uses: Swatinem/rust-cache@v2
+      - name: Check desktop shell
+        run: cargo check -p motionwright-desktop

@@ -1,0 +1,60 @@
+name: Heavy Verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  coverage-and-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install coverage and audit tools
+        run: |
+          cargo install cargo-llvm-cov --locked
+          cargo install cargo-audit --locked
+      - name: Coverage
+        run: |
+          cargo llvm-cov --workspace --exclude motionwright-desktop --all-targets --lcov --output-path lcov.info
+          cargo llvm-cov report
+      - name: Dependency advisory audit
+        run: cargo audit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: lcov.info
+          if-no-files-found: error
+
+  release-shaped-desktop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - run: npm --prefix apps/studio ci --no-audit --no-fund
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release-shaped desktop binary
+        run: cargo build -p motionwright-desktop --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motionwright-linux-binary
+          path: target/release/motionwright-desktop
+          if-no-files-found: error

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-05",
+  "dependencies": {
+    "semwright": {
+      "repository": "https://github.com/seradotcom/semwright",
+      "revision": "4d291de26724810017ce7b6d185326514cb79fa6",
+      "branch_observed": "origin/main",
+      "native_sdk_package": "semwright-native-sdk",
+      "features_planned": [
+        "driver",
+        "graph",
+        "effects"
+      ],
+      "license_observed": "MIT OR Apache-2.0",
+      "verification": "git fetch origin main && git rev-parse origin/main"
+    }
+  },
+  "notes": [
+    "Motionwright is an external consumer. It does not copy Semwright Core crates into this repository.",
+    "The exact revision is used for reproducible CI and must be intentionally updated.",
+    "Application state, transactions, revisions and receipts remain Motionwright-owned."
+  ]
+}

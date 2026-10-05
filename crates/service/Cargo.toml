@@ -1,0 +1,12 @@
+[package]
+name = "motionwright-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+motionwright-domain = { path = "../domain" }
+motionwright-storage = { path = "../storage" }
+parking_lot.workspace = true
+uuid.workspace = true

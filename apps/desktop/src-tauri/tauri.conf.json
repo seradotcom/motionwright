@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Motionwright",
+  "version": "0.1.0",
+  "identifier": "com.seradotcom.motionwright",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../studio run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix ../studio run build",
+    "frontendDist": "../../studio/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Motionwright",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "category": "Video",
+    "shortDescription": "Semwright-native creative production studio",
+    "longDescription": "Motionwright is a local-first creative production studio for semantic audiovisual projects."
+  }
+}

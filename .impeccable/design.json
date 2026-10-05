@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "Cut Room Ledger",
+  "mode": "operate",
+  "signature_move": "splice-line",
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "density": "professional-compact",
+  "tokens": {
+    "color": {
+      "bg": "#090B0E",
+      "surface1": "#0F1216",
+      "surface2": "#151A20",
+      "surface3": "#1C222A",
+      "border": "#2B333D",
+      "text": "#F2F4F3",
+      "muted": "#9EA8B3",
+      "accent": "#F5B84A",
+      "info": "#62A9FF",
+      "success": "#5FCB8D",
+      "danger": "#FF6B72",
+      "unknown": "#A78BFA"
+    },
+    "radius": {
+      "control": 8,
+      "panel": 10,
+      "popover": 12
+    }
+  }
+}
