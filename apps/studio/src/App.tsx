@@ -2,7 +2,6 @@ import {
   AlignLeft,
   Box,
   Boxes,
-  Braces,
   ChevronDown,
   ChevronUp,
   CircleCheck,
@@ -41,16 +40,15 @@ import {
   importAssetFile,
   importProjectBundle,
   inspectProjectBundle,
-  projectHistory,
 } from "./api";
 import CanvasWorkspace from "./CanvasWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
+import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
   Bootstrap,
   Change,
   PortableBundlePlan,
   Project,
-  ProjectEvent,
   ProjectState,
   RendererKind,
   Scene,
@@ -408,112 +406,6 @@ function AlternativesView({ scene }: { scene: Scene | null }) {
   );
 }
 
-function ChangesView({ project }: { project: Project }) {
-  const [events, setEvents] = useState<ProjectEvent[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingHistory(true);
-    setHistoryError(null);
-    projectHistory(project, 0, 100)
-      .then((next) => {
-        if (!cancelled) setEvents(next);
-      })
-      .catch((reason) => {
-        if (!cancelled) setHistoryError(reason instanceof Error ? reason.message : String(reason));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingHistory(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id, project.revision]);
-
-  const targetFor = (event: ProjectEvent) => {
-    const sceneId = typeof event.change.scene_id === "string" ? event.change.scene_id : null;
-    const nodeId = typeof event.change.node_id === "string" ? event.change.node_id : null;
-    if (nodeId) return "node:" + nodeId.slice(0, 8);
-    if (sceneId) return "scene:" + sceneId.slice(0, 8);
-    return "project";
-  };
-
-  return (
-    <div className="workspace-scroll table-view">
-      <header className="workspace-heading">
-        <div>
-          <h2>Changes</h2>
-          <p>Branches have explicit bases. The journal below is loaded from application-owned committed events.</p>
-        </div>
-        <span className="revision-chip">r{project.revision}</span>
-      </header>
-
-      <section className="changes-section">
-        <div className="section-title-row">
-          <span className="section-label">Branches</span>
-          <span className="count-label">{project.branches.length}</span>
-        </div>
-        <div className="data-table" role="table" aria-label="Project branches">
-          <div className="data-row data-head" role="row">
-            <span>Branch</span><span>Base</span><span>Head</span><span>State</span>
-          </div>
-          {project.branches.map((branch) => (
-            <div className="data-row" role="row" key={branch.id}>
-              <span><GitBranch size={14} /> {branch.name}</span>
-              <span className="mono">r{branch.base_revision}</span>
-              <span className="mono">{branch.id === project.active_branch ? "r" + project.revision : "—"}</span>
-              <span>{branch.id === project.active_branch ? <span className="status-pill status-current">ACTIVE</span> : <span className="muted">stored base</span>}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="changes-section">
-        <div className="section-title-row">
-          <span className="section-label">Committed event journal</span>
-          <span className="count-label">{loadingHistory ? "loading" : events.length + " loaded"}</span>
-        </div>
-        {historyError ? (
-          <div className="error-banner inline-error" role="alert">
-            <strong>History unavailable.</strong>
-            <span>{historyError}</span>
-          </div>
-        ) : (
-          <div className="data-table" role="table" aria-label="Project event journal">
-            <div className="data-row event-row data-head" role="row">
-              <span>Revision</span><span>Change</span><span>Target</span><span>Committed</span>
-            </div>
-            {[...events].reverse().map((event) => (
-              <div className="data-row event-row" role="row" key={event.revision}>
-                <span className="mono">r{event.revision}</span>
-                <span>{event.change.type.replaceAll("_", " ")}</span>
-                <span className="mono">{targetFor(event)}</span>
-                <span>{new Date(event.created_at).toLocaleString()}</span>
-              </div>
-            ))}
-            {!loadingHistory && events.length === 0 && (
-              <div className="journal-empty">
-                <Braces size={16} />
-                <span>No committed changes are stored for this project yet.</span>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      <div className="evidence-callout">
-        <Braces size={18} />
-        <div>
-          <strong>Journal rows are storage evidence</strong>
-          <span>Browser demo rows only reflect changes committed during the current demo session; Tauri rows come from SQLite.</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function DependenciesView({ project }: { project: Project }) {
   return (
     <div className="workspace-scroll table-view">
@@ -536,47 +428,6 @@ function DependenciesView({ project }: { project: Project }) {
             <span className="status-pill status-unknown">NOT ADMITTED</span>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-function ReviewView({ project, scene }: { project: Project; scene: Scene | null }) {
-  const sceneLocks = scene ? project.locks.filter((lock) => lock.resource === "scene:" + scene.id) : [];
-  return (
-    <div className="workspace-scroll review-view">
-      <header className="workspace-heading">
-        <div>
-          <h2>Review</h2>
-          <p>Technical evidence and creative critique remain separate channels.</p>
-        </div>
-      </header>
-      <div className="review-columns">
-        <section>
-          <span className="section-label">Technical</span>
-          <div className="review-entry">
-            <CircleDashed size={18} />
-            <div>
-              <strong>Effect Conformance</strong>
-              <span>No canonical report attached to this revision.</span>
-            </div>
-            <span className="status-pill status-unknown">UNKNOWN</span>
-          </div>
-          <div className="review-entry">
-            <LockKeyhole size={18} />
-            <div>
-              <strong>Resource locks</strong>
-              <span>{sceneLocks.length ? sceneLocks.map((lock) => lock.kind).join(", ") : "No locks on selected scene."}</span>
-            </div>
-          </div>
-        </section>
-        <section>
-          <span className="section-label">Creative</span>
-          <div className="critique-copy">
-            <strong>{scene?.name ?? "Select a scene"}</strong>
-            <p>{scene ? "Creative notes can recommend changes, but cannot mint a technical PASS or bypass locks." : "Scene-bound critique appears here."}</p>
-          </div>
-        </section>
       </div>
     </div>
   );
@@ -1398,11 +1249,11 @@ export default function App() {
       case "Alternatives":
         return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
       case "Changes":
-        return <ChangesView project={project} />;
+        return <ChangesWorkspace project={project} commit={commit} />;
       case "Dependencies":
         return <DependenciesView project={project} />;
       case "Review":
-        return <ReviewView project={project} scene={selectedScene} />;
+        return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} />;
       case "Deliver":
         return (
           <DeliverView

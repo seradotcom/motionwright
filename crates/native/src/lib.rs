@@ -183,6 +183,24 @@ impl ObservationProvider for MotionwrightObserver {
                 .take(usize::from(query.limit))
                 .map(|lock| serde_json::to_value(lock).unwrap_or(Value::Null))
                 .collect(),
+            "branches" => project
+                .branches
+                .iter()
+                .take(usize::from(query.limit))
+                .map(|branch| serde_json::to_value(branch).unwrap_or(Value::Null))
+                .collect(),
+            "reviews" => project
+                .reviews
+                .iter()
+                .take(usize::from(query.limit))
+                .map(|review| serde_json::to_value(review).unwrap_or(Value::Null))
+                .collect(),
+            "merges" => project
+                .merges
+                .iter()
+                .take(usize::from(query.limit))
+                .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
+                .collect(),
             _ => {
                 return Err(Error::new(
                     ErrorCode::NotFound,
@@ -235,6 +253,12 @@ enum OperationKind {
     SetVisualLanguage,
     AddProposalSet,
     SelectProposal,
+    CreateBranch,
+    CheckoutBranch,
+    MergeBranch,
+    AddReview,
+    ResolveReview,
+    ReopenReview,
     SetLock,
     RemoveLock,
 }
@@ -575,6 +599,69 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         OperationKind::SelectProposal => Ok(Change::SelectProposal {
             proposal_set_id: uuid(args, "proposal_set_id")?,
             proposal_id: uuid(args, "proposal_id")?,
+        }),
+        OperationKind::CreateBranch => Ok(Change::CreateBranch {
+            name: string(args, "name", 120)?,
+        }),
+        OperationKind::CheckoutBranch => Ok(Change::CheckoutBranch {
+            branch_id: uuid(args, "branch_id")?,
+        }),
+        OperationKind::MergeBranch => Ok(Change::MergeBranch {
+            source_branch_id: uuid(args, "source_branch_id")?,
+        }),
+        OperationKind::AddReview => {
+            let kind = serde_json::from_value(
+                args.get("kind")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("review kind is required"))?,
+            )
+            .map_err(|_| Error::invalid("review kind is invalid"))?;
+            let parse_time =
+                |name: &str| -> NativeResult<Option<motionwright_domain::RationalTime>> {
+                    match args.get(name) {
+                        None | Some(Value::Null) => Ok(None),
+                        Some(value) => serde_json::from_value(value.clone())
+                            .map(Some)
+                            .map_err(|_| Error::invalid(format!("{name} is not a rational time"))),
+                    }
+                };
+            let locale = match args.get("locale") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .filter(|value| value.len() <= 64)
+                        .ok_or_else(|| Error::invalid("locale is out of bounds"))?
+                        .to_owned(),
+                ),
+            };
+            let profile_id = match args.get("profile_id") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    Uuid::parse_str(
+                        value
+                            .as_str()
+                            .ok_or_else(|| Error::invalid("profile_id must be a UUID or null"))?,
+                    )
+                    .map_err(|_| Error::invalid("profile_id must be a UUID or null"))?,
+                ),
+            };
+            Ok(Change::AddReview {
+                kind,
+                resource: string(args, "resource", 512)?,
+                body: string(args, "body", 8_000)?,
+                start: parse_time("start")?,
+                end: parse_time("end")?,
+                locale,
+                profile_id,
+            })
+        }
+        OperationKind::ResolveReview => Ok(Change::ResolveReview {
+            review_id: uuid(args, "review_id")?,
+            resolution: string(args, "resolution", 4_000)?,
+        }),
+        OperationKind::ReopenReview => Ok(Change::ReopenReview {
+            review_id: uuid(args, "review_id")?,
         }),
         OperationKind::SetLock => {
             let kind = serde_json::from_value(
@@ -1115,6 +1202,109 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::CreateBranch,
+            descriptor(
+                "branch.create",
+                "Create an isolated creative branch from the exact active project revision",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "name": {"type":"string","minLength":1,"maxLength":120}
+                    }),
+                    &["ref", "name"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::CheckoutBranch,
+            descriptor(
+                "branch.checkout",
+                "Switch the active creative branch while preserving the current branch workspace",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "branch_id": {"type":"string","maxLength":64}
+                    }),
+                    &["ref", "branch_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::MergeBranch,
+            descriptor(
+                "branch.merge",
+                "Three-way merge a direct child branch into the active branch and fail closed on semantic conflicts",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "source_branch_id": {"type":"string","maxLength":64}
+                    }),
+                    &["ref", "source_branch_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::AddReview,
+            descriptor(
+                "review.add",
+                "Anchor a technical, creative or editorial review to the exact active branch and revision",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "kind": {"type":"string","enum":["technical","creative","editorial"]},
+                        "resource": {"type":"string","minLength":1,"maxLength":512},
+                        "body": {"type":"string","minLength":1,"maxLength":8000},
+                        "start": {"anyOf":[
+                            {"type":"null"},
+                            {"type":"object","properties":{
+                                "num":{"type":"string","pattern":"^-?(0|[1-9][0-9]*)$"},
+                                "den":{"type":"string","pattern":"^[1-9][0-9]*$"}
+                            },"required":["num","den"],"additionalProperties":false}
+                        ]},
+                        "end": {"anyOf":[
+                            {"type":"null"},
+                            {"type":"object","properties":{
+                                "num":{"type":"string","pattern":"^-?(0|[1-9][0-9]*)$"},
+                                "den":{"type":"string","pattern":"^[1-9][0-9]*$"}
+                            },"required":["num","den"],"additionalProperties":false}
+                        ]},
+                        "locale": {"anyOf":[{"type":"null"},{"type":"string","maxLength":64}]},
+                        "profile_id": {"anyOf":[{"type":"null"},{"type":"string","maxLength":64}]}
+                    }),
+                    &["ref", "kind", "resource", "body"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ResolveReview,
+            descriptor(
+                "review.resolve",
+                "Resolve one anchored review without transferring its approval to later revisions",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "review_id": {"type":"string","maxLength":64},
+                        "resolution": {"type":"string","minLength":1,"maxLength":4000}
+                    }),
+                    &["ref", "review_id", "resolution"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ReopenReview,
+            descriptor(
+                "review.reopen",
+                "Mark an anchored review as needing recheck",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "review_id": {"type":"string","maxLength":64}
+                    }),
+                    &["ref", "review_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetLock,
             descriptor(
                 "lock.set",
@@ -1198,7 +1388,13 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.asset.register"));
         assert!(names.contains(&"driver.motionwright.asset.remove"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
-        assert_eq!(capabilities.len(), 27);
+        assert!(names.contains(&"driver.motionwright.branch.create"));
+        assert!(names.contains(&"driver.motionwright.branch.checkout"));
+        assert!(names.contains(&"driver.motionwright.branch.merge"));
+        assert!(names.contains(&"driver.motionwright.review.add"));
+        assert!(names.contains(&"driver.motionwright.review.resolve"));
+        assert!(names.contains(&"driver.motionwright.review.reopen"));
+        assert_eq!(capabilities.len(), 33);
     }
 
     #[tokio::test]

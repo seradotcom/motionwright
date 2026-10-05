@@ -843,8 +843,7 @@ impl Store {
 
         let previous_revision = project.revision;
         project.apply_change(change)?;
-        project.revision = project.revision.saturating_add(1);
-        project.validate()?;
+        project.commit_revision(previous_revision.saturating_add(1), change)?;
         let project_json = serde_json::to_string(&project)?;
         let changed = tx.execute(
             "UPDATE projects

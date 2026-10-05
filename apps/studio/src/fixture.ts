@@ -1,4 +1,4 @@
-import type { Bootstrap, CanvasNode, Project } from "./types";
+import type { Bootstrap, BranchState, CanvasNode, Project } from "./types";
 
 const now = new Date().toISOString();
 const id = (suffix: string) => "018f0000-0000-7000-8000-" + suffix.padStart(12, "0");
@@ -51,9 +51,31 @@ export const fixtureProject: Project = {
   state: "current",
   active_branch: id("3"),
   branches: [
-    { id: id("3"), name: "main", base_revision: 0, created_at: now },
-    { id: id("4"), name: "vertical-cut", base_revision: 9, created_at: now }
+    { id: id("3"), name: "main", parent_branch: null, base_revision: 0, head_revision: 12, protected: false, created_at: now },
+    { id: id("4"), name: "vertical-cut", parent_branch: id("3"), base_revision: 9, head_revision: 9, protected: false, created_at: now }
   ],
+  branch_workspaces: [],
+  reviews: [
+    {
+      id: id("71"),
+      kind: "creative",
+      anchor: {
+        resource: "scene:" + id("12"),
+        branch_id: id("3"),
+        revision: 11,
+        start: null,
+        end: null,
+        locale: "en-US",
+        profile_id: null,
+      },
+      body: "Check whether the mechanism contrast still reads before the renderer handoff.",
+      status: "needs_recheck",
+      resolution: null,
+      created_at: now,
+      resolved_at: null,
+    }
+  ],
+  merges: [],
   scenes: [
     {
       id: id("11"),
@@ -202,6 +224,27 @@ export const fixtureProject: Project = {
   model_invocations: [],
   updated_at: now
 };
+
+const fixtureBranchState = (): BranchState => structuredClone({
+  scenes: fixtureProject.scenes,
+  markers: fixtureProject.markers,
+  locks: fixtureProject.locks,
+  deliverables: fixtureProject.deliverables,
+  brief: fixtureProject.brief,
+  narrative: fixtureProject.narrative,
+  audio: fixtureProject.audio,
+  visual_language: fixtureProject.visual_language,
+  proposal_sets: fixtureProject.proposal_sets,
+  model_invocations: fixtureProject.model_invocations,
+});
+
+const mainState = fixtureBranchState();
+const verticalState = fixtureBranchState();
+verticalState.scenes[1].objective = "Reframe the pixel-versus-native contrast for a vertical composition.";
+fixtureProject.branch_workspaces = [
+  { branch_id: id("3"), base_revision: 0, base_state: structuredClone(mainState), current_state: structuredClone(mainState) },
+  { branch_id: id("4"), base_revision: 9, base_state: structuredClone(mainState), current_state: verticalState },
+];
 
 export const fixtureBootstrap: Bootstrap = {
   project: structuredClone(fixtureProject),

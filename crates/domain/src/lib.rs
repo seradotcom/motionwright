@@ -1,7 +1,9 @@
 mod canvas;
 mod creative;
+mod history;
 pub use canvas::*;
 pub use creative::*;
+pub use history::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -300,7 +302,13 @@ impl Asset {
 pub struct Branch {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub parent_branch: Option<Uuid>,
     pub base_revision: u64,
+    #[serde(default)]
+    pub head_revision: u64,
+    #[serde(default)]
+    pub protected: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -324,6 +332,12 @@ pub struct Project {
     pub state: ProjectState,
     pub active_branch: Uuid,
     pub branches: Vec<Branch>,
+    #[serde(default)]
+    pub branch_workspaces: Vec<BranchWorkspace>,
+    #[serde(default)]
+    pub reviews: Vec<CreativeReview>,
+    #[serde(default)]
+    pub merges: Vec<MergeRecord>,
     pub scenes: Vec<Scene>,
     pub markers: Vec<Marker>,
     pub assets: Vec<Asset>,
@@ -365,9 +379,15 @@ impl Project {
             branches: vec![Branch {
                 id: branch_id,
                 name: "main".into(),
+                parent_branch: None,
                 base_revision: 0,
+                head_revision: 0,
+                protected: false,
                 created_at: now,
             }],
+            branch_workspaces: vec![],
+            reviews: vec![],
+            merges: vec![],
             scenes: vec![],
             markers: vec![],
             assets: vec![],
@@ -427,6 +447,7 @@ impl Project {
         if branch_ids.len() != self.branches.len() || !branch_ids.contains(&self.active_branch) {
             return Err(DomainError::Invalid("invalid branch set".into()));
         }
+        self.validate_history()?;
         let mut scene_ids = HashSet::new();
         for scene in &self.scenes {
             scene.validate()?;
@@ -1028,6 +1049,14 @@ impl Project {
                 receipt.validate()?;
                 self.model_invocations.push(receipt.clone());
             }
+            Change::CreateBranch { .. }
+            | Change::CheckoutBranch { .. }
+            | Change::MergeBranch { .. }
+            | Change::AddReview { .. }
+            | Change::ResolveReview { .. }
+            | Change::ReopenReview { .. } => {
+                self.apply_history_change(change)?;
+            }
             Change::SetLock {
                 resource,
                 kind,
@@ -1204,6 +1233,31 @@ pub enum Change {
     },
     RecordModelInvocation {
         receipt: ModelInvocationReceipt,
+    },
+    CreateBranch {
+        name: String,
+    },
+    CheckoutBranch {
+        branch_id: Uuid,
+    },
+    MergeBranch {
+        source_branch_id: Uuid,
+    },
+    AddReview {
+        kind: ReviewKind,
+        resource: String,
+        body: String,
+        start: Option<RationalTime>,
+        end: Option<RationalTime>,
+        locale: Option<String>,
+        profile_id: Option<Uuid>,
+    },
+    ResolveReview {
+        review_id: Uuid,
+        resolution: String,
+    },
+    ReopenReview {
+        review_id: Uuid,
     },
     SetLock {
         resource: String,
