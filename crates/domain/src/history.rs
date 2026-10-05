@@ -88,12 +88,12 @@ impl BranchState {
 
         let asset_ids: HashSet<_> = assets.iter().map(|asset| asset.id).collect();
         for claim in &self.brief.claims {
-            if let Some(SourceReference::Asset { asset_id }) = &claim.source {
-                if !asset_ids.contains(asset_id) {
-                    return Err(DomainError::Invalid(
-                        "branch claim references an unknown asset".into(),
-                    ));
-                }
+            if let Some(SourceReference::Asset { asset_id }) = &claim.source
+                && !asset_ids.contains(asset_id)
+            {
+                return Err(DomainError::Invalid(
+                    "branch claim references an unknown asset".into(),
+                ));
             }
         }
         for track in &self.audio.voice_tracks {
@@ -302,16 +302,15 @@ impl CreativeReview {
         {
             return Err(DomainError::Invalid("invalid creative review".into()));
         }
-        if let Some(profile_id) = self.anchor.profile_id {
-            if !project
+        if let Some(profile_id) = self.anchor.profile_id
+            && !project
                 .deliverables
                 .iter()
                 .any(|profile| profile.id == profile_id)
-            {
-                return Err(DomainError::Invalid(
-                    "review references an unknown deliverable profile".into(),
-                ));
-            }
+        {
+            return Err(DomainError::Invalid(
+                "review references an unknown deliverable profile".into(),
+            ));
         }
         match (self.anchor.start, self.anchor.end) {
             (Some(start), Some(end))
@@ -631,12 +630,12 @@ impl Project {
             .ok_or_else(|| DomainError::Invalid("active branch is missing".into()))?;
         branch.head_revision = next_revision;
 
-        if matches!(change, Change::MergeBranch { .. }) {
-            if let Some(record) = self.merges.iter_mut().rev().find(|record| {
+        if matches!(change, Change::MergeBranch { .. })
+            && let Some(record) = self.merges.iter_mut().rev().find(|record| {
                 record.target_branch == active_branch && record.committed_revision.is_none()
-            }) {
-                record.committed_revision = Some(next_revision);
-            }
+            })
+        {
+            record.committed_revision = Some(next_revision);
         }
 
         let preserves_review_state = matches!(
