@@ -62,7 +62,6 @@ test("canvas edits and stored alternatives use project revisions rather than loc
   const beforeTransform = await page.locator(".revision-chip").first().innerText();
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await expect(page.getByRole("region", { name: "Semantic canvas" })).toBeVisible();
-  await page.getByRole("button", { name: "Semantic tree", exact: true }).click();
 
   const x = page.getByLabel("Canvas X");
   await x.fill("796");
