@@ -136,6 +136,51 @@ textarea:focus-visible {
   font-size: 16px;
 }
 
+.boot-loading,
+.boot-error {
+  width: min(420px, calc(100vw - 32px));
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  text-align: center;
+}
+
+.boot-loading > span,
+.boot-error > span {
+  max-width: 56ch;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.boot-error > span {
+  color: var(--danger);
+}
+
+.boot-error .button {
+  margin-top: 7px;
+}
+
+.boot-skeleton {
+  width: min(280px, 72vw);
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.boot-skeleton i {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+
+.boot-skeleton i:nth-child(2) {
+  width: 82%;
+}
+
+.boot-skeleton i:nth-child(3) {
+  width: 58%;
+}
+
 .brand-mark {
   width: 31px;
   height: 31px;
@@ -219,6 +264,7 @@ textarea:focus-visible {
 .branch-chip,
 .revision-chip,
 .sdk-chip,
+.offline-chip,
 .count-label {
   display: inline-flex;
   align-items: center;
@@ -238,6 +284,10 @@ textarea:focus-visible {
   max-width: 145px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.offline-chip {
+  color: var(--warning);
 }
 
 .status-pill {
@@ -706,10 +756,26 @@ kbd {
 }
 
 .preview-mode {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
   flex: 1;
+}
+
+.preview-revision {
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--dim);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  white-space: nowrap;
 }
 
 .preview-dot {
@@ -2104,16 +2170,18 @@ select:focus {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+  html {
+    scroll-behavior: auto;
   }
 
-  .splice-line {
+  .spin {
+    animation: none;
+  }
+
+  .splice-line,
+  input,
+  textarea,
+  select {
     transition: none;
   }
 }
