@@ -574,7 +574,7 @@ fn build_segment(
                 node,
                 &layer_names,
                 &text_style,
-                &project
+                project
                     .deliverables
                     .iter()
                     .find(|profile| profile.width == width && profile.height == height)
