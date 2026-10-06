@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -207,14 +208,21 @@ def main() -> None:
             start_new_session=True,
         )
 
-        def invoke(command: str, args: dict, *, ok: bool = True) -> dict:
+        def invoke(
+            command: str,
+            args: dict,
+            *,
+            ok: bool | None = True,
+            session_path: Path | None = None,
+        ) -> dict:
+            selected_session = session_path or session
             result = subprocess.run(
                 [
                     str(SW_BINS / "semwright"),
                     "--socket",
                     str(socket),
                     "--session-file",
-                    str(session),
+                    str(selected_session),
                     "--json",
                     "execute",
                     command,
@@ -238,13 +246,16 @@ def main() -> None:
                 {
                     "command": command,
                     "args": args,
+                    "session": selected_session.name,
                     "exit_code": result.returncode,
                     "envelope": value,
                 }
             )
-            if value.get("ok") is not ok or ((result.returncode == 0) is not ok):
+            if ok is not None and (
+                value.get("ok") is not ok or ((result.returncode == 0) is not ok)
+            ):
                 raise AssertionError(json.dumps(value, indent=2))
-            if ok and command.startswith("driver.motionwright."):
+            if value.get("ok") and command.startswith("driver.motionwright."):
                 provenance = value["execution"]["provenance"]
                 if provenance["provider"] != "driver:motionwright":
                     raise AssertionError(f"unexpected provider provenance: {provenance}")
@@ -317,9 +328,109 @@ def main() -> None:
             if fresh["page"]["items"][0]["title"] != "UI renamed after SDK":
                 raise AssertionError("fresh Host observation missed UI-service mutation")
 
+            forged_actor = invoke(
+                "driver.motionwright.project.rename",
+                {
+                    "ref": fresh["ref"],
+                    "title": "forged actor must not commit",
+                    "actor": "human",
+                },
+                ok=False,
+            )
+            if forged_actor.get("error", {}).get("code") != "InvalidArgument":
+                raise AssertionError(
+                    f"caller-supplied actor field was not rejected by the typed contract: {forged_actor}"
+                )
+            if actor(env, database, "show", project_id)["title"] != "UI renamed after SDK":
+                raise AssertionError("forged actor payload altered application state")
+
+            other = actor(env, database, "init", "Independent project")
+            cross_project = invoke(
+                "driver.motionwright.observe",
+                {
+                    "ref": fresh["ref"],
+                    "resource": other["resource"],
+                    "scope": "summary",
+                    "limit": 8,
+                },
+                ok=False,
+            )
+            if cross_project.get("error", {}).get("code") != "StaleReference":
+                raise AssertionError(
+                    f"project-one ref was accepted for project two: {cross_project}"
+                )
+            if actor(env, database, "show", other["id"])["title"] != "Independent project":
+                raise AssertionError("cross-project reference changed the independent project")
+
+            human_session = paths["runtime"] / "human.session"
+            agent_session = paths["runtime"] / "agent.session"
+            human_view = invoke(
+                "driver.motionwright.observe",
+                {"resource": resource, "scope": "summary", "limit": 8},
+                session_path=human_session,
+            )["data"]
+            agent_view = invoke(
+                "driver.motionwright.observe",
+                {"resource": resource, "scope": "summary", "limit": 8},
+                session_path=agent_session,
+            )["data"]
+            human_revision = human_view["page"]["version"]["revision"]
+            agent_revision = agent_view["page"]["version"]["revision"]
+            if human_revision != agent_revision:
+                raise AssertionError("independent clients did not start from the same revision")
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                human_future = pool.submit(
+                    invoke,
+                    "driver.motionwright.project.rename",
+                    {"ref": human_view["ref"], "title": "Human contender"},
+                    ok=None,
+                    session_path=human_session,
+                )
+                agent_future = pool.submit(
+                    invoke,
+                    "driver.motionwright.project.rename",
+                    {"ref": agent_view["ref"], "title": "Agent contender"},
+                    ok=None,
+                    session_path=agent_session,
+                )
+                contenders = [human_future.result(), agent_future.result()]
+
+            winners = [value for value in contenders if value.get("ok") is True]
+            losers = [value for value in contenders if value.get("ok") is False]
+            if len(winners) != 1 or len(losers) != 1:
+                raise AssertionError(
+                    f"concurrent CAS expected exactly one winner and one loser: {contenders}"
+                )
+            if losers[0].get("error", {}).get("code") != "StaleReference":
+                raise AssertionError(
+                    f"concurrent loser was not rejected as stale: {losers[0]}"
+                )
+            after_race = actor(env, database, "show", project_id)
+            winner_title = winners[0]["data"]["title"]
+            if after_race["title"] != winner_title:
+                raise AssertionError("shared state does not match the winning concurrent mutation")
+            if int(after_race["revision"]) != int(human_revision) + 1:
+                raise AssertionError("concurrent CAS advanced the shared revision more than once")
+
+            stale_after_race = invoke(
+                "driver.motionwright.project.rename",
+                {"ref": fresh["ref"], "title": "old default-session ref must stay stale"},
+                ok=False,
+            )
+            if stale_after_race.get("error", {}).get("code") != "StaleReference":
+                raise AssertionError("pre-race reference remained writable after concurrent edit")
+
+            post_race = invoke(
+                "driver.motionwright.observe",
+                {"resource": resource, "scope": "summary", "limit": 8},
+            )["data"]
+            if post_race["page"]["version"]["revision"] != after_race["revision"]:
+                raise AssertionError("post-race observation missed the winning revision")
+
             sdk_final = invoke(
                 "driver.motionwright.project.rename",
-                {"ref": fresh["ref"], "title": "SDK final shared state"},
+                {"ref": post_race["ref"], "title": "SDK final shared state"},
             )["data"]
             final = actor(env, database, "show", project_id)
             if final["title"] != "SDK final shared state":
@@ -345,6 +456,11 @@ def main() -> None:
                         "sdk_write_visible_to_ui_service": True,
                         "ui_write_invalidates_stale_sdk_ref": True,
                         "fresh_sdk_observes_ui_write": True,
+                        "forged_actor_field_rejected": True,
+                        "cross_project_ref_rejected": True,
+                        "two_sessions_share_one_base": True,
+                        "concurrent_cas_has_exactly_one_winner": True,
+                        "concurrent_loser_is_stale": True,
                         "final_sdk_write_visible_to_ui_service": True,
                     },
                 },
