@@ -3,11 +3,10 @@ use motionwright_domain::{
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
-    AUTHORING_VERSION, Align, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat,
-    EditorialSystem, Film, FontFallback, FontSpec, Insets, Layer, NarrativeRole, OutputProfile,
-    Point, Sequence, Shot, Size, SpatialIntent, StartAnchor, Subject, SubjectContent,
-    TemporalConstraint, TemporalGraph, TemporalSpan, TextDirection, TextRun, VisualConstraint,
-    realize,
+    AUTHORING_VERSION, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat, EditorialSystem,
+    Film, FontFallback, FontSpec, Insets, Layer, NarrativeRole, OutputProfile, Point, Sequence,
+    Shot, Size, SpatialIntent, StartAnchor, Subject, SubjectContent, TemporalConstraint,
+    TemporalGraph, TemporalSpan, TextDirection, TextRun, VisualConstraint, realize,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use semwright_semantic_composition::Digest;
@@ -483,13 +482,19 @@ fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
         .assets
         .iter()
         .map(|asset| {
-            let sha256 = Digest::parse(asset.content_sha256.clone())
+            let digest = asset.content_sha256.clone().ok_or_else(|| {
+                unsupported(format!(
+                    "Asset {} has no content digest and cannot enter canonical Film",
+                    asset.id
+                ))
+            })?;
+            let sha256 = Digest::parse(digest)
                 .map_err(|error| contract("Asset digest is invalid", error))?;
             Ok(AssetRef {
                 id: uid("asset", asset.id),
                 sha256,
                 media_type: asset.media_type.clone(),
-                provenance: Some(asset.source_revision.clone()),
+                provenance: asset.source_revision.clone(),
                 license: None,
             })
         })
