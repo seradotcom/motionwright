@@ -122,6 +122,27 @@ export async function importAssetFile(
   });
 }
 
+export async function importVoiceFile(
+  project: Project,
+  path: string,
+  label?: string,
+): Promise<Project> {
+  if (!isTauri()) {
+    throw new Error("Measured voice import requires the Motionwright desktop runtime.");
+  }
+  return invoke<Project>("import_voice_file", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      path,
+      name: null,
+      media_type: null,
+      label: label ?? null,
+    },
+  });
+}
+
 export async function exportProjectBundle(
   project: Project,
   destination: string,
@@ -450,6 +471,78 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         throw new Error("resource not found: deliverable:" + change.profile_id);
       }
       next.deliverables = next.deliverables.filter((profile) => profile.id !== change.profile_id);
+      break;
+    }
+    case "set_active_voice_track": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      if (!next.audio.voice_tracks.some((track) => track.id === change.track_id)) {
+        throw new Error("resource not found: voice-track:" + change.track_id);
+      }
+      next.audio.active_voice_track_id = change.track_id;
+      break;
+    }
+    case "upsert_transcript_segment": {
+      assertUnlocked(next, projectResource(next), ["content", "timing"]);
+      const segment = structuredClone(change.segment);
+      const start = Number(segment.start.num) / Number(segment.start.den);
+      const end = Number(segment.end.num) / Number(segment.end.den);
+      if (
+        !next.audio.voice_tracks.some((track) => track.id === segment.voice_track_id) ||
+        !segment.text.trim() || segment.text.length > 8000 ||
+        !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start
+      ) throw new Error("transcript segment is invalid");
+      if (segment.alignment.kind === "measured") {
+        throw new Error("measured transcript alignment requires a qualified alignment boundary");
+      }
+      const index = next.audio.transcript.findIndex((candidate) => candidate.id === segment.id);
+      if (index >= 0) next.audio.transcript[index] = segment;
+      else next.audio.transcript.push(segment);
+      break;
+    }
+    case "remove_transcript_segment": {
+      assertUnlocked(next, projectResource(next), ["content", "timing"]);
+      if (next.audio.cues.some((cue) => cue.source_segment_id === change.segment_id)) {
+        throw new Error("transcript segment is referenced by an audio cue");
+      }
+      if (!next.audio.transcript.some((segment) => segment.id === change.segment_id)) {
+        throw new Error("resource not found: transcript-segment:" + change.segment_id);
+      }
+      next.audio.transcript = next.audio.transcript.filter((segment) => segment.id !== change.segment_id);
+      break;
+    }
+    case "upsert_audio_cue": {
+      assertUnlocked(next, projectResource(next), ["timing"]);
+      const cue = structuredClone(change.cue);
+      const at = Number(cue.at.num) / Number(cue.at.den);
+      if (!cue.label.trim() || cue.label.length > 512 || !Number.isFinite(at) || at < 0) {
+        throw new Error("audio cue is invalid");
+      }
+      if (cue.source_segment_id && !next.audio.transcript.some((segment) => segment.id === cue.source_segment_id)) {
+        throw new Error("audio cue references an unknown transcript segment");
+      }
+      if (cue.evidence === "measured" || cue.evidence === "transcript_aligned") {
+        throw new Error("measured cue evidence requires a qualified evidence boundary");
+      }
+      const index = next.audio.cues.findIndex((candidate) => candidate.id === cue.id);
+      if (index >= 0) next.audio.cues[index] = cue;
+      else next.audio.cues.push(cue);
+      break;
+    }
+    case "remove_audio_cue": {
+      assertUnlocked(next, projectResource(next), ["timing"]);
+      if (!next.audio.cues.some((cue) => cue.id === change.cue_id)) {
+        throw new Error("resource not found: audio-cue:" + change.cue_id);
+      }
+      next.audio.cues = next.audio.cues.filter((cue) => cue.id !== change.cue_id);
+      break;
+    }
+    case "set_mix_intent": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      const values = [change.mix.voice_gain_db, change.mix.music_gain_db];
+      if (values.some((value) => !Number.isFinite(value) || value < -120 || value > 24)) {
+        throw new Error("mix gain is out of bounds");
+      }
+      next.audio.mix = structuredClone(change.mix);
       break;
     }
     case "set_visual_language":

@@ -1,4 +1,6 @@
-use motionwright_domain::{CaptionFormat, Change, Project, RevisionStamp, caption_sidecar};
+use motionwright_domain::{
+    AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
+};
 use motionwright_native::build_application;
 use motionwright_service::{ProjectEvent, StudioService};
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,17 @@ struct ImportAssetRequest {
     path: String,
     name: Option<String>,
     media_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportVoiceRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    path: String,
+    name: Option<String>,
+    media_type: Option<String>,
+    label: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,6 +191,75 @@ fn import_asset_file(
 }
 
 #[tauri::command]
+fn import_voice_file(
+    state: State<'_, AppState>,
+    request: ImportVoiceRequest,
+) -> Result<Project, String> {
+    let source = absolute_asset_path(&request.path)?;
+    if !source.is_file() {
+        return Err("Voice source must be an existing local file.".into());
+    }
+    let name = request
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| "Voice file name is unavailable.".to_string())?;
+    let label = request
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            source
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "Voice take".into());
+    let media_type = request
+        .media_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| infer_media_type(&source).to_owned());
+    if !media_type.starts_with("audio/") {
+        return Err("Voice import requires a supported audio file.".into());
+    }
+    let current = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let expected = RevisionStamp {
+        resource: current.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    state
+        .service
+        .import_voice_file(
+            request.project_id,
+            &expected,
+            &Uuid::now_v7().to_string(),
+            &source,
+            name,
+            media_type,
+            label,
+        )
+        .map(|outcome| outcome.project)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
 fn export_project_bundle(
     state: State<'_, AppState>,
     request: ExportBundleRequest,
@@ -274,6 +356,23 @@ fn import_project_bundle(
 
 #[tauri::command]
 fn apply_change(state: State<'_, AppState>, request: ApplyRequest) -> Result<Project, String> {
+    let trusted_audio_evidence = match &request.change {
+        Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
+        Change::AddTranscriptSegment { segment } | Change::UpsertTranscriptSegment { segment } => {
+            matches!(segment.alignment, AlignmentEvidence::Measured { .. })
+        }
+        Change::AddAudioCue { cue } | Change::UpsertAudioCue { cue } => matches!(
+            cue.evidence,
+            CueEvidence::Measured | CueEvidence::TranscriptAligned
+        ),
+        _ => false,
+    };
+    if trusted_audio_evidence {
+        return Err(
+            "Measured audio evidence can only enter through the qualified audio import/alignment boundary."
+                .into(),
+        );
+    }
     let current = state
         .service
         .project(request.project_id)
@@ -318,8 +417,10 @@ fn infer_media_type(path: &std::path::Path) -> &'static str {
         "wav" => "audio/wav",
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
-        "ogg" => "audio/ogg",
-        "m4a" => "audio/mp4",
+        "ogg" | "oga" => "audio/ogg",
+        "m4a" | "aac" => "audio/mp4",
+        "aif" | "aiff" => "audio/aiff",
+        "caf" => "audio/x-caf",
         "mp4" => "video/mp4",
         "mov" => "video/quicktime",
         "webm" => "video/webm",
@@ -430,6 +531,7 @@ fn main() {
             bootstrap,
             project_history,
             import_asset_file,
+            import_voice_file,
             export_project_bundle,
             export_caption_sidecar,
             inspect_project_bundle,

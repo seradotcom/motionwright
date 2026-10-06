@@ -261,6 +261,12 @@ enum OperationKind {
     RemoveAsset,
     UpsertDeliverable,
     RemoveDeliverable,
+    SetActiveVoiceTrack,
+    UpsertTranscriptSegment,
+    RemoveTranscriptSegment,
+    UpsertAudioCue,
+    RemoveAudioCue,
+    SetMixIntent,
     SetVisualLanguage,
     AddProposalSet,
     SelectProposal,
@@ -601,6 +607,59 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         OperationKind::RemoveDeliverable => Ok(Change::RemoveDeliverable {
             profile_id: uuid(args, "profile_id")?,
         }),
+        OperationKind::SetActiveVoiceTrack => Ok(Change::SetActiveVoiceTrack {
+            track_id: uuid(args, "track_id")?,
+        }),
+        OperationKind::UpsertTranscriptSegment => {
+            let segment = serde_json::from_value(
+                args.get("segment")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("segment is required"))?,
+            )
+            .map_err(|_| Error::invalid("transcript segment is invalid"))?;
+            if matches!(
+                segment.alignment,
+                motionwright_domain::AlignmentEvidence::Measured { .. }
+            ) {
+                return Err(Error::invalid(
+                    "measured transcript alignment is reserved for a qualified alignment boundary",
+                ));
+            }
+            Ok(Change::UpsertTranscriptSegment { segment })
+        }
+        OperationKind::RemoveTranscriptSegment => Ok(Change::RemoveTranscriptSegment {
+            segment_id: uuid(args, "segment_id")?,
+        }),
+        OperationKind::UpsertAudioCue => {
+            let cue = serde_json::from_value(
+                args.get("cue")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("cue is required"))?,
+            )
+            .map_err(|_| Error::invalid("audio cue is invalid"))?;
+            if matches!(
+                cue.evidence,
+                motionwright_domain::CueEvidence::Measured
+                    | motionwright_domain::CueEvidence::TranscriptAligned
+            ) {
+                return Err(Error::invalid(
+                    "measured or transcript-aligned cue evidence is reserved for a qualified evidence boundary",
+                ));
+            }
+            Ok(Change::UpsertAudioCue { cue })
+        }
+        OperationKind::RemoveAudioCue => Ok(Change::RemoveAudioCue {
+            cue_id: uuid(args, "cue_id")?,
+        }),
+        OperationKind::SetMixIntent => {
+            let mix = serde_json::from_value(
+                args.get("mix")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("mix is required"))?,
+            )
+            .map_err(|_| Error::invalid("mix intent is invalid"))?;
+            Ok(Change::SetMixIntent { mix })
+        }
         OperationKind::SetVisualLanguage => {
             let visual_language = serde_json::from_value(
                 args.get("visual_language")
@@ -1228,6 +1287,124 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::SetActiveVoiceTrack,
+            descriptor(
+                "audio.voice.active.set",
+                "Select one already-measured voice take without deleting or replacing prior takes",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "track_id":{"type":"string","maxLength":64}
+                    }),
+                    &["ref", "track_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertTranscriptSegment,
+            descriptor(
+                "audio.transcript.upsert",
+                "Create or update one transcript interval with explicit timing evidence",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "segment":{
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","maxLength":64},
+                                "voice_track_id":{"type":"string","maxLength":64},
+                                "start":{"type":"object"},
+                                "end":{"type":"object"},
+                                "text":{"type":"string","minLength":1,"maxLength":8000},
+                                "speaker":{"anyOf":[{"type":"null"},{"type":"string","maxLength":256}]},
+                                "alignment":{"type":"object"}
+                            },
+                            "required":["id","voice_track_id","start","end","text","speaker","alignment"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "segment"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveTranscriptSegment,
+            descriptor(
+                "audio.transcript.remove",
+                "Remove an unreferenced transcript segment while preserving cue referential integrity",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "segment_id":{"type":"string","maxLength":64}
+                    }),
+                    &["ref", "segment_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertAudioCue,
+            descriptor(
+                "audio.cue.upsert",
+                "Create or update one stable audio cue at an explicit rational timestamp",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "cue":{
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","maxLength":64},
+                                "label":{"type":"string","minLength":1,"maxLength":512},
+                                "at":{"type":"object"},
+                                "source_segment_id":{"anyOf":[{"type":"null"},{"type":"string","maxLength":64}]},
+                                "evidence":{"type":"string","enum":["manual","transcript_aligned","measured","unknown"]}
+                            },
+                            "required":["id","label","at","source_segment_id","evidence"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "cue"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveAudioCue,
+            descriptor(
+                "audio.cue.remove",
+                "Remove one audio cue by stable identifier",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "cue_id":{"type":"string","maxLength":64}
+                    }),
+                    &["ref", "cue_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetMixIntent,
+            descriptor(
+                "audio.mix.set",
+                "Set bounded voice/music gain and optional mastering targets without claiming measured loudness",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "mix":{
+                            "type":"object",
+                            "properties":{
+                                "voice_gain_db":{"type":"number","minimum":-120,"maximum":24},
+                                "music_gain_db":{"type":"number","minimum":-120,"maximum":24},
+                                "target_lufs":{"anyOf":[{"type":"null"},{"type":"number"}]},
+                                "target_true_peak_dbfs":{"anyOf":[{"type":"null"},{"type":"number"}]}
+                            },
+                            "required":["voice_gain_db","music_gain_db","target_lufs","target_true_peak_dbfs"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "mix"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetVisualLanguage,
             descriptor(
                 "visual-language.set",
@@ -1463,7 +1640,11 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.review.add"));
         assert!(names.contains(&"driver.motionwright.review.resolve"));
         assert!(names.contains(&"driver.motionwright.review.reopen"));
-        assert_eq!(capabilities.len(), 35);
+        assert!(names.contains(&"driver.motionwright.audio.voice.active.set"));
+        assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
+        assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
+        assert!(names.contains(&"driver.motionwright.audio.mix.set"));
+        assert_eq!(capabilities.len(), 41);
     }
 
     #[tokio::test]
@@ -1559,6 +1740,44 @@ mod tests {
                 profile: motionwright_domain::DeliverableProfile { id, .. }
             } if id == profile_id
         ));
+
+        let track_id = Uuid::now_v7();
+        let segment_id = Uuid::now_v7();
+        let segment = change_from_args(
+            OperationKind::UpsertTranscriptSegment,
+            &json!({
+                "segment": {
+                    "id": segment_id.to_string(),
+                    "voice_track_id": track_id.to_string(),
+                    "start": {"num": 1, "den": 2},
+                    "end": {"num": 3, "den": 2},
+                    "text": "Native audio evidence remains editable.",
+                    "speaker": "Narrator",
+                    "alignment": {"kind": "manual"}
+                }
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            segment,
+            Change::UpsertTranscriptSegment {
+                segment: motionwright_domain::TranscriptSegment { id, .. }
+            } if id == segment_id
+        ));
+
+        let mix = change_from_args(
+            OperationKind::SetMixIntent,
+            &json!({
+                "mix": {
+                    "voice_gain_db": 0.0,
+                    "music_gain_db": -14.0,
+                    "target_lufs": null,
+                    "target_true_peak_dbfs": null
+                }
+            }),
+        )
+        .unwrap();
+        assert!(matches!(mix, Change::SetMixIntent { .. }));
 
         let transform = change_from_args(
             OperationKind::TransformCanvasNode,

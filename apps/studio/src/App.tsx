@@ -1,5 +1,6 @@
 import {
   AlignLeft,
+  AudioLines,
   Box,
   Boxes,
   ChevronDown,
@@ -39,8 +40,10 @@ import {
   exportProjectBundle,
   importAssetFile,
   importProjectBundle,
+  importVoiceFile,
   inspectProjectBundle,
 } from "./api";
+import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
@@ -59,6 +62,7 @@ import { rationalSeconds, seconds } from "./types";
 type Workspace =
   | "Brief"
   | "Narrative"
+  | "Audio"
   | "Storyboard"
   | "Canvas"
   | "Timeline"
@@ -71,6 +75,7 @@ type Workspace =
 const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Brief", icon: AlignLeft },
   { name: "Narrative", icon: Type },
+  { name: "Audio", icon: AudioLines },
   { name: "Storyboard", icon: Columns3 },
   { name: "Canvas", icon: Box },
   { name: "Timeline", icon: Film },
@@ -1213,6 +1218,13 @@ export default function App() {
     setBoot({ ...boot, project: next });
   }, [boot, busy]);
 
+  const ingestVoice = useCallback(async (path: string, label?: string) => {
+    if (!boot) throw new Error("Project is not ready.");
+    if (busy) throw new Error("Finish the current project change before importing a voice take.");
+    const next = await importVoiceFile(boot.project, path, label);
+    setBoot({ ...boot, project: next });
+  }, [boot, busy]);
+
   if (!project || !boot) {
     return (
       <main className="boot-screen">
@@ -1229,6 +1241,15 @@ export default function App() {
         return <RichBriefView project={project} commit={commit} />;
       case "Narrative":
         return <RichNarrativeView project={project} scene={selectedScene} commit={commit} />;
+      case "Audio":
+        return (
+          <AudioWorkspace
+            project={project}
+            commit={commit}
+            desktopMode={boot.native_sdk.mode === "tauri"}
+            importVoice={ingestVoice}
+          />
+        );
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={setSelectedSceneId} />;
       case "Canvas":

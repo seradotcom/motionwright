@@ -184,3 +184,21 @@ test("delivery profiles are versioned and filesystem claims remain truthful", as
   await expect(page.getByRole("button", { name: "Export sidecar", exact: true })).toBeDisabled();
   await expect(page.getByText("Desktop filesystem capability is required.").first()).toBeVisible();
 });
+
+
+test("audio workspace keeps measurement claims honest and versions mix intent", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Audio", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Audio workspace" })).toBeVisible();
+  await expect(page.getByText("No measured take", { exact: true })).toBeVisible();
+  await expect(page.getByText("Desktop runtime required for measured file import.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Import + measure", exact: true })).toBeDisabled();
+
+  const before = await page.locator(".revision-chip").first().innerText();
+  await page.getByLabel("Voice gain dB").fill("-2");
+  await page.getByLabel("Music gain dB").fill("-16");
+  await page.getByRole("button", { name: "Save mix intent", exact: true }).click();
+  await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(before);
+  await expect(page.getByLabel("Voice gain dB")).toHaveValue("-2");
+});

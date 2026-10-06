@@ -298,6 +298,11 @@ impl Store {
         Ok(BlobDescriptor { sha256, size_bytes })
     }
 
+    pub fn verified_blob_path(&self, digest: &str) -> Result<PathBuf> {
+        self.verify_blob(digest)?;
+        self.blob_path(digest)
+    }
+
     pub fn verify_blob(&self, digest: &str) -> Result<BlobDescriptor> {
         let path = self.blob_path(digest)?;
         if !path.is_file() {
@@ -799,10 +804,12 @@ impl Store {
             )));
         }
         let required_blob = match change {
-            Change::AddAsset { asset } => match asset.content_sha256.as_deref() {
-                Some(digest) => Some((digest.to_owned(), self.blob_path(digest)?)),
-                None => None,
-            },
+            Change::AddAsset { asset } | Change::ImportMeasuredVoice { asset, .. } => {
+                match asset.content_sha256.as_deref() {
+                    Some(digest) => Some((digest.to_owned(), self.blob_path(digest)?)),
+                    None => None,
+                }
+            }
             _ => None,
         };
         let request_sha = request_digest(id, change)?;

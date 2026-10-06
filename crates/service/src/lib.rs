@@ -1,4 +1,7 @@
-use motionwright_domain::{Asset, Change, Project, RevisionStamp};
+mod audio;
+pub use audio::AudioMeasurement;
+
+use motionwright_domain::{Asset, Change, Project, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
     BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt,
@@ -90,6 +93,57 @@ impl StudioService {
         store.apply(project_id, expected, request_id, &change)
     }
 
+    pub fn import_voice_file(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: impl AsRef<Path>,
+        name: String,
+        media_type: String,
+        label: String,
+    ) -> StorageResult<ApplyOutcome> {
+        if !media_type.starts_with("audio/") {
+            return Err(motionwright_domain::DomainError::Invalid(
+                "voice import requires an audio media type".into(),
+            )
+            .into());
+        }
+        let source = source.as_ref();
+        let (blob, immutable_path) = {
+            let store = self.store.lock();
+            let blob = store.ingest_blob_file(source)?;
+            let immutable_path = store.verified_blob_path(&blob.sha256)?;
+            (blob, immutable_path)
+        };
+        let measured = audio::measure_audio_file(&immutable_path)?;
+        let asset_id = Uuid::now_v7();
+        let asset = Asset {
+            id: asset_id,
+            name,
+            media_type,
+            content_sha256: Some(blob.sha256.clone()),
+            source_revision: Some("measured-audio-import".into()),
+        };
+        let track = VoiceTrack {
+            id: Uuid::now_v7(),
+            asset_id,
+            label,
+            sample_rate_hz: measured.sample_rate_hz,
+            channels: measured.channels,
+            measured_duration: measured.duration,
+            source_sha256: blob.sha256,
+            loudness_lufs: None,
+            true_peak_dbfs: None,
+        };
+        self.store.lock().apply(
+            project_id,
+            expected,
+            request_id,
+            &Change::ImportMeasuredVoice { asset, track },
+        )
+    }
+
     pub fn export_project_bundle(
         &self,
         id: Uuid,
@@ -153,5 +207,106 @@ impl StudioService {
         change: &Change,
     ) -> StorageResult<ApplyOutcome> {
         self.store.lock().apply(id, expected, request_id, change)
+    }
+}
+
+#[cfg(test)]
+mod audio_import_tests {
+    use super::*;
+    use std::{fs::File, io::Write};
+
+    fn write_pcm16_wav(path: &Path, sample_rate: u32, channels: u16, frames: u32, sample: i16) {
+        let data_bytes = frames * u32::from(channels) * 2;
+        let mut file = File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16_u32.to_le_bytes()).unwrap();
+        file.write_all(&1_u16.to_le_bytes()).unwrap();
+        file.write_all(&channels.to_le_bytes()).unwrap();
+        file.write_all(&sample_rate.to_le_bytes()).unwrap();
+        file.write_all(&(sample_rate * u32::from(channels) * 2).to_le_bytes())
+            .unwrap();
+        file.write_all(&(channels * 2).to_le_bytes()).unwrap();
+        file.write_all(&16_u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&data_bytes.to_le_bytes()).unwrap();
+        for _ in 0..frames * u32::from(channels) {
+            file.write_all(&sample.to_le_bytes()).unwrap();
+        }
+        file.sync_all().unwrap();
+    }
+
+    #[test]
+    fn measured_voice_import_preserves_prior_take_and_exact_blob_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("Audio evidence").unwrap();
+
+        let first_path = temp.path().join("take-01.wav");
+        write_pcm16_wav(&first_path, 48_000, 1, 48_000, 0);
+        let first = service
+            .import_voice_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "voice-take-1",
+                &first_path,
+                "take-01.wav".into(),
+                "audio/wav".into(),
+                "Narrator take 01".into(),
+            )
+            .unwrap()
+            .project;
+
+        assert_eq!(first.audio.voice_tracks.len(), 1);
+        assert_eq!(first.assets.len(), 1);
+        let first_track = first.audio.voice_tracks[0].clone();
+        assert_eq!(first.audio.active_voice_track_id, Some(first_track.id));
+        assert_eq!(
+            first_track.measured_duration,
+            RationalTime::new(1, 1).unwrap()
+        );
+        assert_eq!(
+            first.assets[0].content_sha256.as_deref(),
+            Some(first_track.source_sha256.as_str())
+        );
+        assert!(first_track.loudness_lufs.is_none());
+        assert!(first_track.true_peak_dbfs.is_none());
+
+        let second_path = temp.path().join("take-02.wav");
+        write_pcm16_wav(&second_path, 44_100, 2, 22_050, 7);
+        let second = service
+            .import_voice_file(
+                first.id,
+                &RevisionStamp::from(&first),
+                "voice-take-2",
+                &second_path,
+                "take-02.wav".into(),
+                "audio/wav".into(),
+                "Narrator take 02".into(),
+            )
+            .unwrap()
+            .project;
+
+        assert_eq!(second.audio.voice_tracks.len(), 2);
+        assert_eq!(second.assets.len(), 2);
+        assert!(
+            second
+                .audio
+                .voice_tracks
+                .iter()
+                .any(|track| track.id == first_track.id)
+        );
+        let active = second
+            .audio
+            .voice_tracks
+            .iter()
+            .find(|track| Some(track.id) == second.audio.active_voice_track_id)
+            .unwrap();
+        assert_eq!(active.label, "Narrator take 02");
+        assert_eq!(active.sample_rate_hz, 44_100);
+        assert_eq!(active.channels, 2);
+        assert_eq!(active.measured_duration, RationalTime::new(1, 2).unwrap());
+        assert_ne!(active.source_sha256, first_track.source_sha256);
     }
 }
