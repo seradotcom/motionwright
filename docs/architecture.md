@@ -67,3 +67,6 @@ Motionwright stores its local dependency projection but canonical CURRENT/STALE/
 ## Jobs
 
 Long-running work is correlated locally but scheduled/executed through Semwright mechanisms. The UI may map canonical states into QUEUED/RUNNING/CANCEL_REQUESTED/SUCCEEDED/FAILED/CANCELLED/OUTCOME_UNKNOWN. Result applicability (for example a stale late render) is a separate dimension.
+## Native production connection
+
+The renderer path is an explicit consumer of the Semwright Broker rather than an embedded scheduler. An owner-provisioned, digest-pinned CLI connection is revalidated on every call. The application allowlists production operations, checks Driver provenance and persists revision-bound receipts. A local receipt is historical application evidence only; Graph admission and Effect Conformance remain separate canonical authorities.

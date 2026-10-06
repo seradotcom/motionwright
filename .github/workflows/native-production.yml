@@ -1,0 +1,47 @@
+name: Native Production Contracts
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "crates/domain/**"
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "crates/native/**"
+      - ".github/workflows/native-production.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "crates/domain/**"
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "crates/native/**"
+      - ".github/workflows/native-production.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Source policy
+        run: python3 tooling/source_policy.py
+      - name: Production receipt storage
+        run: cargo test -p motionwright-storage production
+      - name: Broker client and coordinator
+        run: cargo test -p motionwright-native production::tests --all-targets
+      - name: Native production clippy
+        run: cargo clippy -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings

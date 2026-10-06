@@ -1,7 +1,7 @@
 use motionwright_domain::{Asset, Change, Project, RevisionStamp};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
-    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProjectBackup,
+    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt, ProjectBackup,
     ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
@@ -106,6 +106,47 @@ impl StudioService {
 
     pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
         self.store.lock().import_project_bundle(source)
+    }
+
+    pub fn append_production_receipt(
+        &self,
+        project_id: Uuid,
+        generation: Uuid,
+        revision: u64,
+        request_id: &str,
+        request_sha256: &str,
+        command: &str,
+        stage: &str,
+        payload: serde_json::Value,
+    ) -> StorageResult<ProductionReceipt> {
+        self.store.lock().append_production_receipt(
+            project_id,
+            generation,
+            revision,
+            request_id,
+            request_sha256,
+            command,
+            stage,
+            payload,
+        )
+    }
+
+    pub fn latest_production_receipt(
+        &self,
+        project_id: Uuid,
+        request_id: &str,
+    ) -> StorageResult<Option<ProductionReceipt>> {
+        self.store
+            .lock()
+            .latest_production_receipt(project_id, request_id)
+    }
+
+    pub fn production_receipts(
+        &self,
+        project_id: Uuid,
+        limit: usize,
+    ) -> StorageResult<Vec<ProductionReceipt>> {
+        self.store.lock().production_receipts(project_id, limit)
     }
 
     pub fn history(

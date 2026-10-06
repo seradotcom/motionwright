@@ -39,6 +39,7 @@ The Native SDK surface is used as intended:
 - the application cannot mint Broker approvals, grants or Driver Host authority;
 - Graph and Effects are adapters to canonical Semwright authorities, not local replicas.
 - Graph candidates and Effects specifications are prepared through the pinned Native SDK; admission/verdict authority remains outside the application.
+- Native production uses a digest-pinned owner connection to the Semwright CLI/Broker, strict Driver provenance, revision-bound receipts and fail-closed mutation retry semantics.
 
 ## Renderer plan
 
