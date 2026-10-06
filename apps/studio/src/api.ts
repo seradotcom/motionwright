@@ -579,6 +579,22 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       set.selected = change.proposal_id;
       break;
     }
+    case "record_model_invocation": {
+      if (change.receipt.base_revision !== next.revision) {
+        throw new Error("model invocation base must match the current project revision");
+      }
+      if (!change.receipt.resource_refs.length || !change.receipt.data_classes.length) {
+        throw new Error("model invocation receipt is incomplete");
+      }
+      if (new Set(change.receipt.data_classes).size !== change.receipt.data_classes.length) {
+        throw new Error("model invocation data classes contain duplicates");
+      }
+      if (next.model_invocations.some((receipt) => receipt.id === change.receipt.id)) {
+        throw new Error("duplicate model invocation receipt id");
+      }
+      next.model_invocations.push(structuredClone(change.receipt));
+      break;
+    }
     case "create_branch": {
       const name = change.name.trim();
       if (!name || name.length > 120 || next.branches.some((branch) => branch.name.toLowerCase() === name.toLowerCase())) {
@@ -704,6 +720,7 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     "add_review",
     "resolve_review",
     "reopen_review",
+    "record_model_invocation",
     "set_lock",
     "remove_lock",
   ]);

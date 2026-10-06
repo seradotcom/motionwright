@@ -254,6 +254,7 @@ export type Change =
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }
+  | { type: "record_model_invocation"; receipt: ModelInvocationReceipt }
   | { type: "create_branch"; name: string }
   | { type: "checkout_branch"; branch_id: string }
   | { type: "merge_branch"; source_branch_id: string }
