@@ -1,0 +1,2359 @@
+{
+  "schema_version": 1,
+  "source_spec_version": "0.1.0",
+  "source_text_published": false,
+  "baseline": {
+    "repository": "seradotcom/motionwright",
+    "merge_sha": "930c5f089db3bc50cf27ecd779dc1976950be8a1",
+    "pr": 12
+  },
+  "status_semantics": {
+    "EVIDENCE_PRESENT": "Implementation evidence exists in-repo; this is not product acceptance.",
+    "PARTIAL_OR_GAP": "Some implementation evidence exists, but gaps or unreviewed criteria remain.",
+    "BLOCKED_UPSTREAM": "The criterion depends on an unavailable canonical upstream capability.",
+    "OPTIONAL_UNCLAIMED": "Optional extension is not claimed as implemented.",
+    "CI_PARTIAL": "CI supports part of the criterion but is not complete product acceptance.",
+    "NOT_RUN": "Product-level acceptance has not been run."
+  },
+  "requirements": [
+    {
+      "id": "CR-FOUND-01",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-02",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-03",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-04",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-05",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-06",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-07",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-FOUND-08",
+      "area": "FOUND",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "README.md",
+        "PRODUCT.md",
+        "tooling/source_policy.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-01",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-02",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-03",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-04",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-05",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-06",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-07",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-PROJECT-08",
+      "area": "PROJECT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/storage/src/lib.rs",
+        "crates/domain/src/lib.rs",
+        ".github/workflows/project-portability.yml",
+        "docs/architecture.md"
+      ]
+    },
+    {
+      "id": "CR-NARR-01",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-02",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-03",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-04",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-05",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-06",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-07",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-NARR-08",
+      "area": "NARR",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-01",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-02",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-03",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-04",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-05",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-06",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-07",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-AUDIO-08",
+      "area": "AUDIO",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/audio.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md"
+      ]
+    },
+    {
+      "id": "CR-UX-01",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-02",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-03",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-04",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-05",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-06",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-07",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-UX-08",
+      "area": "UX",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/tests/editor.spec.ts"
+      ]
+    },
+    {
+      "id": "CR-TIME-01",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-02",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-03",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-04",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-05",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-06",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-07",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-TIME-08",
+      "area": "TIME",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/lib.rs",
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-01",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-02",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-03",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-04",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-05",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-06",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-07",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CANVAS-08",
+      "area": "CANVAS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/canvas.rs",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/CanvasStructureEditor.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-01",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-02",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-03",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-04",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-05",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-06",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-07",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CONCEPT-08",
+      "area": "CONCEPT",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/creative.rs",
+        "crates/domain/tests/proposal_safety.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-STYLE-01",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-02",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-03",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-04",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-05",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-06",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-07",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-STYLE-08",
+      "area": "STYLE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/studio/src/VisualLanguageEditor.tsx",
+        "crates/domain/src/creative.rs"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-01",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-02",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-03",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-04",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-05",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-06",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-07",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-CHANGE-08",
+      "area": "CHANGE",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/history.rs",
+        "crates/domain/tests/history.rs",
+        "apps/studio/src/HistoryWorkspaces.tsx"
+      ]
+    },
+    {
+      "id": "CR-SDK-01",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-02",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-03",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-04",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-05",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-06",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-07",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-SDK-08",
+      "area": "SDK",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "SOURCE_LOCK.json",
+        "crates/native/src/lib.rs",
+        "docs/native-sdk.md",
+        ".github/workflows/native-sdk.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-01",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-02",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-03",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-04",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-05",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-06",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-07",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MOTION-08",
+      "area": "MOTION",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/film.rs",
+        "docs/canonical-film.md",
+        ".github/workflows/canonical-film.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-01",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-02",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-03",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-04",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-05",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-06",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-07",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-MLT-08",
+      "area": "MLT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/native-production.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-01",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-02",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-03",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-04",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-05",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-06",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-07",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-BLENDER-08",
+      "area": "BLENDER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "crates/native/src/production.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-MANIM-01",
+      "area": "MANIM",
+      "implementation_assessment": "BLOCKED_UPSTREAM",
+      "verification_status": "BLOCKED_UPSTREAM",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ],
+      "note": "Pinned Semwright has no native Manim driver."
+    },
+    {
+      "id": "CR-MANIM-02",
+      "area": "MANIM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-MANIM-03",
+      "area": "MANIM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-MANIM-04",
+      "area": "MANIM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-MANIM-05",
+      "area": "MANIM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-MANIM-06",
+      "area": "MANIM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ]
+    },
+    {
+      "id": "CR-MANIM-07",
+      "area": "MANIM",
+      "implementation_assessment": "BLOCKED_UPSTREAM",
+      "verification_status": "BLOCKED_UPSTREAM",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ],
+      "note": "Native Manim runtime/readback/job evidence depends on a canonical upstream driver."
+    },
+    {
+      "id": "CR-MANIM-08",
+      "area": "MANIM",
+      "implementation_assessment": "BLOCKED_UPSTREAM",
+      "verification_status": "BLOCKED_UPSTREAM",
+      "evidence": [
+        "crates/native/src/multi_renderer.rs",
+        "docs/renderers.md",
+        ".github/workflows/multi-renderer.yml"
+      ],
+      "note": "Native Manim runtime/readback/job evidence depends on a canonical upstream driver."
+    },
+    {
+      "id": "CR-GRAPH-01",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-02",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-03",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-04",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-05",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-06",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-07",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-GRAPH-08",
+      "area": "GRAPH",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-01",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-02",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-03",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-04",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-05",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-06",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-07",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-EFFECT-08",
+      "area": "EFFECT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/canonical.rs",
+        "docs/testing.md",
+        ".github/workflows/canonical-evidence.yml"
+      ],
+      "note": "Compatibility/conformance consumer evidence is not product artifact-level certification."
+    },
+    {
+      "id": "CR-JOBS-01",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-02",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-03",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-04",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-05",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-06",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-07",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-JOBS-08",
+      "area": "JOBS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/jobs.rs",
+        "crates/storage/src/production.rs",
+        "apps/studio/src/ProductionJobs.tsx",
+        "docs/production.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-01",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-02",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-03",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-04",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-05",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-06",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-07",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-MODELS-08",
+      "area": "MODELS",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/service/src/models.rs",
+        "apps/studio/src/ModelContextInspector.tsx",
+        "docs/model-safety.md"
+      ]
+    },
+    {
+      "id": "CR-WORKFLOW-01",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-02",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-03",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-04",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-05",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-06",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-07",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-WORKFLOW-08",
+      "area": "WORKFLOW",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "docs/workflows.md"
+      ],
+      "note": "Implementation and CI contract evidence exists; live product-level distillation acceptance remains NOT_RUN."
+    },
+    {
+      "id": "CR-VARIANT-01",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-02",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-03",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-04",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-05",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-06",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-07",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-VARIANT-08",
+      "area": "VARIANT",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/delivery.md"
+      ]
+    },
+    {
+      "id": "CR-SEC-01",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-02",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-03",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-04",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-05",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-06",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-07",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-SEC-08",
+      "area": "SEC",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "crates/native/src/production.rs",
+        "crates/service/src/models.rs",
+        "tooling/source_policy.py"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-01",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-02",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-03",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-04",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-05",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-06",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-07",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-DELIVER-08",
+      "area": "DELIVER",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "CI_PARTIAL",
+      "evidence": [
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "crates/storage/src/lib.rs",
+        "docs/delivery.md",
+        ".github/workflows/heavy-verification.yml"
+      ]
+    },
+    {
+      "id": "CR-PERF-01",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-02",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-03",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-04",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-05",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-06",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-07",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PERF-08",
+      "area": "PERF",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/testing.md",
+        ".github/workflows/heavy-verification.yml"
+      ],
+      "note": "Required production/performance datasets have not been accepted yet."
+    },
+    {
+      "id": "CR-PLATFORM-01",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-02",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-03",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-04",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-05",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-06",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-07",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-PLATFORM-08",
+      "area": "PLATFORM",
+      "implementation_assessment": "PARTIAL_OR_GAP",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/architecture.md",
+        "crates/native/src/production.rs"
+      ],
+      "note": "Platform acceptance requires separate account/worker/remote-review evidence."
+    },
+    {
+      "id": "CR-EXT-01",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-02",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-03",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-04",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-05",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-06",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-07",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    },
+    {
+      "id": "CR-EXT-08",
+      "area": "EXT",
+      "implementation_assessment": "OPTIONAL_UNCLAIMED",
+      "verification_status": "NOT_RUN",
+      "evidence": [
+        "docs/renderers.md"
+      ]
+    }
+  ]
+}

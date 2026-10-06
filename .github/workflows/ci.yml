@@ -23,6 +23,8 @@ jobs:
           python-version: "3.13"
       - name: Verify public source boundary and Semwright pin
         run: python3 tooling/source_policy.py
+      - name: Verify acceptance ledger invariants
+        run: python3 tooling/acceptance_policy.py
 
   rust-core:
     needs: source-policy
