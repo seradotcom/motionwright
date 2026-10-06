@@ -1,0 +1,73 @@
+name: Multi Renderer Contracts
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "crates/domain/**"
+      - "crates/native/**"
+      - "docs/renderers.md"
+      - ".github/workflows/multi-renderer.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "crates/domain/**"
+      - "crates/native/**"
+      - "docs/renderers.md"
+      - ".github/workflows/multi-renderer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  motionwright-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Source policy
+        run: python3 tooling/source_policy.py
+      - name: Blender and Manim projections
+        run: cargo test -p motionwright-native multi_renderer::tests --all-targets
+      - name: Production driver boundaries
+        run: cargo test -p motionwright-native production::tests --all-targets
+      - name: Multi-renderer clippy
+        run: cargo clippy -p motionwright-native --all-targets -- -D warnings
+
+  locked-blender-catalog:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve pinned Semwright revision
+        id: lock
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          lock = json.load(open("SOURCE_LOCK.json", encoding="utf-8"))
+          print("sha=" + lock["dependencies"]["semwright"]["revision"])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.lock.outputs.sha }}
+          path: semwright
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: semwright
+      - name: Verify curated Blender driver catalog has no generic Python escape
+        working-directory: semwright
+        run: cargo test -p semwright-driver-blender curated_commands_are_migrated_without_generic_python_escape --lib

@@ -1,3 +1,4 @@
+use crate::multi_renderer::{blender_export_path, build_blender_contribution};
 use motionwright_domain::RevisionStamp;
 use motionwright_service::StudioService;
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
@@ -42,6 +43,16 @@ const MLT_COMMANDS: &[&str] = &[
     "driver.mlt-video.render.status",
     "driver.mlt-video.render.cancel",
     "driver.mlt-video.render.result",
+];
+
+const BLENDER_COMMANDS: &[&str] = &[
+    "driver.blender.semantic.datablock.create",
+    "driver.blender.semantic.objects",
+    "driver.blender.mesh.geometry.replace",
+    "driver.blender.semantic.object.create",
+    "driver.blender.material.create",
+    "driver.blender.material.assign",
+    "driver.blender.export.glb",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +202,8 @@ fn expected_provider(command: &str) -> Option<&'static str> {
         Some("driver:motion-canvas")
     } else if MLT_COMMANDS.contains(&command) {
         Some("driver:mlt-video")
+    } else if BLENDER_COMMANDS.contains(&command) {
+        Some("driver:blender")
     } else {
         None
     }
@@ -284,11 +297,12 @@ impl ProductionClient {
             .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
         let stdout_task = tokio::spawn(read_bounded(stdout));
         let stderr_task = tokio::spawn(read_bounded(stderr));
-        let deadline = if command.starts_with("driver.mlt-video.") {
-            MLT_DEADLINE_SECS
-        } else {
-            DEFAULT_DEADLINE_SECS
-        };
+        let deadline =
+            if command.starts_with("driver.mlt-video.") || command.starts_with("driver.blender.") {
+                MLT_DEADLINE_SECS
+            } else {
+                DEFAULT_DEADLINE_SECS
+            };
 
         let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
             Ok(result) => result.map_err(|_| backend("Semwright CLI process failed"))?,
@@ -374,6 +388,196 @@ impl ProductionCoordinator {
         self.service
             .production_receipts(project_id, limit)
             .map_err(storage_error)
+    }
+
+    async fn blender_ref(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        root: &str,
+        name: &str,
+    ) -> NativeResult<Value> {
+        let response = self
+            .execute(
+                project_id,
+                expected,
+                request_id,
+                "driver.blender.semantic.objects",
+                json!({"root": root, "query": name, "limit": 8}),
+                false,
+            )
+            .await?;
+        response_named_ref(&response, name)
+    }
+
+    pub async fn realize_blender_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+    ) -> NativeResult<Value> {
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motionwright project changed since the Blender contribution was prepared",
+            ));
+        }
+        let plan = build_blender_contribution(&project, scene_id)?;
+        let collection = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:collection"),
+                "driver.blender.semantic.datablock.create",
+                json!({
+                    "root": "collections",
+                    "name": plan.collection_name
+                }),
+                true,
+            )
+            .await?;
+
+        let mut objects = Vec::with_capacity(plan.meshes.len());
+        for (index, mesh) in plan.meshes.iter().enumerate() {
+            let mesh_data = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:data"),
+                    "driver.blender.semantic.datablock.create",
+                    json!({
+                        "root": "meshes",
+                        "name": mesh.name
+                    }),
+                    true,
+                )
+                .await?;
+            let mesh_ref = self
+                .blender_ref(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:lookup-before-geometry"),
+                    "meshes",
+                    &mesh.name,
+                )
+                .await?;
+            let geometry = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:geometry"),
+                    "driver.blender.mesh.geometry.replace",
+                    json!({
+                        "mesh_ref": mesh_ref,
+                        "vertices": mesh.vertices,
+                        "edges": mesh.edges,
+                        "faces": mesh.faces
+                    }),
+                    true,
+                )
+                .await?;
+            let current_mesh_ref = self
+                .blender_ref(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:lookup-after-geometry"),
+                    "meshes",
+                    &mesh.name,
+                )
+                .await?;
+            let collection_ref = self
+                .blender_ref(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:collection-ref"),
+                    "collections",
+                    &plan.collection_name,
+                )
+                .await?;
+            let object = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:object"),
+                    "driver.blender.semantic.object.create",
+                    json!({
+                        "name": mesh.name,
+                        "data_ref": current_mesh_ref,
+                        "collection_ref": collection_ref
+                    }),
+                    true,
+                )
+                .await?;
+            let material = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:material"),
+                    "driver.blender.material.create",
+                    json!({
+                        "name": mesh.material_name,
+                        "color": mesh.color_rgba,
+                        "roughness": 0.45,
+                        "metallic": 0.0
+                    }),
+                    true,
+                )
+                .await?;
+            let assignment = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:material-assign"),
+                    "driver.blender.material.assign",
+                    json!({
+                        "object": mesh.name,
+                        "material": mesh.material_name
+                    }),
+                    true,
+                )
+                .await?;
+            objects.push(json!({
+                "node_id": mesh.node_id,
+                "mesh_data": mesh_data,
+                "geometry": geometry,
+                "object": object,
+                "material": material,
+                "material_assignment": assignment
+            }));
+        }
+
+        let export_path = blender_export_path(&plan);
+        let export = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:export"),
+                "driver.blender.export.glb",
+                json!({
+                    "collection": plan.collection_name,
+                    "path": export_path,
+                    "animations": false
+                }),
+                true,
+            )
+            .await?;
+
+        Ok(json!({
+            "renderer": "blender",
+            "native_driver": "driver:blender",
+            "project_revision": plan.revision,
+            "scene_id": plan.scene_id,
+            "collection": collection,
+            "objects": objects,
+            "export_path": export_path,
+            "export": export
+        }))
     }
 
     pub async fn execute(
@@ -506,6 +710,20 @@ impl ProductionCoordinator {
     }
 }
 
+fn response_named_ref(value: &Value, name: &str) -> NativeResult<Value> {
+    value
+        .pointer("/result/data/items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("name").and_then(Value::as_str) == Some(name))
+        })
+        .and_then(|item| item.get("ref"))
+        .cloned()
+        .ok_or_else(|| backend("Blender semantic lookup returned no exact typed ref"))
+}
+
 fn storage_error(error: motionwright_storage::StorageError) -> Error {
     match error {
         motionwright_storage::StorageError::NotFound => {
@@ -614,6 +832,40 @@ mod tests {
             output_root: output,
             resource,
         }
+    }
+
+    #[test]
+    fn production_allowlist_binds_blender_to_the_native_driver() {
+        for command in BLENDER_COMMANDS {
+            assert_eq!(expected_provider(command), Some("driver:blender"));
+        }
+        assert_eq!(expected_provider("driver.blender.python.exec"), None);
+        assert_eq!(expected_provider("driver.manim.render"), None);
+    }
+
+    #[test]
+    fn blender_response_refs_are_extracted_only_from_exact_lookup_results() {
+        let value = json!({
+            "result": {
+                "data": {
+                    "items": [{
+                        "name": "Mesh",
+                        "ref": {
+                            "root": "meshes",
+                            "name": "Mesh",
+                            "path": [],
+                            "generation": 1
+                        }
+                    }]
+                }
+            }
+        });
+        assert_eq!(
+            response_named_ref(&value, "Mesh").unwrap()["root"],
+            "meshes"
+        );
+        assert!(response_named_ref(&value, "Other").is_err());
+        assert!(response_named_ref(&json!({"result":{"data":{}}}), "Mesh").is_err());
     }
 
     #[cfg(unix)]

@@ -45,7 +45,7 @@ The Native SDK surface is used as intended:
 
 ## Renderer plan
 
-The required production path is **Motion Canvas → MLT/audio/master** through Semwright capabilities. Blender provides a meaningful 3D contribution, and Manim Community is a separate semantic realization. Remotion and ManimGL may be supported as optional profiles but are not required for the free base path.
+The required production path is **Motion Canvas → MLT/audio/master** through Semwright capabilities. Blender provides bounded geometry/material contributions through the pinned Semwright native driver. Manim Community has a deterministic declarative compiler but is explicitly native-driver pending in the pinned Semwright snapshot. Remotion and ManimGL may be supported as optional profiles but are not required for the free base path.
 
 No renderer integration is allowed to execute arbitrary model-authored Python.
 
