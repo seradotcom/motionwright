@@ -1,0 +1,41 @@
+name: Canonical Film Projection
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "crates/domain/**"
+      - "crates/native/**"
+      - ".github/workflows/canonical-film.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "crates/domain/**"
+      - "crates/native/**"
+      - ".github/workflows/canonical-film.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-film:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Source policy
+        run: python3 tooling/source_policy.py
+      - name: Motionwright Film projection
+        run: cargo test -p motionwright-native film::tests --all-targets
+      - name: Canonical Film clippy
+        run: cargo clippy -p motionwright-native --all-targets -- -D warnings

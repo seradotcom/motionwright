@@ -18,6 +18,9 @@ tokio = { workspace = true, features = ["process", "time", "io-util"] }
 sha2.workspace = true
 hex.workspace = true
 semwright-project-graph.workspace = true
+semwright-media-time.workspace = true
+semwright-motion-authoring.workspace = true
+semwright-semantic-composition.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
