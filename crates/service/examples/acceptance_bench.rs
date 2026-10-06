@@ -90,7 +90,7 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
     let db_path = temp.path().join("motionwright.sqlite3");
     let service = StudioService::open(&db_path).expect("benchmark store");
     let mut project = service
-        .create_project(format!("{} · {size}", brief.title))
+        .create_project(&format!("{} · {size}", brief.title))
         .expect("benchmark project");
 
     let seed_started = Instant::now();
@@ -167,7 +167,7 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
         "05-ripple-duration",
         Change::SetSceneDuration {
             scene_id: scene_a,
-            duration: RationalTime::new(7, 1).expect("valid rational"),
+            duration: RationalTime { num: 7, den: 1 },
         },
     );
     record(
@@ -180,7 +180,7 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
     record(
         "07-marker",
         Change::AddMarker {
-            at: RationalTime::new(3, 1).expect("valid rational"),
+            at: RationalTime { num: 3, den: 1 },
             label: "Revision ten review".into(),
         },
     );
@@ -192,20 +192,37 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
             note: "Benchmark lock round trip".into(),
         },
     );
+    drop(record);
     let lock_id = project
         .locks
         .iter()
         .find(|lock| lock.note == "Benchmark lock round trip")
         .expect("benchmark lock")
         .id;
-    record("09-project-unlock", Change::RemoveLock { lock_id });
-    record(
+
+    let unlock_micros = commit(
+        &service,
+        &mut project,
+        "09-project-unlock",
+        Change::RemoveLock { lock_id },
+    );
+    operations.push(OperationMetric {
+        name: "09-project-unlock".into(),
+        micros: unlock_micros,
+    });
+    let final_micros = commit(
+        &service,
+        &mut project,
         "10-final-objective",
         Change::UpdateSceneObjective {
             scene_id: scene_a,
             objective: "Tenth predefined change persisted after reopen.".into(),
         },
     );
+    operations.push(OperationMetric {
+        name: "10-final-objective".into(),
+        micros: final_micros,
+    });
 
     let revision_ten_micros = revision_ten_started.elapsed().as_micros();
     let revision_end = project.revision;

@@ -65,3 +65,21 @@ acceptance. Those claims require their own evidence.
 
 Interactive playback remains a future profile rather than a delivered player. No active pricing,
 quota purchase, or commercial plan is inferred by Motionwright.
+
+
+## OpenTimelineIO interchange
+
+Motionwright exports a conservative OpenTimelineIO cut from the desktop runtime. The export writes a
+Timeline containing one video Track and one Clip for each Motionwright scene. Scene duration is
+preserved on a rational timeline and Motionwright identity, renderer, status and objective are kept
+inside namespaced metadata.
+
+The exporter deliberately uses MissingReference for abstract Motionwright scenes unless a scene has
+an explicit, truthful media binding. It does not guess that a project asset belongs to a scene.
+Canvas geometry, hierarchy, semantic relations, property locks, reviews, branch history, transcript
+alignment, mix intent and renderer execution semantics are not described as lossless OTIO state.
+Those omissions are returned as an explicit loss report and embedded in Motionwright metadata.
+
+An OTIO export is therefore an editorial interchange artifact, not a round-trip replacement for the
+Motionwright project bundle. The desktop command uses create-new semantics and never overwrites an
+existing destination.

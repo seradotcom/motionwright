@@ -184,6 +184,142 @@ pub fn caption_sidecar(project: &Project, profile_id: Uuid) -> Result<CaptionSid
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtioInterchange {
+    pub scene_count: usize,
+    pub loss_report: Vec<String>,
+    pub body: String,
+}
+
+pub fn otio_interchange(project: &Project) -> Result<OtioInterchange> {
+    project.validate()?;
+    const RATE: f64 = 24.0;
+
+    let mut loss_report = vec![
+        "Scene clips use MissingReference because Motionwright scenes do not imply a flattened media file.".to_string(),
+        "Renderer-specific behavior is namespaced Motionwright metadata, not portable OTIO execution semantics.".to_string(),
+    ];
+    if project.scenes.iter().any(|scene| !scene.nodes.is_empty()) {
+        loss_report.push(
+            "Canvas node geometry, hierarchy, semantic relations and node property locks are not represented as standard OTIO edits."
+                .into(),
+        );
+    }
+    if !project.markers.is_empty() {
+        loss_report.push(
+            "Project markers are not exported in this conservative interchange profile.".into(),
+        );
+    }
+    if !project.audio.transcript.is_empty() || !project.audio.cues.is_empty() {
+        loss_report.push(
+            "Transcript, alignment evidence, audio cues and mix intent remain in Motionwright; they are not flattened into OTIO audio tracks."
+                .into(),
+        );
+    }
+    if !project.reviews.is_empty() || !project.locks.is_empty() {
+        loss_report.push(
+            "Review state and project locks remain Motionwright-only workflow metadata.".into(),
+        );
+    }
+    if project.branches.len() > 1 || !project.merges.is_empty() {
+        loss_report
+            .push("Branch and merge history are not encoded into the linear OTIO cut.".into());
+    }
+    if !project.assets.is_empty() {
+        loss_report.push(
+            "Project assets are not guessed onto scenes; explicit scene-to-media bindings are required before an ExternalReference can be truthful."
+                .into(),
+        );
+    }
+
+    let clips = project
+        .scenes
+        .iter()
+        .map(|scene| {
+            let duration_frames =
+                (scene.duration.num as f64 / scene.duration.den as f64) * RATE;
+            let renderer = serde_json::to_value(&scene.renderer)
+                .unwrap_or_else(|_| serde_json::Value::String("unknown".into()));
+            serde_json::json!({
+                "OTIO_SCHEMA": "Clip.1",
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "media_reference": {
+                    "OTIO_SCHEMA": "MissingReference.1",
+                    "available_range": serde_json::Value::Null,
+                    "metadata": {},
+                    "name": serde_json::Value::Null
+                },
+                "metadata": {
+                    "motionwright": {
+                        "scene_id": scene.id.to_string(),
+                        "renderer": renderer,
+                        "status": serde_json::to_value(&scene.status).unwrap_or(serde_json::Value::Null),
+                        "objective": scene.objective,
+                    }
+                },
+                "name": scene.name,
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "duration": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": RATE,
+                        "value": duration_frames
+                    },
+                    "start_time": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": RATE,
+                        "value": 0.0
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let timeline = serde_json::json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "metadata": {
+            "motionwright": {
+                "project_id": project.id.to_string(),
+                "generation": project.generation.to_string(),
+                "revision": project.revision,
+                "export_profile": "conservative-cut-v1",
+                "loss_report": loss_report.clone(),
+            }
+        },
+        "name": project.title,
+        "tracks": {
+            "OTIO_SCHEMA": "Stack.1",
+            "children": [{
+                "OTIO_SCHEMA": "Track.1",
+                "children": clips,
+                "effects": [],
+                "kind": "Video",
+                "markers": [],
+                "enabled": true,
+                "metadata": {},
+                "name": "Motionwright scenes",
+                "source_range": serde_json::Value::Null
+            }],
+            "effects": [],
+            "markers": [],
+            "enabled": true,
+            "metadata": {},
+            "name": "tracks",
+            "source_range": serde_json::Value::Null
+        }
+    });
+    let body = serde_json::to_string_pretty(&timeline)
+        .map_err(|_| DomainError::Invalid("OTIO serialization failed".into()))?;
+
+    Ok(OtioInterchange {
+        scene_count: project.scenes.len(),
+        loss_report,
+        body,
+    })
+}
+
 fn rational_milliseconds(value: RationalTime, ceil: bool) -> Result<i128> {
     if value.num < 0 || value.den <= 0 {
         return Err(DomainError::Invalid(
@@ -291,5 +427,28 @@ mod tests {
                 .to_string()
                 .contains("known transcript timing evidence")
         );
+    }
+
+    #[test]
+    fn otio_export_is_linear_and_carries_an_explicit_loss_report() {
+        let mut project = Project::new("OTIO fixture").unwrap();
+        project
+            .apply_change(&crate::Change::AddScene {
+                name: "Editable scene".into(),
+                objective: "Preserve timing without claiming renderer portability.".into(),
+                duration_seconds: 7,
+            })
+            .unwrap();
+        let export = otio_interchange(&project).unwrap();
+        assert_eq!(export.scene_count, 1);
+        assert!(export.body.contains("\"OTIO_SCHEMA\": \"Timeline.1\""));
+        assert!(export.body.contains("\"OTIO_SCHEMA\": \"Clip.1\""));
+        assert!(
+            export
+                .body
+                .contains("\"OTIO_SCHEMA\": \"MissingReference.1\"")
+        );
+        assert!(export.body.contains("\"motionwright\""));
+        assert!(!export.loss_report.is_empty());
     }
 }

@@ -1,5 +1,6 @@
 use motionwright_domain::{
     AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
+    otio_interchange,
 };
 use motionwright_native::{
     build_application,
@@ -153,6 +154,19 @@ struct ExportCaptionRequest {
 struct CaptionExportResponse {
     path: String,
     cue_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportOtioRequest {
+    project_id: Uuid,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OtioExportResponse {
+    path: String,
+    scene_count: usize,
+    loss_report: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -586,6 +600,46 @@ fn export_caption_sidecar(
 }
 
 #[tauri::command]
+fn export_otio(
+    state: State<'_, AppState>,
+    request: ExportOtioRequest,
+) -> Result<OtioExportResponse, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let interchange = otio_interchange(&project).map_err(sanitized)?;
+    let destination = absolute_otio_path(&request.path)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "OTIO export destination has no parent directory.".to_string())?;
+    if !parent.is_dir() {
+        return Err("OTIO export directory must already exist.".into());
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "OTIO export destination already exists; Motionwright will not overwrite it."
+                    .to_string()
+            } else {
+                "Motionwright could not create the OTIO export.".to_string()
+            }
+        })?;
+    file.write_all(interchange.body.as_bytes())
+        .map_err(|_| "Motionwright could not write the OTIO export.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "Motionwright could not finalize the OTIO export.".to_string())?;
+    Ok(OtioExportResponse {
+        path: destination.display().to_string(),
+        scene_count: interchange.scene_count,
+        loss_report: interchange.loss_report,
+    })
+}
+
+#[tauri::command]
 fn inspect_project_bundle(
     state: State<'_, AppState>,
     request: BundlePathRequest,
@@ -729,6 +783,26 @@ fn absolute_caption_path(value: &str, format: CaptionFormat) -> Result<PathBuf, 
     Ok(path)
 }
 
+fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an absolute OTIO export path.".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("OTIO export paths must be absolute.".into());
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension != "otio" {
+        return Err("OTIO export path must use the .otio extension.".into());
+    }
+    Ok(path)
+}
+
 fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -803,6 +877,7 @@ fn main() {
             import_voice_file,
             export_project_bundle,
             export_caption_sidecar,
+            export_otio,
             inspect_project_bundle,
             import_project_bundle,
             apply_change

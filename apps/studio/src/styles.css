@@ -4904,3 +4904,27 @@ select:focus {
     grid-template-columns: 1fr;
   }
 }
+
+
+.otio-loss-report {
+  padding: 11px 13px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-1);
+}
+
+.otio-loss-report > strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--warning);
+  font-size: 10px;
+}
+
+.otio-loss-report ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}

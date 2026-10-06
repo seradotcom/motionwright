@@ -10,6 +10,7 @@ import type {
   ModelContextDisclosure,
   ModelRequestDraft,
   ModelRequestPreflight,
+  OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
   Project,
@@ -342,6 +343,18 @@ export async function exportCaptionSidecar(
     request: {
       project_id: project.id,
       profile_id: profileId,
+      path,
+    },
+  });
+}
+
+export async function exportOtio(project: Project, path: string): Promise<OtioExportResult> {
+  if (!isTauri()) {
+    throw new Error("OpenTimelineIO export requires the Motionwright desktop runtime.");
+  }
+  return invoke<OtioExportResult>("export_otio", {
+    request: {
+      project_id: project.id,
       path,
     },
   });

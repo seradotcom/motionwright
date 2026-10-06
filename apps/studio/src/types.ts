@@ -60,6 +60,7 @@ export interface DeliverableProfile {
   brand_profile: string | null; cut_label: string | null;
 }
 export interface CaptionExportResult { path: string; cue_count: number; }
+export interface OtioExportResult { path: string; scene_count: number; loss_report: string[]; }
 export interface Branch {
   id: string; name: string; parent_branch: string | null;
   base_revision: number; head_revision: number; protected: boolean; created_at: string;

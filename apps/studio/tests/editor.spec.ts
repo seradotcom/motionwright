@@ -301,3 +301,16 @@ test("Launchwright handoffs use public refs and exact output digests without rem
   await expect(section.getByText("artifact output", { exact: true })).toBeVisible();
   await expect(section.getByText("No remote mutation is performed by creating this binding.", { exact: true })).toBeVisible();
 });
+
+
+test("OpenTimelineIO export stays filesystem-gated and never implies lossless interchange in browser mode", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+
+  const section = page.getByRole("region", { name: "OpenTimelineIO export" });
+  await expect(section.getByText("LOSS-AWARE", { exact: true })).toBeVisible();
+  await expect(section.getByLabel("OpenTimelineIO export path")).toBeDisabled();
+  await expect(section.getByRole("button", { name: "Export .otio", exact: true })).toBeDisabled();
+  await expect(section.getByText(/browser demo does not fabricate an OTIO file/)).toBeVisible();
+  await expect(section.getByText(/Unsupported Motionwright semantics are returned as a loss report/)).toBeVisible();
+});
