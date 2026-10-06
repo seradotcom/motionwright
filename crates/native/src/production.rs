@@ -1,5 +1,6 @@
 use motionwright_domain::RevisionStamp;
-use motionwright_service::{ProductionReceipt, StudioService};
+use motionwright_service::StudioService;
+use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
 use semwright_native_sdk::{
     Error, ErrorCode, Result as NativeResult, Value, json,
     types::{Envelope, SourceKind},
@@ -434,38 +435,38 @@ impl ProductionCoordinator {
         }
 
         self.service
-            .append_production_receipt(
+            .append_production_receipt(ProductionReceiptInput {
                 project_id,
-                project.generation,
-                project.revision,
-                request_id,
-                &digest,
-                command,
-                "dispatching",
-                json!({
+                generation: project.generation,
+                revision: project.revision,
+                request_id: request_id.into(),
+                request_sha256: digest.clone(),
+                command: command.into(),
+                stage: "dispatching".into(),
+                payload: json!({
                     "mutation": mutation,
                     "connection": self.client.connection().identity()?
                 }),
-            )
+            })
             .map_err(storage_error)?;
 
         match self.client.execute(command, args, mutation).await {
             Ok(result) => {
                 let receipt = self
                     .service
-                    .append_production_receipt(
+                    .append_production_receipt(ProductionReceiptInput {
                         project_id,
-                        project.generation,
-                        project.revision,
-                        request_id,
-                        &digest,
-                        command,
-                        "completed",
-                        json!({
+                        generation: project.generation,
+                        revision: project.revision,
+                        request_id: request_id.into(),
+                        request_sha256: digest.clone(),
+                        command: command.into(),
+                        stage: "completed".into(),
+                        payload: json!({
                             "result": result.value,
                             "broker_request_id": result.request_id
                         }),
-                    )
+                    })
                     .map_err(|_| {
                         let error = backend(
                             "Production completed but its local receipt could not be persisted",
@@ -484,19 +485,21 @@ impl ProductionCoordinator {
                 } else {
                     "outcome_unknown"
                 };
-                let _ = self.service.append_production_receipt(
-                    project_id,
-                    project.generation,
-                    project.revision,
-                    request_id,
-                    &digest,
-                    command,
-                    stage,
-                    json!({
-                        "error": &error,
-                        "mutation": mutation
-                    }),
-                );
+                let _ = self
+                    .service
+                    .append_production_receipt(ProductionReceiptInput {
+                        project_id,
+                        generation: project.generation,
+                        revision: project.revision,
+                        request_id: request_id.into(),
+                        request_sha256: digest,
+                        command: command.into(),
+                        stage: stage.into(),
+                        payload: json!({
+                            "error": &error,
+                            "mutation": mutation
+                        }),
+                    });
                 Err(error)
             }
         }

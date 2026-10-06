@@ -13,7 +13,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod production;
-pub use production::ProductionReceipt;
+pub use production::{ProductionReceipt, ProductionReceiptInput};
 
 #[derive(Debug, Error)]
 pub enum StorageError {

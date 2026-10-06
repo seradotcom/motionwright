@@ -7,6 +7,19 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct ProductionReceiptInput {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub request_id: String,
+    pub request_sha256: String,
+    pub command: String,
+    pub stage: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProductionReceipt {
     pub id: Uuid,
     pub project_id: Uuid,
@@ -32,20 +45,14 @@ fn bounded_token(value: &str, max: usize, label: &str) -> Result<()> {
 impl Store {
     pub fn append_production_receipt(
         &mut self,
-        project_id: Uuid,
-        generation: Uuid,
-        revision: u64,
-        request_id: &str,
-        request_sha256: &str,
-        command: &str,
-        stage: &str,
-        payload: Value,
+        input: ProductionReceiptInput,
     ) -> Result<ProductionReceipt> {
-        bounded_token(request_id, 256, "production request id")?;
-        bounded_token(command, 256, "production command")?;
-        bounded_token(stage, 64, "production stage")?;
-        if request_sha256.len() != 64
-            || !request_sha256
+        bounded_token(&input.request_id, 256, "production request id")?;
+        bounded_token(&input.command, 256, "production command")?;
+        bounded_token(&input.stage, 64, "production stage")?;
+        if input.request_sha256.len() != 64
+            || !input
+                .request_sha256
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
@@ -54,13 +61,13 @@ impl Store {
             )));
         }
 
-        let current = self.load_project(project_id)?;
-        if current.generation != generation {
+        let current = self.load_project(input.project_id)?;
+        if current.generation != input.generation {
             return Err(StorageError::GenerationConflict);
         }
-        if revision > current.revision {
+        if input.revision > current.revision {
             return Err(StorageError::Conflict {
-                expected: revision,
+                expected: input.revision,
                 actual: current.revision,
             });
         }
@@ -71,26 +78,26 @@ impl Store {
                 "SELECT request_sha256,command FROM production_receipts
                  WHERE project_id=?1 AND request_id=?2
                  ORDER BY receipt_id DESC LIMIT 1",
-                params![project_id.to_string(), request_id],
+                params![input.project_id.to_string(), &input.request_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
         if let Some((prior_sha, prior_command)) = prior
-            && (prior_sha != request_sha256 || prior_command != command)
+            && (prior_sha != input.request_sha256 || prior_command != input.command)
         {
             return Err(StorageError::RequestReuse);
         }
 
         let receipt = ProductionReceipt {
             id: Uuid::now_v7(),
-            project_id,
-            generation,
-            revision,
-            request_id: request_id.to_owned(),
-            request_sha256: request_sha256.to_owned(),
-            command: command.to_owned(),
-            stage: stage.to_owned(),
-            payload,
+            project_id: input.project_id,
+            generation: input.generation,
+            revision: input.revision,
+            request_id: input.request_id,
+            request_sha256: input.request_sha256,
+            command: input.command,
+            stage: input.stage,
+            payload: input.payload,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         self.conn.execute(
@@ -268,29 +275,25 @@ mod tests {
         let project = store.create_named_project("Production fixture").unwrap();
         let sha = "ab".repeat(32);
 
+        let input = |stage: &str, digest: &str, revision: u64| ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision,
+            request_id: "request-one".into(),
+            request_sha256: digest.into(),
+            command: "driver.motion-canvas.composition.inspect".into(),
+            stage: stage.into(),
+            payload: if stage == "completed" {
+                json!({"result":{"ok":true}})
+            } else {
+                json!({"mutation":false})
+            },
+        };
         store
-            .append_production_receipt(
-                project.id,
-                project.generation,
-                project.revision,
-                "request-one",
-                &sha,
-                "driver.motion-canvas.composition.inspect",
-                "dispatching",
-                json!({"mutation":false}),
-            )
+            .append_production_receipt(input("dispatching", &sha, project.revision))
             .unwrap();
         store
-            .append_production_receipt(
-                project.id,
-                project.generation,
-                project.revision,
-                "request-one",
-                &sha,
-                "driver.motion-canvas.composition.inspect",
-                "completed",
-                json!({"result":{"ok":true}}),
-            )
+            .append_production_receipt(input("completed", &sha, project.revision))
             .unwrap();
 
         let latest = store
@@ -301,29 +304,18 @@ mod tests {
         assert_eq!(store.production_receipts(project.id, 10).unwrap().len(), 2);
 
         assert!(matches!(
-            store.append_production_receipt(
-                project.id,
-                project.generation,
-                project.revision,
-                "request-one",
-                &"cd".repeat(32),
-                "driver.motion-canvas.composition.inspect",
+            store.append_production_receipt(input(
                 "dispatching",
-                json!({})
-            ),
+                &"cd".repeat(32),
+                project.revision
+            )),
             Err(StorageError::RequestReuse)
         ));
         assert!(matches!(
-            store.append_production_receipt(
-                project.id,
-                project.generation,
-                project.revision + 1,
-                "future",
-                &sha,
-                "driver.motion-canvas.composition.inspect",
-                "dispatching",
-                json!({})
-            ),
+            store.append_production_receipt(ProductionReceiptInput {
+                request_id: "future".into(),
+                ..input("dispatching", &sha, project.revision + 1)
+            }),
             Err(StorageError::Conflict { .. })
         ));
     }

@@ -110,25 +110,9 @@ impl StudioService {
 
     pub fn append_production_receipt(
         &self,
-        project_id: Uuid,
-        generation: Uuid,
-        revision: u64,
-        request_id: &str,
-        request_sha256: &str,
-        command: &str,
-        stage: &str,
-        payload: serde_json::Value,
+        input: ProductionReceiptInput,
     ) -> StorageResult<ProductionReceipt> {
-        self.store.lock().append_production_receipt(
-            project_id,
-            generation,
-            revision,
-            request_id,
-            request_sha256,
-            command,
-            stage,
-            payload,
-        )
+        self.store.lock().append_production_receipt(input)
     }
 
     pub fn latest_production_receipt(
