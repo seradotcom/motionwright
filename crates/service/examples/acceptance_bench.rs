@@ -129,70 +129,72 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
     let mut operations = Vec::with_capacity(10);
     let revision_ten_started = Instant::now();
 
-    let mut record = |name: &str, change: Change| {
-        let micros = commit(&service, &mut project, name, change);
-        operations.push(OperationMetric {
-            name: name.into(),
-            micros,
-        });
-    };
+    {
+        let mut record = |name: &str, change: Change| {
+            let micros = commit(&service, &mut project, name, change);
+            operations.push(OperationMetric {
+                name: name.into(),
+                micros,
+            });
+        };
 
-    record(
-        "01-rename",
-        Change::RenameProject {
-            title: format!("{} · {size} · revision ten", brief.title),
-        },
-    );
-    record(
-        "02-narrative-premise",
-        Change::SetNarrativePremise {
-            premise: "Maintain semantic intent while the project accumulates revisions.".into(),
-        },
-    );
-    record(
-        "03-scene-objective",
-        Change::UpdateSceneObjective {
-            scene_id: scene_a,
-            objective: "Revision-ten objective remains editable and renderer independent.".into(),
-        },
-    );
-    record(
-        "04-scene-status",
-        Change::SetSceneStatus {
-            scene_id: scene_a,
-            status: SceneStatus::Review,
-        },
-    );
-    record(
-        "05-ripple-duration",
-        Change::SetSceneDuration {
-            scene_id: scene_a,
-            duration: RationalTime { num: 7, den: 1 },
-        },
-    );
-    record(
-        "06-second-renderer",
-        Change::SetSceneRenderer {
-            scene_id: scene_b,
-            renderer: RendererKind::Blender,
-        },
-    );
-    record(
-        "07-marker",
-        Change::AddMarker {
-            at: RationalTime { num: 3, den: 1 },
-            label: "Revision ten review".into(),
-        },
-    );
-    record(
-        "08-project-lock",
-        Change::SetLock {
-            resource: project_resource,
-            kind: LockKind::Style,
-            note: "Benchmark lock round trip".into(),
-        },
-    );
-    drop(record);
+        record(
+            "01-rename",
+            Change::RenameProject {
+                title: format!("{} · {size} · revision ten", brief.title),
+            },
+        );
+        record(
+            "02-narrative-premise",
+            Change::SetNarrativePremise {
+                premise: "Maintain semantic intent while the project accumulates revisions.".into(),
+            },
+        );
+        record(
+            "03-scene-objective",
+            Change::UpdateSceneObjective {
+                scene_id: scene_a,
+                objective: "Revision-ten objective remains editable and renderer independent."
+                    .into(),
+            },
+        );
+        record(
+            "04-scene-status",
+            Change::SetSceneStatus {
+                scene_id: scene_a,
+                status: SceneStatus::Review,
+            },
+        );
+        record(
+            "05-ripple-duration",
+            Change::SetSceneDuration {
+                scene_id: scene_a,
+                duration: RationalTime { num: 7, den: 1 },
+            },
+        );
+        record(
+            "06-second-renderer",
+            Change::SetSceneRenderer {
+                scene_id: scene_b,
+                renderer: RendererKind::Blender,
+            },
+        );
+        record(
+            "07-marker",
+            Change::AddMarker {
+                at: RationalTime { num: 3, den: 1 },
+                label: "Revision ten review".into(),
+            },
+        );
+        record(
+            "08-project-lock",
+            Change::SetLock {
+                resource: project_resource,
+                kind: LockKind::Style,
+                note: "Benchmark lock round trip".into(),
+            },
+        );
+    }
     let lock_id = project
         .locks
         .iter()

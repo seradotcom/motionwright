@@ -22,7 +22,7 @@ test("editor exposes real workspaces and browser-demo mutations", async ({ page 
 
 test("renderer and locks mutate the same visible project revision", async ({ page }) => {
   await page.goto("/");
-  const renderer = page.getByLabel("Renderer");
+  const renderer = page.getByLabel("Renderer", { exact: true });
   await expect(renderer).toHaveValue("motion-canvas");
   await renderer.selectOption("blender");
   await expect(page.getByText("r13", { exact: true }).first()).toBeVisible();
@@ -244,7 +244,7 @@ test("audio workspace keeps measurement claims honest and versions mix intent", 
 test("optional renderers stay closed until a reviewed project extension is explicitly enabled", async ({ page }) => {
   await page.goto("/");
 
-  const renderer = page.getByLabel("Renderer");
+  const renderer = page.getByLabel("Renderer", { exact: true });
   await expect(renderer.locator('option[value="remotion"]')).toBeDisabled();
   await expect(renderer.locator('option[value="manim-gl"]')).toBeDisabled();
 
