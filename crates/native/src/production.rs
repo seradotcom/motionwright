@@ -684,7 +684,7 @@ impl ProductionCoordinator {
                             "Motion Canvas render was cancelled",
                         ));
                     }
-                    Some("queued") | Some("running") => {}
+                    Some("queued") | Some("starting") | Some("rendering") => {}
                     Some(_) => {
                         return Err(backend(
                             "Motion Canvas render returned an unsupported job state",

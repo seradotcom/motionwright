@@ -135,7 +135,7 @@ fn state_from_data(value: &Value) -> Option<ProductionJobState> {
         .or_else(|| value.pointer("/job/state").and_then(Value::as_str))?;
     match state {
         "queued" => Some(ProductionJobState::Queued),
-        "starting" | "running" => Some(ProductionJobState::Running),
+        "starting" | "rendering" | "running" => Some(ProductionJobState::Running),
         "succeeded" | "completed" => Some(ProductionJobState::Succeeded),
         "failed" => Some(ProductionJobState::Failed),
         "cancelled" | "canceled" => Some(ProductionJobState::Cancelled),
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn definitive_terminal_state_cannot_be_resurrected_by_late_running_observation() {
+    fn motion_canvas_starting_and_rendering_map_to_running_without_resurrecting_terminal() {
         let generation = Uuid::now_v7();
         let receipts = vec![
             receipt(
@@ -422,7 +422,7 @@ mod tests {
                 "start",
                 "driver.motion-canvas.render.start",
                 "completed",
-                json!({"result":{"data":{"job_ref":"mc-1","state":"running"}}}),
+                json!({"result":{"data":{"job_ref":"mc-1","state":"starting"}}}),
                 "2026-10-05T01:00:00Z",
             ),
             receipt(
@@ -440,7 +440,7 @@ mod tests {
                 "late-status",
                 "driver.motion-canvas.render.status",
                 "completed",
-                json!({"result":{"data":{"job_ref":"mc-1","state":"running"}}}),
+                json!({"result":{"data":{"job_ref":"mc-1","state":"rendering"}}}),
                 "2026-10-05T01:00:03Z",
             ),
         ];
