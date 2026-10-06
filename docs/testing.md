@@ -32,3 +32,18 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 ## Production job-state acceptance
 
 Job projection tests cover cancellation request versus confirmed cancellation, terminal-state non-resurrection, reconciliation after an uncertain outcome, and CURRENT/STALE applicability against the open project revision. Browser acceptance also verifies that demo mode exposes an empty truthful ledger rather than fabricated runtime jobs. Canonical driver execution remains covered by the dedicated Native Production and renderer workflows.
+
+
+## Performance evidence lane
+
+Heavy performance evidence is produced in GitHub Actions by the Performance Acceptance Evidence
+workflow. The harness uses three unrelated briefs and deterministic S/M/L project sizes. Each
+dataset is seeded into the real SQLite service boundary, receives ten predefined versioned edits,
+reopens from disk, checks editability and journal continuity, and records per-operation timings
+plus database size and process resource usage. The workflow fails if any measured commit exceeds
+its declared CI latency budget.
+
+The report is deliberately incomplete where the product is incomplete. It records derived-media
+cache evidence as open until a real cache can report both avoided work and validation cost. Human
+feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
+comparative claims against other editors.

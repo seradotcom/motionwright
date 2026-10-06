@@ -240,3 +240,64 @@ test("audio workspace keeps measurement claims honest and versions mix intent", 
   await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(before);
   await expect(page.getByLabel("Voice gain dB")).toHaveValue("-2");
 });
+
+test("optional renderers stay closed until a reviewed project extension is explicitly enabled", async ({ page }) => {
+  await page.goto("/");
+
+  const renderer = page.getByLabel("Renderer");
+  await expect(renderer.locator('option[value="remotion"]')).toBeDisabled();
+  await expect(renderer.locator('option[value="manim-gl"]')).toBeDisabled();
+
+  await page.getByRole("button", { name: "Integrations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
+  await expect(page.getByText("UPSTREAM GATE", { exact: true })).toBeVisible();
+  await expect(page.getByText("CONTRACT ONLY", { exact: true })).toBeVisible();
+  await expect(page.getByText("Remotion closed", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Register descriptor", exact: true }).click();
+  await page.getByLabel("Extension display name").fill("Reviewed Remotion bridge");
+  await page.getByLabel("Extension version").fill("1.2.3");
+  await page.getByLabel("Extension license").fill("MIT");
+  await page.getByLabel("Extension source").fill("https://example.invalid/remotion-bridge");
+  await page.getByLabel("Extension digest").fill("ab".repeat(32));
+  await page.getByLabel("Extension rights state").selectOption("cleared");
+  await page.getByLabel("Explicitly enable").check();
+  await page.getByRole("button", { name: "Register versioned descriptor", exact: true }).click();
+
+  await expect(page.getByText("Remotion enabled", { exact: true })).toBeVisible();
+  await expect(page.getByText("OPTED IN", { exact: true })).toBeVisible();
+  await expect(renderer.locator('option[value="remotion"]')).toBeEnabled();
+  await expect(renderer.locator('option[value="manim-gl"]')).toBeDisabled();
+
+  await renderer.selectOption("remotion");
+  await expect(renderer).toHaveValue("remotion");
+
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("renderer is in use");
+  await expect(renderer).toHaveValue("remotion");
+});
+
+test("Launchwright handoffs use public refs and exact output digests without remote mutation claims", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Integrations", exact: true }).click();
+
+  const section = page.getByRole("region", { name: "Launchwright public handoff bindings" });
+  await expect(section.getByText("No external handoff bindings.", { exact: true })).toBeVisible();
+
+  await section.getByLabel("External resource ID").fill("release-public-42");
+  await section.getByLabel("External resource revision").fill("r9");
+  await section.getByRole("button", { name: "Record binding", exact: true }).click();
+  await expect(section.getByText("release-public-42", { exact: true })).toBeVisible();
+  await expect(section.getByText("context input", { exact: true })).toBeVisible();
+
+  await section.getByLabel("Handoff direction").selectOption("artifact_output");
+  await section.getByLabel("External resource ID").fill("artifact-public-84");
+  await expect(section.getByRole("button", { name: "Record binding", exact: true })).toBeDisabled();
+  await section.getByLabel("Handoff artifact digest").fill("cd".repeat(32));
+  await expect(section.getByRole("button", { name: "Record binding", exact: true })).toBeEnabled();
+  await section.getByRole("button", { name: "Record binding", exact: true }).click();
+
+  await expect(section.getByText("artifact-public-84", { exact: true })).toBeVisible();
+  await expect(section.getByText("artifact output", { exact: true })).toBeVisible();
+  await expect(section.getByText("No remote mutation is performed by creating this binding.", { exact: true })).toBeVisible();
+});

@@ -28,6 +28,19 @@ const browserEvents: ProjectEvent[] = [];
 const projectResource = (project: Project) => "project:" + project.id;
 const sceneResource = (sceneId: string) => "scene:" + sceneId;
 
+const extensionKindForRenderer = (renderer: Project["scenes"][number]["renderer"]) => {
+  if (renderer === "remotion") return "remotion-renderer";
+  if (renderer === "manim-gl") return "manim-gl-renderer";
+  return null;
+};
+
+const rendererEnabled = (project: Project, renderer: Project["scenes"][number]["renderer"]) => {
+  const kind = extensionKindForRenderer(renderer);
+  return kind === null || project.extensions.some(
+    (extension) => extension.kind === kind && extension.enabled && extension.rights_status === "cleared",
+  );
+};
+
 function assertUnlocked(project: Project, resource: string, kinds: LockKind[]) {
   const hit = project.locks.find((lock) => lock.resource === resource && kinds.includes(lock.kind));
   if (hit) throw new Error(`resource is locked: ${resource} (${hit.kind})`);
@@ -481,6 +494,9 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     }
     case "set_scene_renderer": {
       assertUnlocked(next, sceneResource(change.scene_id), ["renderer"]);
+      if (!rendererEnabled(next, change.renderer)) {
+        throw new Error("renderer requires an explicitly enabled project extension");
+      }
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       if (scene) scene.renderer = change.renderer;
       break;
@@ -754,6 +770,78 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         throw new Error("resource not found: proposal:" + change.proposal_id);
       }
       set.selected = change.proposal_id;
+      break;
+    }
+    case "upsert_extension": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      const extension = structuredClone(change.extension);
+      if (
+        !extension.name.trim() || extension.name.length > 160 ||
+        !extension.package_version.trim() || extension.package_version.length > 96 ||
+        !/^[0-9a-f]{64}$/.test(extension.digest_sha256) ||
+        !extension.license.trim() || extension.license.length > 128 ||
+        !extension.source.trim() || extension.source.length > 2048
+      ) throw new Error("extension descriptor is invalid");
+      if (extension.enabled && extension.rights_status !== "cleared") {
+        throw new Error("extension rights must be cleared before opt-in");
+      }
+      if (extension.enabled && next.extensions.some(
+        (candidate) => candidate.id !== extension.id && candidate.enabled && candidate.kind === extension.kind,
+      )) throw new Error("another extension of this kind is already enabled");
+      const renderer = extension.kind === "remotion-renderer"
+        ? "remotion"
+        : extension.kind === "manim-gl-renderer" ? "manim-gl" : null;
+      if (!extension.enabled && renderer && next.scenes.some((scene) => scene.renderer === renderer)) {
+        throw new Error("extension cannot be disabled while its renderer is in use");
+      }
+      const index = next.extensions.findIndex((candidate) => candidate.id === extension.id);
+      if (index >= 0) next.extensions[index] = extension;
+      else next.extensions.push(extension);
+      break;
+    }
+    case "remove_extension": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      const extension = next.extensions.find((candidate) => candidate.id === change.extension_id);
+      if (!extension) throw new Error("resource not found: extension:" + change.extension_id);
+      const renderer = extension.kind === "remotion-renderer"
+        ? "remotion"
+        : extension.kind === "manim-gl-renderer" ? "manim-gl" : null;
+      if (renderer && next.scenes.some((scene) => scene.renderer === renderer)) {
+        throw new Error("extension cannot be removed while its renderer is in use");
+      }
+      next.extensions = next.extensions.filter((candidate) => candidate.id !== change.extension_id);
+      break;
+    }
+    case "upsert_handoff": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      const binding = structuredClone(change.binding);
+      if (
+        !binding.external_id.trim() || binding.external_id.length > 256 ||
+        !binding.local_resource.trim() || binding.local_resource.length > 512 ||
+        (binding.external_revision !== null && (!binding.external_revision.trim() || binding.external_revision.length > 256))
+      ) throw new Error("handoff binding is invalid");
+      const output = binding.direction === "artifact_output" || binding.direction === "evidence_output";
+      const exactDigest = binding.artifact_sha256 !== null && /^[0-9a-f]{64}$/.test(binding.artifact_sha256);
+      if (output !== exactDigest) {
+        throw new Error("artifact/evidence outputs require an exact digest; context bindings do not carry one");
+      }
+      const localExists =
+        binding.local_resource === projectResource(next) ||
+        (binding.local_resource.startsWith("scene:") && next.scenes.some((scene) => "scene:" + scene.id === binding.local_resource)) ||
+        (binding.local_resource.startsWith("asset:") && next.assets.some((asset) => "asset:" + asset.id === binding.local_resource)) ||
+        (binding.local_resource.startsWith("deliverable:") && next.deliverables.some((profile) => "deliverable:" + profile.id === binding.local_resource));
+      if (!localExists) throw new Error("handoff references an unknown local resource");
+      const index = next.handoffs.findIndex((candidate) => candidate.id === binding.id);
+      if (index >= 0) next.handoffs[index] = binding;
+      else next.handoffs.push(binding);
+      break;
+    }
+    case "remove_handoff": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      if (!next.handoffs.some((candidate) => candidate.id === change.binding_id)) {
+        throw new Error("resource not found: handoff:" + change.binding_id);
+      }
+      next.handoffs = next.handoffs.filter((candidate) => candidate.id !== change.binding_id);
       break;
     }
     case "record_model_invocation": {

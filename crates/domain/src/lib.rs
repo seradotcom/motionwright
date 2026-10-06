@@ -1,11 +1,15 @@
 mod canvas;
 mod creative;
 mod delivery;
+mod extensions;
 mod history;
+mod integrations;
 pub use canvas::*;
 pub use creative::*;
 pub use delivery::*;
+pub use extensions::*;
 pub use history::*;
+pub use integrations::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -369,6 +373,10 @@ pub struct Project {
     pub proposal_sets: Vec<ProposalSet>,
     #[serde(default)]
     pub model_invocations: Vec<ModelInvocationReceipt>,
+    #[serde(default)]
+    pub extensions: Vec<ExtensionProfile>,
+    #[serde(default)]
+    pub handoffs: Vec<HandoffBinding>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -456,6 +464,8 @@ impl Project {
             visual_language: VisualLanguage::default(),
             proposal_sets: vec![],
             model_invocations: vec![],
+            extensions: vec![],
+            handoffs: vec![],
             updated_at: now,
         };
         project.validate()?;
@@ -568,6 +578,39 @@ impl Project {
                 ));
             }
             receipt.validate()?;
+        }
+        if self.extensions.len() > 128 {
+            return Err(DomainError::Invalid("too many project extensions".into()));
+        }
+        let mut extension_ids = BTreeSet::new();
+        let mut extension_kinds = BTreeSet::new();
+        for extension in &self.extensions {
+            extension.validate()?;
+            if !extension_ids.insert(extension.id) {
+                return Err(DomainError::Invalid("duplicate extension id".into()));
+            }
+            let kind = serde_json::to_string(&extension.kind)
+                .map_err(|_| DomainError::Invalid("extension kind is invalid".into()))?;
+            if extension.enabled && !extension_kinds.insert(kind) {
+                return Err(DomainError::Invalid(
+                    "only one enabled extension is allowed per extension kind".into(),
+                ));
+            }
+        }
+        if self.handoffs.len() > 1_024 {
+            return Err(DomainError::Invalid("too many handoff bindings".into()));
+        }
+        let mut handoff_ids = BTreeSet::new();
+        for binding in &self.handoffs {
+            binding.validate()?;
+            if !handoff_ids.insert(binding.id) {
+                return Err(DomainError::Invalid("duplicate handoff binding id".into()));
+            }
+            if !self.resource_ref_exists(&binding.local_resource) {
+                return Err(DomainError::Invalid(
+                    "handoff references an unknown local resource".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -926,6 +969,11 @@ impl Project {
             Change::SetSceneRenderer { scene_id, renderer } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Renderer])?;
+                if !renderer_extension_enabled(renderer, &self.extensions) {
+                    return Err(DomainError::Invalid(
+                        "renderer requires an explicitly enabled project extension".into(),
+                    ));
+                }
                 let scene = self
                     .scenes
                     .iter_mut()
@@ -1439,6 +1487,86 @@ impl Project {
                 }
                 set.selected = Some(*proposal_id);
             }
+            Change::UpsertExtension { extension } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                extension.validate()?;
+                if !extension.enabled {
+                    if let Some(renderer) = extension.kind.renderer()
+                        && self.scenes.iter().any(|scene| scene.renderer == renderer)
+                    {
+                        return Err(DomainError::Invalid(
+                            "extension cannot be disabled while its renderer is in use".into(),
+                        ));
+                    }
+                }
+                if extension.enabled
+                    && self.extensions.iter().any(|candidate| {
+                        candidate.id != extension.id
+                            && candidate.enabled
+                            && candidate.kind == extension.kind
+                    })
+                {
+                    return Err(DomainError::Invalid(
+                        "another extension of this kind is already enabled".into(),
+                    ));
+                }
+                if let Some(existing) = self
+                    .extensions
+                    .iter_mut()
+                    .find(|candidate| candidate.id == extension.id)
+                {
+                    *existing = extension.clone();
+                } else {
+                    self.extensions.push(extension.clone());
+                }
+            }
+            Change::UpsertHandoff { binding } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                binding.validate()?;
+                if !self.resource_ref_exists(&binding.local_resource) {
+                    return Err(DomainError::Invalid(
+                        "handoff references an unknown local resource".into(),
+                    ));
+                }
+                if let Some(existing) = self
+                    .handoffs
+                    .iter_mut()
+                    .find(|candidate| candidate.id == binding.id)
+                {
+                    *existing = binding.clone();
+                } else {
+                    if self.handoffs.len() >= 1_024 {
+                        return Err(DomainError::Invalid("too many handoff bindings".into()));
+                    }
+                    self.handoffs.push(binding.clone());
+                }
+            }
+            Change::RemoveHandoff { binding_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                let before = self.handoffs.len();
+                self.handoffs
+                    .retain(|candidate| candidate.id != *binding_id);
+                if before == self.handoffs.len() {
+                    return Err(DomainError::NotFound(format!("handoff:{binding_id}")));
+                }
+            }
+            Change::RemoveExtension { extension_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                let extension = self
+                    .extensions
+                    .iter()
+                    .find(|candidate| candidate.id == *extension_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("extension:{extension_id}")))?;
+                if let Some(renderer) = extension.kind.renderer()
+                    && self.scenes.iter().any(|scene| scene.renderer == renderer)
+                {
+                    return Err(DomainError::Invalid(
+                        "extension cannot be removed while its renderer is in use".into(),
+                    ));
+                }
+                self.extensions
+                    .retain(|candidate| candidate.id != *extension_id);
+            }
             Change::RecordModelInvocation { receipt } => {
                 self.validate_model_invocation_targets(receipt)?;
                 if self
@@ -1658,6 +1786,18 @@ pub enum Change {
     SelectProposal {
         proposal_set_id: Uuid,
         proposal_id: Uuid,
+    },
+    UpsertExtension {
+        extension: ExtensionProfile,
+    },
+    RemoveExtension {
+        extension_id: Uuid,
+    },
+    UpsertHandoff {
+        binding: HandoffBinding,
+    },
+    RemoveHandoff {
+        binding_id: Uuid,
     },
     RecordModelInvocation {
         receipt: ModelInvocationReceipt,

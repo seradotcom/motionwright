@@ -92,6 +92,38 @@ export interface Asset {
   content_sha256: string | null; source_revision: string | null;
 }
 
+export type ExtensionKind =
+  | "remotion-renderer"
+  | "manim-gl-renderer"
+  | "generative-assets"
+  | "catalog-package";
+export interface ExtensionProfile {
+  id: string;
+  name: string;
+  kind: ExtensionKind;
+  package_version: string;
+  digest_sha256: string;
+  license: string;
+  source: string;
+  rights_status: RightsStatus;
+  enabled: boolean;
+  permissions: Array<"read_project" | "read_assets" | "write_artifacts" | "network">;
+}
+
+export type ExternalSystem = "launchwright";
+export type HandoffDirection = "context_input" | "context_output" | "artifact_output" | "evidence_output";
+export type ExternalResourceKind = "release" | "target" | "context" | "artifact" | "evidence";
+export interface HandoffBinding {
+  id: string;
+  system: ExternalSystem;
+  direction: HandoffDirection;
+  external_kind: ExternalResourceKind;
+  external_id: string;
+  external_revision: string | null;
+  local_resource: string;
+  artifact_sha256: string | null;
+}
+
 export type SourceReference =
   | { kind: "asset"; asset_id: string }
   | { kind: "url"; url: string }
@@ -290,7 +322,7 @@ export interface Project {
   locks: ProjectLock[]; deliverables: DeliverableProfile[];
   brief: Brief; narrative: Narrative; audio: AudioState;
   visual_language: VisualLanguage; proposal_sets: ProposalSet[];
-  model_invocations: ModelInvocationReceipt[]; updated_at: string;
+  model_invocations: ModelInvocationReceipt[]; extensions: ExtensionProfile[]; handoffs: HandoffBinding[]; updated_at: string;
 }
 
 export type Change =
@@ -326,6 +358,10 @@ export type Change =
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }
+  | { type: "upsert_extension"; extension: ExtensionProfile }
+  | { type: "remove_extension"; extension_id: string }
+  | { type: "upsert_handoff"; binding: HandoffBinding }
+  | { type: "remove_handoff"; binding_id: string }
   | { type: "record_model_invocation"; receipt: ModelInvocationReceipt }
   | { type: "create_branch"; name: string }
   | { type: "checkout_branch"; branch_id: string }

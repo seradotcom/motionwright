@@ -1,0 +1,75 @@
+name: Performance Acceptance Evidence
+
+on:
+  pull_request:
+    paths:
+      - "crates/domain/**"
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "tooling/**"
+      - "docs/testing.md"
+      - ".github/workflows/performance-acceptance.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "crates/domain/**"
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "tooling/**"
+      - "docs/testing.md"
+      - ".github/workflows/performance-acceptance.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 * * 2"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  revision-ten:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Source and acceptance policy
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/acceptance_policy.py
+      - name: S M L × three unrelated briefs × revision ten
+        env:
+          MOTIONWRIGHT_LATENCY_BUDGET_MS: "2000"
+        run: |
+          mkdir -p verification/performance
+          /usr/bin/time -v -o verification/performance/resource-usage.txt \
+            cargo run -p motionwright-service --example acceptance_bench --release \
+            > verification/performance/report.json
+      - name: Validate evidence shape
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path("verification/performance/report.json").read_text())
+          assert report["schema"]=="motionwright.performance.v1"
+          assert report["datasets"]==9 and report["briefs"]==3
+          rows=report["results"]
+          assert {r["size"] for r in rows}=={"S","M","L"}
+          assert len({r["brief"] for r in rows})==3
+          assert all(r["revision_delta"]==10 for r in rows)
+          assert all(len(r["operations"])==10 for r in rows)
+          assert report["human_feedback"].startswith("NOT_RUN")
+          assert report["comparative_claims"].startswith("NONE")
+          assert report["cache_evidence"]["implemented"] is False
+          print("performance-evidence=ok datasets=9 revision-ten=10 human=NOT_RUN cache=OPEN")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-acceptance-evidence
+          path: verification/performance
+          if-no-files-found: error
