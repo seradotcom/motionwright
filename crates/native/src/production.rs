@@ -619,7 +619,7 @@ mod tests {
         let (service, project, temp) = fixture_service();
         let connection = fake_connection(&temp, project.resource_key());
         let coordinator = ProductionCoordinator::new(service, connection).unwrap();
-        let expected = project.stamp();
+        let expected = motionwright_domain::RevisionStamp::from(&project);
 
         let first = coordinator
             .execute(
@@ -659,7 +659,7 @@ mod tests {
         let error = coordinator
             .execute(
                 project.id,
-                &project.stamp(),
+                &motionwright_domain::RevisionStamp::from(&project),
                 "wrong-resource",
                 "driver.motion-canvas.composition.inspect",
                 json!({}),
