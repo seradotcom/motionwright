@@ -160,7 +160,7 @@ test("portable project delivery is truthful in browser demo mode", async ({ page
   await expect(page.getByLabel("Portable import path")).toBeDisabled();
   await expect(page.getByRole("button", { name: "Export bundle", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Inspect bundle", exact: true })).toBeDisabled();
-  await expect(page.getByText(/Desktop filesystem capability is required/)).toBeVisible();
+  await expect(page.getByText(/Desktop filesystem capability is required/).last()).toBeVisible();
 });
 
 

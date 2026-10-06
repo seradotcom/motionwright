@@ -1463,7 +1463,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.review.add"));
         assert!(names.contains(&"driver.motionwright.review.resolve"));
         assert!(names.contains(&"driver.motionwright.review.reopen"));
-        assert_eq!(capabilities.len(), 33);
+        assert_eq!(capabilities.len(), 35);
     }
 
     #[tokio::test]

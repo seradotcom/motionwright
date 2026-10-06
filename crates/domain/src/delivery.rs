@@ -171,12 +171,7 @@ pub fn caption_sidecar(project: &Project, profile_id: Uuid) -> Result<CaptionSid
             profile.caption_format == CaptionFormat::SubRip,
         ));
         body.push('\n');
-        let text = segment
-            .text
-            .replace('\0', "")
-            .replace('\r', "")
-            .trim()
-            .to_owned();
+        let text = segment.text.replace(['\0', '\r'], "").trim().to_owned();
         body.push_str(&text);
         body.push_str("\n\n");
     }
