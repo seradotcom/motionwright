@@ -1,6 +1,6 @@
 import { CircleCheck, CircleDashed, FileOutput, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { exportCaptionSidecar } from "./api";
+import { exportCaptionSidecar, exportOtio } from "./api";
 import type { Change, DeliverableProfile, Project } from "./types";
 
 type Commit = (change: Change) => Promise<void>;
@@ -43,7 +43,9 @@ export default function DeliveryProfiles({
   const selected = project.deliverables.find((profile) => profile.id === selectedId) ?? project.deliverables[0] ?? null;
   const [draft, setDraft] = useState<DeliverableProfile | null>(() => selected ? structuredClone(selected) : null);
   const [sidecarPath, setSidecarPath] = useState("");
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "new" | null>(null);
+  const [otioPath, setOtioPath] = useState("");
+  const [otioLosses, setOtioLosses] = useState<string[]>([]);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "new" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +54,7 @@ export default function DeliveryProfiles({
     if (current && current.id !== selectedId) setSelectedId(current.id);
     setDraft(current ? structuredClone(current) : null);
     setSidecarPath("");
+    setOtioLosses([]);
   }, [project.revision, selectedId]);
 
   const unknownTimings = useMemo(
@@ -103,6 +106,15 @@ export default function DeliveryProfiles({
     void run("caption", async () => {
       const result = await exportCaptionSidecar(project, draft.id, sidecarPath.trim());
       setMessage("Caption sidecar written · " + result.cue_count + " cues · " + result.path);
+    });
+  };
+
+  const exportTimeline = () => {
+    if (!otioPath.trim()) return;
+    void run("otio", async () => {
+      const result = await exportOtio(project, otioPath.trim());
+      setOtioLosses(result.loss_report);
+      setMessage("OTIO cut written · " + result.scene_count + " scenes · " + result.path);
     });
   };
 
@@ -263,6 +275,45 @@ export default function DeliveryProfiles({
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> {unknownTimings} transcript segment{unknownTimings === 1 ? "" : "s"} still have UNKNOWN timing.</div>
               )}
               {dirty && <div className="delivery-truth-note">Save the profile before exporting its sidecar.</div>}
+            </section>
+
+            <section className="caption-export-panel" aria-label="OpenTimelineIO export">
+              <header>
+                <div>
+                  <strong>OpenTimelineIO interchange</strong>
+                  <span>Conservative linear cut only. Unsupported Motionwright semantics are returned as a loss report.</span>
+                </div>
+                <span className="status-pill status-unknown">LOSS-AWARE</span>
+              </header>
+              <div className="caption-controls">
+                <label className="caption-path">
+                  <span className="field-label">Destination · absolute .otio path</span>
+                  <input
+                    aria-label="OpenTimelineIO export path"
+                    value={otioPath}
+                    disabled={!desktopMode}
+                    placeholder="/absolute/path/project.otio"
+                    onChange={(event) => setOtioPath(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={!desktopMode || !otioPath.trim() || busy !== null}
+                  onClick={exportTimeline}
+                >
+                  <FileOutput size={14} /> {busy === "otio" ? "Writing…" : "Export .otio"}
+                </button>
+              </div>
+              {!desktopMode && (
+                <div className="delivery-truth-note"><CircleDashed size={14} /> Desktop filesystem capability is required; browser demo does not fabricate an OTIO file.</div>
+              )}
+              {otioLosses.length > 0 && (
+                <div className="otio-loss-report" role="status" aria-label="OTIO loss report">
+                  <strong>Loss report · {otioLosses.length}</strong>
+                  <ul>{otioLosses.map((loss) => <li key={loss}>{loss}</li>)}</ul>
+                </div>
+              )}
             </section>
 
             {error && <div className="portable-message error" role="alert"><strong>Delivery operation blocked.</strong><span>{error}</span></div>}

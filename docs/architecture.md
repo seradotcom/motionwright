@@ -74,3 +74,17 @@ The renderer path is an explicit consumer of the Semwright Broker rather than an
 ## Delivery boundary
 
 Delivery profiles are application-owned versioned intent and travel with branch state. Caption sidecars are derived locally only from transcript segments whose timing evidence is known; an UNKNOWN alignment cannot be promoted to a timestamp. Final media production remains a Semwright-backed runtime concern, so configuring H.264, HEVC, ProRes, VP9, AV1, AAC, PCM or Opus never creates an execution or quality claim by itself.
+
+## Public product handoff boundary
+
+Motionwright can record versioned handoff bindings to Launchwright without mounting Launchwright
+storage or importing its internal release domain. An input binding contains only a public resource
+kind/ID, optional exact external revision and the Motionwright resource that consumed that context.
+Artifact and evidence output bindings additionally require an exact SHA-256 digest. Context
+bindings never smuggle artifact identity.
+
+These bindings are local project records; creating one does not mutate the other product. A real
+remote exchange still requires an authorized public service/client contract and must preserve the
+same public IDs, revisions and artifact digests end to end. Until that service exists and is
+exercised, the Integrations workspace labels the remote Platform path as an upstream gate rather
+than presenting a mock as live.

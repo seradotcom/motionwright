@@ -45,3 +45,41 @@ Remotion and ManimGL can be adapters when licenses/environment permit. Their abs
 Swapping a renderer computes capability differences before executing. Losses are explicit and reviewable. A backend that can only crossfade a concept transition must not report an exact morph.
 
 Motion Canvas remains the canonical 2D authoring/render route and MLT remains the delivery/compositing route. Blender contributes explicit 3D artifacts. Manim contributes a safe declarative realization once a native driver exists. Motionwright does not create a second scheduler, Broker, Project Graph authority or Effect Conformance authority for any renderer.
+
+
+## Optional renderer gates
+
+Remotion and ManimGL are separate optional renderer identities. They are not dependencies of the
+free base path and are not available merely because their names appear in a project. A project must
+record a versioned extension descriptor with an exact SHA-256 digest, source, license/rights state,
+requested permissions, and an explicit opt-in before either renderer can be selected.
+
+Registering a descriptor grants no permissions by itself. Rights must be explicitly marked cleared
+before opt-in, only one enabled descriptor per extension kind is allowed, and an extension cannot be
+disabled or removed while a scene still selects its renderer. ManimGL never aliases or upgrades the
+Manim Community path.
+
+Optional generative-asset and catalog-package descriptors use the same registration boundary. Their
+presence does not establish provenance, runtime execution, billing, network authority, or technical
+acceptance. Those claims require their own evidence.
+
+Interactive playback remains a future profile rather than a delivered player. No active pricing,
+quota purchase, or commercial plan is inferred by Motionwright.
+
+
+## OpenTimelineIO interchange
+
+Motionwright exports a conservative OpenTimelineIO cut from the desktop runtime. The export writes a
+Timeline containing one video Track and one Clip for each Motionwright scene. Scene duration is
+preserved on a rational timeline and Motionwright identity, renderer, status and objective are kept
+inside namespaced metadata.
+
+The exporter deliberately uses MissingReference for abstract Motionwright scenes unless a scene has
+an explicit, truthful media binding. It does not guess that a project asset belongs to a scene.
+Canvas geometry, hierarchy, semantic relations, property locks, reviews, branch history, transcript
+alignment, mix intent and renderer execution semantics are not described as lossless OTIO state.
+Those omissions are returned as an explicit loss report and embedded in Motionwright metadata.
+
+An OTIO export is therefore an editorial interchange artifact, not a round-trip replacement for the
+Motionwright project bundle. The desktop command uses create-new semantics and never overwrites an
+existing destination.

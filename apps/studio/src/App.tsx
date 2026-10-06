@@ -47,6 +47,7 @@ import {
 import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
+import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
 import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
@@ -71,6 +72,7 @@ type Workspace =
   | "Timeline"
   | "Jobs"
   | "Workflows"
+  | "Integrations"
   | "Alternatives"
   | "Changes"
   | "Dependencies"
@@ -86,6 +88,7 @@ const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Timeline", icon: Film },
   { name: "Jobs", icon: Activity },
   { name: "Workflows", icon: Wand2 },
+  { name: "Integrations", icon: Settings2 },
   { name: "Alternatives", icon: Sparkles },
   { name: "Changes", icon: GitBranch },
   { name: "Dependencies", icon: Workflow },
@@ -100,6 +103,16 @@ const rendererLabels: Record<RendererKind, string> = {
   "manim-community": "Manim Community",
   remotion: "Remotion",
   "manim-gl": "ManimGL",
+};
+
+const rendererAvailable = (project: Project, renderer: RendererKind) => {
+  if (renderer === "remotion") {
+    return project.extensions.some((extension) => extension.kind === "remotion-renderer" && extension.enabled && extension.rights_status === "cleared");
+  }
+  if (renderer === "manim-gl") {
+    return project.extensions.some((extension) => extension.kind === "manim-gl-renderer" && extension.enabled && extension.rights_status === "cleared");
+  }
+  return true;
 };
 
 function formatTime(value: number) {
@@ -932,9 +945,15 @@ function Inspector({
             renderer: event.target.value as RendererKind,
           })}
         >
-          {Object.entries(rendererLabels).map(([value, label]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
+          {Object.entries(rendererLabels).map(([value, label]) => {
+            const renderer = value as RendererKind;
+            const available = rendererAvailable(project, renderer);
+            return (
+              <option key={value} value={value} disabled={!available}>
+                {label}{available ? "" : " · opt-in required"}
+              </option>
+            );
+          })}
         </select>
         <label className="field-label" htmlFor="scene-status">Review state</label>
         <select
@@ -1272,6 +1291,8 @@ export default function App() {
         );
       case "Workflows":
         return <WorkflowWorkspace project={project} />;
+      case "Integrations":
+        return <IntegrationsWorkspace project={project} nativeSdk={boot.native_sdk} commit={commit} />;
       case "Alternatives":
         return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
       case "Changes":

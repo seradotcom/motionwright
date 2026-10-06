@@ -223,6 +223,8 @@ export const fixtureProject: Project = {
     }
   ],
   model_invocations: [],
+  extensions: [],
+  handoffs: [],
   updated_at: now
 };
 
