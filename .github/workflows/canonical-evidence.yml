@@ -1,0 +1,48 @@
+name: Canonical Graph and Effects
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "SOURCE_LOCK.json"
+      - "crates/native/**"
+      - ".github/workflows/canonical-evidence.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "Cargo.toml"
+      - "SOURCE_LOCK.json"
+      - "crates/native/**"
+      - ".github/workflows/canonical-evidence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-adapters:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve pinned Semwright revision
+        id: pin
+        run: echo "sha=$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+      - name: Verify immutable upstream checkout
+        run: test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Upstream canonical Graph adapter contract
+        working-directory: _semwright
+        run: cargo test -p semwright-native-sdk --features graph --test graph_adapter
+      - name: Upstream canonical Effects contract
+        working-directory: _semwright
+        run: cargo test -p semwright-native-sdk --features effects --test effects_conformance
+      - name: Motionwright canonical adapter tests
+        run: cargo test -p motionwright-native canonical::tests --all-targets

@@ -25,3 +25,6 @@ Current required CI lanes are:
 The heavier workflow separately owns coverage/security and release-shaped builds. Renderer/Graph/Effects lanes are added only when they execute real integrations; a placeholder is never reported as acceptance evidence.
 
 GitHub Actions receipts must identify app SHA, Semwright pin, suite, environment and input fixtures. A skipped, cancelled or unavailable gate is not a PASS.
+## Canonical evidence lane
+
+The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter compatibility. It runs Semwright's own Project Graph adapter and Effect Conformance suites from the pinned source before Motionwright's wrapper tests. A green lane proves the consumer boundary compiles and preserves the upstream contracts; it does **not** claim Graph admission, render success, or a product-level Effects PASS for a Motionwright deliverable.

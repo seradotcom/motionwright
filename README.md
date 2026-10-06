@@ -38,6 +38,7 @@ The Native SDK surface is used as intended:
 - operation discovery is not permission;
 - the application cannot mint Broker approvals, grants or Driver Host authority;
 - Graph and Effects are adapters to canonical Semwright authorities, not local replicas.
+- Graph candidates and Effects specifications are prepared through the pinned Native SDK; admission/verdict authority remains outside the application.
 
 ## Renderer plan
 
