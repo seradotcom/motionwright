@@ -67,3 +67,8 @@ Motionwright stores its local dependency projection but canonical CURRENT/STALE/
 ## Jobs
 
 Long-running work is correlated locally but scheduled/executed through Semwright mechanisms. The UI may map canonical states into QUEUED/RUNNING/CANCEL_REQUESTED/SUCCEEDED/FAILED/CANCELLED/OUTCOME_UNKNOWN. Result applicability (for example a stale late render) is a separate dimension.
+
+
+## Delivery boundary
+
+Delivery profiles are application-owned versioned intent and travel with branch state. Caption sidecars are derived locally only from transcript segments whose timing evidence is known; an UNKNOWN alignment cannot be promoted to a timestamp. Final media production remains a Semwright-backed runtime concern, so configuring H.264, HEVC, ProRes, VP9, AV1, AAC, PCM or Opus never creates an execution or quality claim by itself.

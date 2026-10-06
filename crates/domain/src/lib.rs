@@ -1,8 +1,10 @@
 mod canvas;
 mod creative;
+mod delivery;
 mod history;
 pub use canvas::*;
 pub use creative::*;
+pub use delivery::*;
 pub use history::*;
 
 use chrono::{DateTime, Utc};
@@ -320,6 +322,18 @@ pub struct DeliverableProfile {
     pub height: u32,
     pub language: String,
     pub captions: bool,
+    #[serde(default)]
+    pub caption_format: CaptionFormat,
+    #[serde(default)]
+    pub video_codec: VideoCodec,
+    #[serde(default)]
+    pub audio_codec: AudioCodec,
+    #[serde(default = "default_audio_sample_rate_hz")]
+    pub audio_sample_rate_hz: u32,
+    #[serde(default)]
+    pub brand_profile: Option<String>,
+    #[serde(default)]
+    pub cut_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -400,6 +414,12 @@ impl Project {
                     height: 1080,
                     language: "en".into(),
                     captions: true,
+                    caption_format: CaptionFormat::WebVtt,
+                    video_codec: VideoCodec::H264,
+                    audio_codec: AudioCodec::Aac,
+                    audio_sample_rate_hz: default_audio_sample_rate_hz(),
+                    brand_profile: None,
+                    cut_label: None,
                 },
                 DeliverableProfile {
                     id: Uuid::now_v7(),
@@ -408,6 +428,12 @@ impl Project {
                     height: 1920,
                     language: "en".into(),
                     captions: true,
+                    caption_format: CaptionFormat::WebVtt,
+                    video_codec: VideoCodec::H264,
+                    audio_codec: AudioCodec::Aac,
+                    audio_sample_rate_hz: default_audio_sample_rate_hz(),
+                    brand_profile: None,
+                    cut_label: None,
                 },
                 DeliverableProfile {
                     id: Uuid::now_v7(),
@@ -416,6 +442,12 @@ impl Project {
                     height: 1080,
                     language: "en".into(),
                     captions: true,
+                    caption_format: CaptionFormat::WebVtt,
+                    video_codec: VideoCodec::H264,
+                    audio_codec: AudioCodec::Aac,
+                    audio_sample_rate_hz: default_audio_sample_rate_hz(),
+                    brand_profile: None,
+                    cut_label: None,
                 },
             ],
             brief: Brief::default(),
@@ -475,17 +507,7 @@ impl Project {
                 return Err(DomainError::Invalid("invalid lock".into()));
             }
         }
-        for profile in &self.deliverables {
-            if profile.width == 0
-                || profile.height == 0
-                || profile.width > 16384
-                || profile.height > 16384
-            {
-                return Err(DomainError::Invalid(
-                    "invalid deliverable dimensions".into(),
-                ));
-            }
-        }
+        validate_deliverables(&self.deliverables)?;
         self.brief.validate()?;
         self.narrative.validate()?;
         let claim_ids: HashSet<_> = self.brief.claims.iter().map(|claim| claim.id).collect();
@@ -981,6 +1003,46 @@ impl Project {
                     return Err(DomainError::NotFound(format!("asset:{asset_id}")));
                 }
             }
+            Change::UpsertDeliverable { profile } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                profile.validate()?;
+                if let Some(existing) = self
+                    .deliverables
+                    .iter_mut()
+                    .find(|candidate| candidate.id == profile.id)
+                {
+                    *existing = profile.clone();
+                } else {
+                    if self.deliverables.len() >= MAX_DELIVERABLE_PROFILES {
+                        return Err(DomainError::Invalid("too many deliverable profiles".into()));
+                    }
+                    self.deliverables.push(profile.clone());
+                }
+                validate_deliverables(&self.deliverables)?;
+            }
+            Change::RemoveDeliverable { profile_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self.deliverables.len() <= 1 {
+                    return Err(DomainError::Invalid(
+                        "a project must keep at least one deliverable profile".into(),
+                    ));
+                }
+                if self
+                    .reviews
+                    .iter()
+                    .any(|review| review.anchor.profile_id == Some(*profile_id))
+                {
+                    return Err(DomainError::Invalid(
+                        "deliverable profile is referenced by review history".into(),
+                    ));
+                }
+                let before = self.deliverables.len();
+                self.deliverables
+                    .retain(|profile| profile.id != *profile_id);
+                if before == self.deliverables.len() {
+                    return Err(DomainError::NotFound(format!("deliverable:{profile_id}")));
+                }
+            }
             Change::AddVoiceTrack { track } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 self.audio.voice_tracks.push(track.clone());
@@ -1208,6 +1270,12 @@ pub enum Change {
     },
     RemoveAsset {
         asset_id: Uuid,
+    },
+    UpsertDeliverable {
+        profile: DeliverableProfile,
+    },
+    RemoveDeliverable {
+        profile_id: Uuid,
     },
     AddVoiceTrack {
         track: VoiceTrack,

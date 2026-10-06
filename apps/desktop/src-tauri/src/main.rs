@@ -1,8 +1,8 @@
-use motionwright_domain::{Change, Project, RevisionStamp};
+use motionwright_domain::{CaptionFormat, Change, Project, RevisionStamp, caption_sidecar};
 use motionwright_native::build_application;
 use motionwright_service::{ProjectEvent, StudioService};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -51,6 +51,19 @@ struct BundlePathRequest {
 struct ExportBundleRequest {
     project_id: Uuid,
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportCaptionRequest {
+    project_id: Uuid,
+    profile_id: Uuid,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CaptionExportResponse {
+    path: String,
+    cue_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +200,45 @@ fn export_project_bundle(
 }
 
 #[tauri::command]
+fn export_caption_sidecar(
+    state: State<'_, AppState>,
+    request: ExportCaptionRequest,
+) -> Result<CaptionExportResponse, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let sidecar = caption_sidecar(&project, request.profile_id).map_err(sanitized)?;
+    let destination = absolute_caption_path(&request.path, sidecar.format)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Caption export destination has no parent directory.".to_string())?;
+    if !parent.is_dir() {
+        return Err("Caption export directory must already exist.".into());
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "Caption export destination already exists; Motionwright will not overwrite it."
+                    .to_string()
+            } else {
+                "Motionwright could not create the caption sidecar.".to_string()
+            }
+        })?;
+    file.write_all(sidecar.body.as_bytes())
+        .map_err(|_| "Motionwright could not write the caption sidecar.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "Motionwright could not finalize the caption sidecar.".to_string())?;
+    Ok(CaptionExportResponse {
+        path: destination.display().to_string(),
+        cue_count: sidecar.cue_count,
+    })
+}
+
+#[tauri::command]
 fn inspect_project_bundle(
     state: State<'_, AppState>,
     request: BundlePathRequest,
@@ -285,6 +337,32 @@ fn infer_media_type(path: &std::path::Path) -> &'static str {
     }
 }
 
+fn absolute_caption_path(value: &str, format: CaptionFormat) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an absolute caption sidecar path.".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("Caption sidecar paths must be absolute.".into());
+    }
+    let expected = match format {
+        CaptionFormat::WebVtt => "vtt",
+        CaptionFormat::SubRip => "srt",
+    };
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension != expected {
+        return Err(format!(
+            "Caption sidecar must use the .{expected} extension."
+        ));
+    }
+    Ok(path)
+}
+
 fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -353,6 +431,7 @@ fn main() {
             project_history,
             import_asset_file,
             export_project_bundle,
+            export_caption_sidecar,
             inspect_project_bundle,
             import_project_bundle,
             apply_change
