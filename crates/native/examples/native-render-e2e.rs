@@ -37,12 +37,34 @@ fn text_arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> String {
         .unwrap_or_else(|| usage())
 }
 
-fn text_node() -> CanvasNode {
+fn fixed_group() -> CanvasNode {
+    CanvasNode {
+        id: Uuid::now_v7(),
+        name: "Native production frame".into(),
+        kind: "group".into(),
+        parent_id: None,
+        x: 260.0,
+        y: 390.0,
+        width: 1_400.0,
+        height: 300.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: None,
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 1,
+        style: NodeStyle::default(),
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    }
+}
+
+fn text_node(parent_id: Uuid) -> CanvasNode {
     CanvasNode {
         id: Uuid::now_v7(),
         name: "Native production title".into(),
         kind: "text".into(),
-        parent_id: None,
+        parent_id: Some(parent_id),
         x: 480.0,
         y: 460.0,
         width: 960.0,
@@ -88,14 +110,27 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         )?
         .project;
     let scene_id = with_scene.scenes[0].id;
-    let project = service
+    let group = fixed_group();
+    let group_id = group.id;
+    let with_group = service
         .apply(
             with_scene.id,
             &RevisionStamp::from(&with_scene),
-            "native-render-seed-node",
+            "native-render-seed-group",
             &Change::AddCanvasNode {
                 scene_id,
-                node: text_node(),
+                node: group,
+            },
+        )?
+        .project;
+    let project = service
+        .apply(
+            with_group.id,
+            &RevisionStamp::from(&with_group),
+            "native-render-seed-title",
+            &Change::AddCanvasNode {
+                scene_id,
+                node: text_node(group_id),
             },
         )?
         .project;

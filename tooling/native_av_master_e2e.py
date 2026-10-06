@@ -382,37 +382,38 @@ def main() -> None:
             capabilities = discovered.get("data", {}).get("capabilities", [])
             if not capabilities:
                 raise AssertionError("pinned Motion Canvas provider exposed no capabilities")
-            mlt_discovered = run_json(
-                [
-                    str(SW_BINS / "semwright"),
-                    "--socket",
-                    str(socket),
-                    "--session-file",
-                    str(session),
-                    "--json",
-                    "capabilities",
-                    "search",
-                    "mlt-video",
-                    "--provider",
-                    "driver:mlt-video",
-                ],
-                env=env,
-            )
-            mlt_capabilities = mlt_discovered.get("data", {}).get("capabilities", [])
-            required_mlt = {
+            required_mlt = (
                 "driver.mlt-video.frames.encode",
                 "driver.mlt-video.av.mux",
                 "driver.mlt-video.sync.probe",
-            }
-            observed_mlt = {
-                row.get("descriptor", {}).get("name")
-                for row in mlt_capabilities
-                if isinstance(row, dict)
-            }
-            if not required_mlt.issubset(observed_mlt):
-                raise AssertionError(
-                    f"pinned MLT provider lacks closed AV operations: {sorted(required_mlt - observed_mlt)}"
+            )
+            for capability_name in required_mlt:
+                described = run_json(
+                    [
+                        str(SW_BINS / "semwright"),
+                        "--socket",
+                        str(socket),
+                        "--session-file",
+                        str(session),
+                        "--json",
+                        "capabilities",
+                        "describe",
+                        capability_name,
+                    ],
+                    env=env,
                 )
+                payload = described.get("data", {})
+                capability = payload.get("capability", {})
+                provenance = payload.get("provenance", {})
+                if capability.get("name") != capability_name:
+                    raise AssertionError(
+                        f"pinned MLT capability describe mismatch: {capability_name}: {capability}"
+                    )
+                if provenance.get("provider") != "driver:mlt-video":
+                    raise AssertionError(
+                        f"pinned MLT capability has unexpected provider: "
+                        f"{capability_name}: {provenance}"
+                    )
             if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
                 raise AssertionError("Semwright did not create a private persistent session ticket")
 
