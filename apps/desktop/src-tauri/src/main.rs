@@ -3,7 +3,8 @@ use motionwright_domain::{
 };
 use motionwright_native::build_application;
 use motionwright_service::{
-    ProductionJobProjection, ProjectEvent, StudioService, VoiceImportMetadata,
+    ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
+    VoiceImportMetadata,
 };
 use serde::{Deserialize, Serialize};
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
@@ -50,6 +51,12 @@ struct HistoryRequest {
 struct ProductionJobsRequest {
     project_id: Uuid,
     limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelRequestPreflightRequest {
+    project_id: Uuid,
+    draft: ModelRequestDraft,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +150,17 @@ fn project_history(
     state
         .service
         .history(request.project_id, request.after_revision, request.limit)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
+fn model_request_preflight(
+    state: State<'_, AppState>,
+    request: ModelRequestPreflightRequest,
+) -> Result<ModelRequestPreflight, String> {
+    state
+        .service
+        .model_request_preflight(request.project_id, &request.draft)
         .map_err(sanitized)
 }
 
@@ -551,6 +569,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             project_history,
+            model_request_preflight,
             production_jobs,
             import_asset_file,
             import_voice_file,

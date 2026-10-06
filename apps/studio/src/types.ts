@@ -175,6 +175,46 @@ export interface ModelInvocationReceipt {
   base_revision: number; resource_refs: string[]; data_classes: DataClass[];
   budget: InvocationBudget; outcome: InvocationOutcome;
 }
+export type ModelProviderKind = "manual" | "external_agent" | "local" | "remote";
+export interface ModelRequestDraft {
+  provider_kind: ModelProviderKind;
+  provider: string;
+  model: string;
+  resource_refs: string[];
+  data_classes: DataClass[];
+  budget: InvocationBudget;
+}
+export interface ModelContextDisclosure {
+  resource_ref: string;
+  data_class: DataClass;
+  label: string;
+  media_type: string | null;
+  estimated_bytes: number;
+  content_sha256: string | null;
+  preview: string | null;
+  preview_truncated: boolean;
+  untrusted_data: boolean;
+}
+export interface ModelRequestPreflight {
+  schema: string;
+  project_id: string;
+  generation: string;
+  base_revision: number;
+  provider_kind: ModelProviderKind;
+  provider: string;
+  model: string;
+  resource_refs: string[];
+  data_classes: DataClass[];
+  budget: InvocationBudget;
+  disclosures: ModelContextDisclosure[];
+  estimated_total_bytes: number;
+  source_data_classes: DataClass[];
+  explicit_source_consent_required: boolean;
+  fallback_provider: string | null;
+  studio_network_dispatch_supported: boolean;
+  network_dispatched: boolean;
+  fingerprint_sha256: string;
+}
 
 export type ProductionJobState =
   | "queued"

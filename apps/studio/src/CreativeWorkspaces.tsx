@@ -1,5 +1,6 @@
 import { CircleDashed, LockKeyhole, Sparkles, Type } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import ModelContextInspector from "./ModelContextInspector";
 import type { Change, Project, Scene } from "./types";
 
 type Commit = (change: Change) => Promise<void>;
@@ -167,10 +168,19 @@ export function RichAlternativesView({ project, scene, commit }: { project: Proj
 
   if (!proposalSet) {
     return (
-      <div className="empty-workspace">
-        <Sparkles size={24} />
-        <strong>No proposals for this scene</strong>
-        <span>Motionwright will not fabricate alternatives. A planner or external agent must add a versioned proposal set first.</span>
+      <div className="workspace-scroll alternatives-view">
+        <header className="workspace-heading">
+          <div>
+            <h2>Alternatives</h2>
+            <p>Model context is inspectable even when the creative path remains fully manual.</p>
+          </div>
+        </header>
+        <ModelContextInspector project={project} scene={scene} />
+        <div className="alternatives-empty-inline">
+          <Sparkles size={20} />
+          <strong>No proposals for this scene</strong>
+          <span>Motionwright will not fabricate alternatives. Manual editing and external-agent authoring remain available without a model subscription.</span>
+        </div>
       </div>
     );
   }
@@ -187,6 +197,7 @@ export function RichAlternativesView({ project, scene, commit }: { project: Proj
           {stale ? "STALE SET" : "base r" + proposalSet.base_revision}
         </span>
       </header>
+      <ModelContextInspector project={project} scene={scene} />
       <div className="proposal-budget">
         <span>Candidate budget <strong>{proposalSet.search_budget.candidates}</strong></span>
         <span>Model calls <strong>{proposalSet.search_budget.model_calls}</strong></span>

@@ -45,6 +45,22 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
 });
 
 
+test("model preflight exposes minimal context without dispatch or silent fallback", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Alternatives", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Model request boundary" })).toBeVisible();
+  await expect(page.getByText("NETWORK OFF", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Inspect request boundary", exact: true }).click();
+
+  const result = page.getByRole("region", { name: "Model request preflight result" });
+  await expect(result).toBeVisible();
+  await expect(result).toContainText("fallback: none");
+  await expect(result).toContainText("network dispatched: no");
+  await expect(result).toContainText("UNTRUSTED DATA");
+  await expect(result).toContainText("exact base");
+});
+
 test("canvas edits and stored alternatives use project revisions rather than local-only UI state", async ({ page }) => {
   await page.goto("/");
 

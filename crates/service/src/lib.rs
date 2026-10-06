@@ -1,9 +1,13 @@
 mod audio;
 mod jobs;
+mod models;
 pub use audio::AudioMeasurement;
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
+};
+pub use models::{
+    ModelContextDisclosure, ModelProviderKind, ModelRequestDraft, ModelRequestPreflight,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +200,16 @@ impl StudioService {
         limit: usize,
     ) -> StorageResult<Vec<ProductionReceipt>> {
         self.store.lock().production_receipts(project_id, limit)
+    }
+
+    pub fn model_request_preflight(
+        &self,
+        project_id: Uuid,
+        draft: &ModelRequestDraft,
+    ) -> StorageResult<ModelRequestPreflight> {
+        let store = self.store.lock();
+        let project = store.load_project(project_id)?;
+        models::build_model_request_preflight(&store, &project, draft)
     }
 
     pub fn production_jobs(
