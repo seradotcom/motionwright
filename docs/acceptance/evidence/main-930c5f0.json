@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "repository": "seradotcom/motionwright",
+  "pr": 12,
+  "tested_head_sha": "744facffc43a6a9c1e0b314306df9bf40d3321e9",
+  "merge_sha": "930c5f089db3bc50cf27ecd779dc1976950be8a1",
+  "observed_green_lanes": [
+    "source-policy",
+    "studio",
+    "browser-acceptance",
+    "rust-core",
+    "storage-contracts",
+    "production-contracts",
+    "verify-native-sdk",
+    "canonical-film",
+    "canonical-adapters",
+    "locked-blender-catalog",
+    "motionwright-contracts",
+    "desktop-linux"
+  ],
+  "heavy_verification": {
+    "run_id": 37421901701,
+    "status_at_record": "queued",
+    "claim": "No PASS is claimed until the workflow completes successfully."
+  },
+  "limits": [
+    "Green compatibility lanes do not certify every product-level SRS criterion.",
+    "Graph/Effects compatibility is not artifact-level authority or a product Effect Conformance PASS.",
+    "Workflow V1/V2/V3 implementation does not replace a live product-level recorder/replay/promotion acceptance run.",
+    "Manim native execution remains blocked because the pinned Semwright revision has no Manim driver."
+  ]
+}
