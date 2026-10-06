@@ -407,7 +407,7 @@ def main() -> None:
                     f"concurrent loser was not rejected as stale: {losers[0]}"
                 )
             after_race = actor(env, database, "show", project_id)
-            winner_title = winners[0]["data"]["title"]
+            winner_title = winners[0]["data"]["project"]["title"]
             if after_race["title"] != winner_title:
                 raise AssertionError("shared state does not match the winning concurrent mutation")
             if int(after_race["revision"]) != int(human_revision) + 1:
