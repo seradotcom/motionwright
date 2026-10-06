@@ -46,7 +46,9 @@ jobs:
           persist-credentials: false
       - name: Resolve pinned Semwright revision
         id: pin
-        run: echo "sha=$(python3 -c 'import json; print(json.load(open(\"SOURCE_LOCK.json\"))[\"dependencies\"][\"semwright\"][\"revision\"])')" >> "$GITHUB_OUTPUT"
+        run: |
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: seradotcom/semwright
@@ -84,7 +86,9 @@ jobs:
           persist-credentials: false
       - name: Resolve pinned Semwright revision
         id: pin
-        run: echo "sha=$(python3 -c 'import json; print(json.load(open(\"SOURCE_LOCK.json\"))[\"dependencies\"][\"semwright\"][\"revision\"])')" >> "$GITHUB_OUTPUT"
+        run: |
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: seradotcom/semwright
