@@ -2,7 +2,7 @@ use motionwright_domain::{
     AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
 };
 use motionwright_native::build_application;
-use motionwright_service::{ProjectEvent, StudioService};
+use motionwright_service::{ProjectEvent, StudioService, VoiceImportMetadata};
 use serde::{Deserialize, Serialize};
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
@@ -251,9 +251,11 @@ fn import_voice_file(
             &expected,
             &Uuid::now_v7().to_string(),
             &source,
-            name,
-            media_type,
-            label,
+            VoiceImportMetadata {
+                name,
+                media_type,
+                label,
+            },
         )
         .map(|outcome| outcome.project)
         .map_err(sanitized)

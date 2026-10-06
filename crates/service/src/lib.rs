@@ -1,6 +1,13 @@
 mod audio;
 pub use audio::AudioMeasurement;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceImportMetadata {
+    pub name: String,
+    pub media_type: String,
+    pub label: String,
+}
+
 use motionwright_domain::{Asset, Change, Project, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
@@ -99,11 +106,9 @@ impl StudioService {
         expected: &RevisionStamp,
         request_id: &str,
         source: impl AsRef<Path>,
-        name: String,
-        media_type: String,
-        label: String,
+        metadata: VoiceImportMetadata,
     ) -> StorageResult<ApplyOutcome> {
-        if !media_type.starts_with("audio/") {
+        if !metadata.media_type.starts_with("audio/") {
             return Err(motionwright_domain::DomainError::Invalid(
                 "voice import requires an audio media type".into(),
             )
@@ -120,15 +125,15 @@ impl StudioService {
         let asset_id = Uuid::now_v7();
         let asset = Asset {
             id: asset_id,
-            name,
-            media_type,
+            name: metadata.name,
+            media_type: metadata.media_type,
             content_sha256: Some(blob.sha256.clone()),
             source_revision: Some("measured-audio-import".into()),
         };
         let track = VoiceTrack {
             id: Uuid::now_v7(),
             asset_id,
-            label,
+            label: metadata.label,
             sample_rate_hz: measured.sample_rate_hz,
             channels: measured.channels,
             measured_duration: measured.duration,
@@ -213,6 +218,7 @@ impl StudioService {
 #[cfg(test)]
 mod audio_import_tests {
     use super::*;
+    use motionwright_domain::RationalTime;
     use std::{fs::File, io::Write};
 
     fn write_pcm16_wav(path: &Path, sample_rate: u32, channels: u16, frames: u32, sample: i16) {
@@ -251,9 +257,11 @@ mod audio_import_tests {
                 &RevisionStamp::from(&initial),
                 "voice-take-1",
                 &first_path,
-                "take-01.wav".into(),
-                "audio/wav".into(),
-                "Narrator take 01".into(),
+                VoiceImportMetadata {
+                    name: "take-01.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Narrator take 01".into(),
+                },
             )
             .unwrap()
             .project;
@@ -281,9 +289,11 @@ mod audio_import_tests {
                 &RevisionStamp::from(&first),
                 "voice-take-2",
                 &second_path,
-                "take-02.wav".into(),
-                "audio/wav".into(),
-                "Narrator take 02".into(),
+                VoiceImportMetadata {
+                    name: "take-02.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Narrator take 02".into(),
+                },
             )
             .unwrap()
             .project;
