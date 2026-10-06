@@ -397,7 +397,16 @@ impl Default for VisualLanguage {
         Self {
             version: 1,
             name: "Cut Room Ledger".into(),
-            palette: vec![],
+            palette: vec![
+                VisualToken {
+                    name: "ink".into(),
+                    value: "#F2F4F3".into(),
+                },
+                VisualToken {
+                    name: "surface".into(),
+                    value: "#0F1216".into(),
+                },
+            ],
             type_tokens: vec![],
             motion_grammar: vec![],
             anti_slop_rules: vec![],

@@ -47,7 +47,7 @@ fn text_node() -> CanvasNode {
             fill: Some("#F5F5F2".into()),
             stroke: None,
             stroke_width: 0.0,
-            font_family: Some("system-ui".into()),
+            font_family: Some("Instrument Sans Variable".into()),
             font_size: Some(64.0),
             font_weight: Some(700),
             line_height: Some(1.05),
@@ -142,8 +142,8 @@ async fn render(
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let options = FilmBuildOptions {
         frame_rate: Rate::new(30, 1)?,
-        font_family: "system-ui".into(),
-        mono_font_family: "monospace".into(),
+        font_family: "Instrument Sans Variable".into(),
+        mono_font_family: "IBM Plex Mono".into(),
         scene_intents: vec![SceneFilmIntent {
             scene_id: scene.id,
             role: NarrativeRole::Mechanism,

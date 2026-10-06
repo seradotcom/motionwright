@@ -1327,7 +1327,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                             fill: Some("#F5F5F2".into()),
                             stroke: None,
                             stroke_width: 0.0,
-                            font_family: Some("system-ui".into()),
+                            font_family: Some("Instrument Sans Variable".into()),
                             font_size: Some(64.0),
                             font_weight: Some(700),
                             line_height: Some(1.05),
@@ -1447,8 +1447,8 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         let deliverable_id = project.deliverables[0].id;
         let options = FilmBuildOptions {
             frame_rate: Rate::new(30, 1).unwrap(),
-            font_family: "system-ui".into(),
-            mono_font_family: "monospace".into(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
             scene_intents: vec![crate::film::SceneFilmIntent {
                 scene_id,
                 role: NarrativeRole::Mechanism,

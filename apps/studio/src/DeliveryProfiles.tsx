@@ -84,8 +84,8 @@ export default function DeliveryProfiles({
   const [otioPath, setOtioPath] = useState("");
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const [frameRate, setFrameRate] = useState("30/1");
-  const [fontFamily, setFontFamily] = useState("system-ui");
-  const [monoFontFamily, setMonoFontFamily] = useState("monospace");
+  const fontFamily = "Instrument Sans Variable";
+  const monoFontFamily = "IBM Plex Mono";
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const [renderEvidence, setRenderEvidence] = useState<MotionCanvasRenderEvidence | null>(null);
   const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "new" | null>(null);
@@ -133,12 +133,18 @@ export default function DeliveryProfiles({
   const renderProfileCompatible = Boolean(
     selected && selected.width * 9 === selected.height * 16,
   );
+  const nativePaletteReady = useMemo(() => {
+    const names = new Set(project.visual_language.palette.map((token) => token.name.toLowerCase()));
+    return (names.has("text") || names.has("ink")) &&
+      (names.has("background") || names.has("surface"));
+  }, [project.visual_language.palette]);
   const renderReady = Boolean(
     desktopMode &&
     selected &&
     !dirty &&
     renderProfileCompatible &&
     renderIntentsComplete &&
+    nativePaletteReady &&
     fontFamily.trim() &&
     monoFontFamily.trim(),
   );
@@ -356,11 +362,11 @@ export default function DeliveryProfiles({
                 </label>
                 <label>
                   <span className="field-label">Primary font</span>
-                  <input value={fontFamily} maxLength={128} disabled={busy !== null} onChange={(event) => setFontFamily(event.target.value)} />
+                  <input value={fontFamily} readOnly aria-readonly="true" />
                 </label>
                 <label>
                   <span className="field-label">Mono font</span>
-                  <input value={monoFontFamily} maxLength={128} disabled={busy !== null} onChange={(event) => setMonoFontFamily(event.target.value)} />
+                  <input value={monoFontFamily} readOnly aria-readonly="true" />
                 </label>
               </div>
 
@@ -442,6 +448,9 @@ export default function DeliveryProfiles({
               )}
               {!renderProfileCompatible && selected && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> Canonical Film currently requires a 16:9 profile; use a reframed branch for other aspect ratios.</div>
+              )}
+              {!nativePaletteReady && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> Native Motion Canvas production requires explicit ink/text and surface/background tokens in Visual language.</div>
               )}
               {motionScenes.length === 0 && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> This revision has no scenes assigned to Motion Canvas.</div>
