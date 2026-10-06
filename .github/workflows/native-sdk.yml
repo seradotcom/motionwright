@@ -4,44 +4,132 @@ on:
   pull_request:
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
       - "SOURCE_LOCK.json"
       - "crates/native/**"
       - "apps/desktop/src-tauri/**"
+      - "tooling/native_host_shared_state.py"
+      - "docs/native-sdk.md"
       - ".github/workflows/native-sdk.yml"
   push:
     branches: ["main"]
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
       - "SOURCE_LOCK.json"
       - "crates/native/**"
       - "apps/desktop/src-tauri/**"
+      - "tooling/native_host_shared_state.py"
+      - "docs/native-sdk.md"
       - ".github/workflows/native-sdk.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: native-sdk-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   verify-native-sdk:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Resolve pinned Semwright revision
         id: pin
-        run: echo "sha=$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+        run: |
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: seradotcom/semwright
           ref: ${{ steps.pin.outputs.sha }}
           path: _semwright
+          persist-credentials: false
       - name: Verify immutable checkout
-        run: test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
-      - uses: dtolnay/rust-toolchain@master
+        run: |
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-sdk-1.98.1
+          cache-on-failure: true
       - name: Upstream public Native SDK contract tests
         working-directory: _semwright
-        run: cargo test -p semwright-native-sdk --features driver --test cooperation
+        run: cargo test --locked -p semwright-native-sdk --features driver --test cooperation
       - name: Motionwright Native SDK adapter tests
-        run: cargo test -p motionwright-native --all-targets
+        run: cargo test --locked -p motionwright-native --all-targets
+
+  real-host-shared-state:
+    needs: verify-native-sdk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+      SEMWRIGHT_TEST_DRIVER_SANDBOX: "1"
+      SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Resolve pinned Semwright revision
+        id: pin
+        run: |
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+      - name: Verify exact source identities
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-real-host-1.98.1
+          cache-on-failure: true
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-sdk/github-actions/shared-state/sandbox-profile.txt"
+      - name: Install exact Semwright daemon build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
+      - name: Build exact Semwright daemon, CLI and sandbox
+        working-directory: _semwright
+        run: |
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
+      - name: Build Motionwright provider and app-state actor
+        run: |
+          cargo build --locked -p motionwright-native \
+            --bin motionwright-native-provider \
+            --example shared-state-actor
+      - name: Real UI-service to Native Host shared-state acceptance
+        run: python3 tooling/native_host_shared_state.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: motionwright-native-shared-state-${{ github.sha }}
+          path: verification/native-sdk/github-actions/shared-state
+          if-no-files-found: error
+          retention-days: 14

@@ -32,13 +32,17 @@ The provider intentionally exposes composable commands instead of an unrestricte
 - creative system: set visual language, add a bounded proposal set and select one proposal;
 - authority hints owned by the app: set and remove explicit project/resource locks.
 
-Together with `driver.motionwright.observe`, this is currently 27 Native SDK capabilities.
+Together with `driver.motionwright.observe`, this is currently 42 Native SDK capabilities.
 
 Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries. Scene-duration ripple changes presentation timing and later scene starts; it does not silently retime measured audio.
 
 ## Shared UI and agent state
 
 The React/Tauri editor calls the same application service and `Change` domain used by the Native SDK adapter. Browser-only development fixtures mirror those change contracts for UI tests, but are not runtime evidence.
+
+The dedicated Native SDK workflow also exercises a **real Host shared-state lane** on a disposable Linux runner. It launches the exact pinned Semwright daemon/Broker/Driver Host, the Motionwright stdio Native SDK provider and a separate app-state actor using the same `StudioService` path as Tauri. The lane proves that app-owned writes are visible through Host, SDK writes are visible when the application reopens the same SQLite store, and an app write invalidates an older Native SDK reference with `StaleReference`. The actor is test evidence for the shared application-service boundary; it is not a substitute for independent end-user UI acceptance, which remains separately gated.
+
+Driver Host supplies the provider with an owner-granted `motionwright-data` workspace mount. The provider never accepts a database path from an operation payload. Explicit `MOTIONWRIGHT_DB` or positional database paths remain development/operator entry points only when the provider is launched directly outside Host.
 
 Operation discovery never authorizes an invocation. Broker/Policy/Driver Host remain responsible for capability, consent, session and runtime authority.
 ## Canonical Graph and Effects adapters

@@ -297,10 +297,20 @@ impl OperationHandler for ApplyHandler {
         if let Err(error) = context.check_cancelled() {
             return Completion::NotApplied(error);
         }
-        let Some(reference) = args.get("ref").and_then(Value::as_str) else {
+        if args.get("ref").and_then(Value::as_str).is_none() {
             return Completion::NotApplied(Error::invalid("Project ref is required"));
+        }
+        // The caller's ref is an opaque Native SDK marker. NativeDriver validates and
+        // binds it before invoking this handler; application code must never parse it
+        // as a Motionwright resource. The Host-bound ResourceVersion is the authority
+        // for selecting the application-owned project and checking the commit CAS.
+        let Some(bound) = context.expected() else {
+            return Completion::NotApplied(Error::new(
+                ErrorCode::StaleReference,
+                "Observed project base is required",
+            ));
         };
-        let project_id = match project_id_from_resource(reference) {
+        let project_id = match project_id_from_resource(&bound.resource) {
             Ok(value) => value,
             Err(error) => return Completion::NotApplied(error),
         };
