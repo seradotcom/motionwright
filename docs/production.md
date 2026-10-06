@@ -19,6 +19,16 @@ Production receipts are application-owned history, not execution authority. Each
 
 A request ID cannot be reused with different input. A completed request replays its stored result instead of dispatching again. A request whose mutation outcome is unknown fails closed and must be inspected before any retry. Late results remain attached to their original project revision and never silently become current after creative edits.
 
+## Native Motion Canvas segment production
+
+The desktop Deliver surface exposes a bounded production operation for saved 16:9 profiles. The user supplies the canonical frame rate, primary/monospace fonts and an explicit narrative role plus motion archetype for every scene assigned to Motion Canvas. The UI does not infer those creative semantics at dispatch time.
+
+The coordinator projects only contiguous Motion Canvas scenes into the pinned canonical Film contract, then executes `composition.plan`, `composition.apply`, `render.start`, bounded `render.status` polling, `render.result` and `composition.verify` through the owner-provisioned Semwright connection. The plan reference, applied source fingerprint, render job reference, artifact frame count and native verification report must all agree with the same Motionwright generation/revision. Verification is accepted only when Semwright reports completed native support, zero findings and a non-empty all-PASS validation check set.
+
+This operation intentionally produces verified Motion Canvas segment artifacts, **not** the final audiovisual master. MLT assembly, final audio realization and AV mux remain separate production stages until they are connected to the same revision-bound path. Generic Canvas keyframes also remain fail-closed in canonical Film projection until the pinned Semwright authoring contract can preserve those curves exactly; Motionwright never substitutes an approximate animation silently.
+
+`.github/workflows/native-render-e2e.yml` is the heavy exact-SHA acceptance lane for this boundary. It provisions the pinned Semwright Broker/Driver Host on an ephemeral GitHub-hosted runner, installs the pinned Motion Canvas runtime and Firefox, keeps network disabled for the driver, renders a two-second application-owned revision to 60 real frames, verifies the driver artifact manifest and retains first/middle/last review frames plus machine-readable evidence. A written workflow is not a PASS; the evidence belongs to the exact Motionwright SHA only after that run succeeds.
+
 ## Authority boundary
 
 A valid local receipt means only that Motionwright recorded a Broker interaction. It does not imply render quality, Project Graph admission, Effect Conformance PASS, creative approval or freshness. Those claims require their canonical Semwright evidence paths.

@@ -27,7 +27,7 @@ The desktop editor is organized around:
 - **Changes** — revision history, branches, semantic diffs, conflict-aware merges and restore-as-new-change.
 - **Dependencies** — canonical Project Graph projections and honest CURRENT / STALE / UNKNOWN status.
 - **Review** — technical findings separated from creative critique and comments anchored to frame/object/beat/revision.
-- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, fail-closed WebVTT/SRT sidecars, and portable project exports.
+- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, explicit native Motion Canvas segment production, fail-closed WebVTT/SRT sidecars, and portable project exports.
 
 ## Native SDK
 
@@ -43,7 +43,7 @@ The Native SDK surface is used as intended:
 - Graph and Effects are adapters to canonical Semwright authorities, not local replicas.
 - Graph candidates and Effects specifications are prepared through the pinned Native SDK; admission/verdict authority remains outside the application.
 - Native production uses a digest-pinned owner connection to the Semwright CLI/Broker, strict Driver provenance, revision-bound receipts and fail-closed mutation retry semantics.
-- Motion Canvas production projects only explicit Motion Canvas timeline segments into the pinned canonical Film schema; mixed-renderer scenes remain in their native lanes.
+- Motion Canvas production projects only explicit Motion Canvas timeline segments into the pinned canonical Film schema; Studio supplies explicit narrative-role/archetype intent, then the production coordinator executes Semwright composition plan/apply, bounded render polling and native verification before exposing artifact evidence. Mixed-renderer scenes remain in their native lanes.
 
 ## Renderer plan
 

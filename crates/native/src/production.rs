@@ -1,4 +1,7 @@
-use crate::multi_renderer::{blender_export_path, build_blender_contribution};
+use crate::{
+    film::{FilmBuildOptions, build_motion_canvas_segments},
+    multi_renderer::{blender_export_path, build_blender_contribution},
+};
 use motionwright_domain::RevisionStamp;
 use motionwright_service::StudioService;
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
@@ -14,7 +17,11 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+use tokio::{
+    io::AsyncReadExt,
+    process::Command,
+    time::{Instant, sleep, timeout},
+};
 use uuid::Uuid;
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
@@ -23,6 +30,10 @@ const MAX_ARGS_BYTES: usize = 220_000;
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
 const DEFAULT_DEADLINE_SECS: u64 = 45;
 const MLT_DEADLINE_SECS: u64 = 330;
+const MOTION_RENDER_TIMEOUT_MS: u64 = 300_000;
+const MOTION_RENDER_POLL_DEADLINE_SECS: u64 = 330;
+const MOTION_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
+const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
 
 const MOTION_CANVAS_COMMANDS: &[&str] = &[
     "driver.motion-canvas.composition.inspect",
@@ -290,6 +301,29 @@ pub struct BrokerResult {
     pub request_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotionCanvasRenderEvidence {
+    pub project_resource: String,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+    pub segments: Vec<MotionCanvasSegmentEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotionCanvasSegmentEvidence {
+    pub segment_id: String,
+    pub scene_ids: Vec<Uuid>,
+    pub frame_count: u64,
+    pub plan_ref: String,
+    pub fingerprint: String,
+    pub job_ref: String,
+    pub artifact: Value,
+    pub verification: Value,
+}
+
 #[derive(Clone)]
 pub struct ProductionClient {
     connection: ProductionConnection,
@@ -430,6 +464,60 @@ impl ProductionClient {
     }
 }
 
+fn response_data(value: &Value) -> NativeResult<&Value> {
+    value
+        .pointer("/result/data")
+        .ok_or_else(|| backend("Canonical production response is missing provider data"))
+}
+
+fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| backend(context))
+}
+
+fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
+    if value
+        .pointer("/report/execution_status")
+        .and_then(Value::as_str)
+        != Some("completed")
+        || value
+            .pointer("/report/support_level")
+            .and_then(Value::as_str)
+            != Some("native")
+    {
+        return Err(backend(
+            "Motion Canvas composition verification did not complete with native support",
+        ));
+    }
+    let findings = value
+        .pointer("/measurement/findings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| backend("Motion Canvas verification findings are unavailable"))?;
+    if !findings.is_empty() {
+        return Err(backend(
+            "Motion Canvas native verification returned unresolved findings",
+        ));
+    }
+    let checks = value
+        .pointer("/measurement/validation/checks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| backend("Motion Canvas verification checks are unavailable"))?;
+    if checks.is_empty()
+        || checks
+            .iter()
+            .any(|check| check.get("verdict").and_then(Value::as_str) != Some("PASS"))
+    {
+        return Err(backend(
+            "Motion Canvas native verification did not produce an all-PASS check set",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -448,6 +536,239 @@ impl ProductionCoordinator {
         self.service
             .production_receipts(project_id, limit)
             .map_err(storage_error)
+    }
+
+    pub async fn render_motion_canvas_segments(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+    ) -> NativeResult<MotionCanvasRenderEvidence> {
+        if request_id.trim().is_empty()
+            || request_id.len() > 96
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(invalid("Motion Canvas production request id is invalid"));
+        }
+
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motionwright project changed since Motion Canvas production was prepared",
+            ));
+        }
+
+        let segments = build_motion_canvas_segments(&project, deliverable_id, options)?;
+        if segments.is_empty() {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "The selected revision has no Motion Canvas segments to render",
+            ));
+        }
+
+        let mut evidence = Vec::with_capacity(segments.len());
+        for (index, segment) in segments.into_iter().enumerate() {
+            let prefix = format!("{request_id}:motion:{index}");
+            let film = serde_json::to_value(&segment.film)
+                .map_err(|_| invalid("Canonical Film could not be encoded"))?;
+
+            let planned = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{prefix}:plan"),
+                    "driver.motion-canvas.composition.plan",
+                    json!({
+                        "film": film,
+                        "budget": {
+                            "max_iterations": 8,
+                            "max_operations": MOTION_PLAN_MAX_OPERATIONS,
+                            "max_findings": 1024,
+                            "max_observations": 128,
+                            "max_elapsed_ms": 120000
+                        }
+                    }),
+                    false,
+                )
+                .await?;
+            let plan_ref = required_string(
+                response_data(&planned)?,
+                "/plan_ref",
+                "Motion Canvas composition plan returned no plan reference",
+            )?;
+
+            let applied = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{prefix}:apply"),
+                    "driver.motion-canvas.composition.apply",
+                    json!({"plan_ref": plan_ref, "dry_run": false}),
+                    true,
+                )
+                .await?;
+            let applied_data = response_data(&applied)?;
+            if applied_data.get("applied").and_then(Value::as_bool) != Some(true)
+                || applied_data.get("execution_status").and_then(Value::as_str) != Some("completed")
+            {
+                return Err(backend(
+                    "Motion Canvas composition apply did not complete deterministically",
+                ));
+            }
+            let fingerprint = required_string(
+                applied_data,
+                "/fingerprint",
+                "Motion Canvas composition apply returned no source fingerprint",
+            )?;
+
+            let started = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{prefix}:render-start"),
+                    "driver.motion-canvas.render.start",
+                    json!({
+                        "expected_fingerprint": fingerprint,
+                        "profile": {
+                            "first_frame": 0,
+                            "end_frame_exclusive": segment.frame_count,
+                            "scale": "full",
+                            "transparent": false,
+                            "timeout_ms": MOTION_RENDER_TIMEOUT_MS
+                        }
+                    }),
+                    true,
+                )
+                .await?;
+            let job_ref = required_string(
+                response_data(&started)?,
+                "/job_ref",
+                "Motion Canvas render did not return a job reference",
+            )?;
+
+            let deadline = Instant::now() + Duration::from_secs(MOTION_RENDER_POLL_DEADLINE_SECS);
+            let mut poll = 0_u32;
+            let terminal = loop {
+                if Instant::now() >= deadline {
+                    return Err(Error::new(
+                        ErrorCode::Timeout,
+                        "Motion Canvas render did not reach a terminal state before the bounded deadline",
+                    )
+                    .uncertain());
+                }
+                let status = self
+                    .execute(
+                        project_id,
+                        expected,
+                        &format!("{prefix}:render-status:{poll}"),
+                        "driver.motion-canvas.render.status",
+                        json!({"job_ref": job_ref}),
+                        false,
+                    )
+                    .await?;
+                let data = response_data(&status)?.clone();
+                match data.get("state").and_then(Value::as_str) {
+                    Some("succeeded") => break data,
+                    Some("failed") => {
+                        return Err(backend("Motion Canvas render reported failure"));
+                    }
+                    Some("cancelled") => {
+                        return Err(Error::new(
+                            ErrorCode::Cancelled,
+                            "Motion Canvas render was cancelled",
+                        ));
+                    }
+                    Some("queued") | Some("running") => {}
+                    Some(_) => {
+                        return Err(backend(
+                            "Motion Canvas render returned an unsupported job state",
+                        ));
+                    }
+                    None => {
+                        return Err(backend(
+                            "Motion Canvas render status returned no canonical state",
+                        ));
+                    }
+                }
+                poll = poll
+                    .checked_add(1)
+                    .ok_or_else(|| backend("Motion Canvas render poll counter overflowed"))?;
+                sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
+            };
+            if terminal
+                .pointer("/artifact/frame_count")
+                .and_then(Value::as_u64)
+                != Some(segment.frame_count)
+            {
+                return Err(backend(
+                    "Motion Canvas terminal artifact frame count does not match the Film realization",
+                ));
+            }
+
+            let rendered = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{prefix}:render-result"),
+                    "driver.motion-canvas.render.result",
+                    json!({"job_ref": job_ref}),
+                    false,
+                )
+                .await?;
+            let rendered_data = response_data(&rendered)?;
+            if rendered_data.get("state").and_then(Value::as_str) != Some("succeeded") {
+                return Err(backend(
+                    "Motion Canvas render result is not a successful terminal artifact",
+                ));
+            }
+            let artifact = rendered_data
+                .get("artifact")
+                .cloned()
+                .ok_or_else(|| backend("Motion Canvas render result has no artifact"))?;
+            if artifact.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count) {
+                return Err(backend(
+                    "Motion Canvas result artifact frame count does not match the Film realization",
+                ));
+            }
+
+            let verified = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{prefix}:verify"),
+                    "driver.motion-canvas.composition.verify",
+                    json!({"plan_ref": plan_ref, "job_ref": job_ref}),
+                    false,
+                )
+                .await?;
+            let verification = response_data(&verified)?.clone();
+            ensure_native_motion_verification(&verification)?;
+
+            evidence.push(MotionCanvasSegmentEvidence {
+                segment_id: segment.id,
+                scene_ids: segment.scene_ids,
+                frame_count: segment.frame_count,
+                plan_ref,
+                fingerprint,
+                job_ref,
+                artifact,
+                verification,
+            });
+        }
+
+        Ok(MotionCanvasRenderEvidence {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            segments: evidence,
+        })
     }
 
     async fn blender_ref(
@@ -813,11 +1134,14 @@ fn storage_error(error: motionwright_storage::StorageError) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use motionwright_domain::{BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle};
     use motionwright_storage::Store;
+    use semwright_media_time::Rate;
+    use semwright_motion_authoring::{Archetype, NarrativeRole};
     use semwright_native_sdk::types::{Execution, InvocationProvenance};
-    use std::fs::File;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::{collections::BTreeSet, fs::File};
 
     fn fixture_service() -> (
         StudioService,
@@ -900,6 +1224,123 @@ mod tests {
             output_root: output,
             resource,
         }
+    }
+
+    #[cfg(unix)]
+    fn fake_render_connection(temp: &tempfile::TempDir, resource: String) -> ProductionConnection {
+        let mut connection = fake_connection(temp, resource);
+        let execution = Execution {
+            backend: "driver:motion-canvas".into(),
+            duration_ms: 1,
+            policy_decision: "allow".into(),
+            fallbacks_attempted: vec![],
+            provenance: Some(InvocationProvenance {
+                provider: "driver:motion-canvas".into(),
+                source: SourceKind::Driver,
+                provider_version: "test".into(),
+                capability_version: "test".into(),
+                descriptor_sha256: "cd".repeat(32),
+                untrusted_metadata: false,
+                catalog_revision: 1,
+                execution_provider: Some("driver:motion-canvas".into()),
+                provider_generation: Some(2),
+            }),
+            dry_run: false,
+        };
+        let execution_json = serde_json::to_string(&execution).unwrap();
+        let script = r#"#!/bin/sh
+command="$7"
+case "$command" in
+  driver.motion-canvas.composition.plan)
+    data='{"plan_ref":"plan-native-1","repair":false}'
+    ;;
+  driver.motion-canvas.composition.apply)
+    data='{"applied":true,"execution_status":"completed","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    ;;
+  driver.motion-canvas.render.start)
+    data='{"job_ref":"job-native-1","state":"queued"}'
+    ;;
+  driver.motion-canvas.render.status)
+    data='{"job_ref":"job-native-1","state":"succeeded","artifact":{"directory":"render-native-1","frame_count":60}}'
+    ;;
+  driver.motion-canvas.render.result)
+    data='{"job_ref":"job-native-1","state":"succeeded","artifact":{"directory":"render-native-1","frame_count":60,"manifest_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'
+    ;;
+  driver.motion-canvas.composition.verify)
+    data='{"report":{"execution_status":"completed","support_level":"native"},"measurement":{"findings":[],"validation":{"checks":[{"id":"native-frame-evidence","verdict":"PASS"}]}}}'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s,"error":null,"execution":__EXECUTION__,"warnings":[]}\n' "$command" "$data"
+"#
+        .replace("__EXECUTION__", &execution_json);
+        fs::write(&connection.executable, script).unwrap();
+        let mut permissions = fs::metadata(&connection.executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&connection.executable, permissions).unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        connection
+    }
+
+    fn motion_canvas_fixture(
+        service: &StudioService,
+        initial: motionwright_domain::Project,
+    ) -> motionwright_domain::Project {
+        let scene = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "render-fixture-scene",
+                &Change::AddScene {
+                    name: "Native render".into(),
+                    objective: "Prove the canonical render path".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = scene.scenes[0].id;
+        service
+            .apply(
+                scene.id,
+                &RevisionStamp::from(&scene),
+                "render-fixture-node",
+                &Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::now_v7(),
+                        name: "Native title".into(),
+                        kind: "text".into(),
+                        parent_id: None,
+                        x: 240.0,
+                        y: 320.0,
+                        width: 960.0,
+                        height: 160.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: Some("Motionwright".into()),
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 1,
+                        style: NodeStyle {
+                            fill: Some("#F5F5F2".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: Some("system-ui".into()),
+                            font_size: Some(64.0),
+                            font_weight: Some(700),
+                            line_height: Some(1.05),
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            )
+            .unwrap()
+            .project
     }
 
     #[test]
@@ -992,6 +1433,55 @@ mod tests {
             .unwrap();
         assert_eq!(replay["replayed"], true);
         assert_eq!(coordinator.receipts(project.id, 10).unwrap().len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn motion_canvas_production_is_revision_bound_rendered_and_natively_verified() {
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let coordinator = ProductionCoordinator::new(service, connection).unwrap();
+        let expected = RevisionStamp::from(&project);
+        let scene_id = project.scenes[0].id;
+        let deliverable_id = project.deliverables[0].id;
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: "system-ui".into(),
+            mono_font_family: "monospace".into(),
+            scene_intents: vec![crate::film::SceneFilmIntent {
+                scene_id,
+                role: NarrativeRole::Mechanism,
+                archetype: Archetype::Statement,
+            }],
+        };
+
+        let rendered = coordinator
+            .render_motion_canvas_segments(
+                project.id,
+                &expected,
+                "native-render-e2e",
+                deliverable_id,
+                &options,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(rendered.project_resource, project.resource_key());
+        assert_eq!(rendered.generation, project.generation);
+        assert_eq!(rendered.revision, project.revision);
+        assert_eq!(rendered.segments.len(), 1);
+        assert_eq!(rendered.segments[0].frame_count, 60);
+        assert_eq!(rendered.segments[0].artifact["frame_count"], 60);
+        assert_eq!(
+            rendered.segments[0].verification["report"]["support_level"],
+            "native"
+        );
+        assert_eq!(
+            rendered.segments[0].verification["measurement"]["validation"]["checks"][0]["verdict"],
+            "PASS"
+        );
+        assert_eq!(coordinator.receipts(project.id, 100).unwrap().len(), 12);
     }
 
     #[cfg(unix)]
