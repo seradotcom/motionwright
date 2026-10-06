@@ -66,6 +66,7 @@ docs/
   architecture.md
   native-sdk.md
   renderers.md
+  security.md
   workflows.md
   testing.md
   visual-references.md
@@ -84,6 +85,8 @@ Semwright itself is a separate project and is not relicensed by this repository.
 ## Security / truthfulness
 
 Do not commit secrets, private prompts, paid-provider credentials, proprietary fonts, customer media or private coordination kits. CI receipts and product status must stay attached to exact source revisions. A written test is not a passing test; a sampled frame is not proof of the whole video; a generated recommendation is not an Effect Conformance verdict.
+
+The concrete WebView, controlled-import, portable-bundle and exact-source delivery boundaries are documented in [docs/security.md](docs/security.md). CI enforces the public source boundary and produces a delivery manifest tied to the tested Motionwright SHA and pinned Semwright revision.
 
 ## Acceptance status
 

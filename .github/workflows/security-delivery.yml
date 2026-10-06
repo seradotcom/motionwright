@@ -1,0 +1,110 @@
+name: Security and Delivery
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "apps/desktop/src-tauri/**"
+      - "apps/studio/src/**"
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "tooling/source_policy.py"
+      - "tooling/release_manifest.py"
+      - "SOURCE_LOCK.json"
+      - "Cargo.lock"
+      - "apps/studio/package-lock.json"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
+      - "docs/security.md"
+      - ".github/workflows/security-delivery.yml"
+  pull_request:
+    paths:
+      - "apps/desktop/src-tauri/**"
+      - "apps/studio/src/**"
+      - "crates/storage/**"
+      - "crates/service/**"
+      - "tooling/source_policy.py"
+      - "tooling/release_manifest.py"
+      - "SOURCE_LOCK.json"
+      - "Cargo.lock"
+      - "apps/studio/package-lock.json"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
+      - "docs/security.md"
+      - ".github/workflows/security-delivery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  source-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Public source, WebView and credential policy
+        run: python3 tooling/source_policy.py
+      - name: Exact-source delivery manifest
+        run: |
+          mkdir -p ci-evidence
+          python3 tooling/release_manifest.py \
+            --git-sha "$(git rev-parse HEAD)" \
+            --output ci-evidence/delivery-manifest.json
+          python3 -m json.tool ci-evidence/delivery-manifest.json >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motionwright-delivery-manifest
+          path: ci-evidence/delivery-manifest.json
+          if-no-files-found: error
+
+  controlled-imports:
+    needs: source-boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: false
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Storage and import security contracts
+        run: cargo test -p motionwright-storage -p motionwright-service --all-targets
+      - name: Clippy
+        run: cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
+
+  desktop-boundary:
+    needs: source-boundary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - name: Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Check bounded desktop command surface
+        run: cargo check -p motionwright-desktop
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4

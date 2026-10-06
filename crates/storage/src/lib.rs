@@ -47,6 +47,8 @@ pub enum StorageError {
     BlobTooLarge { size: u64, limit: u64 },
     #[error("export destination already exists")]
     DestinationExists,
+    #[error("unsafe source path: {0}")]
+    UnsafeSourcePath(String),
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
@@ -55,6 +57,8 @@ pub const STORAGE_SCHEMA_VERSION: u32 = 2;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BUNDLE_BLOBS: usize = 4096;
+const MAX_BUNDLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectSummary {
@@ -252,6 +256,7 @@ impl Store {
 
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> Result<BlobDescriptor> {
         let source = source.as_ref();
+        ensure_regular_file(source, "blob source")?;
         let staging_root = self.blob_root.join(".staging");
         fs::create_dir_all(&staging_root)?;
         let staging_path = staging_root.join(format!("{}.part", Uuid::now_v7()));
@@ -326,7 +331,7 @@ impl Store {
                 digest: digest.to_owned(),
             });
         }
-        let size = fs::metadata(&path)?.len();
+        let size = ensure_regular_file(&path, "content-addressed blob")?.len();
         if size > limit {
             return Err(StorageError::BlobTooLarge { size, limit });
         }
@@ -429,7 +434,7 @@ impl Store {
         self.validate_bundle(source, &manifest)?;
 
         for blob in &manifest.blobs {
-            let path = source.join(&blob.relative_path);
+            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
             let descriptor = self.ingest_blob_file(&path)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
@@ -451,6 +456,11 @@ impl Store {
                 manifest.format_version
             )));
         }
+        if manifest.blobs.len() > MAX_BUNDLE_BLOBS {
+            return Err(StorageError::InvalidBackup(
+                "portable bundle contains too many blobs".into(),
+            ));
+        }
         let project_plan = self.inspect_import(&manifest.backup)?;
         let mut expected = BTreeSet::new();
         for asset in &manifest.backup.project.assets {
@@ -471,13 +481,28 @@ impl Store {
                     "bundle blob manifest is duplicate or has a non-canonical path".into(),
                 ));
             }
-            let descriptor = hash_file(&source.join(&blob.relative_path))?;
+            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
+            let size = fs::symlink_metadata(&path)?.len();
+            if size != blob.size_bytes {
+                return Err(StorageError::InvalidBackup(
+                    "bundle blob size differs from its manifest before hashing".into(),
+                ));
+            }
+            total_blob_bytes = total_blob_bytes.checked_add(size).ok_or_else(|| {
+                StorageError::InvalidBackup("portable bundle byte total overflowed".into())
+            })?;
+            if total_blob_bytes > MAX_BUNDLE_TOTAL_BYTES {
+                return Err(StorageError::BlobTooLarge {
+                    size: total_blob_bytes,
+                    limit: MAX_BUNDLE_TOTAL_BYTES,
+                });
+            }
+            let descriptor = hash_file(&path)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
                 ));
             }
-            total_blob_bytes = total_blob_bytes.saturating_add(blob.size_bytes);
         }
         if observed != expected {
             return Err(StorageError::InvalidBackup(
@@ -1049,7 +1074,63 @@ fn blob_relative_path(digest: &str) -> Result<String> {
     Ok(format!("blobs/sha256/{}/{}", &digest[..2], digest))
 }
 
+fn ensure_regular_file(path: &Path, label: &str) -> Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(StorageError::UnsafeSourcePath(format!(
+            "{label} must be a regular non-symlink file"
+        )));
+    }
+    Ok(metadata)
+}
+
+fn ensure_regular_directory(path: &Path, label: &str) -> Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_dir() {
+        return Err(StorageError::UnsafeSourcePath(format!(
+            "{label} must be a real non-symlink directory"
+        )));
+    }
+    Ok(metadata)
+}
+
+fn bundle_member_path(root: &Path, relative: &str, label: &str) -> Result<PathBuf> {
+    ensure_regular_directory(root, "portable bundle")?;
+    let relative = Path::new(relative);
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty() {
+        return Err(StorageError::UnsafeSourcePath(format!(
+            "{label} path is empty"
+        )));
+    }
+
+    let mut current = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(StorageError::UnsafeSourcePath(format!(
+                "{label} path is not a relative normal path"
+            )));
+        };
+        current.push(part);
+        let metadata = fs::symlink_metadata(&current)?;
+        let file_type = metadata.file_type();
+        let is_last = index + 1 == components.len();
+        if file_type.is_symlink()
+            || (is_last && !file_type.is_file())
+            || (!is_last && !file_type.is_dir())
+        {
+            return Err(StorageError::UnsafeSourcePath(format!(
+                "{label} contains a symlink or special path component"
+            )));
+        }
+    }
+    Ok(current)
+}
+
 fn hash_file(path: &Path) -> Result<BlobDescriptor> {
+    ensure_regular_file(path, "hashed source")?;
     let mut input = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut size_bytes = 0_u64;
@@ -1069,8 +1150,8 @@ fn hash_file(path: &Path) -> Result<BlobDescriptor> {
 }
 
 fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
-    let path = source.join("manifest.json");
-    let size = fs::metadata(&path)?.len();
+    let path = bundle_member_path(source, "manifest.json", "portable bundle manifest")?;
+    let size = ensure_regular_file(&path, "portable bundle manifest")?.len();
     if size > MAX_BUNDLE_MANIFEST_BYTES {
         return Err(StorageError::BlobTooLarge {
             size,
@@ -1317,6 +1398,116 @@ mod tests {
         let destination = Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
         let error = destination.inspect_project_bundle(&bundle).unwrap_err();
         assert!(matches!(error, StorageError::InvalidBackup(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blob_ingest_and_portable_bundle_reject_symlink_sources() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real_source = temp.path().join("real.bin");
+        let linked_source = temp.path().join("linked.bin");
+        fs::write(&real_source, b"outside-bytes").unwrap();
+        symlink(&real_source, &linked_source).unwrap();
+
+        let mut source = Store::open(temp.path().join("source.sqlite3")).unwrap();
+        let ingest_error = source.ingest_blob_file(&linked_source).unwrap_err();
+        assert!(matches!(ingest_error, StorageError::UnsafeSourcePath(_)));
+
+        let descriptor = source.ingest_blob_file(&real_source).unwrap();
+        let mut project = Project::new("Symlink bundle").unwrap();
+        project.assets.push(Asset {
+            id: Uuid::now_v7(),
+            name: "real.bin".into(),
+            media_type: "application/octet-stream".into(),
+            content_sha256: Some(descriptor.sha256.clone()),
+            source_revision: None,
+        });
+        source.create_project(&project).unwrap();
+
+        let bundle = temp.path().join("portable");
+        let manifest = source.export_project_bundle(project.id, &bundle).unwrap();
+        let bundled_blob = bundle.join(&manifest.blobs[0].relative_path);
+        fs::remove_file(&bundled_blob).unwrap();
+        symlink(&real_source, &bundled_blob).unwrap();
+
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination = Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
+        let error = destination.inspect_project_bundle(&bundle).unwrap_err();
+        assert!(matches!(error, StorageError::UnsafeSourcePath(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_bundle_rejects_symlink_path_components() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut source = Store::open(temp.path().join("source.sqlite3")).unwrap();
+        let blob_source = temp.path().join("asset.bin");
+        fs::write(&blob_source, b"component-bytes").unwrap();
+        let descriptor = source.ingest_blob_file(&blob_source).unwrap();
+
+        let mut project = Project::new("Component boundary").unwrap();
+        project.assets.push(Asset {
+            id: Uuid::now_v7(),
+            name: "asset.bin".into(),
+            media_type: "application/octet-stream".into(),
+            content_sha256: Some(descriptor.sha256.clone()),
+            source_revision: None,
+        });
+        source.create_project(&project).unwrap();
+
+        let bundle = temp.path().join("bundle");
+        let manifest = source.export_project_bundle(project.id, &bundle).unwrap();
+        let bundled_blob = bundle.join(&manifest.blobs[0].relative_path);
+        let prefix_dir = bundled_blob.parent().unwrap().to_path_buf();
+        let external_prefix = temp.path().join("external-prefix");
+        fs::create_dir(&external_prefix).unwrap();
+        fs::copy(
+            &bundled_blob,
+            external_prefix.join(bundled_blob.file_name().unwrap()),
+        )
+        .unwrap();
+        fs::remove_file(&bundled_blob).unwrap();
+        fs::remove_dir(&prefix_dir).unwrap();
+        symlink(&external_prefix, &prefix_dir).unwrap();
+
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination = Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
+        let error = destination.inspect_project_bundle(&bundle).unwrap_err();
+        assert!(matches!(error, StorageError::UnsafeSourcePath(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_bundle_rejects_symlink_manifest_and_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut source = Store::open(temp.path().join("source.sqlite3")).unwrap();
+        let project = source.create_named_project("Manifest boundary").unwrap();
+        let bundle = temp.path().join("bundle");
+        source.export_project_bundle(project.id, &bundle).unwrap();
+
+        let manifest = bundle.join("manifest.json");
+        let copied_manifest = temp.path().join("manifest-copy.json");
+        fs::copy(&manifest, &copied_manifest).unwrap();
+        fs::remove_file(&manifest).unwrap();
+        symlink(&copied_manifest, &manifest).unwrap();
+
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination = Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
+        let error = destination.inspect_project_bundle(&bundle).unwrap_err();
+        assert!(matches!(error, StorageError::UnsafeSourcePath(_)));
+
+        let bundle_link = temp.path().join("bundle-link");
+        symlink(&bundle, &bundle_link).unwrap();
+        let error = destination
+            .inspect_project_bundle(&bundle_link)
+            .unwrap_err();
+        assert!(matches!(error, StorageError::UnsafeSourcePath(_)));
     }
 
     #[test]
