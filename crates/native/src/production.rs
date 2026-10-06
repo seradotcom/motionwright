@@ -62,6 +62,29 @@ const WORKFLOW_READ_COMMANDS: &[&str] = &[
     "workflow.suggestions.list",
     "workflow.proposals.list",
     "workflow.promotions.list",
+    "workflow.proposal.plan",
+];
+
+const WORKFLOW_ACTION_COMMANDS: &[&str] = &[
+    "workflow.record.start",
+    "workflow.record.stop",
+    "workflow.compile",
+    "workflow.suggestion.compile",
+    "workflow.proposal.accept",
+    "workflow.verify",
+    "workflow.replay",
+    "workflow.promote",
+];
+
+const WORKFLOW_MUTATING_COMMANDS: &[&str] = &[
+    "workflow.record.start",
+    "workflow.record.stop",
+    "workflow.compile",
+    "workflow.suggestion.compile",
+    "workflow.proposal.accept",
+    "workflow.verify",
+    "workflow.replay",
+    "workflow.promote",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,7 +255,9 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
             source: SourceKind::Driver,
             provider_generation_required: true,
         })
-    } else if WORKFLOW_READ_COMMANDS.contains(&command) {
+    } else if WORKFLOW_READ_COMMANDS.contains(&command)
+        || WORKFLOW_ACTION_COMMANDS.contains(&command)
+    {
         Some(ExpectedAuthority {
             provider: "semwright-core",
             source: SourceKind::Builtin,
@@ -289,6 +314,7 @@ impl ProductionClient {
         let expected = expected_authority(command).ok_or_else(|| {
             Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
+        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
         self.connection.validate()?;
         let encoded = serde_json::to_vec(&args)
             .map_err(|_| invalid("Production command arguments are malformed"))?;
@@ -889,16 +915,21 @@ mod tests {
     }
 
     #[test]
-    fn workflow_view_is_read_only_and_bound_to_builtin_core() {
-        for command in WORKFLOW_READ_COMMANDS {
+    fn workflow_surface_is_bounded_and_bound_to_builtin_core() {
+        for command in WORKFLOW_READ_COMMANDS
+            .iter()
+            .chain(WORKFLOW_ACTION_COMMANDS.iter())
+        {
             let authority = expected_authority(command).unwrap();
             assert_eq!(authority.provider, "semwright-core");
             assert_eq!(authority.source, SourceKind::Builtin);
             assert!(!authority.provider_generation_required);
         }
-        assert!(expected_authority("workflow.record.start").is_none());
-        assert!(expected_authority("workflow.promote").is_none());
-        assert!(expected_authority("workflow.replay").is_none());
+        assert!(expected_authority("workflow.trace.delete").is_none());
+        assert!(expected_authority("workflow.demote").is_none());
+        assert!(expected_authority("workflow.suggestion.dismiss").is_none());
+        assert!(WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.replay"));
+        assert!(!WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.proposal.plan"));
     }
 
     #[test]

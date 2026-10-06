@@ -250,6 +250,24 @@ export interface ProductionJobProjection {
 }
 
 export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";
+export type WorkflowAction =
+  | "record_start"
+  | "record_stop"
+  | "compile"
+  | "suggestion_compile"
+  | "proposal_plan"
+  | "proposal_accept"
+  | "verify"
+  | "replay"
+  | "promote";
+
+export interface WorkflowActionResult {
+  command: string;
+  request_id: string;
+  authority: Record<string, unknown> | null;
+  result: unknown;
+}
+
 export interface WorkflowOverview {
   status: WorkflowOverviewStatus;
   reason: string | null;

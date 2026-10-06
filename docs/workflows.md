@@ -1,18 +1,18 @@
-# Workflow intelligence
+# Workflow distillation
 
-Motionwright can inspect workflow-learning evidence from an owner-provisioned canonical Semwright session without becoming a second workflow authority.
+Motionwright exposes Semwright Workflow Distillation without creating a second workflow engine, store, permission model, recorder or promotion authority.
 
 ## Trust boundary
 
 The desktop shell reads the connection descriptor from `MOTIONWRIGHT_SEMWRIGHT_CONNECTION`. The descriptor must validate through the same `ProductionConnection` checks used by native production and must be bound to the exact Motionwright project resource.
 
-Every workflow query is sent through the Semwright CLI/Broker boundary. Motionwright does not parse Semwright state files directly, bypass Broker/Policy, or infer live workflow state from local project history.
+Every workflow read or action is sent through the Semwright CLI/Broker boundary. Motionwright does not parse Semwright state files directly, mint grants, bypass Policy, or infer live workflow state from local creative history.
 
-The read surface accepts provenance only when the response is owned by the built-in `semwright-core` authority with a valid descriptor digest.
+Responses are accepted only when provenance identifies the built-in `semwright-core` authority with a valid descriptor digest.
 
-## Read-only commands
+## Evidence reads
 
-The current workspace exposes:
+The workspace reads:
 
 - `workflow.traces.list`
 - `workflow.patterns.list`
@@ -21,20 +21,42 @@ The current workspace exposes:
 - `workflow.candidates.list`
 - `workflow.promotions.list`
 
-No workflow mutation is allowlisted from this UI. Recording, compilation, proposal acceptance, verification, replay, promotion, demotion and dismissal remain outside Motionwright's observational surface.
+Browser demo mode returns empty evidence and never fabricates traces, candidates, promoted capabilities or runtime provenance.
 
-## UI states
+## Explicit V1 recording and compilation
 
-The workspace distinguishes three states:
+Recording is user-initiated with `workflow.record.start` and user-stopped with `workflow.record.stop`. There is no background desktop recorder. Argument-value capture is off by default and must be enabled explicitly for a recording.
 
-- `available`: evidence came from the configured canonical Semwright connection;
-- `unconfigured`: the desktop app has no owner-provisioned connection descriptor;
-- `browser_demo`: the web-only development surface is active and intentionally returns empty evidence.
+Selected explicit traces can be compiled with `workflow.compile`. Repeated suggestions can enter the same canonical compiler through `workflow.suggestion.compile`. Motionwright never writes directly to a workflow database.
 
-Browser demo mode never fabricates traces, candidates, promoted capabilities, or runtime provenance.
+## V2 advisory and V3 proposals
 
-## Why this belongs in Motionwright
+Patterns and suggestions are advisory. Merely observing repetition does not execute an operation, change permissions or promote a capability.
 
-Repeated creative operations can become useful workflow evidence, but the creative project and the workflow authority have different ownership. Motionwright owns project intent, revisions, locks, reviews and renderer receipts. Semwright owns workflow recording, learning, replay, capability admission and runtime provenance.
+A proposal can be inspected with `workflow.proposal.plan` without persistence or execution. Exact proposal acceptance uses `workflow.proposal.accept`, and still does not authorize a replay or production mutation by itself.
 
-Keeping the boundary read-only lets the editor surface useful automation opportunities without silently turning observations into executable behavior.
+## Verification, replay and promotion
+
+Candidates use the canonical gates:
+
+1. `workflow.verify` checks current capability schemas and descriptor digests.
+2. `workflow.replay` re-authorizes every recipe step through Broker/Policy using current inputs and current authority.
+3. `workflow.promote` is attempted only explicitly; Semwright rejects promotion without its required successful verification/replay evidence.
+
+Motionwright treats replay as a mutation for uncertain-outcome handling because a replay can execute real application steps. A transport timeout is not interpreted as proof that the operation did or did not happen.
+
+The UI does not expose trace deletion, arbitrary demotion, suggestion dismissal or other generic workflow commands. Adding any such operation requires an explicit product contract and allowlist change.
+
+## Stochastic steps
+
+A Recipe that invokes AI or another stochastic system does not become deterministic when compiled or promoted. Workflow automation can bind inputs, invoke operations and validate results while creative outputs may still vary. Human taste decisions are not silently turned into constants.
+
+## UI consent
+
+Operational workflow controls appear only with a live canonical connection. The user must enable workflow changes for the current workspace session before record/compile/accept/verify/replay/promote controls are enabled. This UI gate is not a security authority; Semwright still decides every operation.
+
+Recording state stored in browser session storage is only a UI hint so the user can leave the workspace while demonstrating operations. Semwright remains the source of truth; a stale hint cannot authorize or complete an operation.
+
+## Failure behavior
+
+If the connection is missing, bound to another project, fails digest/path validation, or a canonical policy/gate rejects an action, Motionwright fails closed. The user can refresh evidence and inspect current policy, consent, replay or descriptor state. The app does not switch provider, fake acceptance or fall back to local workflow execution.

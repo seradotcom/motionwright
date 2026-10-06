@@ -15,6 +15,8 @@ import type {
   Project,
   ProjectEvent,
   ProductionJobProjection,
+  WorkflowAction,
+  WorkflowActionResult,
   WorkflowOverview,
 } from "./types";
 import { rationalSeconds } from "./types";
@@ -350,6 +352,23 @@ export async function workflowOverview(project: Project): Promise<WorkflowOvervi
     proposals: { proposals: [] },
     promotions: { promotions: [] },
   };
+}
+
+export async function workflowAction(
+  project: Project,
+  action: WorkflowAction,
+  args: Record<string, unknown> = {},
+): Promise<WorkflowActionResult> {
+  if (!isTauri()) {
+    throw new Error("Canonical workflow actions require the Motionwright desktop runtime.");
+  }
+  return invoke<WorkflowActionResult>("workflow_action", {
+    request: {
+      project_id: project.id,
+      action,
+      args,
+    },
+  });
 }
 
 export async function productionJobs(

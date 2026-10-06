@@ -68,6 +68,55 @@ struct WorkflowOverviewRequest {
     project_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkflowAction {
+    RecordStart,
+    RecordStop,
+    Compile,
+    SuggestionCompile,
+    ProposalPlan,
+    ProposalAccept,
+    Verify,
+    Replay,
+    Promote,
+}
+
+impl WorkflowAction {
+    fn command(&self) -> &'static str {
+        match self {
+            Self::RecordStart => "workflow.record.start",
+            Self::RecordStop => "workflow.record.stop",
+            Self::Compile => "workflow.compile",
+            Self::SuggestionCompile => "workflow.suggestion.compile",
+            Self::ProposalPlan => "workflow.proposal.plan",
+            Self::ProposalAccept => "workflow.proposal.accept",
+            Self::Verify => "workflow.verify",
+            Self::Replay => "workflow.replay",
+            Self::Promote => "workflow.promote",
+        }
+    }
+
+    fn mutation(&self) -> bool {
+        !matches!(self, Self::ProposalPlan)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowActionRequest {
+    project_id: Uuid,
+    action: WorkflowAction,
+    args: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkflowActionResponse {
+    command: &'static str,
+    request_id: String,
+    authority: Option<Value>,
+    result: Value,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkflowOverviewResponse {
     status: &'static str,
@@ -301,6 +350,43 @@ async fn workflow_overview(
         suggestions,
         proposals,
         promotions,
+    })
+}
+
+#[tauri::command]
+async fn workflow_action(
+    state: State<'_, AppState>,
+    request: WorkflowActionRequest,
+) -> Result<WorkflowActionResponse, String> {
+    let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
+        .ok_or_else(|| "Canonical Semwright workflow actions are not configured.".to_string())?;
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+        .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
+    if connection.resource != project.resource_key() {
+        return Err(
+            "The canonical Semwright connection is bound to another Motionwright resource.".into(),
+        );
+    }
+    let client = ProductionClient::new(connection)
+        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    let command = request.action.command();
+    let response = client
+        .execute(command, request.args, request.action.mutation())
+        .await
+        .map_err(|_| {
+            "Semwright rejected the workflow action. Refresh the evidence and review current policy, consent, replay, or descriptor gates.".to_string()
+        })?;
+    let authority = response.value.pointer("/execution/provenance").cloned();
+    let result = response.value.get("data").cloned().unwrap_or(Value::Null);
+    Ok(WorkflowActionResponse {
+        command,
+        request_id: response.request_id,
+        authority,
+        result,
     })
 }
 
@@ -711,6 +797,7 @@ fn main() {
             project_history,
             model_request_preflight,
             workflow_overview,
+            workflow_action,
             production_jobs,
             import_asset_file,
             import_voice_file,

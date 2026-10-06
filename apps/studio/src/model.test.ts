@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { workflowOverview } from "./api";
+import { workflowAction, workflowOverview } from "./api";
 import { fixtureProject } from "./fixture";
 import { rationalSeconds, seconds } from "./types";
 
@@ -69,6 +69,12 @@ describe("creative project fixture", () => {
     expect(overview.suggestions).toEqual({ suggestions: [] });
     expect(overview.proposals).toEqual({ proposals: [] });
     expect(overview.promotions).toEqual({ promotions: [] });
+    await expect(
+      workflowAction(fixtureProject, "promote", {
+        candidate_id: "candidate-not-live",
+        slug: "not-live",
+      }),
+    ).rejects.toThrow("desktop runtime");
   });
 
 });
