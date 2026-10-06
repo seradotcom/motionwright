@@ -175,6 +175,111 @@ export interface ModelInvocationReceipt {
   base_revision: number; resource_refs: string[]; data_classes: DataClass[];
   budget: InvocationBudget; outcome: InvocationOutcome;
 }
+export type ModelProviderKind = "manual" | "external_agent" | "local" | "remote";
+export interface ModelRequestDraft {
+  provider_kind: ModelProviderKind;
+  provider: string;
+  model: string;
+  resource_refs: string[];
+  data_classes: DataClass[];
+  budget: InvocationBudget;
+}
+export interface ModelContextDisclosure {
+  resource_ref: string;
+  data_class: DataClass;
+  label: string;
+  media_type: string | null;
+  estimated_bytes: number;
+  content_sha256: string | null;
+  preview: string | null;
+  preview_truncated: boolean;
+  untrusted_data: boolean;
+}
+export interface ModelRequestPreflight {
+  schema: string;
+  project_id: string;
+  generation: string;
+  base_revision: number;
+  provider_kind: ModelProviderKind;
+  provider: string;
+  model: string;
+  resource_refs: string[];
+  data_classes: DataClass[];
+  budget: InvocationBudget;
+  disclosures: ModelContextDisclosure[];
+  estimated_total_bytes: number;
+  source_data_classes: DataClass[];
+  explicit_source_consent_required: boolean;
+  fallback_provider: string | null;
+  studio_network_dispatch_supported: boolean;
+  network_dispatched: boolean;
+  fingerprint_sha256: string;
+}
+
+export type ProductionJobState =
+  | "queued"
+  | "running"
+  | "cancel_requested"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "outcome_unknown";
+export type ProductionJobApplicability = "current" | "stale";
+export type ProductionObservationState = "observed" | "failed_known" | "outcome_unknown";
+export interface ProductionJobProgress {
+  completed: number; total: number | null; message: string | null;
+}
+export interface ProductionJobProjection {
+  job_ref: string;
+  provider: string;
+  root_request_id: string;
+  generation: string;
+  revision: number;
+  state: ProductionJobState;
+  cancellation_requested: boolean;
+  applicability: ProductionJobApplicability;
+  last_command: string;
+  created_at: string;
+  last_observed_at: string;
+  local_observations: number;
+  provider_generation: number | null;
+  progress: ProductionJobProgress | null;
+  artifact_available: boolean;
+  result_available: boolean;
+  last_observation: ProductionObservationState;
+}
+
+export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";
+export type WorkflowAction =
+  | "record_start"
+  | "record_stop"
+  | "compile"
+  | "suggestion_compile"
+  | "proposal_plan"
+  | "proposal_accept"
+  | "verify"
+  | "replay"
+  | "promote";
+
+export interface WorkflowActionResult {
+  command: string;
+  request_id: string;
+  authority: Record<string, unknown> | null;
+  result: unknown;
+}
+
+export interface WorkflowOverview {
+  status: WorkflowOverviewStatus;
+  reason: string | null;
+  connection_identity: string | null;
+  authority: Record<string, unknown> | null;
+  traces: Record<string, unknown> | null;
+  candidates: Record<string, unknown> | null;
+  patterns: Record<string, unknown> | null;
+  suggestions: Record<string, unknown> | null;
+  proposals: Record<string, unknown> | null;
+  promotions: Record<string, unknown> | null;
+}
 
 export interface Project {
   schema_version: number; id: string; generation: string; revision: number;
@@ -221,6 +326,7 @@ export type Change =
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }
+  | { type: "record_model_invocation"; receipt: ModelInvocationReceipt }
   | { type: "create_branch"; name: string }
   | { type: "checkout_branch"; branch_id: string }
   | { type: "merge_branch"; source_branch_id: string }

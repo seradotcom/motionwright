@@ -55,6 +55,38 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.export.glb",
 ];
 
+const WORKFLOW_READ_COMMANDS: &[&str] = &[
+    "workflow.traces.list",
+    "workflow.candidates.list",
+    "workflow.patterns.list",
+    "workflow.suggestions.list",
+    "workflow.proposals.list",
+    "workflow.promotions.list",
+    "workflow.proposal.plan",
+];
+
+const WORKFLOW_ACTION_COMMANDS: &[&str] = &[
+    "workflow.record.start",
+    "workflow.record.stop",
+    "workflow.compile",
+    "workflow.suggestion.compile",
+    "workflow.proposal.accept",
+    "workflow.verify",
+    "workflow.replay",
+    "workflow.promote",
+];
+
+const WORKFLOW_MUTATING_COMMANDS: &[&str] = &[
+    "workflow.record.start",
+    "workflow.record.stop",
+    "workflow.compile",
+    "workflow.suggestion.compile",
+    "workflow.proposal.accept",
+    "workflow.verify",
+    "workflow.replay",
+    "workflow.promote",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProductionConnection {
@@ -197,13 +229,40 @@ impl ProductionConnection {
     }
 }
 
-fn expected_provider(command: &str) -> Option<&'static str> {
+#[derive(Debug, Clone)]
+struct ExpectedAuthority {
+    provider: &'static str,
+    source: SourceKind,
+    provider_generation_required: bool,
+}
+
+fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
     if MOTION_CANVAS_COMMANDS.contains(&command) {
-        Some("driver:motion-canvas")
+        Some(ExpectedAuthority {
+            provider: "driver:motion-canvas",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if MLT_COMMANDS.contains(&command) {
-        Some("driver:mlt-video")
+        Some(ExpectedAuthority {
+            provider: "driver:mlt-video",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if BLENDER_COMMANDS.contains(&command) {
-        Some("driver:blender")
+        Some(ExpectedAuthority {
+            provider: "driver:blender",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
+    } else if WORKFLOW_READ_COMMANDS.contains(&command)
+        || WORKFLOW_ACTION_COMMANDS.contains(&command)
+    {
+        Some(ExpectedAuthority {
+            provider: "semwright-core",
+            source: SourceKind::Builtin,
+            provider_generation_required: false,
+        })
     } else {
         None
     }
@@ -252,9 +311,10 @@ impl ProductionClient {
         args: Value,
         mutation: bool,
     ) -> NativeResult<BrokerResult> {
-        let expected = expected_provider(command).ok_or_else(|| {
-            Error::new(ErrorCode::Unsupported, "Production command is not enabled")
+        let expected = expected_authority(command).ok_or_else(|| {
+            Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
+        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
         self.connection.validate()?;
         let encoded = serde_json::to_vec(&args)
             .map_err(|_| invalid("Production command arguments are malformed"))?;
@@ -346,13 +406,13 @@ impl ProductionClient {
             .provenance
             .as_ref()
             .ok_or_else(|| backend("Canonical production response has no provenance"))?;
-        if provenance.provider != expected
-            || provenance.source != SourceKind::Driver
-            || provenance.provider_generation.is_none()
+        if provenance.provider != expected.provider
+            || provenance.source != expected.source
+            || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
         {
             return Err(backend(
-                "Canonical production response provenance does not match the expected driver",
+                "Canonical response provenance does not match the expected authority",
             ));
         }
         let value = envelope
@@ -605,6 +665,11 @@ impl ProductionCoordinator {
                 "Production connection is bound to another Motionwright resource",
             ));
         }
+        let job_ref = args
+            .get("job_ref")
+            .or_else(|| args.get("job"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let digest = request_digest(command, &args)?;
 
         if let Some(prior) = self
@@ -649,7 +714,8 @@ impl ProductionCoordinator {
                 stage: "dispatching".into(),
                 payload: json!({
                     "mutation": mutation,
-                    "connection": self.client.connection().identity()?
+                    "connection": self.client.connection().identity()?,
+                    "job_ref": job_ref.clone()
                 }),
             })
             .map_err(storage_error)?;
@@ -668,7 +734,8 @@ impl ProductionCoordinator {
                         stage: "completed".into(),
                         payload: json!({
                             "result": result.value,
-                            "broker_request_id": result.request_id
+                            "broker_request_id": result.request_id,
+                            "job_ref": job_ref.clone()
                         }),
                     })
                     .map_err(|_| {
@@ -701,7 +768,8 @@ impl ProductionCoordinator {
                         stage: stage.into(),
                         payload: json!({
                             "error": &error,
-                            "mutation": mutation
+                            "mutation": mutation,
+                            "job_ref": job_ref
                         }),
                     });
                 Err(error)
@@ -837,10 +905,31 @@ mod tests {
     #[test]
     fn production_allowlist_binds_blender_to_the_native_driver() {
         for command in BLENDER_COMMANDS {
-            assert_eq!(expected_provider(command), Some("driver:blender"));
+            let authority = expected_authority(command).unwrap();
+            assert_eq!(authority.provider, "driver:blender");
+            assert_eq!(authority.source, SourceKind::Driver);
+            assert!(authority.provider_generation_required);
         }
-        assert_eq!(expected_provider("driver.blender.python.exec"), None);
-        assert_eq!(expected_provider("driver.manim.render"), None);
+        assert!(expected_authority("driver.blender.python.exec").is_none());
+        assert!(expected_authority("driver.manim.render").is_none());
+    }
+
+    #[test]
+    fn workflow_surface_is_bounded_and_bound_to_builtin_core() {
+        for command in WORKFLOW_READ_COMMANDS
+            .iter()
+            .chain(WORKFLOW_ACTION_COMMANDS.iter())
+        {
+            let authority = expected_authority(command).unwrap();
+            assert_eq!(authority.provider, "semwright-core");
+            assert_eq!(authority.source, SourceKind::Builtin);
+            assert!(!authority.provider_generation_required);
+        }
+        assert!(expected_authority("workflow.trace.delete").is_none());
+        assert!(expected_authority("workflow.demote").is_none());
+        assert!(expected_authority("workflow.suggestion.dismiss").is_none());
+        assert!(WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.replay"));
+        assert!(!WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.proposal.plan"));
     }
 
     #[test]

@@ -45,6 +45,34 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
 });
 
 
+test("workflow intelligence never fabricates canonical evidence in browser demo", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Workflows", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Workflow intelligence" })).toBeVisible();
+  await expect(page.getByText("BROWSER DEMO", { exact: true })).toBeVisible();
+  await expect(page.getByText("No live workflow evidence is being presented.", { exact: true })).toBeVisible();
+  await expect(page.getByText("No proposal is currently ready from the connected evidence.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /promote/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /replay/i })).toHaveCount(0);
+});
+
+test("model preflight exposes minimal context without dispatch or silent fallback", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Alternatives", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Model request boundary" })).toBeVisible();
+  await expect(page.getByText("NETWORK OFF", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Inspect request boundary", exact: true }).click();
+
+  const result = page.getByRole("region", { name: "Model request preflight result" });
+  await expect(result).toBeVisible();
+  await expect(result).toContainText("fallback: none");
+  await expect(result).toContainText("network dispatched: no");
+  await expect(result).toContainText("UNTRUSTED DATA");
+  await expect(result).toContainText("exact base");
+});
+
 test("canvas edits and stored alternatives use project revisions rather than local-only UI state", async ({ page }) => {
   await page.goto("/");
 
@@ -146,6 +174,16 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
   await page.locator(".canvas-tree-row").filter({ hasText: "Group 1" }).click();
   await page.getByRole("button", { name: "Remove object", exact: true }).click();
   await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toHaveCount(0);
+});
+
+test("production jobs workspace never fabricates runtime evidence in browser demo mode", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Jobs", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Production jobs" })).toBeVisible();
+  await expect(page.getByText("No canonical render job receipts yet.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Browser demo mode intentionally does not fabricate runtime jobs/)).toBeVisible();
+  await expect(page.getByText(/A cancellation request stays unconfirmed until/)).toBeVisible();
 });
 
 test("portable project delivery is truthful in browser demo mode", async ({ page }) => {

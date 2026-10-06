@@ -181,6 +181,13 @@ impl ObservationProvider for MotionwrightObserver {
                 .take(usize::from(query.limit))
                 .map(|set| serde_json::to_value(set).unwrap_or(Value::Null))
                 .collect(),
+            "production-jobs" => self
+                .service
+                .production_jobs(project_id, usize::from(query.limit))
+                .map_err(storage_error)?
+                .into_iter()
+                .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
+                .collect(),
             "history" => self
                 .service
                 .history(project_id, 0, usize::from(query.limit))
@@ -272,6 +279,7 @@ enum OperationKind {
     SetVisualLanguage,
     AddProposalSet,
     SelectProposal,
+    RecordModelInvocation,
     CreateBranch,
     CheckoutBranch,
     MergeBranch,
@@ -684,6 +692,15 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             proposal_set_id: uuid(args, "proposal_set_id")?,
             proposal_id: uuid(args, "proposal_id")?,
         }),
+        OperationKind::RecordModelInvocation => {
+            let receipt = serde_json::from_value(
+                args.get("receipt")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("model invocation receipt is required"))?,
+            )
+            .map_err(|_| Error::invalid("model invocation receipt is invalid"))?;
+            Ok(Change::RecordModelInvocation { receipt })
+        }
         OperationKind::CreateBranch => Ok(Change::CreateBranch {
             name: string(args, "name", 120)?,
         }),
@@ -1450,6 +1467,20 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::RecordModelInvocation,
+            descriptor(
+                "model-invocation.record",
+                "Record bounded model provenance against the exact observed project revision",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "receipt": {"type":"object"}
+                    }),
+                    &["ref", "receipt"],
+                ),
+            ),
+        ),
+        (
             OperationKind::CreateBranch,
             descriptor(
                 "branch.create",
@@ -1636,6 +1667,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.asset.register"));
         assert!(names.contains(&"driver.motionwright.asset.remove"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
+        assert!(names.contains(&"driver.motionwright.model-invocation.record"));
         assert!(names.contains(&"driver.motionwright.branch.create"));
         assert!(names.contains(&"driver.motionwright.branch.checkout"));
         assert!(names.contains(&"driver.motionwright.branch.merge"));
@@ -1646,7 +1678,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
-        assert_eq!(capabilities.len(), 41);
+        assert_eq!(capabilities.len(), 42);
     }
 
     #[tokio::test]
@@ -1812,6 +1844,7 @@ mod tests {
             "visual-language",
             "canvas",
             "alternatives",
+            "production-jobs",
             "history",
         ] {
             let query = Query {

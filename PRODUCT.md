@@ -47,6 +47,7 @@ Motionwright treats creative production as a versioned semantic project rather t
 - Alternatives are structurally distinct proposals with explicit selection/merge into reviewable changes.
 - Technical verification and creative critique are separate channels.
 - Jobs use Semwright runtime mechanisms rather than a private scheduler.
+- Canonical workflow distillation remains owned by Semwright: Motionwright can explicitly record, compile, inspect, plan, accept, verify, replay and promote only through an allowlisted Broker/Policy boundary; no background recorder or private workflow authority exists.
 - Variants include 16:9, 9:16, 1:1, captions/languages, cuts, codec/audio/brand profiles, and portable packages.
 - No automatic paid-provider activation, publication, registry release, or hidden destructive cleanup.
 - No arbitrary model-generated Python execution for renderers.

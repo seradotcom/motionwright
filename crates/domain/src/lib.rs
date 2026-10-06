@@ -553,11 +553,227 @@ impl Project {
                 "creative project collection is too large".into(),
             ));
         }
+        let mut proposal_set_ids = BTreeSet::new();
         for set in &self.proposal_sets {
-            set.validate()?;
+            if !proposal_set_ids.insert(set.id) {
+                return Err(DomainError::Invalid("duplicate proposal set id".into()));
+            }
+            self.validate_proposal_set_targets(set)?;
         }
+        let mut model_receipt_ids = BTreeSet::new();
         for receipt in &self.model_invocations {
+            if !model_receipt_ids.insert(receipt.id) || receipt.base_revision > self.revision {
+                return Err(DomainError::Invalid(
+                    "invalid model invocation history".into(),
+                ));
+            }
             receipt.validate()?;
+        }
+        Ok(())
+    }
+
+    fn resource_ref_exists(&self, resource: &str) -> bool {
+        if resource == self.resource_key() {
+            return true;
+        }
+        let parsed = |prefix: &str| {
+            resource
+                .strip_prefix(prefix)
+                .and_then(|value| Uuid::parse_str(value).ok())
+        };
+        if let Some(id) = parsed("scene:") {
+            return self.scenes.iter().any(|scene| scene.id == id);
+        }
+        if let Some(id) = parsed("asset:") {
+            return self.assets.iter().any(|asset| asset.id == id);
+        }
+        if let Some(id) = parsed("marker:") {
+            return self.markers.iter().any(|marker| marker.id == id);
+        }
+        if let Some(id) = parsed("claim:") {
+            return self.brief.claims.iter().any(|claim| claim.id == id);
+        }
+        if let Some(id) = parsed("beat:").or_else(|| parsed("narrative-beat:")) {
+            return self.narrative.beats.iter().any(|beat| beat.id == id)
+                || self
+                    .scenes
+                    .iter()
+                    .any(|scene| scene.beats.iter().any(|beat| beat.id == id));
+        }
+        if let Some(id) = parsed("node:").or_else(|| parsed("canvas-node:")) {
+            return self
+                .scenes
+                .iter()
+                .any(|scene| scene.nodes.iter().any(|node| node.id == id));
+        }
+        if let Some(id) = parsed("voice-track:") {
+            return self.audio.voice_tracks.iter().any(|track| track.id == id);
+        }
+        if let Some(id) = parsed("transcript:").or_else(|| parsed("transcript-segment:")) {
+            return self.audio.transcript.iter().any(|segment| segment.id == id);
+        }
+        if let Some(id) = parsed("audio-cue:") {
+            return self.audio.cues.iter().any(|cue| cue.id == id);
+        }
+        if let Some(id) = parsed("deliverable:") {
+            return self.deliverables.iter().any(|profile| profile.id == id);
+        }
+        if let Some(id) = parsed("branch:") {
+            return self.branches.iter().any(|branch| branch.id == id);
+        }
+        if let Some(id) = parsed("review:") {
+            return self.reviews.iter().any(|review| review.id == id);
+        }
+        if let Some(id) = parsed("proposal-set:") {
+            return self.proposal_sets.iter().any(|set| set.id == id);
+        }
+        if let Some(id) = parsed("lock:") {
+            return self.locks.iter().any(|lock| lock.id == id);
+        }
+        false
+    }
+
+    fn proposal_scope_allows_scene(&self, scope: &ProposalScope, scene_id: Uuid) -> bool {
+        match scope {
+            ProposalScope::Project => true,
+            ProposalScope::Scene { scene_id: scoped } => *scoped == scene_id,
+            ProposalScope::Selection { resource_refs } => {
+                let reference = format!("scene:{scene_id}");
+                resource_refs.iter().any(|resource| resource == &reference)
+            }
+        }
+    }
+
+    fn proposal_scope_allows_beat(
+        &self,
+        scope: &ProposalScope,
+        beat_id: Uuid,
+        owner_scene: Option<Uuid>,
+    ) -> bool {
+        match scope {
+            ProposalScope::Project => true,
+            ProposalScope::Scene { scene_id } => owner_scene == Some(*scene_id),
+            ProposalScope::Selection { resource_refs } => {
+                let short = format!("beat:{beat_id}");
+                let narrative = format!("narrative-beat:{beat_id}");
+                resource_refs
+                    .iter()
+                    .any(|resource| resource == &short || resource == &narrative)
+            }
+        }
+    }
+
+    fn validate_proposal_set_targets(&self, proposal_set: &ProposalSet) -> Result<()> {
+        proposal_set.validate()?;
+        match &proposal_set.scope {
+            ProposalScope::Project => {}
+            ProposalScope::Scene { scene_id } => {
+                if !self.scenes.iter().any(|scene| scene.id == *scene_id) {
+                    return Err(DomainError::Invalid(
+                        "proposal scope references an unknown scene".into(),
+                    ));
+                }
+            }
+            ProposalScope::Selection { resource_refs } => {
+                if resource_refs
+                    .iter()
+                    .any(|resource| !self.resource_ref_exists(resource))
+                {
+                    return Err(DomainError::Invalid(
+                        "proposal scope references an unknown resource".into(),
+                    ));
+                }
+            }
+        }
+
+        let project_scene_ids: HashSet<_> = self.scenes.iter().map(|scene| scene.id).collect();
+        for proposal in &proposal_set.proposals {
+            for edit in &proposal.edits {
+                match edit {
+                    CreativeEdit::SceneObjective { scene_id, .. } => {
+                        if !project_scene_ids.contains(scene_id)
+                            || !self.proposal_scope_allows_scene(&proposal_set.scope, *scene_id)
+                        {
+                            return Err(DomainError::Invalid(
+                                "proposal scene edit escapes its validated scope".into(),
+                            ));
+                        }
+                    }
+                    CreativeEdit::RendererChoice { scene_id, renderer } => {
+                        if !project_scene_ids.contains(scene_id)
+                            || !self.proposal_scope_allows_scene(&proposal_set.scope, *scene_id)
+                        {
+                            return Err(DomainError::Invalid(
+                                "proposal renderer edit escapes its validated scope".into(),
+                            ));
+                        }
+                        if !matches!(
+                            renderer.as_str(),
+                            "motion-canvas"
+                                | "mlt"
+                                | "blender"
+                                | "manim-community"
+                                | "remotion"
+                                | "manim-gl"
+                        ) {
+                            return Err(DomainError::Invalid(
+                                "proposal renderer choice is unsupported".into(),
+                            ));
+                        }
+                    }
+                    CreativeEdit::SceneOrder { scene_ids } => {
+                        let candidate: HashSet<_> = scene_ids.iter().copied().collect();
+                        if !matches!(&proposal_set.scope, ProposalScope::Project)
+                            || candidate.len() != scene_ids.len()
+                            || candidate != project_scene_ids
+                        {
+                            return Err(DomainError::Invalid(
+                                "proposal scene order must be a complete project permutation"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    CreativeEdit::BeatRewrite { beat_id, .. } => {
+                        let owner_scene = self
+                            .scenes
+                            .iter()
+                            .find(|scene| scene.beats.iter().any(|beat| beat.id == *beat_id))
+                            .map(|scene| scene.id);
+                        let exists = owner_scene.is_some()
+                            || self.narrative.beats.iter().any(|beat| beat.id == *beat_id);
+                        if !exists
+                            || !self.proposal_scope_allows_beat(
+                                &proposal_set.scope,
+                                *beat_id,
+                                owner_scene,
+                            )
+                        {
+                            return Err(DomainError::Invalid(
+                                "proposal beat edit escapes its validated scope".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_model_invocation_targets(&self, receipt: &ModelInvocationReceipt) -> Result<()> {
+        receipt.validate()?;
+        if receipt.base_revision != self.revision {
+            return Err(DomainError::Invalid(
+                "model invocation base must match the current project revision".into(),
+            ));
+        }
+        if receipt
+            .resource_refs
+            .iter()
+            .any(|resource| !self.resource_ref_exists(resource))
+        {
+            return Err(DomainError::Invalid(
+                "model invocation references an unknown resource".into(),
+            ));
         }
         Ok(())
     }
@@ -1195,7 +1411,7 @@ impl Project {
                         "proposal set base does not match the current project revision".into(),
                     ));
                 }
-                proposal_set.validate()?;
+                self.validate_proposal_set_targets(proposal_set)?;
                 self.proposal_sets.push(proposal_set.clone());
             }
             Change::SelectProposal {
@@ -1224,12 +1440,16 @@ impl Project {
                 set.selected = Some(*proposal_id);
             }
             Change::RecordModelInvocation { receipt } => {
-                if receipt.base_revision > self.revision {
+                self.validate_model_invocation_targets(receipt)?;
+                if self
+                    .model_invocations
+                    .iter()
+                    .any(|existing| existing.id == receipt.id)
+                {
                     return Err(DomainError::Invalid(
-                        "model invocation references a future project revision".into(),
+                        "duplicate model invocation receipt id".into(),
                     ));
                 }
-                receipt.validate()?;
                 self.model_invocations.push(receipt.clone());
             }
             Change::CreateBranch { .. }

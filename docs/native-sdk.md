@@ -48,3 +48,7 @@ Motionwright now enables the Native SDK `graph` and `effects` features on the ex
 These helpers intentionally stop before authority. A Motionwright process cannot admit its own Graph evidence, decide CURRENT / STALE / UNKNOWN, or mint an Effect Conformance verdict. Graph admission still requires the trusted Graph owner and authenticated Driver Host session; Effects readback still runs against immutable admitted artifacts under the Semwright-owned protected path.
 
 The dedicated `Canonical Graph and Effects` workflow re-runs the upstream adapter/conformance tests at the exact `SOURCE_LOCK.json` SHA and then exercises Motionwright's consumer wrappers.
+
+The provider also exposes production-jobs, a read-only projection derived from Motionwright production receipts. The job scope is application history only: Semwright remains the scheduler/runtime authority, and CURRENT/STALE applicability is evaluated against the open Motionwright revision.
+
+The desktop Workflow workspace uses the same owner-provisioned `ProductionConnection` boundary for canonical Semwright workflow distillation. Reads plus the explicitly supported record/compile/plan/accept/verify/replay/promote commands are hard-allowlisted and must carry built-in `semwright-core` provenance. Replay is treated as a mutation for uncertain-outcome handling even though Semwright supports planning/dry-run semantics. Destructive or unrelated workflow commands are not exposed by Motionwright; see `workflows.md`.

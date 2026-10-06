@@ -5,15 +5,23 @@ import type {
   BranchState,
   CaptionExportResult,
   Change,
+  DataClass,
   LockKind,
+  ModelContextDisclosure,
+  ModelRequestDraft,
+  ModelRequestPreflight,
   PortableBundleExport,
   PortableBundlePlan,
   Project,
   ProjectEvent,
+  ProductionJobProjection,
+  WorkflowAction,
+  WorkflowActionResult,
+  WorkflowOverview,
 } from "./types";
 import { rationalSeconds } from "./types";
 
-const isTauri = () => "__TAURI_INTERNALS__" in window;
+const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
 const browserEvents: ProjectEvent[] = [];
 
@@ -99,6 +107,139 @@ function mergeBranchState(base: BranchState, target: BranchState, source: Branch
 export async function bootstrap(): Promise<Bootstrap> {
   if (isTauri()) return invoke<Bootstrap>("bootstrap");
   return structuredClone(browserState);
+}
+
+function browserModelDisclosure(
+  project: Project,
+  resourceRef: string,
+  dataClass: DataClass,
+): ModelContextDisclosure {
+  const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+  if (resourceRef === projectResource(project)) {
+    if (dataClass === "metadata") {
+      const value = {
+        id: project.id,
+        title: project.title,
+        revision: project.revision,
+        active_branch: project.active_branch,
+        scene_count: project.scenes.length,
+        asset_count: project.assets.length,
+      };
+      return {
+        resource_ref: resourceRef, data_class: dataClass, label: project.title,
+        media_type: null, estimated_bytes: encode(value), content_sha256: null,
+        preview: null, preview_truncated: false, untrusted_data: true,
+      };
+    }
+    if (dataClass === "text") {
+      const value = JSON.stringify({
+        title: project.title, brief: project.brief, narrative: project.narrative,
+      });
+      return {
+        resource_ref: resourceRef, data_class: dataClass, label: project.title,
+        media_type: null, estimated_bytes: new TextEncoder().encode(value).length,
+        content_sha256: null, preview: value.slice(0, 640),
+        preview_truncated: value.length > 640, untrusted_data: true,
+      };
+    }
+    throw new Error("Project resource exposes only metadata or text context.");
+  }
+
+  if (resourceRef.startsWith("scene:")) {
+    const scene = project.scenes.find((candidate) => candidate.id === resourceRef.slice(6));
+    if (!scene) throw new Error("Model request references an unknown scene.");
+    if (dataClass === "metadata") {
+      const value = {
+        id: scene.id, name: scene.name, start: scene.start, duration: scene.duration,
+        renderer: scene.renderer, status: scene.status,
+        beat_count: scene.beats.length, node_count: scene.nodes.length,
+      };
+      return {
+        resource_ref: resourceRef, data_class: dataClass, label: scene.name,
+        media_type: null, estimated_bytes: encode(value), content_sha256: null,
+        preview: null, preview_truncated: false, untrusted_data: true,
+      };
+    }
+    if (dataClass === "text") {
+      const value = JSON.stringify({
+        name: scene.name,
+        objective: scene.objective,
+        beats: scene.beats.map((beat) => ({
+          id: beat.id, label: beat.label, objective: beat.objective,
+        })),
+        node_text: scene.nodes.flatMap((node) =>
+          node.text ? [{ id: node.id, name: node.name, text: node.text }] : []
+        ),
+      });
+      return {
+        resource_ref: resourceRef, data_class: dataClass, label: scene.name,
+        media_type: null, estimated_bytes: new TextEncoder().encode(value).length,
+        content_sha256: null, preview: value.slice(0, 640),
+        preview_truncated: value.length > 640, untrusted_data: true,
+      };
+    }
+    throw new Error("Scene resource exposes only metadata or text in browser demo mode.");
+  }
+
+  if (resourceRef.startsWith("asset:")) {
+    const asset = project.assets.find((candidate) => candidate.id === resourceRef.slice(6));
+    if (!asset) throw new Error("Model request references an unknown asset.");
+    if (dataClass !== "metadata") {
+      throw new Error("Browser demo mode cannot inspect local asset bytes. Use desktop preflight for source data.");
+    }
+    return {
+      resource_ref: resourceRef, data_class: dataClass, label: asset.name,
+      media_type: asset.media_type, estimated_bytes: encode(asset),
+      content_sha256: asset.content_sha256, preview: null,
+      preview_truncated: false, untrusted_data: true,
+    };
+  }
+
+  throw new Error("Model request references an unsupported resource.");
+}
+
+export async function modelRequestPreflight(
+  project: Project,
+  draft: ModelRequestDraft,
+): Promise<ModelRequestPreflight> {
+  if (isTauri()) {
+    return invoke<ModelRequestPreflight>("model_request_preflight", {
+      request: { project_id: project.id, draft },
+    });
+  }
+  const resourceRefs = [...new Set(draft.resource_refs)].sort();
+  const classOrder: DataClass[] = ["audio", "frame", "metadata", "source_code", "text"];
+  const dataClasses = [...new Set(draft.data_classes)].sort(
+    (left, right) => classOrder.indexOf(left) - classOrder.indexOf(right),
+  );
+  if (!resourceRefs.length || !dataClasses.length) {
+    throw new Error("Model request scope and data classes are required.");
+  }
+  const disclosures = resourceRefs.flatMap((resource) =>
+    dataClasses.map((dataClass) => browserModelDisclosure(project, resource, dataClass))
+  );
+  const sourceDataClasses = dataClasses.filter((dataClass) => dataClass !== "metadata");
+  return {
+    schema: "motionwright-model-preflight/1",
+    project_id: project.id,
+    generation: project.generation,
+    base_revision: project.revision,
+    provider_kind: draft.provider_kind,
+    provider: draft.provider,
+    model: draft.model,
+    resource_refs: resourceRefs,
+    data_classes: dataClasses,
+    budget: structuredClone(draft.budget),
+    disclosures,
+    estimated_total_bytes: disclosures.reduce((sum, row) => sum + row.estimated_bytes, 0),
+    source_data_classes: sourceDataClasses,
+    explicit_source_consent_required:
+      draft.provider_kind === "remote" && sourceDataClasses.length > 0,
+    fallback_provider: null,
+    studio_network_dispatch_supported: false,
+    network_dispatched: false,
+    fingerprint_sha256: "browser-demo-" + project.revision.toString(16).padStart(8, "0"),
+  };
 }
 
 export async function importAssetFile(
@@ -189,6 +330,56 @@ export async function exportCaptionSidecar(
       project_id: project.id,
       profile_id: profileId,
       path,
+    },
+  });
+}
+
+export async function workflowOverview(project: Project): Promise<WorkflowOverview> {
+  if (isTauri()) {
+    return invoke<WorkflowOverview>("workflow_overview", {
+      request: { project_id: project.id },
+    });
+  }
+  return {
+    status: "browser_demo",
+    reason: "Browser demo mode does not attach a canonical Semwright session. No workflow evidence is mocked as live.",
+    connection_identity: null,
+    authority: null,
+    traces: { traces: [] },
+    candidates: { candidates: [] },
+    patterns: { patterns: [] },
+    suggestions: { suggestions: [] },
+    proposals: { proposals: [] },
+    promotions: { promotions: [] },
+  };
+}
+
+export async function workflowAction(
+  project: Project,
+  action: WorkflowAction,
+  args: Record<string, unknown> = {},
+): Promise<WorkflowActionResult> {
+  if (!isTauri()) {
+    throw new Error("Canonical workflow actions require the Motionwright desktop runtime.");
+  }
+  return invoke<WorkflowActionResult>("workflow_action", {
+    request: {
+      project_id: project.id,
+      action,
+      args,
+    },
+  });
+}
+
+export async function productionJobs(
+  project: Project,
+  limit = 32,
+): Promise<ProductionJobProjection[]> {
+  if (!isTauri()) return [];
+  return invoke<ProductionJobProjection[]>("production_jobs", {
+    request: {
+      project_id: project.id,
+      limit,
     },
   });
 }
@@ -565,6 +756,22 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       set.selected = change.proposal_id;
       break;
     }
+    case "record_model_invocation": {
+      if (change.receipt.base_revision !== next.revision) {
+        throw new Error("model invocation base must match the current project revision");
+      }
+      if (!change.receipt.resource_refs.length || !change.receipt.data_classes.length) {
+        throw new Error("model invocation receipt is incomplete");
+      }
+      if (new Set(change.receipt.data_classes).size !== change.receipt.data_classes.length) {
+        throw new Error("model invocation data classes contain duplicates");
+      }
+      if (next.model_invocations.some((receipt) => receipt.id === change.receipt.id)) {
+        throw new Error("duplicate model invocation receipt id");
+      }
+      next.model_invocations.push(structuredClone(change.receipt));
+      break;
+    }
     case "create_branch": {
       const name = change.name.trim();
       if (!name || name.length > 120 || next.branches.some((branch) => branch.name.toLowerCase() === name.toLowerCase())) {
@@ -690,6 +897,7 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     "add_review",
     "resolve_review",
     "reopen_review",
+    "record_model_invocation",
     "set_lock",
     "remove_lock",
   ]);

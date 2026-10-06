@@ -533,6 +533,25 @@ impl ProposalSet {
                 "selected proposal is not in its set".into(),
             ));
         }
+        if let ProposalScope::Selection { resource_refs } = &self.scope {
+            if resource_refs.is_empty() || resource_refs.len() > 512 {
+                return Err(DomainError::Invalid(
+                    "proposal selection scope is out of bounds".into(),
+                ));
+            }
+            let mut refs = HashSet::new();
+            for resource in resource_refs {
+                if resource.trim().is_empty()
+                    || resource.len() > 512
+                    || resource.chars().any(char::is_control)
+                    || !refs.insert(resource)
+                {
+                    return Err(DomainError::Invalid(
+                        "proposal selection scope contains an invalid resource ref".into(),
+                    ));
+                }
+            }
+        }
         self.search_budget.validate()
     }
 }
@@ -647,13 +666,34 @@ impl ModelInvocationReceipt {
         if self
             .provider_version
             .as_ref()
-            .is_some_and(|value| value.len() > 256)
+            .is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control))
+            || self.resource_refs.is_empty()
             || self.resource_refs.len() > 512
+            || self.data_classes.is_empty()
             || self.data_classes.len() > 32
         {
             return Err(DomainError::Invalid(
-                "model invocation receipt is too large".into(),
+                "model invocation receipt is too large or incomplete".into(),
             ));
+        }
+        let mut refs = HashSet::new();
+        for resource in &self.resource_refs {
+            if resource.trim().is_empty()
+                || resource.len() > 512
+                || resource.chars().any(char::is_control)
+                || !refs.insert(resource)
+            {
+                return Err(DomainError::Invalid(
+                    "model invocation resource refs are invalid".into(),
+                ));
+            }
+        }
+        for (index, class) in self.data_classes.iter().enumerate() {
+            if self.data_classes[..index].contains(class) {
+                return Err(DomainError::Invalid(
+                    "model invocation data classes contain duplicates".into(),
+                ));
+            }
         }
         self.budget.validate()
     }
