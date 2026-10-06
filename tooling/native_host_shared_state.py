@@ -160,7 +160,7 @@ def main() -> None:
             },
             "request_timeout_ms": 10_000,
             "interfaces": {
-                "dynamic_capabilities": True,
+                "dynamic_capabilities": False,
                 "cooperative_cancellation": True,
                 "events": False,
                 "progress": False,
