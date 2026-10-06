@@ -1,8 +1,9 @@
 use motionwright_domain::{Asset, Change, Project, RevisionStamp};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
-    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt, ProjectBackup,
-    ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt,
+    ProductionReceiptInput, ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent,
+    ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
