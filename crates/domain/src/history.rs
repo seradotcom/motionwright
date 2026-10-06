@@ -55,19 +55,7 @@ impl BranchState {
             }
         }
 
-        for profile in &self.deliverables {
-            if profile.width == 0
-                || profile.height == 0
-                || profile.width > 16_384
-                || profile.height > 16_384
-                || profile.name.trim().is_empty()
-                || profile.language.trim().is_empty()
-            {
-                return Err(DomainError::Invalid(
-                    "invalid deliverable in branch state".into(),
-                ));
-            }
-        }
+        validate_deliverables(&self.deliverables)?;
 
         self.brief.validate()?;
         self.narrative.validate()?;

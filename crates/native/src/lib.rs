@@ -151,6 +151,12 @@ impl ObservationProvider for MotionwrightObserver {
             "brief" => vec![serde_json::to_value(&project.brief).unwrap_or(Value::Null)],
             "narrative" => vec![serde_json::to_value(&project.narrative).unwrap_or(Value::Null)],
             "audio" => vec![serde_json::to_value(&project.audio).unwrap_or(Value::Null)],
+            "deliverables" => project
+                .deliverables
+                .iter()
+                .take(usize::from(query.limit))
+                .map(|profile| serde_json::to_value(profile).unwrap_or(Value::Null))
+                .collect(),
             "visual-language" => {
                 vec![serde_json::to_value(&project.visual_language).unwrap_or(Value::Null)]
             }
@@ -253,6 +259,8 @@ enum OperationKind {
     AddMarker,
     AddAsset,
     RemoveAsset,
+    UpsertDeliverable,
+    RemoveDeliverable,
     SetVisualLanguage,
     AddProposalSet,
     SelectProposal,
@@ -580,6 +588,18 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         }
         OperationKind::RemoveAsset => Ok(Change::RemoveAsset {
             asset_id: uuid(args, "asset_id")?,
+        }),
+        OperationKind::UpsertDeliverable => {
+            let profile = serde_json::from_value(
+                args.get("profile")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("profile is required"))?,
+            )
+            .map_err(|_| Error::invalid("deliverable profile is invalid"))?;
+            Ok(Change::UpsertDeliverable { profile })
+        }
+        OperationKind::RemoveDeliverable => Ok(Change::RemoveDeliverable {
+            profile_id: uuid(args, "profile_id")?,
         }),
         OperationKind::SetVisualLanguage => {
             let visual_language = serde_json::from_value(
@@ -1162,6 +1182,52 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertDeliverable,
+            descriptor(
+                "deliverable.upsert",
+                "Create or replace one versioned delivery profile without claiming a rendered artifact exists",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "profile": {
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","maxLength":64},
+                                "name":{"type":"string","minLength":1,"maxLength":160},
+                                "width":{"type":"integer","minimum":1,"maximum":16384},
+                                "height":{"type":"integer","minimum":1,"maximum":16384},
+                                "language":{"type":"string","minLength":1,"maxLength":64},
+                                "captions":{"type":"boolean"},
+                                "caption_format":{"type":"string","enum":["web_vtt","srt"]},
+                                "video_codec":{"type":"string","enum":["h264","hevc","prores_422_hq","vp9","av1"]},
+                                "audio_codec":{"type":"string","enum":["aac","pcm_s16_le","opus"]},
+                                "audio_sample_rate_hz":{"type":"integer","enum":[44100,48000,96000]},
+                                "brand_profile":{"anyOf":[{"type":"null"},{"type":"string","minLength":1,"maxLength":256}]},
+                                "cut_label":{"anyOf":[{"type":"null"},{"type":"string","minLength":1,"maxLength":256}]}
+                            },
+                            "required":["id","name","width","height","language","captions","caption_format","video_codec","audio_codec","audio_sample_rate_hz","brand_profile","cut_label"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "profile"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveDeliverable,
+            descriptor(
+                "deliverable.remove",
+                "Remove an unreferenced delivery profile while preserving anchored review history",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "profile_id":{"type":"string","maxLength":64}
+                    }),
+                    &["ref", "profile_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetVisualLanguage,
             descriptor(
                 "visual-language.set",
@@ -1397,7 +1463,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.review.add"));
         assert!(names.contains(&"driver.motionwright.review.resolve"));
         assert!(names.contains(&"driver.motionwright.review.reopen"));
-        assert_eq!(capabilities.len(), 33);
+        assert_eq!(capabilities.len(), 35);
     }
 
     #[tokio::test]
@@ -1466,6 +1532,34 @@ mod tests {
             } if id == asset_id
         ));
 
+        let profile_id = Uuid::now_v7();
+        let profile = change_from_args(
+            OperationKind::UpsertDeliverable,
+            &json!({
+                "profile": {
+                    "id": profile_id.to_string(),
+                    "name": "Vertical review",
+                    "width": 1080,
+                    "height": 1920,
+                    "language": "es-MX",
+                    "captions": true,
+                    "caption_format": "srt",
+                    "video_codec": "h264",
+                    "audio_codec": "aac",
+                    "audio_sample_rate_hz": 48000,
+                    "brand_profile": "launch",
+                    "cut_label": "social"
+                }
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            profile,
+            Change::UpsertDeliverable {
+                profile: motionwright_domain::DeliverableProfile { id, .. }
+            } if id == profile_id
+        ));
+
         let transform = change_from_args(
             OperationKind::TransformCanvasNode,
             &json!({
@@ -1493,6 +1587,7 @@ mod tests {
             "brief",
             "narrative",
             "audio",
+            "deliverables",
             "visual-language",
             "canvas",
             "alternatives",

@@ -50,10 +50,16 @@ export interface Scene {
 }
 export interface Marker { id: string; at: RationalTime; label: string; }
 export interface ProjectLock { id: string; resource: string; kind: LockKind; note: string; }
+export type CaptionFormat = "web_vtt" | "srt";
+export type VideoCodec = "h264" | "hevc" | "prores_422_hq" | "vp9" | "av1";
+export type AudioCodec = "aac" | "pcm_s16_le" | "opus";
 export interface DeliverableProfile {
   id: string; name: string; width: number; height: number;
-  language: string; captions: boolean;
+  language: string; captions: boolean; caption_format: CaptionFormat;
+  video_codec: VideoCodec; audio_codec: AudioCodec; audio_sample_rate_hz: number;
+  brand_profile: string | null; cut_label: string | null;
 }
+export interface CaptionExportResult { path: string; cue_count: number; }
 export interface Branch {
   id: string; name: string; parent_branch: string | null;
   base_revision: number; head_revision: number; protected: boolean; created_at: string;
@@ -204,6 +210,8 @@ export type Change =
   | { type: "add_marker"; at: RationalTime; label: string }
   | { type: "add_asset"; asset: Asset }
   | { type: "remove_asset"; asset_id: string }
+  | { type: "upsert_deliverable"; profile: DeliverableProfile }
+  | { type: "remove_deliverable"; profile_id: string }
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }

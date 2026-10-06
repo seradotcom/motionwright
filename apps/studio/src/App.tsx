@@ -42,6 +42,7 @@ import {
   inspectProjectBundle,
 } from "./api";
 import CanvasWorkspace from "./CanvasWorkspace";
+import DeliveryProfiles from "./DeliveryProfiles";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
@@ -452,10 +453,12 @@ function formatByteCount(value: string) {
 
 function DeliverView({
   project,
+  commit,
   desktopMode,
   onImported,
 }: {
   project: Project;
+  commit: (change: Change) => Promise<void>;
   desktopMode: boolean;
   onImported: (project: Project) => void;
 }) {
@@ -530,21 +533,7 @@ function DeliverView({
         <span className="count-label">{project.deliverables.length} profiles</span>
       </header>
 
-      <div className="deliver-list">
-        {project.deliverables.map((profile) => (
-          <div className="deliver-row" key={profile.id}>
-            <div className="format-frame" style={{ aspectRatio: profile.width + " / " + profile.height }} />
-            <div>
-              <strong>{profile.name}</strong>
-              <span>{profile.width} × {profile.height} · {profile.language.toUpperCase()}</span>
-            </div>
-            <span className="captions-state">{profile.captions ? "Captions on" : "Captions off"}</span>
-            <button type="button" className="button" disabled title="No render artifact is available for this profile">
-              Export unavailable
-            </button>
-          </div>
-        ))}
-      </div>
+      <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode} />
 
       <section className="portable-project" aria-label="Portable project">
         <header className="portable-heading">
@@ -1258,6 +1247,7 @@ export default function App() {
         return (
           <DeliverView
             project={project}
+            commit={commit}
             desktopMode={boot.native_sdk.mode === "tauri"}
             onImported={(imported) => {
               setBoot({ ...boot, project: imported });

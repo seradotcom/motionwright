@@ -160,5 +160,27 @@ test("portable project delivery is truthful in browser demo mode", async ({ page
   await expect(page.getByLabel("Portable import path")).toBeDisabled();
   await expect(page.getByRole("button", { name: "Export bundle", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Inspect bundle", exact: true })).toBeDisabled();
-  await expect(page.getByText(/Desktop filesystem capability is required/)).toBeVisible();
+  await expect(page.getByText(/Desktop filesystem capability is required/).last()).toBeVisible();
+});
+
+
+test("delivery profiles are versioned and filesystem claims remain truthful", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Delivery profiles" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New profile", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Video codec")).toHaveValue("h264");
+  await expect(page.getByLabel("Audio codec")).toHaveValue("aac");
+
+  const before = await page.locator(".revision-chip").first().innerText();
+  const name = page.getByLabel("Profile name");
+  await name.fill("Master review");
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect.poll(async () => page.locator(".revision-chip").first().innerText()).not.toBe(before);
+  await expect(name).toHaveValue("Master review");
+
+  await expect(page.getByLabel("Destination · absolute path")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Export sidecar", exact: true })).toBeDisabled();
+  await expect(page.getByText("Desktop filesystem capability is required.").first()).toBeVisible();
 });

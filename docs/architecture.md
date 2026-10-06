@@ -70,3 +70,7 @@ Long-running work is correlated locally but scheduled/executed through Semwright
 ## Native production connection
 
 The renderer path is an explicit consumer of the Semwright Broker rather than an embedded scheduler. An owner-provisioned, digest-pinned CLI connection is revalidated on every call. The application allowlists production operations, checks Driver provenance and persists revision-bound receipts. A local receipt is historical application evidence only; Graph admission and Effect Conformance remain separate canonical authorities.
+
+## Delivery boundary
+
+Delivery profiles are application-owned versioned intent and travel with branch state. Caption sidecars are derived locally only from transcript segments whose timing evidence is known; an UNKNOWN alignment cannot be promoted to a timestamp. Final media production remains a Semwright-backed runtime concern, so configuring H.264, HEVC, ProRes, VP9, AV1, AAC, PCM or Opus never creates an execution or quality claim by itself.

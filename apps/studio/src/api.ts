@@ -3,6 +3,7 @@ import { fixtureBootstrap } from "./fixture";
 import type {
   Bootstrap,
   BranchState,
+  CaptionExportResult,
   Change,
   LockKind,
   PortableBundleExport,
@@ -151,6 +152,23 @@ export async function importProjectBundle(path: string): Promise<Project> {
   }
   return invoke<Project>("import_project_bundle", {
     request: { path },
+  });
+}
+
+export async function exportCaptionSidecar(
+  project: Project,
+  profileId: string,
+  path: string,
+): Promise<CaptionExportResult> {
+  if (!isTauri()) {
+    throw new Error("Caption sidecar export requires the Motionwright desktop runtime.");
+  }
+  return invoke<CaptionExportResult>("export_caption_sidecar", {
+    request: {
+      project_id: project.id,
+      profile_id: profileId,
+      path,
+    },
   });
 }
 
@@ -398,6 +416,40 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         throw new Error("resource not found: asset:" + change.asset_id);
       }
       next.assets = next.assets.filter((asset) => asset.id !== change.asset_id);
+      break;
+    }
+    case "upsert_deliverable": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      const profile = structuredClone(change.profile);
+      if (
+        !profile.name.trim() || profile.name.length > 160 ||
+        !profile.language.trim() || profile.language.length > 64 ||
+        !Number.isInteger(profile.width) || !Number.isInteger(profile.height) ||
+        profile.width <= 0 || profile.height <= 0 || profile.width > 16384 || profile.height > 16384 ||
+        ![44100, 48000, 96000].includes(profile.audio_sample_rate_hz)
+      ) throw new Error("deliverable profile is invalid");
+      const duplicate = next.deliverables.find(
+        (candidate) => candidate.id !== profile.id && candidate.name.trim().toLowerCase() === profile.name.trim().toLowerCase(),
+      );
+      if (duplicate) throw new Error("deliverable profile name is already used");
+      const index = next.deliverables.findIndex((candidate) => candidate.id === profile.id);
+      if (index >= 0) next.deliverables[index] = profile;
+      else {
+        if (next.deliverables.length >= 128) throw new Error("too many deliverable profiles");
+        next.deliverables.push(profile);
+      }
+      break;
+    }
+    case "remove_deliverable": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      if (next.deliverables.length <= 1) throw new Error("a project must keep at least one deliverable profile");
+      if (next.reviews.some((review) => review.anchor.profile_id === change.profile_id)) {
+        throw new Error("deliverable profile is referenced by review history");
+      }
+      if (!next.deliverables.some((profile) => profile.id === change.profile_id)) {
+        throw new Error("resource not found: deliverable:" + change.profile_id);
+      }
+      next.deliverables = next.deliverables.filter((profile) => profile.id !== change.profile_id);
       break;
     }
     case "set_visual_language":

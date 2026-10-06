@@ -24,7 +24,7 @@ The desktop editor is organized around:
 - **Changes** — revision history, branches, semantic diffs, conflict-aware merges and restore-as-new-change.
 - **Dependencies** — canonical Project Graph projections and honest CURRENT / STALE / UNKNOWN status.
 - **Review** — technical findings separated from creative critique and comments anchored to frame/object/beat/revision.
-- **Deliver** — 16:9, 9:16 and 1:1 profiles, captions/languages, codecs, audio, brand packages and portable project exports.
+- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, fail-closed WebVTT/SRT sidecars, and portable project exports.
 
 ## Native SDK
 
