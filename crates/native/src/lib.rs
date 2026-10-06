@@ -1749,8 +1749,8 @@ mod tests {
                 "segment": {
                     "id": segment_id.to_string(),
                     "voice_track_id": track_id.to_string(),
-                    "start": {"num": 1, "den": 2},
-                    "end": {"num": 3, "den": 2},
+                    "start": {"num": "1", "den": "2"},
+                    "end": {"num": "3", "den": "2"},
                     "text": "Native audio evidence remains editable.",
                     "speaker": "Narrator",
                     "alignment": {"kind": "manual"}
