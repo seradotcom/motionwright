@@ -40,6 +40,7 @@ const node = (
   },
   relations: [],
   property_locks: [],
+  keyframes: [],
 });
 
 export const fixtureProject: Project = {

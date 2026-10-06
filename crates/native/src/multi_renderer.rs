@@ -61,6 +61,12 @@ fn project_xy(node: &CanvasNode, x: f64, y: f64) -> (f64, f64) {
 }
 
 fn ensure_flat_semantics(node: &CanvasNode) -> NativeResult<()> {
+    if !node.keyframes.is_empty() {
+        return Err(unsupported(format!(
+            "Canvas node {} has authored motion that requires an explicit renderer-time mapping",
+            node.id
+        )));
+    }
     if node.coordinate_space != CoordinateSpace::ProjectPixels {
         return Err(unsupported(format!(
             "Canvas node {} does not use project-pixel coordinates",
@@ -436,6 +442,7 @@ mod tests {
             },
             relations: vec![],
             property_locks: BTreeSet::new(),
+            keyframes: vec![],
         }
     }
 

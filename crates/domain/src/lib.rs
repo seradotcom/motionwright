@@ -120,6 +120,8 @@ pub struct CanvasNode {
     pub relations: Vec<NodeRelation>,
     #[serde(default)]
     pub property_locks: BTreeSet<NodeProperty>,
+    #[serde(default)]
+    pub keyframes: Vec<CanvasKeyframe>,
 }
 
 impl CanvasNode {
@@ -150,10 +152,21 @@ impl CanvasNode {
             .is_some_and(|value| value.len() > 100_000)
             || self.relations.len() > 128
             || self.property_locks.len() > 8
+            || self.keyframes.len() > 128
         {
             return Err(DomainError::Invalid(
                 "canvas node content exceeds bounded limits".into(),
             ));
+        }
+        for (index, keyframe) in self.keyframes.iter().enumerate() {
+            keyframe.validate()?;
+            if self.keyframes[..index].iter().any(|existing| {
+                existing.at == keyframe.at && existing.property == keyframe.property
+            }) {
+                return Err(DomainError::Invalid(
+                    "duplicate canvas keyframe time/property".into(),
+                ));
+            }
         }
         let mut relation_ids = HashSet::new();
         for relation in &self.relations {
@@ -197,6 +210,15 @@ impl Scene {
         let mut ids = HashSet::new();
         for node in &self.nodes {
             node.validate()?;
+            if node
+                .keyframes
+                .iter()
+                .any(|keyframe| keyframe.at >= self.duration)
+            {
+                return Err(DomainError::Invalid(
+                    "canvas keyframe must stay inside the half-open scene interval".into(),
+                ));
+            }
             if !ids.insert(node.id) {
                 return Err(DomainError::Invalid("duplicate canvas node id".into()));
             }
@@ -1004,6 +1026,16 @@ impl Project {
                     .iter_mut()
                     .find(|scene| scene.id == *scene_id)
                     .ok_or(DomainError::NotFound(resource))?;
+                if scene
+                    .nodes
+                    .iter()
+                    .flat_map(|node| &node.keyframes)
+                    .any(|keyframe| keyframe.at >= *duration)
+                {
+                    return Err(DomainError::Invalid(
+                        "scene duration would strand an authored keyframe".into(),
+                    ));
+                }
                 scene.duration = *duration;
                 self.reflow_scene_starts()?;
             }
@@ -1016,6 +1048,15 @@ impl Project {
                     .iter_mut()
                     .find(|scene| scene.id == *scene_id)
                     .ok_or(DomainError::NotFound(resource))?;
+                if node
+                    .keyframes
+                    .iter()
+                    .any(|keyframe| keyframe.at >= scene.duration)
+                {
+                    return Err(DomainError::Invalid(
+                        "canvas keyframe must stay inside the half-open scene interval".into(),
+                    ));
+                }
                 if scene.nodes.iter().any(|existing| existing.id == node.id) {
                     return Err(DomainError::Invalid(
                         "canvas node identity already exists in scene".into(),
@@ -1097,6 +1138,93 @@ impl Project {
                 node.height = transform.height;
                 node.rotation_deg = transform.rotation_deg;
                 node.opacity = transform.opacity;
+            }
+            Change::SetCanvasKeyframe {
+                scene_id,
+                node_id,
+                keyframe,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                keyframe.validate()?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if keyframe.at >= scene.duration {
+                    return Err(DomainError::Invalid(
+                        "canvas keyframe must stay inside the half-open scene interval".into(),
+                    ));
+                }
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                let locked = keyframe.property.node_property();
+                if node.property_locks.contains(&locked) {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} motion property"
+                    )));
+                }
+                if let Some(existing) = node.keyframes.iter_mut().find(|existing| {
+                    existing.at == keyframe.at && existing.property == keyframe.property
+                }) {
+                    *existing = keyframe.clone();
+                } else {
+                    if node.keyframes.len() >= 128 {
+                        return Err(DomainError::Invalid(
+                            "canvas keyframe budget exceeded".into(),
+                        ));
+                    }
+                    node.keyframes.push(keyframe.clone());
+                }
+                node.keyframes.sort_by(|left, right| {
+                    left.at
+                        .cmp(&right.at)
+                        .then(left.property.cmp(&right.property))
+                });
+            }
+            Change::RemoveCanvasKeyframe {
+                scene_id,
+                node_id,
+                at,
+                property,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                if at.validate().is_err() || *at < RationalTime::ZERO {
+                    return Err(DomainError::Invalid(
+                        "canvas keyframe time is invalid".into(),
+                    ));
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if node.property_locks.contains(&property.node_property()) {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} motion property"
+                    )));
+                }
+                let index = node
+                    .keyframes
+                    .iter()
+                    .position(|keyframe| keyframe.at == *at && keyframe.property == *property)
+                    .ok_or_else(|| {
+                        DomainError::NotFound(format!(
+                            "keyframe:{node_id}:{:?}:{}/{}",
+                            property, at.num, at.den
+                        ))
+                    })?;
+                node.keyframes.remove(index);
             }
             Change::UpdateCanvasText {
                 scene_id,
@@ -1698,6 +1826,17 @@ pub enum Change {
         node_id: Uuid,
         transform: CanvasTransform,
     },
+    SetCanvasKeyframe {
+        scene_id: Uuid,
+        node_id: Uuid,
+        keyframe: CanvasKeyframe,
+    },
+    RemoveCanvasKeyframe {
+        scene_id: Uuid,
+        node_id: Uuid,
+        at: RationalTime,
+        property: MotionProperty,
+    },
     UpdateCanvasText {
         scene_id: Uuid,
         node_id: Uuid,
@@ -1875,6 +2014,7 @@ mod tests {
             style: NodeStyle::default(),
             relations: vec![],
             property_locks: BTreeSet::new(),
+            keyframes: vec![],
         }
     }
 
@@ -2024,6 +2164,163 @@ mod tests {
                 .iter()
                 .all(|node| node.id != parent_id)
         );
+    }
+
+    #[test]
+    fn typed_keyframes_replace_sort_and_remove_deterministically() {
+        let mut project = Project::new("Motion").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Scene".into(),
+                objective: "animate".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Animated");
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+
+        for keyframe in [
+            CanvasKeyframe {
+                at: whole_seconds(3),
+                property: MotionProperty::X,
+                value: 300.0,
+                interpolation: MotionInterpolation::Linear,
+            },
+            CanvasKeyframe {
+                at: whole_seconds(1),
+                property: MotionProperty::X,
+                value: 100.0,
+                interpolation: MotionInterpolation::EaseInOut,
+            },
+            CanvasKeyframe {
+                at: whole_seconds(1),
+                property: MotionProperty::X,
+                value: 125.0,
+                interpolation: MotionInterpolation::Hold,
+            },
+        ] {
+            project
+                .apply_change(&Change::SetCanvasKeyframe {
+                    scene_id,
+                    node_id,
+                    keyframe,
+                })
+                .unwrap();
+        }
+
+        let keyframes = &project.scenes[0].nodes[0].keyframes;
+        assert_eq!(keyframes.len(), 2);
+        assert_eq!(keyframes[0].at, whole_seconds(1));
+        assert_eq!(keyframes[0].value, 125.0);
+        assert_eq!(keyframes[0].interpolation, MotionInterpolation::Hold);
+        assert_eq!(keyframes[1].at, whole_seconds(3));
+
+        project
+            .apply_change(&Change::RemoveCanvasKeyframe {
+                scene_id,
+                node_id,
+                at: whole_seconds(1),
+                property: MotionProperty::X,
+            })
+            .unwrap();
+        assert_eq!(project.scenes[0].nodes[0].keyframes.len(), 1);
+    }
+
+    #[test]
+    fn keyframes_respect_property_locks_and_scene_bounds() {
+        let mut project = Project::new("Motion locks").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Scene".into(),
+                objective: "animate".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Animated");
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        project
+            .apply_change(&Change::SetNodePropertyLock {
+                scene_id,
+                node_id,
+                property: NodeProperty::Opacity,
+                locked: true,
+            })
+            .unwrap();
+
+        let locked = project
+            .apply_change(&Change::SetCanvasKeyframe {
+                scene_id,
+                node_id,
+                keyframe: CanvasKeyframe {
+                    at: whole_seconds(1),
+                    property: MotionProperty::Opacity,
+                    value: 0.5,
+                    interpolation: MotionInterpolation::Linear,
+                },
+            })
+            .unwrap_err();
+        assert!(matches!(locked, DomainError::Locked(_)));
+
+        let outside = project
+            .apply_change(&Change::SetCanvasKeyframe {
+                scene_id,
+                node_id,
+                keyframe: CanvasKeyframe {
+                    at: whole_seconds(5),
+                    property: MotionProperty::X,
+                    value: 100.0,
+                    interpolation: MotionInterpolation::Linear,
+                },
+            })
+            .unwrap_err();
+        assert!(matches!(outside, DomainError::Invalid(_)));
+    }
+
+    #[test]
+    fn duration_cannot_strand_existing_keyframes() {
+        let mut project = Project::new("Motion duration").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Scene".into(),
+                objective: "animate".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Animated");
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        project
+            .apply_change(&Change::SetCanvasKeyframe {
+                scene_id,
+                node_id,
+                keyframe: CanvasKeyframe {
+                    at: whole_seconds(4),
+                    property: MotionProperty::Y,
+                    value: 220.0,
+                    interpolation: MotionInterpolation::EaseInOut,
+                },
+            })
+            .unwrap();
+
+        let error = project
+            .apply_change(&Change::SetSceneDuration {
+                scene_id,
+                duration: whole_seconds(4),
+            })
+            .unwrap_err();
+        assert!(matches!(error, DomainError::Invalid(_)));
+        assert_eq!(project.scenes[0].duration, whole_seconds(5));
     }
 
     #[test]

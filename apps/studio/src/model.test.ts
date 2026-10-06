@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { workflowAction, workflowOverview } from "./api";
+import { applyChange, workflowAction, workflowOverview } from "./api";
 import { fixtureProject } from "./fixture";
 import { rationalSeconds, seconds } from "./types";
 
@@ -57,6 +57,63 @@ describe("creative project fixture", () => {
     expect(fixtureProject.visual_language.version).toBe(1);
     expect(fixtureProject.visual_language.anti_slop_rules).toContain("No glassmorphism");
     expect(fixtureProject.visual_language.motion_grammar[0].reduced_motion).toBe("static_equivalent");
+  });
+
+  it("persists typed canvas keyframes with deterministic replacement and bounds", async () => {
+    const project = structuredClone(fixtureProject);
+    project.locks = [];
+    const scene = project.scenes[0];
+    const node = scene.nodes[0];
+
+    const first = await applyChange(project, {
+      type: "set_canvas_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      keyframe: {
+        at: rationalSeconds(0.5),
+        property: "opacity",
+        value: 0.6,
+        interpolation: "ease_in_out",
+      },
+    });
+    expect(first.scenes[0].nodes[0].keyframes).toEqual([
+      {
+        at: { num: "1", den: "2" },
+        property: "opacity",
+        value: 0.6,
+        interpolation: "ease_in_out",
+      },
+    ]);
+
+    const replaced = await applyChange(first, {
+      type: "set_canvas_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      keyframe: {
+        at: rationalSeconds(0.5),
+        property: "opacity",
+        value: 0.35,
+        interpolation: "hold",
+      },
+    });
+    expect(replaced.scenes[0].nodes[0].keyframes).toHaveLength(1);
+    expect(replaced.scenes[0].nodes[0].keyframes[0].value).toBe(0.35);
+    expect(replaced.scenes[0].nodes[0].keyframes[0].interpolation).toBe("hold");
+
+    await expect(applyChange(replaced, {
+      type: "set_scene_duration",
+      scene_id: scene.id,
+      duration: rationalSeconds(0.5),
+    })).rejects.toThrow("strand an authored keyframe");
+
+    const removed = await applyChange(replaced, {
+      type: "remove_canvas_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      at: rationalSeconds(0.5),
+      property: "opacity",
+    });
+    expect(removed.scenes[0].nodes[0].keyframes).toEqual([]);
   });
 
   it("does not fabricate canonical workflow evidence in browser mode", async () => {

@@ -260,6 +260,8 @@ enum OperationKind {
     AddCanvasNode,
     RemoveCanvasNode,
     TransformCanvasNode,
+    SetCanvasKeyframe,
+    RemoveCanvasKeyframe,
     UpdateCanvasText,
     UpdateCanvasStyle,
     ReparentCanvasNode,
@@ -494,6 +496,39 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 scene_id: uuid(args, "scene_id")?,
                 node_id: uuid(args, "node_id")?,
                 transform,
+            })
+        }
+        OperationKind::SetCanvasKeyframe => {
+            let keyframe = serde_json::from_value(
+                args.get("keyframe")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("keyframe is required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas keyframe is invalid"))?;
+            Ok(Change::SetCanvasKeyframe {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                keyframe,
+            })
+        }
+        OperationKind::RemoveCanvasKeyframe => {
+            let at = serde_json::from_value(
+                args.get("at")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("keyframe time is required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas keyframe time is invalid"))?;
+            let property = serde_json::from_value(
+                args.get("property")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("keyframe property is required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas keyframe property is invalid"))?;
+            Ok(Change::RemoveCanvasKeyframe {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                at,
+                property,
             })
         }
         OperationKind::UpdateCanvasText => {
@@ -1023,7 +1058,22 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                                 "z_index":{"type":"integer"},
                                 "style":{"type":"object"},
                                 "relations":{"type":"array","maxItems":128},
-                                "property_locks":{"type":"array","maxItems":8,"items":{"type":"string","enum":["position","size","rotation","opacity","text","style","parent","order"]}}
+                                "property_locks":{"type":"array","maxItems":8,"items":{"type":"string","enum":["position","size","rotation","opacity","text","style","parent","order"]}},
+                                "keyframes":{
+                                    "type":"array",
+                                    "maxItems":128,
+                                    "items":{
+                                        "type":"object",
+                                        "properties":{
+                                            "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
+                                            "property":{"type":"string","enum":["x","y","width","height","rotation_deg","opacity"]},
+                                            "value":{"type":"number"},
+                                            "interpolation":{"type":"string","enum":["hold","linear","ease_in_out"]}
+                                        },
+                                        "required":["at","property","value","interpolation"],
+                                        "additionalProperties":false
+                                    }
+                                }
                             },
                             "required":["id","name","kind","parent_id","x","y","width","height","rotation_deg","opacity","text","coordinate_space","z_index","style","relations","property_locks"],
                             "additionalProperties":false
@@ -1073,6 +1123,49 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         }
                     }),
                     &["ref", "scene_id", "node_id", "transform"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetCanvasKeyframe,
+            descriptor(
+                "canvas.keyframe.set",
+                "Create or replace one typed scene-local keyframe without bypassing object property locks",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "scene_id":{"type":"string","maxLength":64},
+                        "node_id":{"type":"string","maxLength":64},
+                        "keyframe":{
+                            "type":"object",
+                            "properties":{
+                                "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
+                                "property":{"type":"string","enum":["x","y","width","height","rotation_deg","opacity"]},
+                                "value":{"type":"number"},
+                                "interpolation":{"type":"string","enum":["hold","linear","ease_in_out"]}
+                            },
+                            "required":["at","property","value","interpolation"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "scene_id", "node_id", "keyframe"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveCanvasKeyframe,
+            descriptor(
+                "canvas.keyframe.remove",
+                "Remove one exact typed keyframe while preserving the remaining motion curve",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "scene_id":{"type":"string","maxLength":64},
+                        "node_id":{"type":"string","maxLength":64},
+                        "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
+                        "property":{"type":"string","enum":["x","y","width","height","rotation_deg","opacity"]}
+                    }),
+                    &["ref", "scene_id", "node_id", "at", "property"],
                 ),
             ),
         ),
@@ -1671,6 +1764,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.canvas.node.add"));
         assert!(names.contains(&"driver.motionwright.canvas.node.remove"));
         assert!(names.contains(&"driver.motionwright.canvas.node.transform"));
+        assert!(names.contains(&"driver.motionwright.canvas.keyframe.set"));
+        assert!(names.contains(&"driver.motionwright.canvas.keyframe.remove"));
         assert!(names.contains(&"driver.motionwright.canvas.node.style.set"));
         assert!(names.contains(&"driver.motionwright.canvas.node.reparent"));
         assert!(names.contains(&"driver.motionwright.canvas.node.relations.set"));
@@ -1689,7 +1784,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
-        assert_eq!(capabilities.len(), 42);
+        assert_eq!(capabilities.len(), 44);
     }
 
     #[tokio::test]
@@ -1841,6 +1936,32 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(transform, Change::TransformCanvasNode { .. }));
+
+        let keyframe = change_from_args(
+            OperationKind::SetCanvasKeyframe,
+            &json!({
+                "scene_id": Uuid::now_v7().to_string(),
+                "node_id": Uuid::now_v7().to_string(),
+                "keyframe": {
+                    "at": {"num": "3", "den": "2"},
+                    "property": "opacity",
+                    "value": 0.4,
+                    "interpolation": "ease_in_out"
+                }
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            keyframe,
+            Change::SetCanvasKeyframe {
+                keyframe: motionwright_domain::CanvasKeyframe {
+                    property: motionwright_domain::MotionProperty::Opacity,
+                    interpolation: motionwright_domain::MotionInterpolation::EaseInOut,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

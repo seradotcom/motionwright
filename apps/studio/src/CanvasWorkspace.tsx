@@ -1,7 +1,17 @@
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import CanvasStructureEditor from "./CanvasStructureEditor";
-import type { CanvasNode, CanvasTransform, Change, NodeProperty, Project, Scene } from "./types";
+import type {
+  CanvasNode,
+  CanvasTransform,
+  Change,
+  MotionInterpolation,
+  MotionProperty,
+  NodeProperty,
+  Project,
+  Scene,
+} from "./types";
+import { rationalSeconds, seconds } from "./types";
 import VisualLanguageEditor from "./VisualLanguageEditor";
 
 type Commit = (change: Change) => Promise<void>;
@@ -23,6 +33,47 @@ function nodeTransform(node: CanvasNode): CanvasTransform {
 function numberValue(value: string, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const MOTION_PROPERTIES: MotionProperty[] = ["x", "y", "width", "height", "rotation_deg", "opacity"];
+
+function easedProgress(progress: number, interpolation: MotionInterpolation) {
+  if (interpolation === "hold") return 0;
+  if (interpolation === "ease_in_out") return progress * progress * (3 - 2 * progress);
+  return progress;
+}
+
+function previewTransform(node: CanvasNode, playhead: number): CanvasTransform {
+  const output = nodeTransform(node);
+  for (const property of MOTION_PROPERTIES) {
+    const keys = node.keyframes
+      .filter((keyframe) => keyframe.property === property)
+      .sort((left, right) => seconds(left.at) - seconds(right.at));
+    if (keys.length === 0) continue;
+    let fromValue = output[property];
+    let fromTime = 0;
+    for (const keyframe of keys) {
+      const keyTime = seconds(keyframe.at);
+      if (playhead < keyTime) {
+        const span = keyTime - fromTime;
+        if (span <= 0) break;
+        const progress = Math.max(0, Math.min(1, (playhead - fromTime) / span));
+        output[property] = fromValue + (keyframe.value - fromValue) * easedProgress(progress, keyframe.interpolation);
+        break;
+      }
+      fromValue = keyframe.value;
+      fromTime = keyTime;
+      output[property] = keyframe.value;
+    }
+  }
+  return output;
+}
+
+function propertyLock(property: MotionProperty): NodeProperty {
+  if (property === "x" || property === "y") return "position";
+  if (property === "width" || property === "height") return "size";
+  if (property === "rotation_deg") return "rotation";
+  return "opacity";
 }
 
 function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode {
@@ -59,6 +110,7 @@ function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode 
     },
     relations: [],
     property_locks: [],
+    keyframes: [],
   };
 }
 
@@ -75,6 +127,10 @@ export default function CanvasWorkspace({
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
   const [formTransform, setFormTransform] = useState<CanvasTransform | null>(scene?.nodes[0] ? nodeTransform(scene.nodes[0]) : null);
   const [textValue, setTextValue] = useState(scene?.nodes[0]?.text ?? "");
+  const [playhead, setPlayhead] = useState(0);
+  const [motionProperty, setMotionProperty] = useState<MotionProperty>("opacity");
+  const [motionValue, setMotionValue] = useState(scene?.nodes[0]?.opacity ?? 1);
+  const [motionInterpolation, setMotionInterpolation] = useState<MotionInterpolation>("linear");
   const drag = useRef<{
     pointerId: number;
     nodeId: string;
@@ -88,6 +144,7 @@ export default function CanvasWorkspace({
     setSelectedNodeId(next?.id ?? null);
     setFormTransform(next ? nodeTransform(next) : null);
     setTextValue(next?.text ?? "");
+    setPlayhead(0);
     setDraftTransforms({});
   }, [scene?.id]);
 
@@ -115,6 +172,10 @@ export default function CanvasWorkspace({
     selectedNode?.text,
   ]);
 
+  useEffect(() => {
+    if (selectedNode) setMotionValue(nodeTransform(selectedNode)[motionProperty]);
+  }, [selectedNode, motionProperty]);
+
   if (!scene) {
     return (
       <div className="empty-workspace">
@@ -131,6 +192,8 @@ export default function CanvasWorkspace({
   const sceneContentLocked = project.locks.some(
     (lock) => lock.resource === "scene:" + scene.id && lock.kind === "content",
   );
+  const sceneDurationSeconds = seconds(scene.duration);
+  const maxPlayhead = Math.max(0, sceneDurationSeconds - 0.001);
 
   const addNode = async (kind: "text" | "shape" | "group") => {
     const node = createNode(scene, kind);
@@ -147,6 +210,7 @@ export default function CanvasWorkspace({
   };
 
   const objectTransform = (node: CanvasNode) => draftTransforms[node.id] ?? nodeTransform(node);
+  const stageTransform = (node: CanvasNode) => draftTransforms[node.id] ?? previewTransform(node, playhead);
 
   const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, node: CanvasNode) => {
     selectNode(node);
@@ -219,6 +283,33 @@ export default function CanvasWorkspace({
     });
   };
 
+  const commitKeyframe = () => {
+    if (!selectedNode) return;
+    const at = Math.max(0, Math.min(playhead, maxPlayhead));
+    void commit({
+      type: "set_canvas_keyframe",
+      scene_id: scene.id,
+      node_id: selectedNode.id,
+      keyframe: {
+        at: rationalSeconds(at),
+        property: motionProperty,
+        value: motionValue,
+        interpolation: motionInterpolation,
+      },
+    });
+  };
+
+  const removeKeyframe = (at: ReturnType<typeof rationalSeconds>, property: MotionProperty) => {
+    if (!selectedNode) return;
+    void commit({
+      type: "remove_canvas_keyframe",
+      scene_id: scene.id,
+      node_id: selectedNode.id,
+      at,
+      property,
+    });
+  };
+
   return (
     <div className="canvas-workspace">
       <header className="canvas-toolbar">
@@ -227,7 +318,19 @@ export default function CanvasWorkspace({
           <span>{scene.name}</span>
         </div>
         <div className="canvas-toolbar-state">
-          <span className="status-pill status-unknown">DESIGN REPRESENTATION</span>
+          <label className="motion-playhead">
+            <span className="mono">{playhead.toFixed(2)}s / {sceneDurationSeconds.toFixed(2)}s</span>
+            <input
+              aria-label="Motion playhead"
+              type="range"
+              min="0"
+              max={Math.max(maxPlayhead, 0)}
+              step="0.001"
+              value={Math.min(playhead, maxPlayhead)}
+              onChange={(event) => setPlayhead(numberValue(event.target.value, 0))}
+            />
+          </label>
+          <span className="status-pill status-unknown">EDITORIAL PREVIEW</span>
           <span className="mono">{scene.nodes.length} objects</span>
         </div>
       </header>
@@ -286,7 +389,7 @@ export default function CanvasWorkspace({
               <span>SAFE</span>
             </div>
             {scene.nodes.map((node) => {
-              const transform = objectTransform(node);
+              const transform = stageTransform(node);
               const positionLocked = scenePositionLocked || node.property_locks.includes("position");
               return (
                 <button
@@ -379,6 +482,92 @@ export default function CanvasWorkspace({
               <button className="button full" type="button" onClick={commitTransform} disabled={scenePositionLocked}>
                 Commit transform
               </button>
+
+              <section className="motion-editor" aria-label="Typed motion keyframes">
+                <div className="motion-editor-heading">
+                  <div>
+                    <span className="field-label">Motion</span>
+                    <strong>{selectedNode.keyframes.length} keyframe{selectedNode.keyframes.length === 1 ? "" : "s"}</strong>
+                  </div>
+                  <span className="mono">{playhead.toFixed(3)}s</span>
+                </div>
+                <div className="canvas-field-grid motion-fields">
+                  <label>
+                    <span>Property</span>
+                    <select
+                      aria-label="Motion property"
+                      value={motionProperty}
+                      onChange={(event) => setMotionProperty(event.target.value as MotionProperty)}
+                    >
+                      {MOTION_PROPERTIES.map((property) => <option value={property} key={property}>{property.replace("_deg", "")}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Value</span>
+                    <input
+                      aria-label="Motion keyframe value"
+                      type="number"
+                      step={motionProperty === "opacity" ? "0.05" : "1"}
+                      min={motionProperty === "opacity" || motionProperty === "width" || motionProperty === "height" ? "0" : undefined}
+                      max={motionProperty === "opacity" ? "1" : undefined}
+                      value={motionValue}
+                      onChange={(event) => setMotionValue(numberValue(event.target.value, motionValue))}
+                    />
+                  </label>
+                  <label>
+                    <span>Interpolation</span>
+                    <select
+                      aria-label="Motion interpolation"
+                      value={motionInterpolation}
+                      onChange={(event) => setMotionInterpolation(event.target.value as MotionInterpolation)}
+                    >
+                      <option value="linear">Linear</option>
+                      <option value="ease_in_out">Ease in/out</option>
+                      <option value="hold">Hold</option>
+                    </select>
+                  </label>
+                </div>
+                <button
+                  className="button full"
+                  type="button"
+                  disabled={scenePositionLocked || selectedNode.property_locks.includes(propertyLock(motionProperty))}
+                  onClick={commitKeyframe}
+                >
+                  Add or replace keyframe at playhead
+                </button>
+                <div className="motion-keyframe-list">
+                  {selectedNode.keyframes.length === 0 ? (
+                    <span className="canvas-empty-note">No authored motion on this object.</span>
+                  ) : [...selectedNode.keyframes]
+                    .sort((left, right) => seconds(left.at) - seconds(right.at) || left.property.localeCompare(right.property))
+                    .map((keyframe) => (
+                      <div className="motion-keyframe-row" key={keyframe.at.num + "/" + keyframe.at.den + ":" + keyframe.property}>
+                        <button
+                          type="button"
+                          className="motion-keyframe-jump"
+                          onClick={() => setPlayhead(Math.min(seconds(keyframe.at), maxPlayhead))}
+                          title="Move playhead to keyframe"
+                        >
+                          <span className="mono">{seconds(keyframe.at).toFixed(3)}s</span>
+                          <strong>{keyframe.property.replace("_deg", "")}</strong>
+                          <span>{keyframe.value} · {keyframe.interpolation.replaceAll("_", " ")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={"Remove " + keyframe.property + " keyframe at " + seconds(keyframe.at).toFixed(3) + " seconds"}
+                          disabled={scenePositionLocked || selectedNode.property_locks.includes(propertyLock(keyframe.property))}
+                          onClick={() => removeKeyframe(keyframe.at, keyframe.property)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                </div>
+                <p className="inspector-note">
+                  Preview interpolation is editorial only. Native Film export rejects motion it cannot preserve exactly.
+                </p>
+              </section>
 
               <label className="canvas-text-editor">
                 <span className="field-label">Text</span>

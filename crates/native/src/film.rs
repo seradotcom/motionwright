@@ -168,6 +168,12 @@ fn canonical_position(node: &CanvasNode, scale: f64, output: &OutputProfile) -> 
 }
 
 fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResult<()> {
+    if !node.keyframes.is_empty() {
+        return Err(unsupported(format!(
+            "Canvas node {} has authored motion keyframes that require an exact canonical Film motion projection",
+            node.id
+        )));
+    }
     if node.coordinate_space != CoordinateSpace::ProjectPixels {
         return Err(unsupported(format!(
             "Canvas node {} uses a coordinate space not yet representable by canonical Film",
@@ -702,7 +708,10 @@ pub fn build_motion_canvas_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use motionwright_domain::{CanvasNode, Change, NodeStyle, RendererKind};
+    use motionwright_domain::{
+        CanvasKeyframe, CanvasNode, Change, MotionInterpolation, MotionProperty, NodeStyle,
+        RationalTime, RendererKind,
+    };
     use std::collections::BTreeSet;
 
     fn node(kind: &str, text: Option<&str>) -> CanvasNode {
@@ -740,6 +749,7 @@ mod tests {
             },
             relations: vec![],
             property_locks: BTreeSet::new(),
+            keyframes: vec![],
         }
     }
 
@@ -836,6 +846,35 @@ mod tests {
         assert_eq!(segments[0].scene_ids, vec![project.scenes[0].id]);
         assert_eq!(segments[0].global_start, Rational::ZERO);
         assert_eq!(segments[0].duration, Rational::new(2, 1).unwrap());
+    }
+
+    #[test]
+    fn authored_keyframes_fail_closed_until_film_can_preserve_them() {
+        let mut project = fixture_project();
+        project.scenes[0].nodes[0].keyframes.push(CanvasKeyframe {
+            at: RationalTime::new(1, 2).unwrap(),
+            property: MotionProperty::X,
+            value: 320.0,
+            interpolation: MotionInterpolation::EaseInOut,
+        });
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: "system-ui".into(),
+            mono_font_family: "monospace".into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("motion keyframes"));
     }
 
     #[test]
