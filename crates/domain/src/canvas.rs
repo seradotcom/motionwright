@@ -1,4 +1,4 @@
-use crate::{DomainError, Result};
+use crate::{DomainError, RationalTime, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -23,6 +23,68 @@ pub enum NodeProperty {
     Style,
     Parent,
     Order,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionProperty {
+    X,
+    Y,
+    Width,
+    Height,
+    RotationDeg,
+    Opacity,
+}
+
+impl MotionProperty {
+    pub fn node_property(self) -> NodeProperty {
+        match self {
+            Self::X | Self::Y => NodeProperty::Position,
+            Self::Width | Self::Height => NodeProperty::Size,
+            Self::RotationDeg => NodeProperty::Rotation,
+            Self::Opacity => NodeProperty::Opacity,
+        }
+    }
+
+    pub fn validate_value(self, value: f64) -> Result<()> {
+        if !value.is_finite()
+            || matches!(self, Self::Width | Self::Height) && value < 0.0
+            || self == Self::Opacity && !(0.0..=1.0).contains(&value)
+        {
+            return Err(DomainError::Invalid(
+                "canvas keyframe value is out of bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionInterpolation {
+    Hold,
+    Linear,
+    EaseInOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanvasKeyframe {
+    pub at: RationalTime,
+    pub property: MotionProperty,
+    pub value: f64,
+    pub interpolation: MotionInterpolation,
+}
+
+impl CanvasKeyframe {
+    pub fn validate(&self) -> Result<()> {
+        if self.at.validate().is_err() || self.at < RationalTime::ZERO {
+            return Err(DomainError::Invalid(
+                "canvas keyframe time is invalid".into(),
+            ));
+        }
+        self.property.validate_value(self.value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

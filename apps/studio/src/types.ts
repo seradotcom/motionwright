@@ -11,6 +11,8 @@ export type LockKind = "content" | "timing" | "position" | "style" | "renderer";
 export type CoordinateSpace = "project_pixels" | "normalized" | "scene_local";
 export type NodeProperty = "position" | "size" | "rotation" | "opacity" | "text" | "style" | "parent" | "order";
 export type BlendMode = "normal" | "multiply" | "screen" | "add";
+export type MotionProperty = "x" | "y" | "width" | "height" | "rotation_deg" | "opacity";
+export type MotionInterpolation = "hold" | "linear" | "ease_in_out";
 export type RelationKind = "align_left" | "align_center_x" | "align_right" | "align_top" | "align_center_y" | "align_bottom" | "follow" | "attach";
 
 export interface RationalTime { num: string; den: string; }
@@ -25,6 +27,9 @@ export interface NodeStyle {
   blend_mode: BlendMode;
 }
 export interface NodeRelation { id: string; kind: RelationKind; target_id: string; }
+export interface CanvasKeyframe {
+  at: RationalTime; property: MotionProperty; value: number; interpolation: MotionInterpolation;
+}
 export interface CanvasTransform {
   x: number; y: number; width: number; height: number;
   rotation_deg: number; opacity: number;
@@ -41,6 +46,7 @@ export interface CanvasNode extends CanvasTransform {
   id: string; name: string; kind: string; parent_id: string | null;
   text: string | null; coordinate_space: CoordinateSpace; z_index: number;
   style: NodeStyle; relations: NodeRelation[]; property_locks: NodeProperty[];
+  keyframes: CanvasKeyframe[];
 }
 export interface Scene {
   id: string; name: string; objective: string;
@@ -339,6 +345,8 @@ export type Change =
   | { type: "add_canvas_node"; scene_id: string; node: CanvasNode }
   | { type: "remove_canvas_node"; scene_id: string; node_id: string }
   | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }
+  | { type: "set_canvas_keyframe"; scene_id: string; node_id: string; keyframe: CanvasKeyframe }
+  | { type: "remove_canvas_keyframe"; scene_id: string; node_id: string; at: RationalTime; property: MotionProperty }
   | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
   | { type: "update_canvas_style"; scene_id: string; node_id: string; style: NodeStyle }
   | { type: "reparent_canvas_node"; scene_id: string; node_id: string; parent_id: string | null; z_index: number }

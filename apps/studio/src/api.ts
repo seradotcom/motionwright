@@ -528,6 +528,11 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       if (!Number.isFinite(duration) || duration <= 0 || duration > 86_400) {
         throw new Error("scene duration is out of bounds");
       }
+      if (scene.nodes.some((node) => node.keyframes.some((keyframe) =>
+        Number(keyframe.at.num) / Number(keyframe.at.den) >= duration
+      ))) {
+        throw new Error("scene duration would strand an authored keyframe");
+      }
       scene.duration = structuredClone(change.duration);
       let cursor = 0;
       next.scenes.forEach((entry) => {
@@ -573,6 +578,69 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         (changesOpacity && node.property_locks.includes("opacity"))
       ) throw new Error("resource is locked: node transform property");
       Object.assign(node, change.transform);
+      break;
+    }
+    case "set_canvas_keyframe": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      const node = scene?.nodes.find((entry) => entry.id === change.node_id);
+      if (!scene || !node) throw new Error("resource not found: node:" + change.node_id);
+      const at = Number(change.keyframe.at.num) / Number(change.keyframe.at.den);
+      const duration = Number(scene.duration.num) / Number(scene.duration.den);
+      const { property, value } = change.keyframe;
+      if (!Number.isFinite(at) || at < 0 || at >= duration || !Number.isFinite(value)) {
+        throw new Error("canvas keyframe is out of bounds");
+      }
+      if ((property === "width" || property === "height") && value < 0) {
+        throw new Error("canvas keyframe value is out of bounds");
+      }
+      if (property === "opacity" && (value < 0 || value > 1)) {
+        throw new Error("canvas keyframe value is out of bounds");
+      }
+      const lock = property === "x" || property === "y"
+        ? "position"
+        : property === "width" || property === "height"
+          ? "size"
+          : property === "rotation_deg"
+            ? "rotation"
+            : "opacity";
+      if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
+      const index = node.keyframes.findIndex((keyframe) =>
+        keyframe.at.num === change.keyframe.at.num
+        && keyframe.at.den === change.keyframe.at.den
+        && keyframe.property === property
+      );
+      if (index >= 0) node.keyframes[index] = structuredClone(change.keyframe);
+      else {
+        if (node.keyframes.length >= 128) throw new Error("canvas keyframe budget exceeded");
+        node.keyframes.push(structuredClone(change.keyframe));
+      }
+      node.keyframes.sort((left, right) => {
+        const leftAt = Number(left.at.num) / Number(left.at.den);
+        const rightAt = Number(right.at.num) / Number(right.at.den);
+        return leftAt - rightAt || left.property.localeCompare(right.property);
+      });
+      break;
+    }
+    case "remove_canvas_keyframe": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const node = next.scenes.find((entry) => entry.id === change.scene_id)?.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      const lock = change.property === "x" || change.property === "y"
+        ? "position"
+        : change.property === "width" || change.property === "height"
+          ? "size"
+          : change.property === "rotation_deg"
+            ? "rotation"
+            : "opacity";
+      if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
+      const index = node.keyframes.findIndex((keyframe) =>
+        keyframe.at.num === change.at.num
+        && keyframe.at.den === change.at.den
+        && keyframe.property === change.property
+      );
+      if (index < 0) throw new Error("resource not found: canvas keyframe");
+      node.keyframes.splice(index, 1);
       break;
     }
     case "update_canvas_text": {

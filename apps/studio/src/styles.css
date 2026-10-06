@@ -2304,6 +2304,18 @@ select:focus {
   font-size: 9px;
 }
 
+.motion-playhead {
+  min-width: 190px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.motion-playhead input {
+  width: 105px;
+  margin: 0;
+}
+
 .canvas-body {
   min-width: 0;
   min-height: 0;
@@ -2610,10 +2622,106 @@ select:focus {
 }
 
 .canvas-field-grid input,
+.canvas-field-grid select,
 .camera-controls input {
   min-height: 29px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 10px;
+}
+
+.motion-editor {
+  margin: 2px 10px 10px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.motion-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.motion-editor-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.motion-editor-heading strong {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 660;
+}
+
+.motion-fields {
+  grid-template-columns: 1fr 1fr;
+  padding: 9px 0;
+}
+
+.motion-fields label:last-child {
+  grid-column: 1 / -1;
+}
+
+.motion-editor > .button.full {
+  width: 100%;
+}
+
+.motion-keyframe-list {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.motion-keyframe-list > .canvas-empty-note {
+  padding: 5px 0;
+}
+
+.motion-keyframe-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 4px;
+}
+
+.motion-keyframe-jump {
+  min-width: 0;
+  min-height: 31px;
+  display: grid;
+  grid-template-columns: 50px 50px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--dim);
+  text-align: left;
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.motion-keyframe-jump:hover {
+  border-color: var(--dim);
+  color: var(--text);
+}
+
+.motion-keyframe-jump strong {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+}
+
+.motion-keyframe-jump > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motion-editor .inspector-note {
+  margin: 8px 0 0;
 }
 
 .canvas-properties > .button.full {
