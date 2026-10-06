@@ -20,8 +20,13 @@
   ],
   "heavy_verification": {
     "run_id": 37421901701,
-    "status_at_record": "queued",
-    "claim": "No PASS is claimed until the workflow completes successfully."
+    "status_at_record": "success",
+    "url": "https://github.com/seradotcom/motionwright/actions/runs/37421901701",
+    "scope": [
+      "coverage-and-security",
+      "release-shaped-desktop"
+    ],
+    "claim": "The workflow completed successfully on merge SHA 930c5f0; this is CI evidence, not full product acceptance."
   },
   "limits": [
     "Green compatibility lanes do not certify every product-level SRS criterion.",
