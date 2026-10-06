@@ -531,6 +531,22 @@ impl Project {
             ));
         }
         self.audio.validate()?;
+        for track in &self.audio.voice_tracks {
+            let asset = self
+                .assets
+                .iter()
+                .find(|asset| asset.id == track.asset_id)
+                .ok_or_else(|| {
+                    DomainError::Invalid("voice track references an unknown asset".into())
+                })?;
+            if !asset.media_type.starts_with("audio/")
+                || asset.content_sha256.as_deref() != Some(track.source_sha256.as_str())
+            {
+                return Err(DomainError::Invalid(
+                    "voice track does not match its exact audio asset".into(),
+                ));
+            }
+        }
         self.visual_language.validate()?;
         if self.proposal_sets.len() > 512 || self.model_invocations.len() > 10_000 {
             return Err(DomainError::Invalid(
@@ -1051,20 +1067,117 @@ impl Project {
                     return Err(DomainError::NotFound(format!("deliverable:{profile_id}")));
                 }
             }
+            Change::ImportMeasuredVoice { asset, track } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                asset.validate()?;
+                if !asset.media_type.starts_with("audio/")
+                    || asset.content_sha256.as_deref() != Some(track.source_sha256.as_str())
+                    || track.asset_id != asset.id
+                {
+                    return Err(DomainError::Invalid(
+                        "measured voice must bind to the exact imported audio asset".into(),
+                    ));
+                }
+                if self.assets.iter().any(|candidate| candidate.id == asset.id)
+                    || self
+                        .audio
+                        .voice_tracks
+                        .iter()
+                        .any(|candidate| candidate.id == track.id)
+                {
+                    return Err(DomainError::Invalid(
+                        "measured voice import contains a duplicate id".into(),
+                    ));
+                }
+                self.assets.push(asset.clone());
+                self.audio.voice_tracks.push(track.clone());
+                self.audio.active_voice_track_id = Some(track.id);
+                self.audio.validate()?;
+            }
             Change::AddVoiceTrack { track } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 self.audio.voice_tracks.push(track.clone());
                 self.audio.validate()?;
+            }
+            Change::SetActiveVoiceTrack { track_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if !self
+                    .audio
+                    .voice_tracks
+                    .iter()
+                    .any(|track| track.id == *track_id)
+                {
+                    return Err(DomainError::NotFound(format!("voice-track:{track_id}")));
+                }
+                self.audio.active_voice_track_id = Some(*track_id);
             }
             Change::AddTranscriptSegment { segment } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 self.audio.transcript.push(segment.clone());
                 self.audio.validate()?;
             }
+            Change::UpsertTranscriptSegment { segment } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                if let Some(existing) = self
+                    .audio
+                    .transcript
+                    .iter_mut()
+                    .find(|candidate| candidate.id == segment.id)
+                {
+                    *existing = segment.clone();
+                } else {
+                    self.audio.transcript.push(segment.clone());
+                }
+                self.audio.validate()?;
+            }
+            Change::RemoveTranscriptSegment { segment_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                if self
+                    .audio
+                    .cues
+                    .iter()
+                    .any(|cue| cue.source_segment_id == Some(*segment_id))
+                {
+                    return Err(DomainError::Invalid(
+                        "transcript segment is referenced by an audio cue".into(),
+                    ));
+                }
+                let before = self.audio.transcript.len();
+                self.audio
+                    .transcript
+                    .retain(|segment| segment.id != *segment_id);
+                if before == self.audio.transcript.len() {
+                    return Err(DomainError::NotFound(format!(
+                        "transcript-segment:{segment_id}"
+                    )));
+                }
+            }
             Change::AddAudioCue { cue } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
                 self.audio.cues.push(cue.clone());
                 self.audio.validate()?;
+            }
+            Change::UpsertAudioCue { cue } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
+                if let Some(existing) = self
+                    .audio
+                    .cues
+                    .iter_mut()
+                    .find(|candidate| candidate.id == cue.id)
+                {
+                    *existing = cue.clone();
+                } else {
+                    self.audio.cues.push(cue.clone());
+                }
+                self.audio.validate()?;
+            }
+            Change::RemoveAudioCue { cue_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
+                let before = self.audio.cues.len();
+                self.audio.cues.retain(|cue| cue.id != *cue_id);
+                if before == self.audio.cues.len() {
+                    return Err(DomainError::NotFound(format!("audio-cue:{cue_id}")));
+                }
             }
             Change::SetMixIntent { mix } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -1285,14 +1398,33 @@ pub enum Change {
     RemoveDeliverable {
         profile_id: Uuid,
     },
+    ImportMeasuredVoice {
+        asset: Asset,
+        track: VoiceTrack,
+    },
     AddVoiceTrack {
         track: VoiceTrack,
+    },
+    SetActiveVoiceTrack {
+        track_id: Uuid,
     },
     AddTranscriptSegment {
         segment: TranscriptSegment,
     },
+    UpsertTranscriptSegment {
+        segment: TranscriptSegment,
+    },
+    RemoveTranscriptSegment {
+        segment_id: Uuid,
+    },
     AddAudioCue {
         cue: AudioCue,
+    },
+    UpsertAudioCue {
+        cue: AudioCue,
+    },
+    RemoveAudioCue {
+        cue_id: Uuid,
     },
     SetMixIntent {
         mix: MixIntent,

@@ -136,8 +136,8 @@ export interface MixIntent {
   target_lufs: number | null; target_true_peak_dbfs: number | null;
 }
 export interface AudioState {
-  voice_tracks: VoiceTrack[]; transcript: TranscriptSegment[];
-  cues: AudioCue[]; mix: MixIntent;
+  voice_tracks: VoiceTrack[]; active_voice_track_id: string | null;
+  transcript: TranscriptSegment[]; cues: AudioCue[]; mix: MixIntent;
 }
 export interface VisualToken { name: string; value: string; }
 export type ReducedMotionBehavior = "instant" | "fade_only" | "static_equivalent";
@@ -212,6 +212,12 @@ export type Change =
   | { type: "remove_asset"; asset_id: string }
   | { type: "upsert_deliverable"; profile: DeliverableProfile }
   | { type: "remove_deliverable"; profile_id: string }
+  | { type: "set_active_voice_track"; track_id: string }
+  | { type: "upsert_transcript_segment"; segment: TranscriptSegment }
+  | { type: "remove_transcript_segment"; segment_id: string }
+  | { type: "upsert_audio_cue"; cue: AudioCue }
+  | { type: "remove_audio_cue"; cue_id: string }
+  | { type: "set_mix_intent"; mix: MixIntent }
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }

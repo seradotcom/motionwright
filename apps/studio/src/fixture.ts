@@ -165,6 +165,7 @@ export const fixtureProject: Project = {
   },
   audio: {
     voice_tracks: [],
+    active_voice_track_id: null,
     transcript: [],
     cues: [],
     mix: {

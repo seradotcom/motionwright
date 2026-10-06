@@ -16,7 +16,8 @@ The application owns its creative domain and SQLite transaction boundary. Semwri
 
 The desktop editor is organized around:
 
-- **Brief & Narrative** — audience, objective, claims, beats, voice/cues and scoped constraints.
+- **Brief & Narrative** — audience, objective, claims, beats and scoped constraints.
+- **Audio** — byte-bound measured voice takes, active-take selection, rational transcript alignment, stable cues and explicit mix intent.
 - **Storyboard** — persistent scene cards with objective, duration, renderer, state and continuity consequences.
 - **Canvas** — stable object identity, transforms, hierarchy, relationships, safe areas, cameras and locks.
 - **Timeline** — voice/music, transcript, beats, scenes, cues, objects, cameras, markers and review regions on one clock.

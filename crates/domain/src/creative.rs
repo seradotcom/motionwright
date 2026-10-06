@@ -159,6 +159,8 @@ impl ProtectedSection {
 #[serde(deny_unknown_fields)]
 pub struct AudioState {
     pub voice_tracks: Vec<VoiceTrack>,
+    #[serde(default)]
+    pub active_voice_track_id: Option<Uuid>,
     pub transcript: Vec<TranscriptSegment>,
     pub cues: Vec<AudioCue>,
     pub mix: MixIntent,
@@ -180,6 +182,14 @@ impl AudioState {
             }
         }
         let track_ids = ids.clone();
+        if self
+            .active_voice_track_id
+            .is_some_and(|track_id| !track_ids.contains(&track_id))
+        {
+            return Err(DomainError::Invalid(
+                "active voice track does not exist".into(),
+            ));
+        }
         ids.clear();
         for segment in &self.transcript {
             segment.validate()?;
@@ -231,7 +241,7 @@ pub struct VoiceTrack {
 impl VoiceTrack {
     fn validate(&self) -> Result<()> {
         nonempty_bounded_text(&self.label, 256, "voice label")?;
-        if !matches!(self.sample_rate_hz, 44_100 | 48_000 | 96_000)
+        if !(8_000..=384_000).contains(&self.sample_rate_hz)
             || self.channels == 0
             || self.channels > 32
             || !non_negative(self.measured_duration)
