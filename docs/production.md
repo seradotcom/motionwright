@@ -22,3 +22,13 @@ A request ID cannot be reused with different input. A completed request replays 
 ## Authority boundary
 
 A valid local receipt means only that Motionwright recorded a Broker interaction. It does not imply render quality, Project Graph admission, Effect Conformance PASS, creative approval or freshness. Those claims require their canonical Semwright evidence paths.
+
+## Job correlation projection
+
+Motionwright does not persist a second scheduler or a competing runtime state machine. The Studio derives a bounded job ledger from its immutable production receipts and groups only the allowlisted Motion Canvas and MLT render job commands.
+
+The projection keeps execution state separate from result applicability. CANCEL_REQUESTED is never rendered as CANCELLED until the canonical driver confirms cancellation. A definitive SUCCEEDED, FAILED or CANCELLED observation cannot be resurrected by a later incompatible active-state receipt. An OUTCOME_UNKNOWN observation may be reconciled by a later canonical observation. The original project generation/revision remains the applicability base, so a late successful result is displayed as STALE after the creative project advances.
+
+Only safe correlation metadata is copied into dispatch/error receipts for job commands: the job reference when one already exists. Render arguments, private logs, session contents and arbitrary filesystem paths are not added to the job projection. Progress and artifact indicators appear only when the canonical driver actually returned them.
+
+The same derived ledger is available to the desktop UI and through the Semwright Native SDK production-jobs observation scope. That scope exposes Motionwright-owned receipt history; it does not create runtime authority.

@@ -148,6 +148,16 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
   await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toHaveCount(0);
 });
 
+test("production jobs workspace never fabricates runtime evidence in browser demo mode", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Jobs", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Production jobs" })).toBeVisible();
+  await expect(page.getByText("No canonical render job receipts yet.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Browser demo mode intentionally does not fabricate runtime jobs/)).toBeVisible();
+  await expect(page.getByText(/A cancellation request stays unconfirmed until/)).toBeVisible();
+});
+
 test("portable project delivery is truthful in browser demo mode", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Import local asset" })).toBeDisabled();

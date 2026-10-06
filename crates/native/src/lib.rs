@@ -181,6 +181,13 @@ impl ObservationProvider for MotionwrightObserver {
                 .take(usize::from(query.limit))
                 .map(|set| serde_json::to_value(set).unwrap_or(Value::Null))
                 .collect(),
+            "production-jobs" => self
+                .service
+                .production_jobs(project_id, usize::from(query.limit))
+                .map_err(storage_error)?
+                .into_iter()
+                .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
+                .collect(),
             "history" => self
                 .service
                 .history(project_id, 0, usize::from(query.limit))
@@ -1812,6 +1819,7 @@ mod tests {
             "visual-language",
             "canvas",
             "alternatives",
+            "production-jobs",
             "history",
         ] {
             let query = Query {

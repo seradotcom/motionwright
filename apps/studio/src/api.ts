@@ -10,6 +10,7 @@ import type {
   PortableBundlePlan,
   Project,
   ProjectEvent,
+  ProductionJobProjection,
 } from "./types";
 import { rationalSeconds } from "./types";
 
@@ -189,6 +190,19 @@ export async function exportCaptionSidecar(
       project_id: project.id,
       profile_id: profileId,
       path,
+    },
+  });
+}
+
+export async function productionJobs(
+  project: Project,
+  limit = 32,
+): Promise<ProductionJobProjection[]> {
+  if (!isTauri()) return [];
+  return invoke<ProductionJobProjection[]>("production_jobs", {
+    request: {
+      project_id: project.id,
+      limit,
     },
   });
 }

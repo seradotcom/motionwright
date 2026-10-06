@@ -605,6 +605,11 @@ impl ProductionCoordinator {
                 "Production connection is bound to another Motionwright resource",
             ));
         }
+        let job_ref = args
+            .get("job_ref")
+            .or_else(|| args.get("job"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let digest = request_digest(command, &args)?;
 
         if let Some(prior) = self
@@ -649,7 +654,8 @@ impl ProductionCoordinator {
                 stage: "dispatching".into(),
                 payload: json!({
                     "mutation": mutation,
-                    "connection": self.client.connection().identity()?
+                    "connection": self.client.connection().identity()?,
+                    "job_ref": job_ref.clone()
                 }),
             })
             .map_err(storage_error)?;
@@ -668,7 +674,8 @@ impl ProductionCoordinator {
                         stage: "completed".into(),
                         payload: json!({
                             "result": result.value,
-                            "broker_request_id": result.request_id
+                            "broker_request_id": result.request_id,
+                            "job_ref": job_ref.clone()
                         }),
                     })
                     .map_err(|_| {
@@ -701,7 +708,8 @@ impl ProductionCoordinator {
                         stage: stage.into(),
                         payload: json!({
                             "error": &error,
-                            "mutation": mutation
+                            "mutation": mutation,
+                            "job_ref": job_ref
                         }),
                     });
                 Err(error)

@@ -2,7 +2,9 @@ use motionwright_domain::{
     AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
 };
 use motionwright_native::build_application;
-use motionwright_service::{ProjectEvent, StudioService, VoiceImportMetadata};
+use motionwright_service::{
+    ProductionJobProjection, ProjectEvent, StudioService, VoiceImportMetadata,
+};
 use serde::{Deserialize, Serialize};
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
@@ -41,6 +43,12 @@ struct ApplyRequest {
 struct HistoryRequest {
     project_id: Uuid,
     after_revision: u64,
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductionJobsRequest {
+    project_id: Uuid,
     limit: usize,
 }
 
@@ -135,6 +143,17 @@ fn project_history(
     state
         .service
         .history(request.project_id, request.after_revision, request.limit)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
+fn production_jobs(
+    state: State<'_, AppState>,
+    request: ProductionJobsRequest,
+) -> Result<Vec<ProductionJobProjection>, String> {
+    state
+        .service
+        .production_jobs(request.project_id, request.limit)
         .map_err(sanitized)
 }
 
@@ -532,6 +551,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             project_history,
+            production_jobs,
             import_asset_file,
             import_voice_file,
             export_project_bundle,

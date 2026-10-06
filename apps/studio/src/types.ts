@@ -176,6 +176,39 @@ export interface ModelInvocationReceipt {
   budget: InvocationBudget; outcome: InvocationOutcome;
 }
 
+export type ProductionJobState =
+  | "queued"
+  | "running"
+  | "cancel_requested"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "outcome_unknown";
+export type ProductionJobApplicability = "current" | "stale";
+export type ProductionObservationState = "observed" | "failed_known" | "outcome_unknown";
+export interface ProductionJobProgress {
+  completed: number; total: number | null; message: string | null;
+}
+export interface ProductionJobProjection {
+  job_ref: string;
+  provider: string;
+  root_request_id: string;
+  generation: string;
+  revision: number;
+  state: ProductionJobState;
+  cancellation_requested: boolean;
+  applicability: ProductionJobApplicability;
+  last_command: string;
+  created_at: string;
+  last_observed_at: string;
+  local_observations: number;
+  provider_generation: number | null;
+  progress: ProductionJobProgress | null;
+  artifact_available: boolean;
+  result_available: boolean;
+  last_observation: ProductionObservationState;
+}
+
 export interface Project {
   schema_version: number; id: string; generation: string; revision: number;
   title: string; state: ProjectState; active_branch: string;

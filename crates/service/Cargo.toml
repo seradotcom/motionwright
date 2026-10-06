@@ -10,6 +10,7 @@ motionwright-domain = { path = "../domain" }
 motionwright-storage = { path = "../storage" }
 parking_lot.workspace = true
 uuid.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 symphonia.workspace = true
 
