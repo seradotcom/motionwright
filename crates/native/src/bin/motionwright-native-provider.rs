@@ -11,10 +11,15 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::var_os("MOTIONWRIGHT_DB")
+    let path = if let Some(path) = std::env::var_os("MOTIONWRIGHT_DB")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::args_os().nth(1).map(std::path::PathBuf::from))
-        .ok_or("MOTIONWRIGHT_DB or a database path argument is required")?;
+    {
+        path
+    } else {
+        semwright_native_sdk::driver_sdk::workspace_mount("motionwright-data")?
+            .join("motionwright.sqlite3")
+    };
     let service = StudioService::open(path)?;
     let app = build_application(service)?;
     serve(NativeDriver::new(app)?).await?;
