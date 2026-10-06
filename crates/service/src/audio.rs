@@ -3,7 +3,6 @@ use motionwright_storage::{Result, StorageError};
 use std::{fs::File, path::Path};
 use symphonia::{
     core::{
-        audio::Audio,
         codecs::audio::AudioDecoderOptions,
         errors::Error as SymphoniaError,
         formats::{FormatOptions, TrackType, probe::Hint},
@@ -75,8 +74,8 @@ pub fn measure_audio_file(path: impl AsRef<Path>) -> Result<AudioMeasurement> {
             .decode(&packet)
             .map_err(|error| invalid(format!("audio decode failed: {error}")))?;
         let spec = decoded.spec();
-        let rate = spec.rate;
-        let channels = u16::try_from(spec.channels.count())
+        let rate = spec.rate();
+        let channels = u16::try_from(spec.channels().count())
             .map_err(|_| invalid("audio channel count exceeds supported bounds"))?;
         if !(8_000..=384_000).contains(&rate) || channels == 0 || channels > 32 {
             return Err(invalid("decoded audio format is outside supported bounds"));
