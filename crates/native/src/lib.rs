@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 pub mod canonical;
 pub mod film;
+pub mod multi_renderer;
 pub mod production;
 
 pub const APP_ID: &str = "motionwright";
