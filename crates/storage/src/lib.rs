@@ -12,6 +12,9 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
+mod production;
+pub use production::{ProductionReceipt, ProductionReceiptInput};
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("sqlite: {0}")]
@@ -48,7 +51,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 1;
+pub const STORAGE_SCHEMA_VERSION: u32 = 2;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -206,8 +209,26 @@ impl Store {
               FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS production_receipts(
+              receipt_id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL,
+              generation TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK(revision >= 0),
+              request_id TEXT NOT NULL,
+              request_sha256 TEXT NOT NULL,
+              command TEXT NOT NULL,
+              stage TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS events_by_project_revision
               ON events(project_id, revision);
+            CREATE INDEX IF NOT EXISTS production_receipts_by_project
+              ON production_receipts(project_id, receipt_id DESC);
+            CREATE INDEX IF NOT EXISTS production_receipts_by_request
+              ON production_receipts(project_id, request_id, receipt_id DESC);
             "#,
         )?;
         if observed_schema < STORAGE_SCHEMA_VERSION {

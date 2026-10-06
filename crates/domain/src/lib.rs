@@ -466,6 +466,14 @@ impl Project {
         format!("project:{}", self.id)
     }
 
+    pub fn stamp(&self) -> RevisionStamp {
+        RevisionStamp {
+            resource: self.resource_key(),
+            generation: self.generation,
+            revision: self.revision,
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != PROJECT_SCHEMA_VERSION {
             return Err(DomainError::Invalid("unsupported project schema".into()));
