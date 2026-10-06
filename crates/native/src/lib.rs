@@ -611,7 +611,7 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             track_id: uuid(args, "track_id")?,
         }),
         OperationKind::UpsertTranscriptSegment => {
-            let segment = serde_json::from_value(
+            let segment: motionwright_domain::TranscriptSegment = serde_json::from_value(
                 args.get("segment")
                     .cloned()
                     .ok_or_else(|| Error::invalid("segment is required"))?,
@@ -631,7 +631,7 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             segment_id: uuid(args, "segment_id")?,
         }),
         OperationKind::UpsertAudioCue => {
-            let cue = serde_json::from_value(
+            let cue: motionwright_domain::AudioCue = serde_json::from_value(
                 args.get("cue")
                     .cloned()
                     .ok_or_else(|| Error::invalid("cue is required"))?,
