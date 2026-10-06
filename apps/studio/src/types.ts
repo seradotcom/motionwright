@@ -321,7 +321,41 @@ export interface MotionCanvasRenderEvidence {
   generation: string;
   revision: number;
   deliverable_id: string;
+  frame_rate: { num: number; den: number };
   segments: MotionCanvasSegmentEvidence[];
+}
+
+export interface MltAudioArtifact {
+  relative_path: string;
+  sha256: string;
+  sample_rate: number;
+  channels: number;
+}
+
+export interface AvSyncCue {
+  id: string;
+  expected_us: number;
+}
+
+export interface AvSyncSpec {
+  window_us: number;
+  full_scan: boolean;
+  cues: AvSyncCue[];
+}
+
+export interface MltAvMasterEvidence {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  motion_segment_id: string;
+  frame_rate: { num: number; den: number };
+  frame_count: number;
+  mezzanine: Record<string, unknown>;
+  source_audio: MltAudioArtifact;
+  master: Record<string, unknown>;
+  decoded_audio: Record<string, unknown>;
+  sync: Record<string, unknown> | null;
 }
 
 export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";

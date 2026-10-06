@@ -2,9 +2,10 @@ use crate::{
     film::{FilmBuildOptions, build_motion_canvas_segments},
     multi_renderer::{blender_export_path, build_blender_contribution},
 };
-use motionwright_domain::RevisionStamp;
+use motionwright_domain::{AudioCodec, RevisionStamp, VideoCodec};
 use motionwright_service::StudioService;
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
+use semwright_media_time::Rate;
 use semwright_native_sdk::{
     Error, ErrorCode, Result as NativeResult, Value, json,
     types::{Envelope, SourceKind},
@@ -14,7 +15,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Duration,
 };
 use tokio::{
@@ -34,6 +35,10 @@ const MOTION_RENDER_TIMEOUT_MS: u64 = 300_000;
 const MOTION_RENDER_POLL_DEADLINE_SECS: u64 = 330;
 const MOTION_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
+const MLT_MEZZANINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const MLT_MASTER_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
+const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
 
 const MOTION_CANVAS_COMMANDS: &[&str] = &[
     "driver.motion-canvas.composition.inspect",
@@ -155,24 +160,97 @@ fn safe_metadata(path: &Path) -> NativeResult<fs::Metadata> {
 }
 
 fn sha256_file(path: &Path) -> NativeResult<String> {
-    let mut file = fs::File::open(path).map_err(|_| {
-        Error::new(
-            ErrorCode::Unavailable,
-            "Semwright executable is unavailable",
-        )
-    })?;
+    let mut file = fs::File::open(path)
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "Production file is unavailable"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 128 * 1024];
     loop {
         let read = file
             .read(&mut buffer)
-            .map_err(|_| backend("Semwright executable could not be verified"))?;
+            .map_err(|_| backend("Production file could not be verified"))?;
         if read == 0 {
             break;
         }
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeResult<PathBuf> {
+    if relative.is_empty()
+        || relative.len() > 4096
+        || relative.contains('\0')
+        || relative.contains('\\')
+    {
+        return Err(invalid("Production artifact path is invalid"));
+    }
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(invalid(
+            "Production artifact path must be a normalized relative path",
+        ));
+    }
+    let root = fs::canonicalize(root).map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production output root is unavailable",
+        )
+    })?;
+    let mut lexical = root.clone();
+    for component in relative_path.components() {
+        let Component::Normal(component) = component else {
+            return Err(invalid(
+                "Production artifact path must contain only normal components",
+            ));
+        };
+        lexical.push(component);
+        let metadata = fs::symlink_metadata(&lexical).map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "Production artifact is unavailable")
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Production artifact paths cannot traverse symlinks",
+            ));
+        }
+    }
+    let candidate = fs::canonicalize(&lexical)
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact is unavailable"))?;
+    if !candidate.starts_with(&root) {
+        return Err(Error::new(
+            ErrorCode::PermissionDenied,
+            "Production artifact escaped the owner output root",
+        ));
+    }
+    let metadata = fs::metadata(&candidate)
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact is unavailable"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
+        return Err(invalid("Production artifact is not a bounded regular file"));
+    }
+    Ok(candidate)
+}
+
+fn verify_output_artifact(
+    root: &Path,
+    relative: &str,
+    expected_sha256: &str,
+    max_bytes: u64,
+) -> NativeResult<PathBuf> {
+    if !is_sha256(expected_sha256) {
+        return Err(invalid("Production artifact digest is malformed"));
+    }
+    let path = output_artifact_path(root, relative, max_bytes)?;
+    if sha256_file(&path)? != expected_sha256 {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Production artifact digest changed before dispatch",
+        ));
+    }
+    Ok(path)
 }
 
 impl ProductionConnection {
@@ -308,6 +386,7 @@ pub struct MotionCanvasRenderEvidence {
     pub generation: Uuid,
     pub revision: u64,
     pub deliverable_id: Uuid,
+    pub frame_rate: Rate,
     pub segments: Vec<MotionCanvasSegmentEvidence>,
 }
 
@@ -322,6 +401,47 @@ pub struct MotionCanvasSegmentEvidence {
     pub job_ref: String,
     pub artifact: Value,
     pub verification: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MltAudioArtifact {
+    pub relative_path: String,
+    pub sha256: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvSyncCue {
+    pub id: String,
+    pub expected_us: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvSyncSpec {
+    pub window_us: u64,
+    pub full_scan: bool,
+    pub cues: Vec<AvSyncCue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MltAvMasterEvidence {
+    pub project_resource: String,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+    pub motion_segment_id: String,
+    pub frame_rate: Rate,
+    pub frame_count: u64,
+    pub mezzanine: Value,
+    pub source_audio: MltAudioArtifact,
+    pub master: Value,
+    pub decoded_audio: Value,
+    pub sync: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -684,7 +804,7 @@ impl ProductionCoordinator {
                             "Motion Canvas render was cancelled",
                         ));
                     }
-                    Some("queued") | Some("running") => {}
+                    Some("queued") | Some("starting") | Some("rendering") => {}
                     Some(_) => {
                         return Err(backend(
                             "Motion Canvas render returned an unsupported job state",
@@ -767,7 +887,317 @@ impl ProductionCoordinator {
             generation: project.generation,
             revision: project.revision,
             deliverable_id,
+            frame_rate: options.frame_rate,
             segments: evidence,
+        })
+    }
+
+    pub async fn assemble_mlt_av_master(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        deliverable_id: Uuid,
+        motion: &MotionCanvasRenderEvidence,
+        audio: &MltAudioArtifact,
+        sync: Option<&AvSyncSpec>,
+    ) -> NativeResult<MltAvMasterEvidence> {
+        if request_id.trim().is_empty()
+            || request_id.len() > 96
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(invalid("MLT audiovisual production request id is invalid"));
+        }
+
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motionwright project changed since MLT audiovisual production was prepared",
+            ));
+        }
+        if motion.project_resource != project.resource_key()
+            || motion.generation != project.generation
+            || motion.revision != project.revision
+            || motion.deliverable_id != deliverable_id
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motion Canvas evidence does not belong to the selected Motionwright revision",
+            ));
+        }
+
+        let deliverable = project
+            .deliverables
+            .iter()
+            .find(|profile| profile.id == deliverable_id)
+            .ok_or_else(|| invalid("Deliverable profile not found"))?;
+        if deliverable.video_codec != VideoCodec::H264
+            || deliverable.audio_codec != AudioCodec::Aac
+            || deliverable.audio_sample_rate_hz != 48_000
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Pinned MLT final-master path requires an H.264/AAC 48 kHz deliverable",
+            ));
+        }
+        motion
+            .frame_rate
+            .validate()
+            .map_err(|error| invalid(format!("MLT frame rate is invalid: {error}")))?;
+        if motion.segments.len() != 1 {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Direct MLT audiovisual master currently requires one contiguous Motion Canvas segment; multi-segment timeline assembly must use the semantic MLT edit path",
+            ));
+        }
+        let segment = &motion.segments[0];
+        if segment.frame_count == 0 || segment.frame_count > 36_000 {
+            return Err(invalid(
+                "MLT audiovisual frame count is outside certified bounds",
+            ));
+        }
+
+        let manifest_path = required_string(
+            &segment.artifact,
+            "/manifest",
+            "Motion Canvas artifact has no manifest path",
+        )?;
+        let manifest_sha256 = required_string(
+            &segment.artifact,
+            "/manifest_sha256",
+            "Motion Canvas artifact has no manifest digest",
+        )?;
+        verify_output_artifact(
+            &self.client.connection().output_root,
+            &manifest_path,
+            &manifest_sha256,
+            8 * 1024 * 1024,
+        )?;
+
+        if audio.sample_rate != 48_000 || audio.channels != 2 {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Pinned MLT final-master path requires a 48 kHz stereo audio master",
+            ));
+        }
+        verify_output_artifact(
+            &self.client.connection().output_root,
+            &audio.relative_path,
+            &audio.sha256,
+            MLT_MASTER_MAX_BYTES,
+        )?;
+
+        let token = hex::encode(Sha256::digest(request_id.as_bytes()));
+        let token = &token[..16];
+        let stem = format!("mw-{}-r{}-{token}", project.id.simple(), project.revision);
+        let mezzanine_path = format!("{stem}-motion.mkv");
+        let master_path = format!("{stem}-master.mp4");
+
+        let encoded = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:mlt:frames-encode"),
+                "driver.mlt-video.frames.encode",
+                json!({
+                    "root": "output",
+                    "manifest_path": manifest_path,
+                    "expected_manifest_sha256": manifest_sha256,
+                    "output_path": mezzanine_path,
+                    "max_bytes": MLT_MEZZANINE_MAX_BYTES
+                }),
+                true,
+            )
+            .await?;
+        let mezzanine = response_data(&encoded)?.clone();
+        if mezzanine.get("codec").and_then(Value::as_str) != Some("ffv1")
+            || mezzanine.get("container").and_then(Value::as_str) != Some("matroska")
+            || mezzanine.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count)
+            || mezzanine.get("width").and_then(Value::as_u64) != Some(u64::from(deliverable.width))
+            || mezzanine.get("height").and_then(Value::as_u64)
+                != Some(u64::from(deliverable.height))
+            || mezzanine.get("fps_num").and_then(Value::as_u64)
+                != Some(u64::from(motion.frame_rate.num))
+            || mezzanine.get("fps_den").and_then(Value::as_u64)
+                != Some(u64::from(motion.frame_rate.den))
+            || mezzanine.pointer("/media/video").and_then(Value::as_bool) != Some(true)
+            || mezzanine.pointer("/media/audio").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(backend(
+                "MLT frame encoding did not produce the expected verified FFV1 mezzanine",
+            ));
+        }
+        let mezzanine_artifact_path = required_string(
+            &mezzanine,
+            "/artifact/path",
+            "MLT frame encoding returned no artifact path",
+        )?;
+        let mezzanine_sha256 = required_string(
+            &mezzanine,
+            "/artifact/sha256",
+            "MLT frame encoding returned no artifact digest",
+        )?;
+        verify_output_artifact(
+            &self.client.connection().output_root,
+            &mezzanine_artifact_path,
+            &mezzanine_sha256,
+            MLT_MEZZANINE_MAX_BYTES,
+        )?;
+
+        let muxed = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:mlt:av-mux"),
+                "driver.mlt-video.av.mux",
+                json!({
+                    "video_root": "output",
+                    "video_path": mezzanine_artifact_path,
+                    "video_sha256": mezzanine_sha256,
+                    "audio_root": "output",
+                    "audio_path": audio.relative_path,
+                    "audio_sha256": audio.sha256,
+                    "width": deliverable.width,
+                    "height": deliverable.height,
+                    "fps_num": motion.frame_rate.num,
+                    "fps_den": motion.frame_rate.den,
+                    "frame_count": segment.frame_count,
+                    "sample_rate": audio.sample_rate,
+                    "channels": audio.channels,
+                    "profile": "h264-aac-mp4",
+                    "output_path": master_path,
+                    "max_bytes": MLT_MASTER_MAX_BYTES
+                }),
+                true,
+            )
+            .await?;
+        let master = response_data(&muxed)?.clone();
+        if master.get("profile").and_then(Value::as_str) != Some("h264-aac-mp4")
+            || master.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count)
+            || master.get("sample_rate").and_then(Value::as_u64) != Some(48_000)
+            || master.get("channels").and_then(Value::as_u64) != Some(2)
+            || master.pointer("/media/video").and_then(Value::as_bool) != Some(true)
+            || master.pointer("/media/audio").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(backend(
+                "MLT audiovisual mux did not return the certified H.264/AAC master profile",
+            ));
+        }
+        let master_artifact_path = required_string(
+            &master,
+            "/artifact/path",
+            "MLT audiovisual mux returned no master path",
+        )?;
+        let master_sha256 = required_string(
+            &master,
+            "/artifact/sha256",
+            "MLT audiovisual mux returned no master digest",
+        )?;
+        verify_output_artifact(
+            &self.client.connection().output_root,
+            &master_artifact_path,
+            &master_sha256,
+            MLT_MASTER_MAX_BYTES,
+        )?;
+        let decoded_audio_path = required_string(
+            &master,
+            "/decoded_audio/path",
+            "MLT audiovisual mux returned no decoded-audio artifact",
+        )?;
+        let decoded_audio_sha256 = required_string(
+            &master,
+            "/decoded_audio/sha256",
+            "MLT audiovisual mux returned no decoded-audio digest",
+        )?;
+        verify_output_artifact(
+            &self.client.connection().output_root,
+            &decoded_audio_path,
+            &decoded_audio_sha256,
+            MLT_MASTER_MAX_BYTES,
+        )?;
+
+        let sync_evidence = if let Some(spec) = sync {
+            if !(MLT_SYNC_MIN_WINDOW_US..=MLT_SYNC_MAX_WINDOW_US).contains(&spec.window_us)
+                || spec.cues.is_empty()
+                || spec.cues.len() > 16
+            {
+                return Err(invalid(
+                    "MLT sync specification is outside certified bounds",
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for cue in &spec.cues {
+                if cue.id.is_empty()
+                    || cue.id.len() > 96
+                    || !cue
+                        .id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                    || cue.expected_us > 600_000_000
+                    || !seen.insert(cue.id.clone())
+                {
+                    return Err(invalid("MLT sync cue is invalid or duplicated"));
+                }
+            }
+            let probed = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mlt:sync-probe"),
+                    "driver.mlt-video.sync.probe",
+                    json!({
+                        "root": "output",
+                        "path": master_artifact_path,
+                        "expected_sha256": master_sha256,
+                        "window_us": spec.window_us,
+                        "full_scan": spec.full_scan,
+                        "cues": spec.cues
+                    }),
+                    false,
+                )
+                .await?;
+            let probed = response_data(&probed)?.clone();
+            if probed.get("artifact_sha256").and_then(Value::as_str) != Some(master_sha256.as_str())
+                || (spec.full_scan
+                    && probed.get("coverage").and_then(Value::as_str) != Some("full_scan"))
+                || probed
+                    .get("missing_video")
+                    .and_then(Value::as_array)
+                    .is_none_or(|missing| !missing.is_empty())
+                || probed
+                    .get("missing_audio")
+                    .and_then(Value::as_array)
+                    .is_none_or(|missing| !missing.is_empty())
+            {
+                return Err(backend(
+                    "MLT decoded sync verification did not satisfy the requested cue coverage",
+                ));
+            }
+            Some(probed)
+        } else {
+            None
+        };
+
+        Ok(MltAvMasterEvidence {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            motion_segment_id: segment.segment_id.clone(),
+            frame_rate: motion.frame_rate,
+            frame_count: segment.frame_count,
+            mezzanine,
+            source_audio: audio.clone(),
+            master: master.clone(),
+            decoded_audio: master
+                .get("decoded_audio")
+                .cloned()
+                .ok_or_else(|| backend("MLT master lost decoded-audio evidence"))?,
+            sync: sync_evidence,
         })
     }
 
