@@ -668,7 +668,7 @@ mod tests {
         let mut store = Store::open(temp.path().join("model.sqlite3")).unwrap();
         let mut project = store.create_named_project("Model boundary").unwrap();
         let audio = temp.path().join("voice.bin");
-        fs::write(&audio, b"not decoded by the preflight").unwrap();
+        fs::write(&audio, vec![b'x'; 16 * 1024]).unwrap();
         let blob = store.ingest_blob_file(&audio).unwrap();
         let asset = Asset {
             id: Uuid::now_v7(),
