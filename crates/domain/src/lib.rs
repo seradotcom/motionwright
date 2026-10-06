@@ -1490,14 +1490,13 @@ impl Project {
             Change::UpsertExtension { extension } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 extension.validate()?;
-                if !extension.enabled {
-                    if let Some(renderer) = extension.kind.renderer()
-                        && self.scenes.iter().any(|scene| scene.renderer == renderer)
-                    {
-                        return Err(DomainError::Invalid(
-                            "extension cannot be disabled while its renderer is in use".into(),
-                        ));
-                    }
+                if !extension.enabled
+                    && let Some(renderer) = extension.kind.renderer()
+                    && self.scenes.iter().any(|scene| scene.renderer == renderer)
+                {
+                    return Err(DomainError::Invalid(
+                        "extension cannot be disabled while its renderer is in use".into(),
+                    ));
                 }
                 if extension.enabled
                     && self.extensions.iter().any(|candidate| {
