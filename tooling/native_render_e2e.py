@@ -241,8 +241,6 @@ def main() -> None:
 
         socket = paths["runtime"] / "broker.sock"
         session = paths["runtime"] / "motionwright.session"
-        session.write_text("{}\n", encoding="utf-8")
-        session.chmod(0o600)
         daemon_log = EVIDENCE / "semwrightd.log"
         log_stream = daemon_log.open("wb")
         daemon = subprocess.Popen(
@@ -262,6 +260,28 @@ def main() -> None:
 
         try:
             wait_for_socket(daemon, socket, daemon_log)
+            discovered = run_json(
+                [
+                    str(SW_BINS / "semwright"),
+                    "--socket",
+                    str(socket),
+                    "--session-file",
+                    str(session),
+                    "--json",
+                    "capabilities",
+                    "search",
+                    "motion-canvas",
+                    "--provider",
+                    "driver:motion-canvas",
+                ],
+                env=env,
+            )
+            capabilities = discovered.get("data", {}).get("capabilities", [])
+            if not capabilities:
+                raise AssertionError("pinned Motion Canvas provider exposed no capabilities")
+            if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
+                raise AssertionError("Semwright did not create a private persistent session ticket")
+
             connection_path = paths["config"] / "motionwright-connection.json"
             write_private_json(
                 connection_path,
