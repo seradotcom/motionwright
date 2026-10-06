@@ -32,3 +32,5 @@ semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = 
 semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-media-time" }
 semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-project-graph" }
 semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-effect-conformance" }
+semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-motion-authoring" }
+semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "4d291de26724810017ce7b6d185326514cb79fa6", package = "semwright-semantic-composition" }

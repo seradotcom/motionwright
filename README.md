@@ -40,6 +40,7 @@ The Native SDK surface is used as intended:
 - Graph and Effects are adapters to canonical Semwright authorities, not local replicas.
 - Graph candidates and Effects specifications are prepared through the pinned Native SDK; admission/verdict authority remains outside the application.
 - Native production uses a digest-pinned owner connection to the Semwright CLI/Broker, strict Driver provenance, revision-bound receipts and fail-closed mutation retry semantics.
+- Motion Canvas production projects only explicit Motion Canvas timeline segments into the pinned canonical Film schema; mixed-renderer scenes remain in their native lanes.
 
 ## Renderer plan
 
