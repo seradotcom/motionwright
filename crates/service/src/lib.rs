@@ -17,16 +17,135 @@ pub struct VoiceImportMetadata {
     pub label: String,
 }
 
-use motionwright_domain::{Asset, Change, Project, RevisionStamp, VoiceTrack};
-use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
+use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, VoiceTrack};
+use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt,
     ProductionReceiptInput, ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent,
     ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
-use std::{path::Path, sync::Arc};
+use std::{fs, fs::File, io::Read, path::Path, sync::Arc};
 use uuid::Uuid;
+
+const MAX_SVG_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
+const SVG_SNIFF_BYTES: usize = 16 * 1024;
+
+fn invalid_import(message: impl Into<String>) -> StorageError {
+    DomainError::Invalid(message.into()).into()
+}
+
+fn source_looks_like_svg(source: &Path) -> StorageResult<bool> {
+    let mut input = File::open(source)?;
+    let mut prefix = vec![0_u8; SVG_SNIFF_BYTES];
+    let read = input.read(&mut prefix)?;
+    prefix.truncate(read);
+    let prefix = String::from_utf8_lossy(&prefix).to_ascii_lowercase();
+    Ok(prefix.contains("<svg"))
+}
+
+fn has_event_handler(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index + 3 < bytes.len() {
+        let boundary = bytes[index].is_ascii_whitespace() || bytes[index] == b'<';
+        if boundary && bytes[index + 1] == b'o' && bytes[index + 2] == b'n' {
+            let mut cursor = index + 3;
+            let name_start = cursor;
+            while cursor < bytes.len()
+                && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'-')
+            {
+                cursor += 1;
+            }
+            if cursor > name_start {
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if cursor < bytes.len() && bytes[cursor] == b'=' {
+                    return true;
+                }
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+fn has_external_href(text: &str) -> bool {
+    let mut cursor = text;
+    while let Some(index) = cursor.find("href") {
+        let after_name = &cursor[index + 4..];
+        let after_name = after_name.trim_start();
+        if let Some(after_equals) = after_name.strip_prefix('=') {
+            let value = after_equals.trim_start();
+            let value = if let Some(value) = value.strip_prefix('"') {
+                value
+            } else if let Some(value) = value.strip_prefix('\'') {
+                value
+            } else {
+                value
+            };
+            if !value.is_empty() && !value.starts_with('#') {
+                return true;
+            }
+        }
+        cursor = &cursor[index + 4..];
+    }
+    false
+}
+
+fn validate_importable_asset(source: &Path, media_type: &str) -> StorageResult<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(StorageError::UnsafeSourcePath(
+            "asset import requires a regular non-symlink file".into(),
+        ));
+    }
+
+    let declared_svg = media_type.eq_ignore_ascii_case("image/svg+xml")
+        || source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+    if !declared_svg && !source_looks_like_svg(source)? {
+        return Ok(());
+    }
+    if metadata.len() > MAX_SVG_IMPORT_BYTES {
+        return Err(StorageError::BlobTooLarge {
+            size: metadata.len(),
+            limit: MAX_SVG_IMPORT_BYTES,
+        });
+    }
+
+    let bytes = fs::read(source)?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| invalid_import("SVG assets must be valid UTF-8 XML"))?;
+    let lowered = text.to_ascii_lowercase();
+    let blocked = [
+        "<script",
+        "<foreignobject",
+        "<iframe",
+        "<object",
+        "<embed",
+        "<?xml-stylesheet",
+        "<!doctype",
+        "<!entity",
+        "javascript:",
+        "data:text/html",
+        "url(",
+        "@import",
+    ];
+    if blocked.iter().any(|marker| lowered.contains(marker))
+        || has_event_handler(&lowered)
+        || has_external_href(&lowered)
+    {
+        return Err(invalid_import(
+            "active or externally-referencing SVG assets are not admitted",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct StudioService {
@@ -95,6 +214,8 @@ impl StudioService {
         name: String,
         media_type: String,
     ) -> StorageResult<ApplyOutcome> {
+        let source = source.as_ref();
+        validate_importable_asset(source, &media_type)?;
         let mut store = self.store.lock();
         let blob = store.ingest_blob_file(source)?;
         let change = Change::AddAsset {
@@ -247,6 +368,100 @@ impl StudioService {
         change: &Change,
     ) -> StorageResult<ApplyOutcome> {
         self.store.lock().apply(id, expected, request_id, change)
+    }
+}
+
+#[cfg(test)]
+mod asset_import_security_tests {
+    use super::*;
+
+    #[test]
+    fn static_svg_is_admitted_as_immutable_asset() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("Static SVG").unwrap();
+        let source = temp.path().join("mark.svg");
+        fs::write(
+            &source,
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M1 1h18v18H1z"/></svg>"#,
+        )
+        .unwrap();
+
+        let outcome = service
+            .import_asset_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "static-svg",
+                &source,
+                "mark.svg".into(),
+                "image/svg+xml".into(),
+            )
+            .unwrap();
+
+        assert_eq!(outcome.project.assets.len(), 1);
+        let asset = &outcome.project.assets[0];
+        assert_eq!(asset.media_type, "image/svg+xml");
+        assert!(asset.content_sha256.is_some());
+    }
+
+    #[test]
+    fn active_svg_is_rejected_even_when_mislabeled() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("Active SVG").unwrap();
+        let source = temp.path().join("poster.png");
+        fs::write(
+            &source,
+            br#"<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(1)</script></svg>"#,
+        )
+        .unwrap();
+
+        let error = service
+            .import_asset_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "active-svg",
+                &source,
+                "poster.png".into(),
+                "image/png".into(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StorageError::Domain(DomainError::Invalid(_))
+        ));
+        assert!(service.project(initial.id).unwrap().assets.is_empty());
+    }
+
+    #[test]
+    fn svg_external_references_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("External SVG").unwrap();
+        let source = temp.path().join("external.svg");
+        fs::write(
+            &source,
+            br#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.invalid/pixel.png"/></svg>"#,
+        )
+        .unwrap();
+
+        let error = service
+            .import_asset_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "external-svg",
+                &source,
+                "external.svg".into(),
+                "image/svg+xml".into(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StorageError::Domain(DomainError::Invalid(_))
+        ));
+        assert!(service.project(initial.id).unwrap().assets.is_empty());
     }
 }
 

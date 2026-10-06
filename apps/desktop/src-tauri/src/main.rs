@@ -831,6 +831,7 @@ fn sanitized(error: impl std::fmt::Display) -> String {
         || text.contains("invalid blob digest")
         || text.contains("blob ")
         || text.contains("export destination already exists")
+        || text.contains("unsafe source path")
         || text.contains("storage schema")
     {
         return text;

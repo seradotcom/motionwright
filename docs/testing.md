@@ -20,7 +20,8 @@ Current required CI lanes are:
 - Studio unit/type/build;
 - Chromium browser acceptance;
 - Linux desktop shell check;
-- immutable Semwright Native SDK pin verification.
+- immutable Semwright Native SDK pin verification;
+- security/delivery policy, controlled-import contracts and exact-source delivery-manifest evidence.
 
 The heavier workflow separately owns coverage/security and release-shaped builds. Renderer/Graph/Effects lanes are added only when they execute real integrations; a placeholder is never reported as acceptance evidence.
 

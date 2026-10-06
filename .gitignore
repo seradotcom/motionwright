@@ -37,6 +37,10 @@ proxies/
 .impeccable/*
 !.impeccable/design.json
 
+# Python caches
+__pycache__/
+*.pyc
+
 # Editors / OS
 .DS_Store
 Thumbs.db
