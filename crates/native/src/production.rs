@@ -427,6 +427,15 @@ pub struct AvSyncSpec {
     pub cues: Vec<AvSyncCue>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MltAvMasterRequest<'a> {
+    pub request_id: &'a str,
+    pub deliverable_id: Uuid,
+    pub motion: &'a MotionCanvasRenderEvidence,
+    pub audio: &'a MltAudioArtifact,
+    pub sync: Option<&'a AvSyncSpec>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MltAvMasterEvidence {
@@ -896,12 +905,15 @@ impl ProductionCoordinator {
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
-        request_id: &str,
-        deliverable_id: Uuid,
-        motion: &MotionCanvasRenderEvidence,
-        audio: &MltAudioArtifact,
-        sync: Option<&AvSyncSpec>,
+        request: MltAvMasterRequest<'_>,
     ) -> NativeResult<MltAvMasterEvidence> {
+        let MltAvMasterRequest {
+            request_id,
+            deliverable_id,
+            motion,
+            audio,
+            sync,
+        } = request;
         if request_id.trim().is_empty()
             || request_id.len() > 96
             || request_id.chars().any(char::is_control)

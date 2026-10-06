@@ -4,7 +4,8 @@ use motionwright_domain::{
 use motionwright_native::{
     film::{FilmBuildOptions, SceneFilmIntent},
     production::{
-        MltAudioArtifact, MotionCanvasRenderEvidence, ProductionConnection, ProductionCoordinator,
+        MltAudioArtifact, MltAvMasterRequest, MotionCanvasRenderEvidence, ProductionConnection,
+        ProductionCoordinator,
     },
 };
 use motionwright_service::StudioService;
@@ -296,11 +297,13 @@ async fn master(
         .assemble_mlt_av_master(
             project.id,
             &RevisionStamp::from(&project),
-            "native-av-master-real-driver-host",
-            deliverable.id,
-            &motion,
-            &audio,
-            None,
+            MltAvMasterRequest {
+                request_id: "native-av-master-real-driver-host",
+                deliverable_id: deliverable.id,
+                motion: &motion,
+                audio: &audio,
+                sync: None,
+            },
         )
         .await
     {
