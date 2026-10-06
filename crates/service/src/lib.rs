@@ -1,8 +1,9 @@
 use motionwright_domain::{Asset, Change, Project, RevisionStamp};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
-    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProjectBackup,
-    ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt,
+    ProductionReceiptInput, ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent,
+    ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
@@ -106,6 +107,31 @@ impl StudioService {
 
     pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
         self.store.lock().import_project_bundle(source)
+    }
+
+    pub fn append_production_receipt(
+        &self,
+        input: ProductionReceiptInput,
+    ) -> StorageResult<ProductionReceipt> {
+        self.store.lock().append_production_receipt(input)
+    }
+
+    pub fn latest_production_receipt(
+        &self,
+        project_id: Uuid,
+        request_id: &str,
+    ) -> StorageResult<Option<ProductionReceipt>> {
+        self.store
+            .lock()
+            .latest_production_receipt(project_id, request_id)
+    }
+
+    pub fn production_receipts(
+        &self,
+        project_id: Uuid,
+        limit: usize,
+    ) -> StorageResult<Vec<ProductionReceipt>> {
+        self.store.lock().production_receipts(project_id, limit)
     }
 
     pub fn history(

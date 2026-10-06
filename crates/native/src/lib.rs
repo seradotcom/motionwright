@@ -14,6 +14,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod canonical;
+pub mod production;
 
 pub const APP_ID: &str = "motionwright";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
