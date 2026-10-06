@@ -48,6 +48,7 @@ import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import ProductionJobsWorkspace from "./ProductionJobs";
+import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
@@ -69,6 +70,7 @@ type Workspace =
   | "Canvas"
   | "Timeline"
   | "Jobs"
+  | "Workflows"
   | "Alternatives"
   | "Changes"
   | "Dependencies"
@@ -83,6 +85,7 @@ const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Canvas", icon: Box },
   { name: "Timeline", icon: Film },
   { name: "Jobs", icon: Activity },
+  { name: "Workflows", icon: Wand2 },
   { name: "Alternatives", icon: Sparkles },
   { name: "Changes", icon: GitBranch },
   { name: "Dependencies", icon: Workflow },
@@ -1267,6 +1270,8 @@ export default function App() {
             desktopMode={boot.native_sdk.mode === "tauri"}
           />
         );
+      case "Workflows":
+        return <WorkflowWorkspace project={project} />;
       case "Alternatives":
         return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
       case "Changes":

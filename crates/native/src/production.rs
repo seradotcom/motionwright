@@ -55,6 +55,15 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.export.glb",
 ];
 
+const WORKFLOW_READ_COMMANDS: &[&str] = &[
+    "workflow.traces.list",
+    "workflow.candidates.list",
+    "workflow.patterns.list",
+    "workflow.suggestions.list",
+    "workflow.proposals.list",
+    "workflow.promotions.list",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProductionConnection {
@@ -197,13 +206,38 @@ impl ProductionConnection {
     }
 }
 
-fn expected_provider(command: &str) -> Option<&'static str> {
+#[derive(Debug, Clone)]
+struct ExpectedAuthority {
+    provider: &'static str,
+    source: SourceKind,
+    provider_generation_required: bool,
+}
+
+fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
     if MOTION_CANVAS_COMMANDS.contains(&command) {
-        Some("driver:motion-canvas")
+        Some(ExpectedAuthority {
+            provider: "driver:motion-canvas",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if MLT_COMMANDS.contains(&command) {
-        Some("driver:mlt-video")
+        Some(ExpectedAuthority {
+            provider: "driver:mlt-video",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if BLENDER_COMMANDS.contains(&command) {
-        Some("driver:blender")
+        Some(ExpectedAuthority {
+            provider: "driver:blender",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
+    } else if WORKFLOW_READ_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "semwright-core",
+            source: SourceKind::Builtin,
+            provider_generation_required: false,
+        })
     } else {
         None
     }
@@ -252,8 +286,8 @@ impl ProductionClient {
         args: Value,
         mutation: bool,
     ) -> NativeResult<BrokerResult> {
-        let expected = expected_provider(command).ok_or_else(|| {
-            Error::new(ErrorCode::Unsupported, "Production command is not enabled")
+        let expected = expected_authority(command).ok_or_else(|| {
+            Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
         self.connection.validate()?;
         let encoded = serde_json::to_vec(&args)
@@ -346,13 +380,13 @@ impl ProductionClient {
             .provenance
             .as_ref()
             .ok_or_else(|| backend("Canonical production response has no provenance"))?;
-        if provenance.provider != expected
-            || provenance.source != SourceKind::Driver
-            || provenance.provider_generation.is_none()
+        if provenance.provider != expected.provider
+            || provenance.source != expected.source
+            || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
         {
             return Err(backend(
-                "Canonical production response provenance does not match the expected driver",
+                "Canonical response provenance does not match the expected authority",
             ));
         }
         let value = envelope
@@ -845,10 +879,26 @@ mod tests {
     #[test]
     fn production_allowlist_binds_blender_to_the_native_driver() {
         for command in BLENDER_COMMANDS {
-            assert_eq!(expected_provider(command), Some("driver:blender"));
+            let authority = expected_authority(command).unwrap();
+            assert_eq!(authority.provider, "driver:blender");
+            assert_eq!(authority.source, SourceKind::Driver);
+            assert!(authority.provider_generation_required);
         }
-        assert_eq!(expected_provider("driver.blender.python.exec"), None);
-        assert_eq!(expected_provider("driver.manim.render"), None);
+        assert!(expected_authority("driver.blender.python.exec").is_none());
+        assert!(expected_authority("driver.manim.render").is_none());
+    }
+
+    #[test]
+    fn workflow_view_is_read_only_and_bound_to_builtin_core() {
+        for command in WORKFLOW_READ_COMMANDS {
+            let authority = expected_authority(command).unwrap();
+            assert_eq!(authority.provider, "semwright-core");
+            assert_eq!(authority.source, SourceKind::Builtin);
+            assert!(!authority.provider_generation_required);
+        }
+        assert!(expected_authority("workflow.record.start").is_none());
+        assert!(expected_authority("workflow.promote").is_none());
+        assert!(expected_authority("workflow.replay").is_none());
     }
 
     #[test]

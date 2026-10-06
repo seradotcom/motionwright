@@ -201,7 +201,7 @@ export default function ModelContextInspector({
       )}
 
       {plan && (
-        <div className="model-preflight-result" aria-label="Model request preflight result">
+        <div className="model-preflight-result" role="region" aria-label="Model request preflight result">
           <div className="model-preflight-summary">
             <span>
               <strong>{plan.disclosures.length}</strong> disclosed row

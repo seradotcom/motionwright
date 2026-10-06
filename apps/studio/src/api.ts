@@ -15,10 +15,11 @@ import type {
   Project,
   ProjectEvent,
   ProductionJobProjection,
+  WorkflowOverview,
 } from "./types";
 import { rationalSeconds } from "./types";
 
-const isTauri = () => "__TAURI_INTERNALS__" in window;
+const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
 const browserEvents: ProjectEvent[] = [];
 
@@ -329,6 +330,26 @@ export async function exportCaptionSidecar(
       path,
     },
   });
+}
+
+export async function workflowOverview(project: Project): Promise<WorkflowOverview> {
+  if (isTauri()) {
+    return invoke<WorkflowOverview>("workflow_overview", {
+      request: { project_id: project.id },
+    });
+  }
+  return {
+    status: "browser_demo",
+    reason: "Browser demo mode does not attach a canonical Semwright session. No workflow evidence is mocked as live.",
+    connection_identity: null,
+    authority: null,
+    traces: { traces: [] },
+    candidates: { candidates: [] },
+    patterns: { patterns: [] },
+    suggestions: { suggestions: [] },
+    proposals: { proposals: [] },
+    promotions: { promotions: [] },
+  };
 }
 
 export async function productionJobs(

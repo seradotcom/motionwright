@@ -50,3 +50,5 @@ These helpers intentionally stop before authority. A Motionwright process cannot
 The dedicated `Canonical Graph and Effects` workflow re-runs the upstream adapter/conformance tests at the exact `SOURCE_LOCK.json` SHA and then exercises Motionwright's consumer wrappers.
 
 The provider also exposes production-jobs, a read-only projection derived from Motionwright production receipts. The job scope is application history only: Semwright remains the scheduler/runtime authority, and CURRENT/STALE applicability is evaluated against the open Motionwright revision.
+
+The desktop Workflow workspace uses the same owner-provisioned `ProductionConnection` boundary to read canonical Semwright workflow evidence. Its allowlist is restricted to the six read-only `workflow.*.list` commands documented in `workflows.md`; responses must carry built-in `semwright-core` provenance, and no record/compile/accept/replay/promote mutation is exposed through Motionwright.

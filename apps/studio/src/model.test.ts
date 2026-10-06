@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { workflowOverview } from "./api";
 import { fixtureProject } from "./fixture";
 import { rationalSeconds, seconds } from "./types";
 
@@ -56,6 +57,18 @@ describe("creative project fixture", () => {
     expect(fixtureProject.visual_language.version).toBe(1);
     expect(fixtureProject.visual_language.anti_slop_rules).toContain("No glassmorphism");
     expect(fixtureProject.visual_language.motion_grammar[0].reduced_motion).toBe("static_equivalent");
+  });
+
+  it("does not fabricate canonical workflow evidence in browser mode", async () => {
+    const overview = await workflowOverview(fixtureProject);
+    expect(overview.status).toBe("browser_demo");
+    expect(overview.connection_identity).toBeNull();
+    expect(overview.traces).toEqual({ traces: [] });
+    expect(overview.candidates).toEqual({ candidates: [] });
+    expect(overview.patterns).toEqual({ patterns: [] });
+    expect(overview.suggestions).toEqual({ suggestions: [] });
+    expect(overview.proposals).toEqual({ proposals: [] });
+    expect(overview.promotions).toEqual({ promotions: [] });
   });
 
 });

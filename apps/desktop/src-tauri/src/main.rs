@@ -1,12 +1,16 @@
 use motionwright_domain::{
     AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
 };
-use motionwright_native::build_application;
+use motionwright_native::{
+    build_application,
+    production::{ProductionClient, ProductionConnection},
+};
 use motionwright_service::{
     ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
     VoiceImportMetadata,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -57,6 +61,25 @@ struct ProductionJobsRequest {
 struct ModelRequestPreflightRequest {
     project_id: Uuid,
     draft: ModelRequestDraft,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowOverviewRequest {
+    project_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkflowOverviewResponse {
+    status: &'static str,
+    reason: Option<String>,
+    connection_identity: Option<String>,
+    authority: Option<Value>,
+    traces: Value,
+    candidates: Value,
+    patterns: Value,
+    suggestions: Value,
+    proposals: Value,
+    promotions: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +185,123 @@ fn model_request_preflight(
         .service
         .model_request_preflight(request.project_id, &request.draft)
         .map_err(sanitized)
+}
+
+#[tauri::command]
+async fn workflow_overview(
+    state: State<'_, AppState>,
+    request: WorkflowOverviewRequest,
+) -> Result<WorkflowOverviewResponse, String> {
+    let Some(connection_path) = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION") else {
+        return Ok(WorkflowOverviewResponse {
+            status: "unconfigured",
+            reason: Some("Set MOTIONWRIGHT_SEMWRIGHT_CONNECTION to an owner-provisioned canonical Semwright connection file.".into()),
+            connection_identity: None,
+            authority: None,
+            traces: serde_json::json!({"traces": []}),
+            candidates: serde_json::json!({"candidates": []}),
+            patterns: serde_json::json!({"patterns": []}),
+            suggestions: serde_json::json!({"suggestions": []}),
+            proposals: serde_json::json!({"proposals": []}),
+            promotions: serde_json::json!({"promotions": []}),
+        });
+    };
+
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+        .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
+    if connection.resource != project.resource_key() {
+        return Err(
+            "The canonical Semwright connection is bound to another Motionwright resource.".into(),
+        );
+    }
+    let connection_identity = connection
+        .identity()
+        .map_err(|_| "Canonical Semwright connection identity could not be verified".to_string())?;
+    let client = ProductionClient::new(connection)
+        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+
+    let traces_result = client
+        .execute("workflow.traces.list", serde_json::json!({}), false)
+        .await
+        .map_err(|_| "Canonical Semwright workflow query failed".to_string())?;
+    let authority = traces_result
+        .value
+        .pointer("/execution/provenance")
+        .cloned();
+    let traces = traces_result
+        .value
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let candidates = client
+        .execute("workflow.candidates.list", serde_json::json!({}), false)
+        .await
+        .map_err(|_| "Canonical Semwright workflow query failed".to_string())?
+        .value
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let patterns = client
+        .execute(
+            "workflow.patterns.list",
+            serde_json::json!({"min_occurrences": 2}),
+            false,
+        )
+        .await
+        .map_err(|_| "Canonical Semwright workflow query failed".to_string())?
+        .value
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let suggestions = client
+        .execute(
+            "workflow.suggestions.list",
+            serde_json::json!({"min_occurrences": 3, "include_dismissed": false}),
+            false,
+        )
+        .await
+        .map_err(|_| "Canonical Semwright workflow query failed".to_string())?
+        .value
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let proposals = client
+        .execute(
+            "workflow.proposals.list",
+            serde_json::json!({"min_occurrences": 3, "include_dismissed": false}),
+            false,
+        )
+        .await
+        .map_err(|_| "Canonical Semwright workflow query failed".to_string())?
+        .value
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let promotions = client
+        .execute("workflow.promotions.list", serde_json::json!({}), false)
+        .await
+        .map_err(|_| "Canonical Semwright workflow query failed".to_string())?
+        .value
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    Ok(WorkflowOverviewResponse {
+        status: "available",
+        reason: None,
+        connection_identity: Some(connection_identity),
+        authority,
+        traces,
+        candidates,
+        patterns,
+        suggestions,
+        proposals,
+        promotions,
+    })
 }
 
 #[tauri::command]
@@ -570,6 +710,7 @@ fn main() {
             bootstrap,
             project_history,
             model_request_preflight,
+            workflow_overview,
             production_jobs,
             import_asset_file,
             import_voice_file,

@@ -249,6 +249,20 @@ export interface ProductionJobProjection {
   last_observation: ProductionObservationState;
 }
 
+export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";
+export interface WorkflowOverview {
+  status: WorkflowOverviewStatus;
+  reason: string | null;
+  connection_identity: string | null;
+  authority: Record<string, unknown> | null;
+  traces: Record<string, unknown> | null;
+  candidates: Record<string, unknown> | null;
+  patterns: Record<string, unknown> | null;
+  suggestions: Record<string, unknown> | null;
+  proposals: Record<string, unknown> | null;
+  promotions: Record<string, unknown> | null;
+}
+
 export interface Project {
   schema_version: number; id: string; generation: string; revision: number;
   title: string; state: ProjectState; active_branch: string;

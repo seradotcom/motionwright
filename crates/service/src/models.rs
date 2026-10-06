@@ -658,8 +658,8 @@ pub(crate) fn build_model_request_preflight(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use motionwright_domain::RevisionStamp;
     use motionwright_domain::{Asset, Change};
-    use motionwright_storage::RevisionStamp;
     use std::fs;
 
     #[test]

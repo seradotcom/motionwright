@@ -45,6 +45,18 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
 });
 
 
+test("workflow intelligence never fabricates canonical evidence in browser demo", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Workflows", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Workflow intelligence" })).toBeVisible();
+  await expect(page.getByText("BROWSER DEMO", { exact: true })).toBeVisible();
+  await expect(page.getByText("No live workflow evidence is being presented.", { exact: true })).toBeVisible();
+  await expect(page.getByText("No proposal is currently ready from the connected evidence.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /promote/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /replay/i })).toHaveCount(0);
+});
+
 test("model preflight exposes minimal context without dispatch or silent fallback", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Alternatives", exact: true }).click();

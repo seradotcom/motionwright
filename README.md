@@ -21,6 +21,8 @@ The desktop editor is organized around:
 - **Storyboard** — persistent scene cards with objective, duration, renderer, state and continuity consequences.
 - **Canvas** — stable object identity, transforms, hierarchy, relationships, safe areas, cameras and locks.
 - **Timeline** — voice/music, transcript, beats, scenes, cues, objects, cameras, markers and review regions on one clock.
+- **Jobs** — durable production receipts with execution state separated from CURRENT / STALE applicability.
+- **Workflows** — read-only canonical Semwright traces, patterns, suggestions, proposals, candidates and promotions; Motionwright cannot accept, replay or promote from this surface.
 - **Alternatives** — synchronized A/B/C comparison and explicit selection/merge into reviewable changes.
 - **Changes** — revision history, branches, semantic diffs, conflict-aware merges and restore-as-new-change.
 - **Dependencies** — canonical Project Graph projections and honest CURRENT / STALE / UNKNOWN status.
@@ -64,6 +66,7 @@ docs/
   architecture.md
   native-sdk.md
   renderers.md
+  workflows.md
   testing.md
   visual-references.md
 ```
