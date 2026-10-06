@@ -150,7 +150,7 @@ async fn render(
             archetype: Archetype::Statement,
         }],
     };
-    let result = coordinator
+    let result = match coordinator
         .render_motion_canvas_segments(
             project.id,
             &RevisionStamp::from(&project),
@@ -158,7 +158,38 @@ async fn render(
             deliverable.id,
             &options,
         )
-        .await?;
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let diagnostic_path =
+                evidence_path.with_file_name("motionwright-render-diagnostic.json");
+            let receipts = coordinator.receipts(project.id, 128).unwrap_or_default();
+            let diagnostic = json!({
+                "native_render_e2e": "FAIL",
+                "project_id": project.id,
+                "generation": project.generation,
+                "revision": project.revision,
+                "error": {
+                    "code": format!("{:?}", error.code),
+                    "message": &error.message,
+                    "outcome_known": error.outcome_known,
+                    "candidates": &error.candidates,
+                },
+                "receipts": receipts,
+            });
+            let body = serde_json::to_vec_pretty(&diagnostic)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&diagnostic_path)?;
+            file.write_all(&body)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            return Err(error.into());
+        }
+    };
 
     if result.generation != project.generation
         || result.revision != project.revision
