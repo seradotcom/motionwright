@@ -81,7 +81,8 @@ fn storage_error(error: StorageError) -> Error {
         StorageError::Serde(_)
         | StorageError::InvalidBackup(_)
         | StorageError::InvalidBlobDigest
-        | StorageError::BlobTooLarge { .. } => {
+        | StorageError::BlobTooLarge { .. }
+        | StorageError::UnsafeSourcePath(_) => {
             Error::new(ErrorCode::InvalidArgument, "Malformed project value")
         }
         StorageError::ProjectExists | StorageError::DestinationExists => {
