@@ -31,6 +31,7 @@ import {
   Type,
   Unlock,
   Wand2,
+  WifiOff,
   Workflow,
   X,
 } from "lucide-react";
@@ -78,6 +79,21 @@ type Workspace =
   | "Dependencies"
   | "Review"
   | "Deliver";
+
+type Theme = "dark" | "light";
+
+const THEME_STORAGE_KEY = "motionwright.theme";
+
+function preferredTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "dark" || stored === "light") return stored;
+  } catch {
+    // Local storage may be unavailable in hardened or private WebViews.
+  }
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
 
 const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Brief", icon: AlignLeft },
@@ -175,6 +191,12 @@ function PreviewSurface({
           Program
           <span className="toolbar-divider" />
           <span className="muted">Design representation</span>
+          <span
+            className="preview-revision"
+            aria-label={`Preview representation is based on project revision ${project.revision}`}
+          >
+            PROJECT r{project.revision}
+          </span>
         </div>
         <div className="timecode">{formatTime(playhead)}</div>
       </div>
@@ -1054,14 +1076,14 @@ function Inspector({
 function Timeline({
   project,
   selectedSceneId,
-  setSelectedSceneId,
+  selectScene,
   playhead,
   setPlayhead,
   commit,
 }: {
   project: Project;
   selectedSceneId: string | null;
-  setSelectedSceneId: (id: string) => void;
+  selectScene: (id: string, seekToStart?: boolean) => void;
   playhead: number;
   setPlayhead: (value: number) => void;
   commit: (change: Change) => Promise<void>;
@@ -1116,7 +1138,16 @@ function Timeline({
           onPointerDown={(event) => {
             const bounds = event.currentTarget.getBoundingClientRect();
             const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-            setPlayhead(ratio * duration);
+            const nextPlayhead = ratio * duration;
+            setPlayhead(nextPlayhead);
+            const sceneAtPlayhead = project.scenes.find((scene) => {
+              const start = seconds(scene.start);
+              const end = start + seconds(scene.duration);
+              return nextPlayhead >= start && nextPlayhead < end;
+            });
+            if (sceneAtPlayhead && sceneAtPlayhead.id !== selectedSceneId) {
+              selectScene(sceneAtPlayhead.id, false);
+            }
           }}
         >
           <div className="ruler">
@@ -1162,7 +1193,7 @@ function Timeline({
                   width: (seconds(scene.duration) / duration) * 100 + "%",
                 }}
                 onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => setSelectedSceneId(scene.id)}
+                onClick={() => selectScene(scene.id)}
               >
                 <span>{scene.name}</span>
                 <small>{rendererLabels[scene.renderer]}</small>
@@ -1198,27 +1229,59 @@ export default function App() {
   const [playhead, setPlayhead] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>(preferredTheme);
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
 
-  useEffect(() => {
-    bootstrap()
-      .then((value) => {
-        setBoot(value);
-        setSelectedSceneId(value.project.scenes[0]?.id ?? null);
-      })
-      .catch((reason) => setError(String(reason)));
+  const loadProject = useCallback(async () => {
+    setBootError(null);
+    try {
+      const value = await bootstrap();
+      setBoot(value);
+      setSelectedSceneId(value.project.scenes[0]?.id ?? null);
+      setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
+    } catch (reason) {
+      setBootError(reason instanceof Error ? reason.message : String(reason));
+    }
   }, []);
 
   useEffect(() => {
+    void loadProject();
+  }, [loadProject]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Theme remains active for this session when persistence is unavailable.
+    }
   }, [theme]);
+
+  useEffect(() => {
+    const markOnline = () => setOnline(true);
+    const markOffline = () => setOnline(false);
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+    return () => {
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
+    };
+  }, []);
 
   const project = boot?.project ?? null;
   const selectedScene = useMemo(
     () => project?.scenes.find((scene) => scene.id === selectedSceneId) ?? null,
     [project, selectedSceneId],
   );
+
+  const selectScene = useCallback((id: string, seekToStart = true) => {
+    setSelectedSceneId(id);
+    if (!seekToStart) return;
+    const scene = project?.scenes.find((candidate) => candidate.id === id);
+    if (scene) setPlayhead(seconds(scene.start));
+  }, [project]);
 
   const commit = useCallback(async (change: Change) => {
     if (!boot || busy) return;
@@ -1253,10 +1316,27 @@ export default function App() {
 
   if (!project || !boot) {
     return (
-      <main className="boot-screen">
+      <main className="boot-screen" aria-busy={!bootError}>
         <div className="brand-mark">MW</div>
-        <strong>Opening Motionwright</strong>
-        <span>{error ?? "Loading the local project store…"}</span>
+        {bootError ? (
+          <section className="boot-error" role="alert" aria-label="Project open error">
+            <strong>Couldn’t open the local project</strong>
+            <span>{bootError}</span>
+            <button type="button" className="button button-primary" onClick={() => void loadProject()}>
+              Retry opening project
+            </button>
+          </section>
+        ) : (
+          <section className="boot-loading" role="status" aria-live="polite">
+            <strong>Opening Motionwright</strong>
+            <span>Loading the local project store…</span>
+            <div className="boot-skeleton" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </div>
+          </section>
+        )}
       </main>
     );
   }
@@ -1277,7 +1357,7 @@ export default function App() {
           />
         );
       case "Storyboard":
-        return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={setSelectedSceneId} />;
+        return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} />;
       case "Timeline":
@@ -1333,7 +1413,12 @@ export default function App() {
           <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
         </div>
         <div className="command-actions">
-          {busy && <span className="saving-state"><RefreshCw size={13} className="spin" /> Committing</span>}
+          {busy && <span className="saving-state" role="status" aria-live="polite"><RefreshCw size={13} className="spin" /> Committing</span>}
+          {!online && (
+            <span className="offline-chip" title="Network unavailable. Local project editing remains available.">
+              <WifiOff size={13} aria-hidden="true" /> OFFLINE · LOCAL
+            </span>
+          )}
           <span className="sdk-chip" title={boot.native_sdk.pinned_revision}>
             Native SDK · {boot.native_sdk.mode === "tauri" ? "connected" : "browser demo"}
           </span>
@@ -1352,6 +1437,7 @@ export default function App() {
             type="button"
             key={name}
             className={workspace === name ? "active" : ""}
+            aria-current={workspace === name ? "page" : undefined}
             onClick={() => setWorkspace(name)}
           >
             <Icon size={14} />
@@ -1372,7 +1458,7 @@ export default function App() {
         <ProjectRail
           project={project}
           selectedSceneId={selectedSceneId}
-          selectScene={setSelectedSceneId}
+          selectScene={selectScene}
           commit={commit}
           ingestAsset={ingestAsset}
           desktopMode={boot.native_sdk.mode === "tauri"}
@@ -1388,7 +1474,7 @@ export default function App() {
       <Timeline
         project={project}
         selectedSceneId={selectedSceneId}
-        setSelectedSceneId={setSelectedSceneId}
+        selectScene={selectScene}
         playhead={playhead}
         setPlayhead={setPlayhead}
         commit={commit}

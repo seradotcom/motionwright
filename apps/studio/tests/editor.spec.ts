@@ -45,6 +45,60 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
 });
 
 
+test("theme preference persists without mutating the project revision", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => window.localStorage.removeItem("motionwright.theme"));
+  await page.reload();
+
+  const revision = await page.locator(".revision-chip").first().innerText();
+  const html = page.locator("html");
+  const initialTheme = await html.getAttribute("data-theme");
+  expect(initialTheme === "dark" || initialTheme === "light").toBeTruthy();
+
+  const targetTheme = initialTheme === "dark" ? "light" : "dark";
+  await page.getByRole("button", {
+    name: initialTheme === "dark" ? "Use light theme" : "Use dark theme",
+  }).click();
+
+  await expect(html).toHaveAttribute("data-theme", targetTheme);
+  await expect.poll(async () => page.evaluate(() => window.localStorage.getItem("motionwright.theme"))).toBe(targetTheme);
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", targetTheme);
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+});
+
+test("scene selection and timeline seeking share one playhead context", async ({ page }) => {
+  await page.goto("/");
+  const timelineTimecode = page.locator(".timeline-header .timecode");
+
+  await page.getByRole("button", { name: "Storyboard", exact: true }).click();
+  await page.locator(".story-card").filter({ hasText: "Pixels are brittle" }).click();
+  await expect(timelineTimecode).toHaveText("00:07:00");
+
+  await page.locator(".tree-row").filter({ hasText: "Semwright acts natively" }).click();
+  await expect(timelineTimecode).toHaveText("00:16:00");
+
+  const trackArea = page.locator(".track-area");
+  const box = await trackArea.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) throw new Error("timeline track area is not measurable");
+  await page.mouse.click(box.x + box.width * 0.25, box.y + 10);
+
+  await expect(page.locator(".tree-row").filter({ hasText: "Pixels are brittle" })).toHaveClass(/selected/);
+});
+
+test("offline state is explicit while local editing remains available", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await expect(page.getByText("OFFLINE · LOCAL", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Brief", exact: true })).toBeEnabled();
+
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(page.getByText("OFFLINE · LOCAL", { exact: true })).toHaveCount(0);
+});
+
 test("workflow intelligence never fabricates canonical evidence in browser demo", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Workflows", exact: true }).click();
