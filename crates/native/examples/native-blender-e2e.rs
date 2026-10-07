@@ -256,6 +256,8 @@ async fn realize(
     for required in [
         "driver.blender.semantic.datablock.create",
         "driver.blender.semantic.objects",
+        "driver.blender.semantic.relations",
+        "driver.blender.semantic.relation.link",
         "driver.blender.mesh.geometry.initialize",
         "driver.blender.semantic.object.create",
         "driver.blender.material.create",

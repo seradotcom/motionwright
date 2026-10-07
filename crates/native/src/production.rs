@@ -1235,6 +1235,84 @@ impl ProductionCoordinator {
         response_named_ref(&response, name)
     }
 
+    async fn blender_link_collection_to_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        collection_ref: &str,
+    ) -> NativeResult<Value> {
+        let scenes = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:scenes"),
+                "driver.blender.semantic.objects",
+                json!({"root": "scenes", "limit": 2}),
+                false,
+            )
+            .await?;
+        let scene_items = response_data(&scenes)?
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| backend("Blender scene inventory returned no items"))?;
+        if scene_items.len() != 1 {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Blender production requires an isolated session with exactly one Scene",
+            ));
+        }
+        let scene_ref = required_string(
+            &scene_items[0],
+            "/ref",
+            "Blender scene inventory returned no typed Scene ref",
+        )?;
+
+        let scene_collection = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:root-collection"),
+                "driver.blender.semantic.relations",
+                json!({
+                    "ref": scene_ref,
+                    "property": "collection",
+                    "limit": 1,
+                    "offset": 0
+                }),
+                false,
+            )
+            .await?;
+        let collection_items = response_data(&scene_collection)?
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| backend("Blender Scene.collection traversal returned no items"))?;
+        if collection_items.len() != 1 {
+            return Err(backend(
+                "Blender Scene.collection traversal did not return exactly one root collection",
+            ));
+        }
+        let scene_collection_ref = required_string(
+            &collection_items[0],
+            "/ref",
+            "Blender Scene.collection traversal returned no typed root collection ref",
+        )?;
+
+        self.execute(
+            project_id,
+            expected,
+            &format!("{request_id}:link"),
+            "driver.blender.semantic.relation.link",
+            json!({
+                "ref": scene_collection_ref,
+                "property": "children",
+                "target_ref": collection_ref
+            }),
+            true,
+        )
+        .await
+    }
+
     pub async fn realize_blender_scene(
         &self,
         project_id: Uuid,
@@ -1264,6 +1342,19 @@ impl ProductionCoordinator {
                     "name": plan.collection_name
                 }),
                 true,
+            )
+            .await?;
+        let collection_ref = required_string(
+            response_data(&collection)?,
+            "/ref",
+            "Blender collection creation returned no typed Collection ref",
+        )?;
+        let collection_link = self
+            .blender_link_collection_to_scene(
+                project_id,
+                expected,
+                &format!("{request_id}:collection"),
+                &collection_ref,
             )
             .await?;
 
@@ -1313,15 +1404,6 @@ impl ProductionCoordinator {
                     &format!("{request_id}:mesh:{index}:lookup-after-geometry"),
                     "meshes",
                     &mesh.name,
-                )
-                .await?;
-            let collection_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:collection-ref"),
-                    "collections",
-                    &plan.collection_name,
                 )
                 .await?;
             let object = self
@@ -1430,6 +1512,7 @@ impl ProductionCoordinator {
             "project_revision": plan.revision,
             "scene_id": plan.scene_id,
             "collection": collection,
+            "collection_link": collection_link,
             "objects": objects,
             "export_path": export_path,
             "export": export,
