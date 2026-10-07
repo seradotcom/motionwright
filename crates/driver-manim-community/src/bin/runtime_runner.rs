@@ -121,12 +121,12 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
         return Err("runner operation must be render".into());
     }
     let rest = &raw[1..];
-    if rest.len() != 24 || rest.len() % 2 != 0 {
+    if rest.len() != 24 {
         return Err("runner requires the exact bounded render argument set".into());
     }
     let mut values = BTreeMap::new();
-    for pair in rest.chunks_exact(2) {
-        let key = pair[0].as_str();
+    for index in (0..rest.len()).step_by(2) {
+        let key = rest[index].as_str();
         if !matches!(
             key,
             "--runtime-root"
@@ -144,7 +144,10 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
         ) {
             return Err("runner received an unsupported option".into());
         }
-        if values.insert(key.to_owned(), pair[1].clone()).is_some() {
+        if values
+            .insert(key.to_owned(), rest[index + 1].clone())
+            .is_some()
+        {
             return Err("runner option was duplicated".into());
         }
     }

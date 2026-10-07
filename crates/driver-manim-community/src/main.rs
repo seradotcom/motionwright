@@ -550,33 +550,35 @@ impl Driver for ManimCommunityDriver {
     }
 }
 
-fn capability(
-    name: &str,
-    description: &str,
-    input_schema: Value,
-    output_schema: Value,
+struct CapabilitySpec<'a> {
+    name: &'a str,
+    description: &'a str,
+    schemas: (Value, Value),
     risk: Risk,
     idempotency: Idempotency,
     dry_run: bool,
-    tags: &[&str],
-) -> Capability {
+    tags: &'a [&'a str],
+}
+
+fn capability(spec: CapabilitySpec<'_>) -> Capability {
+    let (input_schema, output_schema) = spec.schemas;
     Capability {
         descriptor: CommandDescriptor {
-            name: name.into(),
+            name: spec.name.into(),
             version: "1".into(),
-            description: description.into(),
+            description: spec.description.into(),
             input_schema,
             output_schema,
             requires: vec![DRIVER_SCOPE.into()],
-            risk,
-            idempotency,
+            risk: spec.risk,
+            idempotency: spec.idempotency,
             timeout_ms: 300_000,
-            dry_run,
+            dry_run: spec.dry_run,
             interactive_consent: false,
             backends: vec![DRIVER_SCOPE.into()],
         },
         aliases: vec![],
-        tags: tags.iter().map(|value| (*value).into()).collect(),
+        tags: spec.tags.iter().map(|value| (*value).into()).collect(),
         object_types: vec!["manim-scene".into()],
     }
 }
@@ -696,62 +698,60 @@ fn start_schema() -> Value {
 
 fn capability_catalog() -> Result<Vec<Capability>> {
     Ok(vec![
-        capability(
-            "driver.manim-community.doctor",
-            "Inspect the bounded Manim Community runtime contract without executing user code",
-            json!({"type":"object","properties":{},"additionalProperties":false}),
-            json!({"type":"object"}),
-            Risk::ReadOnly,
-            Idempotency::ReadOnly,
-            true,
-            &["manim", "renderer", "diagnostic"],
-        ),
-        capability(
-            "driver.manim-community.render.start",
-            "Render a typed Motionwright Manim plan through the owner-pinned Manim Community runtime",
-            start_schema(),
-            job_output_schema(),
-            Risk::MutatingReversible,
-            Idempotency::NonIdempotent,
-            false,
-            &[
+        capability(CapabilitySpec {
+            name: "driver.manim-community.doctor",
+            description: "Inspect the bounded Manim Community runtime contract without executing user code",
+            schemas: (
+                json!({"type":"object","properties":{},"additionalProperties":false}),
+                json!({"type":"object"}),
+            ),
+            risk: Risk::ReadOnly,
+            idempotency: Idempotency::ReadOnly,
+            dry_run: true,
+            tags: &["manim", "renderer", "diagnostic"],
+        }),
+        capability(CapabilitySpec {
+            name: "driver.manim-community.render.start",
+            description: "Render a typed Motionwright Manim plan through the owner-pinned Manim Community runtime",
+            schemas: (start_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::NonIdempotent,
+            dry_run: false,
+            tags: &[
                 "manim",
                 "renderer",
                 "render",
                 "job",
                 "artifact-out:video/clip",
             ],
-        ),
-        capability(
-            "driver.manim-community.render.status",
-            "Observe a bounded Manim render job",
-            job_schema(),
-            job_output_schema(),
-            Risk::ReadOnly,
-            Idempotency::ReadOnly,
-            true,
-            &["manim", "renderer", "render", "job"],
-        ),
-        capability(
-            "driver.manim-community.render.cancel",
-            "Request cancellation of a Manim render job owned by Driver Host",
-            job_schema(),
-            job_output_schema(),
-            Risk::MutatingReversible,
-            Idempotency::Idempotent,
-            false,
-            &["manim", "renderer", "render", "job"],
-        ),
-        capability(
-            "driver.manim-community.render.result",
-            "Return the digest-bound MP4 artifact for a successful Manim render job",
-            job_schema(),
-            job_output_schema(),
-            Risk::ReadOnly,
-            Idempotency::ReadOnly,
-            true,
-            &["manim", "renderer", "render", "artifact-out:video/clip"],
-        ),
+        }),
+        capability(CapabilitySpec {
+            name: "driver.manim-community.render.status",
+            description: "Observe a bounded Manim render job",
+            schemas: (job_schema(), job_output_schema()),
+            risk: Risk::ReadOnly,
+            idempotency: Idempotency::ReadOnly,
+            dry_run: true,
+            tags: &["manim", "renderer", "render", "job"],
+        }),
+        capability(CapabilitySpec {
+            name: "driver.manim-community.render.cancel",
+            description: "Request cancellation of a Manim render job owned by Driver Host",
+            schemas: (job_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::Idempotent,
+            dry_run: false,
+            tags: &["manim", "renderer", "render", "job"],
+        }),
+        capability(CapabilitySpec {
+            name: "driver.manim-community.render.result",
+            description: "Return the digest-bound MP4 artifact for a successful Manim render job",
+            schemas: (job_schema(), job_output_schema()),
+            risk: Risk::ReadOnly,
+            idempotency: Idempotency::ReadOnly,
+            dry_run: true,
+            tags: &["manim", "renderer", "render", "artifact-out:video/clip"],
+        }),
     ])
 }
 

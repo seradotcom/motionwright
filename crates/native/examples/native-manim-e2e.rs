@@ -24,20 +24,22 @@ fn path_arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> PathBuf {
     args.next().map(PathBuf::from).unwrap_or_else(|| usage())
 }
 
-fn node(
-    kind: &str,
-    name: &str,
-    text: Option<&str>,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    fill: &str,
-) -> CanvasNode {
+struct NodeFixture<'a> {
+    kind: &'a str,
+    name: &'a str,
+    text: Option<&'a str>,
+    position: (f64, f64),
+    size: (f64, f64),
+    fill: &'a str,
+}
+
+fn node(fixture: NodeFixture<'_>) -> CanvasNode {
+    let (x, y) = fixture.position;
+    let (width, height) = fixture.size;
     CanvasNode {
         id: Uuid::now_v7(),
-        name: name.into(),
-        kind: kind.into(),
+        name: fixture.name.into(),
+        kind: fixture.kind.into(),
         parent_id: None,
         x,
         y,
@@ -45,17 +47,17 @@ fn node(
         height,
         rotation_deg: 0.0,
         opacity: 1.0,
-        text: text.map(str::to_owned),
+        text: fixture.text.map(str::to_owned),
         coordinate_space: CoordinateSpace::ProjectPixels,
         z_index: 1,
         style: NodeStyle {
-            fill: Some(fill.into()),
+            fill: Some(fixture.fill.into()),
             stroke: None,
             stroke_width: 0.0,
-            font_family: (kind == "text").then(|| "Sans".into()),
-            font_size: (kind == "text").then_some(42.0),
-            font_weight: (kind == "text").then_some(600),
-            line_height: (kind == "text").then_some(1.0),
+            font_family: (fixture.kind == "text").then(|| "Sans".into()),
+            font_size: (fixture.kind == "text").then_some(42.0),
+            font_weight: (fixture.kind == "text").then_some(600),
+            line_height: (fixture.kind == "text").then_some(1.0),
             blend_mode: BlendMode::Normal,
         },
         relations: vec![],
@@ -98,36 +100,30 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .project;
 
     let fixtures = [
-        node(
-            "rectangle",
-            "Equation panel",
-            None,
-            260.0,
-            180.0,
-            720.0,
-            300.0,
-            "#4F7CAC",
-        ),
-        node(
-            "circle",
-            "Focus point",
-            None,
-            1120.0,
-            390.0,
-            200.0,
-            200.0,
-            "#F5B84A",
-        ),
-        node(
-            "text",
-            "Equation label",
-            Some("x² + y² = r²"),
-            620.0,
-            720.0,
-            520.0,
-            120.0,
-            "#FFFFFF",
-        ),
+        node(NodeFixture {
+            kind: "rectangle",
+            name: "Equation panel",
+            text: None,
+            position: (260.0, 180.0),
+            size: (720.0, 300.0),
+            fill: "#4F7CAC",
+        }),
+        node(NodeFixture {
+            kind: "circle",
+            name: "Focus point",
+            text: None,
+            position: (1120.0, 390.0),
+            size: (200.0, 200.0),
+            fill: "#F5B84A",
+        }),
+        node(NodeFixture {
+            kind: "text",
+            name: "Equation label",
+            text: Some("x² + y² = r²"),
+            position: (620.0, 720.0),
+            size: (520.0, 120.0),
+            fill: "#FFFFFF",
+        }),
     ];
     let mut project = with_renderer;
     for (index, fixture) in fixtures.into_iter().enumerate() {
