@@ -1,6 +1,7 @@
 use motionwright_domain::{
     BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
 };
+use motionwright_manim_profile::ManimRenderProfile;
 use motionwright_native::production::{ProductionConnection, ProductionCoordinator};
 use motionwright_service::StudioService;
 use serde_json::json;
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-blender-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON>"
+        "usage: native-manim-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -23,19 +24,22 @@ fn path_arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> PathBuf {
     args.next().map(PathBuf::from).unwrap_or_else(|| usage())
 }
 
-fn shape_node(
-    kind: &str,
-    name: &str,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    fill: &str,
-) -> CanvasNode {
+struct NodeFixture<'a> {
+    kind: &'a str,
+    name: &'a str,
+    text: Option<&'a str>,
+    position: (f64, f64),
+    size: (f64, f64),
+    fill: &'a str,
+}
+
+fn node(fixture: NodeFixture<'_>) -> CanvasNode {
+    let (x, y) = fixture.position;
+    let (width, height) = fixture.size;
     CanvasNode {
         id: Uuid::now_v7(),
-        name: name.into(),
-        kind: kind.into(),
+        name: fixture.name.into(),
+        kind: fixture.kind.into(),
         parent_id: None,
         x,
         y,
@@ -43,17 +47,17 @@ fn shape_node(
         height,
         rotation_deg: 0.0,
         opacity: 1.0,
-        text: None,
+        text: fixture.text.map(str::to_owned),
         coordinate_space: CoordinateSpace::ProjectPixels,
         z_index: 1,
         style: NodeStyle {
-            fill: Some(fill.into()),
+            fill: Some(fixture.fill.into()),
             stroke: None,
             stroke_width: 0.0,
-            font_family: None,
-            font_size: None,
-            font_weight: None,
-            line_height: None,
+            font_family: (fixture.kind == "text").then(|| "Sans".into()),
+            font_size: (fixture.kind == "text").then_some(42.0),
+            font_weight: (fixture.kind == "text").then_some(600),
+            line_height: (fixture.kind == "text").then_some(1.0),
             blend_mode: BlendMode::Normal,
         },
         relations: vec![],
@@ -65,18 +69,19 @@ fn shape_node(
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     if !service.projects(2)?.is_empty() {
-        return Err("native-blender-e2e seed database must start empty".into());
+        return Err("native-manim-e2e seed database must start empty".into());
     }
 
-    let initial = service.create_project("Native Blender round-trip E2E")?;
+    let initial = service.create_project("Native Manim Community round-trip E2E")?;
     let with_scene = service
         .apply(
             initial.id,
             &RevisionStamp::from(&initial),
-            "native-blender-seed-scene",
+            "native-manim-seed-scene",
             &Change::AddScene {
-                name: "Verified Blender contribution".into(),
-                objective: "Realize bounded Motionwright geometry through Semwright Blender".into(),
+                name: "Verified mathematical explainer".into(),
+                objective: "Render typed Motionwright primitives through Semwright Driver Host"
+                    .into(),
                 duration_seconds: 2,
             },
         )?
@@ -86,51 +91,54 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .apply(
             with_scene.id,
             &RevisionStamp::from(&with_scene),
-            "native-blender-set-renderer",
+            "native-manim-set-renderer",
             &Change::SetSceneRenderer {
                 scene_id,
-                renderer: RendererKind::Blender,
+                renderer: RendererKind::ManimCommunity,
             },
         )?
         .project;
-    let with_rectangle = service
-        .apply(
-            with_renderer.id,
-            &RevisionStamp::from(&with_renderer),
-            "native-blender-seed-rectangle",
-            &Change::AddCanvasNode {
-                scene_id,
-                node: shape_node(
-                    "rectangle",
-                    "Motionwright panel",
-                    260.0,
-                    180.0,
-                    520.0,
-                    260.0,
-                    "#4F7CAC",
-                ),
-            },
-        )?
-        .project;
-    let project = service
-        .apply(
-            with_rectangle.id,
-            &RevisionStamp::from(&with_rectangle),
-            "native-blender-seed-circle",
-            &Change::AddCanvasNode {
-                scene_id,
-                node: shape_node(
-                    "circle",
-                    "Motionwright focus",
-                    920.0,
-                    360.0,
-                    220.0,
-                    220.0,
-                    "#F5B84A",
-                ),
-            },
-        )?
-        .project;
+
+    let fixtures = [
+        node(NodeFixture {
+            kind: "rectangle",
+            name: "Equation panel",
+            text: None,
+            position: (260.0, 180.0),
+            size: (720.0, 300.0),
+            fill: "#4F7CAC",
+        }),
+        node(NodeFixture {
+            kind: "circle",
+            name: "Focus point",
+            text: None,
+            position: (1120.0, 390.0),
+            size: (200.0, 200.0),
+            fill: "#F5B84A",
+        }),
+        node(NodeFixture {
+            kind: "text",
+            name: "Equation label",
+            text: Some("x² + y² = r²"),
+            position: (620.0, 720.0),
+            size: (520.0, 120.0),
+            fill: "#FFFFFF",
+        }),
+    ];
+    let mut project = with_renderer;
+    for (index, fixture) in fixtures.into_iter().enumerate() {
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                &format!("native-manim-seed-node-{index}"),
+                &Change::AddCanvasNode {
+                    scene_id,
+                    node: fixture,
+                },
+            )?
+            .project;
+    }
 
     println!(
         "{}",
@@ -140,7 +148,7 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             "generation": project.generation,
             "revision": project.revision,
             "scene_id": scene_id,
-            "mesh_count": 2
+            "primitive_count": 3
         }))?
     );
     Ok(())
@@ -154,15 +162,15 @@ async fn realize(
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
     if projects.len() != 1 {
-        return Err("native-blender-e2e expected exactly one seeded project".into());
+        return Err("native-manim-e2e expected exactly one seeded project".into());
     }
     let project = projects.into_iter().next().expect("length checked");
     let scene = project
         .scenes
         .first()
-        .ok_or("seeded Blender project has no scene")?;
-    if scene.renderer != RendererKind::Blender {
-        return Err("seeded scene is not owned by the Blender renderer".into());
+        .ok_or("seeded Manim project has no scene")?;
+    if scene.renderer != RendererKind::ManimCommunity {
+        return Err("seeded scene is not owned by the Manim Community renderer".into());
     }
 
     let connection = ProductionConnection::load(connection_path)?;
@@ -171,22 +179,29 @@ async fn realize(
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let expected = RevisionStamp::from(&project);
+    let profile = ManimRenderProfile {
+        width: 640,
+        height: 360,
+        frame_rate: 12,
+    };
+
     let result = match coordinator
-        .realize_blender_scene(
+        .realize_manim_scene(
             project.id,
             &expected,
-            "native-blender-real-driver-host",
+            "native-manim-real-driver-host",
             scene.id,
+            profile,
         )
         .await
     {
         Ok(result) => result,
         Err(error) => {
             let diagnostic_path =
-                evidence_path.with_file_name("motionwright-blender-diagnostic.json");
+                evidence_path.with_file_name("motionwright-manim-diagnostic.json");
             let receipts = coordinator.receipts(project.id, 256).unwrap_or_default();
             let diagnostic = json!({
-                "native_blender_e2e": "FAIL",
+                "native_manim_e2e": "FAIL",
                 "project_id": project.id,
                 "generation": project.generation,
                 "revision": project.revision,
@@ -199,12 +214,11 @@ async fn realize(
                 },
                 "receipts": receipts,
             });
-            let body = serde_json::to_vec_pretty(&diagnostic)?;
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&diagnostic_path)?;
-            file.write_all(&body)?;
+            file.write_all(&serde_json::to_vec_pretty(&diagnostic)?)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
             eprintln!("{}", serde_json::to_string(&diagnostic)?);
@@ -212,39 +226,40 @@ async fn realize(
         }
     };
 
-    if result.get("renderer").and_then(|value| value.as_str()) != Some("blender")
-        || result.get("native_driver").and_then(|value| value.as_str()) != Some("driver:blender")
+    if result.get("renderer").and_then(|value| value.as_str()) != Some("manim-community")
+        || result.get("native_driver").and_then(|value| value.as_str())
+            != Some("driver:manim-community")
+        || result
+            .get("runtime_contract")
+            .and_then(|value| value.as_str())
+            != Some("Manim Community 0.21.0")
         || result
             .get("project_revision")
             .and_then(|value| value.as_u64())
             != Some(project.revision)
         || result.get("scene_id") != Some(&json!(scene.id))
-        || result
-            .get("objects")
-            .and_then(|value| value.as_array())
-            .map(Vec::len)
-            != Some(2)
     {
-        return Err("native Blender realization lost Motionwright revision identity".into());
+        return Err("native Manim realization lost Motionwright revision/runtime identity".into());
     }
+
     let artifact = result
         .get("artifact")
-        .ok_or("native Blender realization returned no verified artifact")?;
+        .ok_or("native Manim realization returned no verified artifact")?;
     let relative = artifact
-        .get("path")
+        .get("relative_path")
         .and_then(|value| value.as_str())
-        .ok_or("verified Blender artifact has no path")?;
+        .ok_or("verified Manim artifact has no relative path")?;
     let sha256 = artifact
         .get("sha256")
         .and_then(|value| value.as_str())
-        .ok_or("verified Blender artifact has no digest")?;
+        .ok_or("verified Manim artifact has no digest")?;
     let bytes = artifact
         .get("bytes")
         .and_then(|value| value.as_u64())
-        .ok_or("verified Blender artifact has no size")?;
-    if !relative.ends_with(".glb") || sha256.len() != 64 || bytes <= 20 || bytes > 256 * 1024 * 1024
+        .ok_or("verified Manim artifact has no size")?;
+    if !relative.ends_with(".mp4") || sha256.len() != 64 || bytes == 0 || bytes > 512 * 1024 * 1024
     {
-        return Err("verified Blender artifact metadata is outside certified bounds".into());
+        return Err("verified Manim artifact metadata is outside certified bounds".into());
     }
 
     let receipts = coordinator.receipts(project.id, 256)?;
@@ -254,42 +269,38 @@ async fn realize(
         .map(|receipt| receipt.command.as_str())
         .collect();
     for required in [
-        "driver.blender.collection.create",
-        "driver.blender.object.create",
-        "driver.blender.object.transform",
-        "driver.blender.collection.link",
-        "driver.blender.material.create",
-        "driver.blender.material.assign",
-        "driver.blender.export.glb",
+        "driver.manim-community.render.start",
+        "driver.manim-community.render.status",
+        "driver.manim-community.render.result",
     ] {
         if !completed_commands.contains(required) {
-            return Err(format!("native Blender receipt ledger is missing {required}").into());
+            return Err(format!("native Manim receipt ledger is missing {required}").into());
         }
     }
 
     let parent = evidence_path
         .parent()
-        .ok_or("Blender evidence destination has no parent")?;
+        .ok_or("Manim evidence destination has no parent")?;
     if !parent.is_dir() {
-        return Err("Blender evidence destination parent must already exist".into());
+        return Err("Manim evidence destination parent must already exist".into());
     }
     let evidence = json!({
-        "native_blender_e2e": "PASS",
+        "native_manim_e2e": "PASS",
         "project_id": project.id,
         "resource": project.resource_key(),
         "generation": project.generation,
         "revision": project.revision,
         "scene_id": scene.id,
+        "profile": profile,
         "result": result,
         "receipt_count": receipts.len(),
         "completed_commands": completed_commands,
     });
-    let body = serde_json::to_vec_pretty(&evidence)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(evidence_path)?;
-    file.write_all(&body)?;
+    file.write_all(&serde_json::to_vec_pretty(&evidence)?)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
 

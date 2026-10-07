@@ -1,8 +1,9 @@
 use crate::{
     film::{FilmBuildOptions, build_motion_canvas_segments},
-    multi_renderer::{blender_export_path, build_blender_contribution},
+    multi_renderer::{blender_export_path, build_blender_contribution, build_manim_plan},
 };
 use motionwright_domain::{AudioCodec, RevisionStamp, VideoCodec};
+use motionwright_manim_profile::ManimRenderProfile;
 use motionwright_service::StudioService;
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
 use semwright_media_time::Rate;
@@ -38,6 +39,9 @@ const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
 const MLT_MEZZANINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MLT_MASTER_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const BLENDER_GLTF_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const MANIM_VIDEO_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const MANIM_RENDER_POLL_DEADLINE_SECS: u64 = 330;
+const MANIM_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
 const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
 
@@ -64,13 +68,19 @@ const MLT_COMMANDS: &[&str] = &[
 
 const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.collection.create",
-    "driver.blender.semantic.datablock.create",
-    "driver.blender.semantic.objects",
-    "driver.blender.mesh.geometry.initialize",
-    "driver.blender.semantic.object.create",
+    "driver.blender.object.create",
+    "driver.blender.object.transform",
+    "driver.blender.collection.link",
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+];
+
+const MANIM_COMMANDS: &[&str] = &[
+    "driver.manim-community.render.start",
+    "driver.manim-community.render.status",
+    "driver.manim-community.render.cancel",
+    "driver.manim-community.render.result",
 ];
 
 const WORKFLOW_READ_COMMANDS: &[&str] = &[
@@ -346,6 +356,12 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
             source: SourceKind::Driver,
             provider_generation_required: true,
         })
+    } else if MANIM_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "driver:manim-community",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if WORKFLOW_READ_COMMANDS.contains(&command)
         || WORKFLOW_ACTION_COMMANDS.contains(&command)
     {
@@ -522,12 +538,14 @@ impl ProductionClient {
             .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
         let stdout_task = tokio::spawn(read_bounded(stdout));
         let stderr_task = tokio::spawn(read_bounded(stderr));
-        let deadline =
-            if command.starts_with("driver.mlt-video.") || command.starts_with("driver.blender.") {
-                MLT_DEADLINE_SECS
-            } else {
-                DEFAULT_DEADLINE_SECS
-            };
+        let deadline = if command.starts_with("driver.mlt-video.")
+            || command.starts_with("driver.blender.")
+            || command.starts_with("driver.manim-community.")
+        {
+            MLT_DEADLINE_SECS
+        } else {
+            DEFAULT_DEADLINE_SECS
+        };
 
         let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
             Ok(result) => result.map_err(|_| backend("Semwright CLI process failed"))?,
@@ -1230,27 +1248,6 @@ impl ProductionCoordinator {
         })
     }
 
-    async fn blender_ref(
-        &self,
-        project_id: Uuid,
-        expected: &RevisionStamp,
-        request_id: &str,
-        root: &str,
-        name: &str,
-    ) -> NativeResult<Value> {
-        let response = self
-            .execute(
-                project_id,
-                expected,
-                request_id,
-                "driver.blender.semantic.objects",
-                json!({"root": root, "query": name, "limit": 8}),
-                false,
-            )
-            .await?;
-        response_named_ref(&response, name)
-    }
-
     pub async fn realize_blender_scene(
         &self,
         project_id: Uuid,
@@ -1279,76 +1276,50 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let mut objects = Vec::with_capacity(plan.meshes.len());
-        for (index, mesh) in plan.meshes.iter().enumerate() {
-            let mesh_data = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:data"),
-                    "driver.blender.semantic.datablock.create",
-                    json!({
-                        "root": "meshes",
-                        "name": mesh.name
-                    }),
-                    true,
-                )
-                .await?;
-            let mesh_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:lookup-before-geometry"),
-                    "meshes",
-                    &mesh.name,
-                )
-                .await?;
-            let geometry = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:geometry"),
-                    "driver.blender.mesh.geometry.initialize",
-                    json!({
-                        "mesh_ref": mesh_ref,
-                        "vertices": mesh.vertices,
-                        "edges": mesh.edges,
-                        "faces": mesh.faces
-                    }),
-                    true,
-                )
-                .await?;
-            let current_mesh_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:lookup-after-geometry"),
-                    "meshes",
-                    &mesh.name,
-                )
-                .await?;
-            // Blender typed refs are generation-bound. Geometry initialization
-            // advances the semantic generation, so refresh the collection ref
-            // in the same generation used for object creation.
-            let current_collection_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:collection-ref"),
-                    "collections",
-                    &plan.collection_name,
-                )
-                .await?;
+        let mut objects = Vec::with_capacity(plan.objects.len());
+        for (index, contribution) in plan.objects.iter().enumerate() {
+            // Semwright 1.0.0 requires foreground human approval for destructive
+            // arbitrary topology replacement. Motionwright's bounded Blender
+            // projection only needs rectangles and circles, so it intentionally
+            // composes allowlisted primitives plus reversible transforms instead.
             let object = self
                 .execute(
                     project_id,
                     expected,
-                    &format!("{request_id}:mesh:{index}:object"),
-                    "driver.blender.semantic.object.create",
+                    &format!("{request_id}:object:{index}:create"),
+                    "driver.blender.object.create",
                     json!({
-                        "name": mesh.name,
-                        "data_ref": current_mesh_ref,
-                        "collection_ref": current_collection_ref
+                        "name": contribution.name,
+                        "primitive": contribution.primitive.as_driver_name(),
+                        "location": contribution.location
+                    }),
+                    true,
+                )
+                .await?;
+            let transform = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:object:{index}:transform"),
+                    "driver.blender.object.transform",
+                    json!({
+                        "name": contribution.name,
+                        "location": contribution.location,
+                        "rotation": contribution.rotation,
+                        "scale": contribution.scale
+                    }),
+                    true,
+                )
+                .await?;
+            let link = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:object:{index}:link"),
+                    "driver.blender.collection.link",
+                    json!({
+                        "object": contribution.name,
+                        "collection": plan.collection_name
                     }),
                     true,
                 )
@@ -1357,11 +1328,11 @@ impl ProductionCoordinator {
                 .execute(
                     project_id,
                     expected,
-                    &format!("{request_id}:mesh:{index}:material"),
+                    &format!("{request_id}:object:{index}:material"),
                     "driver.blender.material.create",
                     json!({
-                        "name": mesh.material_name,
-                        "color": mesh.color_rgba,
+                        "name": contribution.material_name,
+                        "color": contribution.color_rgba,
                         "roughness": 0.45,
                         "metallic": 0.0
                     }),
@@ -1372,20 +1343,21 @@ impl ProductionCoordinator {
                 .execute(
                     project_id,
                     expected,
-                    &format!("{request_id}:mesh:{index}:material-assign"),
+                    &format!("{request_id}:object:{index}:material-assign"),
                     "driver.blender.material.assign",
                     json!({
-                        "object": mesh.name,
-                        "material": mesh.material_name
+                        "object": contribution.name,
+                        "material": contribution.material_name
                     }),
                     true,
                 )
                 .await?;
             objects.push(json!({
-                "node_id": mesh.node_id,
-                "mesh_data": mesh_data,
-                "geometry": geometry,
+                "node_id": contribution.node_id,
+                "primitive": contribution.primitive,
                 "object": object,
+                "transform": transform,
+                "collection_link": link,
                 "material": material,
                 "material_assignment": assignment
             }));
@@ -1426,7 +1398,7 @@ impl ProductionCoordinator {
             || exported_path != export_path
             || exported_bytes <= 20
             || exported_bytes > BLENDER_GLTF_MAX_BYTES
-            || export_data.get("objects").and_then(Value::as_u64) != Some(plan.meshes.len() as u64)
+            || export_data.get("objects").and_then(Value::as_u64) != Some(plan.objects.len() as u64)
         {
             return Err(backend(
                 "Blender GLB export did not match the bounded Motionwright contribution",
@@ -1452,6 +1424,188 @@ impl ProductionCoordinator {
                 "path": exported_path,
                 "sha256": exported_sha256,
                 "bytes": exported_bytes,
+                "verified_path": verified_path
+            }
+        }))
+    }
+
+    pub async fn realize_manim_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        if request_id.trim().is_empty()
+            || request_id.len() > 96
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(invalid("Manim production request id is invalid"));
+        }
+        profile
+            .validate()
+            .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
+
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motionwright project changed since the Manim contribution was prepared",
+            ));
+        }
+
+        let projected = build_manim_plan(&project, scene_id)?;
+        let plan_value = serde_json::to_value(&projected)
+            .map_err(|_| invalid("Manim scene plan could not be encoded"))?;
+        let plan: motionwright_manim_profile::ManimScenePlan =
+            serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Manim scene plan does not match the Driver SDK profile"))?;
+        motionwright_manim_profile::validate_plan(&plan)
+            .map_err(|error| invalid(format!("Manim scene plan is invalid: {error}")))?;
+        let plan_bytes = serde_json::to_vec(&plan)
+            .map_err(|_| invalid("Manim scene plan could not be digested"))?;
+        let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
+
+        let started = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:start"),
+                "driver.manim-community.render.start",
+                json!({"plan": plan_value, "profile": profile}),
+                true,
+            )
+            .await?;
+        let job_ref = required_string(
+            response_data(&started)?,
+            "/job_ref",
+            "Manim render did not return a job reference",
+        )?;
+
+        let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
+        let mut poll = 0_u32;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Error::new(
+                    ErrorCode::Timeout,
+                    "Manim render did not reach a terminal state before the bounded deadline",
+                )
+                .uncertain());
+            }
+            let status = match self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:status:{poll}"),
+                    "driver.manim-community.render.status",
+                    json!({"job_ref": job_ref}),
+                    false,
+                )
+                .await
+            {
+                Ok(status) => status,
+                Err(error) if error.code == ErrorCode::Timeout => {
+                    poll = poll
+                        .checked_add(1)
+                        .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+                    sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match response_data(&status)?.get("state").and_then(Value::as_str) {
+                Some("succeeded") => break,
+                Some("failed") => {
+                    return Err(backend("Manim Community render reported failure"));
+                }
+                Some("cancelled") => {
+                    return Err(Error::new(
+                        ErrorCode::Cancelled,
+                        "Manim Community render was cancelled",
+                    ));
+                }
+                Some("rendering") | Some("cancelling") => {}
+                Some(_) => {
+                    return Err(backend("Manim Community returned an unsupported job state"));
+                }
+                None => {
+                    return Err(backend("Manim Community render status returned no state"));
+                }
+            }
+            poll = poll
+                .checked_add(1)
+                .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+            sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
+        }
+
+        let result = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:result"),
+                "driver.manim-community.render.result",
+                json!({"job_ref": job_ref}),
+                false,
+            )
+            .await?;
+        let result_data = response_data(&result)?;
+        if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
+            return Err(backend(
+                "Manim render result is not a successful terminal artifact",
+            ));
+        }
+        let artifact = result_data
+            .get("artifact")
+            .cloned()
+            .ok_or_else(|| backend("Manim render result has no artifact"))?;
+        let relative_path = required_string(
+            &artifact,
+            "/relative_path",
+            "Manim render artifact has no relative path",
+        )?;
+        let sha256 = required_string(&artifact, "/sha256", "Manim render artifact has no digest")?;
+        let bytes = artifact
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| backend("Manim render artifact has no size"))?;
+        if artifact.get("media_type").and_then(Value::as_str) != Some("video/mp4")
+            || artifact.get("width").and_then(Value::as_u64) != Some(u64::from(profile.width))
+            || artifact.get("height").and_then(Value::as_u64) != Some(u64::from(profile.height))
+            || artifact.get("frame_rate").and_then(Value::as_u64)
+                != Some(u64::from(profile.frame_rate))
+            || artifact.get("plan_sha256").and_then(Value::as_str) != Some(plan_sha256.as_str())
+            || bytes == 0
+            || bytes > MANIM_VIDEO_MAX_BYTES
+        {
+            return Err(backend(
+                "Manim render artifact does not match the bounded Motionwright scene plan",
+            ));
+        }
+        let verified_path = verify_output_artifact(
+            &self.client.connection().output_root,
+            &relative_path,
+            &sha256,
+            MANIM_VIDEO_MAX_BYTES,
+        )?;
+
+        Ok(json!({
+            "renderer": "manim-community",
+            "native_driver": "driver:manim-community",
+            "runtime_contract": "Manim Community 0.21.0",
+            "project_revision": project.revision,
+            "scene_id": scene_id,
+            "job_ref": job_ref,
+            "plan_sha256": plan_sha256,
+            "profile": profile,
+            "result": result,
+            "artifact": {
+                "relative_path": relative_path,
+                "sha256": sha256,
+                "bytes": bytes,
                 "verified_path": verified_path
             }
         }))
@@ -1593,20 +1747,6 @@ impl ProductionCoordinator {
             }
         }
     }
-}
-
-fn response_named_ref(value: &Value, name: &str) -> NativeResult<Value> {
-    value
-        .pointer("/result/data/items")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .find(|item| item.get("name").and_then(Value::as_str) == Some(name))
-        })
-        .and_then(|item| item.get("ref"))
-        .cloned()
-        .ok_or_else(|| backend("Blender semantic lookup returned no exact typed ref"))
 }
 
 fn storage_error(error: motionwright_storage::StorageError) -> Error {
@@ -1859,6 +1999,13 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             assert!(authority.provider_generation_required);
         }
         assert!(expected_authority("driver.blender.python.exec").is_none());
+
+        let manim = expected_authority("driver.manim-community.render.start")
+            .expect("bounded Manim render start must be explicitly enabled");
+        assert_eq!(manim.provider, "driver:manim-community");
+        assert_eq!(manim.source, SourceKind::Driver);
+        assert!(manim.provider_generation_required);
+        assert!(expected_authority("driver.manim-community.python.exec").is_none());
         assert!(expected_authority("driver.manim.render").is_none());
     }
 
@@ -1878,31 +2025,6 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(expected_authority("workflow.suggestion.dismiss").is_none());
         assert!(WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.replay"));
         assert!(!WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.proposal.plan"));
-    }
-
-    #[test]
-    fn blender_response_refs_are_extracted_only_from_exact_lookup_results() {
-        let value = json!({
-            "result": {
-                "data": {
-                    "items": [{
-                        "name": "Mesh",
-                        "ref": {
-                            "root": "meshes",
-                            "name": "Mesh",
-                            "path": [],
-                            "generation": 1
-                        }
-                    }]
-                }
-            }
-        });
-        assert_eq!(
-            response_named_ref(&value, "Mesh").unwrap()["root"],
-            "meshes"
-        );
-        assert!(response_named_ref(&value, "Other").is_err());
-        assert!(response_named_ref(&json!({"result":{"data":{}}}), "Mesh").is_err());
     }
 
     #[cfg(unix)]
@@ -1997,7 +2119,10 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         let blender = expected_authority("driver.blender.collection.create")
             .expect("scene-linked Blender collection creation must be explicitly enabled");
         assert_eq!(blender.provider, "driver:blender");
-        assert!(expected_authority("driver.blender.collection.link").is_none());
+        let link = expected_authority("driver.blender.collection.link")
+            .expect("bounded Blender collection linking must be explicitly enabled");
+        assert_eq!(link.provider, "driver:blender");
+        assert!(link.provider_generation_required);
 
         let (service, project, temp) = fixture_service();
         let mut connection = fake_connection(&temp, "project:other".into());

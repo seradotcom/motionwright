@@ -1,0 +1,79 @@
+{
+  "manifest_version": 1,
+  "protocol": 8,
+  "id": "manim-community",
+  "version": "0.1.0",
+  "publisher": "motionwright",
+  "executable": "/ABSOLUTE/OWNER/APPROVED/motionwright-manim-community-driver",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "application": {
+    "desktop_id": null,
+    "process_names": ["motionwright-manim-runner", "python3", "ffmpeg"],
+    "supported_versions": ["Manim Community 0.21.0"]
+  },
+  "transport": "stdio_v1",
+  "mounts": [
+    {
+      "root": "manim-runtime",
+      "read_only": true
+    },
+    {
+      "root": "manim-work",
+      "read_only": false
+    },
+    {
+      "root": "manim-output",
+      "read_only": false
+    },
+    {
+      "root": "fontconfig",
+      "read_only": true
+    }
+  ],
+  "system_config": [],
+  "secrets": [],
+  "tools": [
+    {
+      "root": "manim-runner-root",
+      "name": "manim-runner",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mounts": ["manim-runtime", "manim-work", "manim-output", "fontconfig"],
+      "dependencies": ["python3", "ffmpeg"]
+    },
+    {
+      "root": "python-root",
+      "name": "python3",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mounts": [],
+      "dependencies": []
+    },
+    {
+      "root": "ffmpeg-root",
+      "name": "ffmpeg",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mounts": [],
+      "dependencies": []
+    }
+  ],
+  "network": false,
+  "loopback_port": null,
+  "resources": {
+    "open_files": 512,
+    "processes": 256,
+    "cpu_seconds": 300,
+    "operation_cpu_seconds": 0,
+    "address_space_bytes": 4294967296,
+    "file_size_bytes": 1073741824
+  },
+  "request_timeout_ms": 300000,
+  "interfaces": {
+    "dynamic_capabilities": false,
+    "cooperative_cancellation": true,
+    "events": false,
+    "health": true,
+    "progress": false,
+    "artifacts": false,
+    "native_refs": false,
+    "host_tools": true
+  }
+}
