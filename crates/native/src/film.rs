@@ -194,6 +194,29 @@ fn subject_id(node_id: Uuid, beat_scope: Option<Uuid>) -> String {
     }
 }
 
+fn validate_static_safe_area(
+    node: &CanvasNode,
+    scale: f64,
+    output: &OutputProfile,
+) -> NativeResult<()> {
+    let left = node.x * scale;
+    let top = node.y * scale;
+    let right = left + node.width * scale;
+    let bottom = top + node.height * scale;
+    let epsilon = 1e-6;
+    if left + epsilon < output.safe_area.left
+        || top + epsilon < output.safe_area.top
+        || right - epsilon > f64::from(output.width) - output.safe_area.right
+        || bottom - epsilon > f64::from(output.height) - output.safe_area.bottom
+    {
+        return Err(unsupported(format!(
+            "Canvas node {} exceeds the deterministic Motionwright safe area",
+            node.id
+        )));
+    }
+    Ok(())
+}
+
 fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResult<()> {
     if !node.keyframes.is_empty() {
         return Err(unsupported(format!(
@@ -356,6 +379,7 @@ fn subject(
     let output = context.output;
     let font_family = context.font_family;
     validate_node_projection(node, font_family)?;
+    validate_static_safe_area(node, scale, output)?;
     let id = subject_id(node.id, beat_scope);
     let layer = layer_names
         .get(&node.z_index)
@@ -423,10 +447,11 @@ fn subject(
             )));
         }
     };
-    let mut constraints = vec![VisualConstraint::SafeArea {
-        subject: id.clone(),
-        tolerance: 0.0,
-    }];
+    // Semwright 1.0.0 deliberately does not guarantee native transformed-bounds
+    // evidence for every frame. Motionwright therefore validates safe-area geometry
+    // deterministically before projection and reserves native verification for
+    // renderer-observable text, font, truncation, cue and lifecycle invariants.
+    let mut constraints = Vec::new();
     if matches!(content, SubjectContent::Text { .. }) {
         constraints.extend([
             VisualConstraint::NativeText {
@@ -995,7 +1020,46 @@ mod tests {
             segments[0].film.timing.duration,
             Rational::new(3, 1).unwrap()
         );
+        let constraints = &segments[0].film.sequences[0].beats[0].shots[0].constraints;
+        assert!(
+            !constraints
+                .iter()
+                .any(|constraint| matches!(constraint, VisualConstraint::SafeArea { .. }))
+        );
+        assert!(
+            constraints
+                .iter()
+                .any(|constraint| matches!(constraint, VisualConstraint::NativeText { .. }))
+        );
         assert!(realize(&segments[0].film).is_ok());
+    }
+
+    #[test]
+    fn out_of_safe_area_canvas_nodes_fail_before_driver_dispatch() {
+        let mut project = fixture_project();
+        project.scenes[0].nodes[0].x = 0.0;
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error
+                .message
+                .contains("deterministic Motionwright safe area")
+        );
     }
 
     #[test]

@@ -70,7 +70,7 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.collection.create",
     "driver.blender.semantic.datablock.create",
     "driver.blender.semantic.objects",
-    "driver.blender.mesh.geometry.initialize",
+    "driver.blender.mesh.geometry.replace",
     "driver.blender.semantic.object.create",
     "driver.blender.material.create",
     "driver.blender.material.assign",
@@ -1327,7 +1327,7 @@ impl ProductionCoordinator {
                     project_id,
                     expected,
                     &format!("{request_id}:mesh:{index}:geometry"),
-                    "driver.blender.mesh.geometry.initialize",
+                    "driver.blender.mesh.geometry.replace",
                     json!({
                         "mesh_ref": mesh_ref,
                         "vertices": mesh.vertices,
@@ -1346,7 +1346,7 @@ impl ProductionCoordinator {
                     &mesh.name,
                 )
                 .await?;
-            // Blender typed refs are generation-bound. Geometry initialization
+            // Blender typed refs are generation-bound. Geometry replacement
             // advances the semantic generation, so refresh the collection ref
             // in the same generation used for object creation.
             let current_collection_ref = self
