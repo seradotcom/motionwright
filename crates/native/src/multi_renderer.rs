@@ -230,7 +230,7 @@ pub fn build_blender_contribution(
 }
 
 pub fn blender_export_path(plan: &BlenderSceneContribution) -> String {
-    format!("motionwright/blender/scene-{}.glb", plan.scene_id.simple())
+    format!("motionwright-blender-scene-{}.glb", plan.scene_id.simple())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -495,7 +495,9 @@ mod tests {
                 "Blender 4.x identifier exceeds 63 bytes: {name}"
             );
         }
-        assert!(blender_export_path(&plan).ends_with(".glb"));
+        let export_path = blender_export_path(&plan);
+        assert!(export_path.ends_with(".glb"));
+        assert!(!export_path.contains('/'));
     }
 
     #[test]
