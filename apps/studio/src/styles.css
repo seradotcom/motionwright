@@ -1806,9 +1806,9 @@ select:focus {
 }
 
 .timeline-panel {
-  height: 252px;
-  flex: 0 0 252px;
-  min-height: 160px;
+  height: 300px;
+  flex: 0 0 300px;
+  min-height: 190px;
   display: grid;
   grid-template-rows: 33px minmax(0, 1fr);
   border-top: 1px solid var(--border);
@@ -1832,6 +1832,30 @@ select:focus {
   font-weight: 700;
 }
 
+.timeline-selection-context {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.timeline-selection-context span {
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.timeline-selection-context strong {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .timeline-transport {
   margin-left: auto;
 }
@@ -1845,7 +1869,7 @@ select:focus {
 
 .track-labels {
   display: grid;
-  grid-template-rows: 24px repeat(3, 1fr);
+  grid-template-rows: 24px repeat(5, 1fr);
   border-right: 1px solid var(--border);
   background: var(--surface-1);
 }
@@ -1881,7 +1905,7 @@ select:focus {
   min-height: 0;
   position: relative;
   display: grid;
-  grid-template-rows: 24px repeat(3, 1fr);
+  grid-template-rows: 24px repeat(5, 1fr);
   overflow: hidden;
   cursor: crosshair;
   background: var(--surface-1);
@@ -1948,8 +1972,71 @@ select:focus {
   font-size: 8px;
 }
 
-.scene-track {
+.transcript-track,
+.beat-track,
+.scene-track,
+.review-track {
   overflow: hidden;
+}
+
+.timeline-empty-lane {
+  position: absolute;
+  inset: 0 8px;
+  display: flex;
+  align-items: center;
+  color: var(--dim);
+  font-size: 8px;
+  pointer-events: none;
+}
+
+.timeline-transcript,
+.timeline-beat {
+  position: absolute;
+  inset-block: 5px;
+  min-width: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 8px;
+  line-height: 1;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.timeline-transcript {
+  padding: 0 6px;
+  border-style: dashed;
+}
+
+.timeline-beat {
+  padding: 0 5px;
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-2));
+  color: var(--text);
+}
+
+.timeline-transcript:hover,
+.timeline-beat:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.timeline-transcript:focus-visible,
+.timeline-beat:focus-visible,
+.timeline-cue:focus-visible,
+.timeline-marker:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.timeline-transcript.selected,
+.timeline-beat.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
 }
 
 .timeline-clip {
@@ -2010,28 +2097,57 @@ select:focus {
   border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
 }
 
-.marker-track {
+.review-track {
   overflow: visible;
 }
 
-.timeline-marker {
+.timeline-marker,
+.timeline-cue {
   position: absolute;
   inset-block: 0;
   width: 1px;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.timeline-marker {
   background: color-mix(in srgb, var(--unknown) 55%, transparent);
 }
 
-.timeline-marker i {
+.timeline-cue {
+  background: color-mix(in srgb, var(--info) 55%, transparent);
+}
+
+.timeline-marker i,
+.timeline-cue i {
   position: absolute;
   top: 5px;
   left: -3px;
   width: 7px;
   height: 7px;
   transform: rotate(45deg);
+}
+
+.timeline-marker i {
   background: var(--unknown);
 }
 
-.timeline-marker b {
+.timeline-cue i {
+  border-radius: 50%;
+  transform: none;
+  background: var(--info);
+}
+
+.timeline-marker.selected i,
+.timeline-cue.selected i {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3px var(--accent);
+}
+
+.timeline-marker b,
+.timeline-cue b {
   position: absolute;
   top: 16px;
   left: 5px;
@@ -2043,6 +2159,10 @@ select:focus {
   font-weight: 550;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.timeline-cue b {
+  color: color-mix(in srgb, var(--info) 72%, var(--text));
 }
 
 .splice-line {

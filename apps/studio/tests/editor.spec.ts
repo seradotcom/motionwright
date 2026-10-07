@@ -89,6 +89,39 @@ test("scene selection and timeline seeking share one playhead context", async ({
   await expect(page.locator(".tree-row").filter({ hasText: "Pixels are brittle" })).toHaveClass(/selected/);
 });
 
+test("beat and cue selection share scene and playhead without mutating project state", async ({ page }) => {
+  await page.goto("/");
+  const timelineTimecode = page.locator(".timeline-header .timecode");
+  const revision = await page.locator(".revision-chip").first().innerText();
+
+  await page.getByRole("button", { name: "Beat: Pixel failure", exact: true }).click();
+  await expect(timelineTimecode).toHaveText("00:08:00");
+  await expect(page.locator(".tree-row").filter({ hasText: "Pixels are brittle" })).toHaveClass(/selected/);
+  await expect(page.locator(".timeline-selection-context")).toContainText("Pixel failure");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+
+  await page.getByRole("button", { name: "Cue: Broker handoff", exact: true }).click();
+  await expect(timelineTimecode).toHaveText("00:18:00");
+  await expect(page.locator(".tree-row").filter({ hasText: "Semwright acts natively" })).toHaveClass(/selected/);
+  await expect(page.locator(".timeline-selection-context")).toContainText("Broker handoff");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+});
+
+test("design preview transport steps and plays without claiming a project edit", async ({ page }) => {
+  await page.goto("/");
+  const timelineTimecode = page.locator(".timeline-header .timecode");
+  const revision = await page.locator(".revision-chip").first().innerText();
+
+  await page.getByRole("button", { name: "Step forward one frame", exact: true }).click();
+  await expect(timelineTimecode).toHaveText("00:00:01");
+
+  await page.getByRole("button", { name: "Play design preview", exact: true }).click();
+  await expect.poll(async () => timelineTimecode.innerText()).not.toBe("00:00:01");
+  await page.getByRole("button", { name: "Pause design preview", exact: true }).click();
+
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+});
+
 test("offline state is explicit while local editing remains available", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(() => window.dispatchEvent(new Event("offline")));
