@@ -200,7 +200,10 @@ pub fn build_blender_contribution(
                 )));
             }
         };
-        let name = format!("mw-{}-{}", scene.id.simple(), node.id.simple());
+        // Blender 4.x data-block names are bounded to 63 bytes. Node UUIDs are
+        // globally unique, so avoid concatenating scene + node UUIDs: Blender
+        // would truncate that identifier and break exact semantic lookups.
+        let name = format!("mw-node-{}", node.id.simple());
         let fill = node
             .style
             .fill
@@ -479,7 +482,19 @@ mod tests {
         assert_eq!(plan.meshes[0].vertices.len(), 4);
         assert_eq!(plan.meshes[0].faces, vec![vec![0, 1, 2, 3]]);
         assert_eq!(plan.meshes[0].color_rgba[3], 1.0);
+        assert!(plan.meshes[0].name.starts_with("mw-node-"));
         assert!(plan.meshes[0].material_name.ends_with("-material"));
+        for name in [
+            plan.collection_name.as_str(),
+            plan.meshes[0].name.as_str(),
+            plan.meshes[0].material_name.as_str(),
+        ] {
+            assert!(name.is_ascii());
+            assert!(
+                name.len() <= 63,
+                "Blender 4.x identifier exceeds 63 bytes: {name}"
+            );
+        }
         assert!(blender_export_path(&plan).ends_with(".glb"));
     }
 
