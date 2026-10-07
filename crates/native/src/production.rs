@@ -37,6 +37,7 @@ const MOTION_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
 const MLT_MEZZANINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MLT_MASTER_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const BLENDER_GLTF_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
 const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
 
@@ -1390,6 +1391,38 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
+        let export_data = response_data(&export)?.clone();
+        let exported_path = required_string(
+            &export_data,
+            "/path",
+            "Blender GLB export returned no artifact path",
+        )?;
+        let exported_sha256 = required_string(
+            &export_data,
+            "/sha256",
+            "Blender GLB export returned no artifact digest",
+        )?;
+        let exported_bytes = export_data
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| backend("Blender GLB export returned no artifact size"))?;
+        if export_data.get("changed").and_then(Value::as_bool) != Some(true)
+            || export_data.get("format").and_then(Value::as_str) != Some("glb")
+            || exported_path != export_path
+            || exported_bytes <= 20
+            || exported_bytes > BLENDER_GLTF_MAX_BYTES
+            || export_data.get("objects").and_then(Value::as_u64) != Some(plan.meshes.len() as u64)
+        {
+            return Err(backend(
+                "Blender GLB export did not match the bounded Motionwright contribution",
+            ));
+        }
+        let verified_path = verify_output_artifact(
+            &self.client.connection().output_root,
+            &exported_path,
+            &exported_sha256,
+            BLENDER_GLTF_MAX_BYTES,
+        )?;
 
         Ok(json!({
             "renderer": "blender",
@@ -1399,7 +1432,13 @@ impl ProductionCoordinator {
             "collection": collection,
             "objects": objects,
             "export_path": export_path,
-            "export": export
+            "export": export,
+            "artifact": {
+                "path": exported_path,
+                "sha256": exported_sha256,
+                "bytes": exported_bytes,
+                "verified_path": verified_path
+            }
         }))
     }
 
