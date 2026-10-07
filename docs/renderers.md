@@ -14,17 +14,17 @@ The model does not assume pixel equivalence between backends. Each renderer decl
 
 ## Blender
 
-Blender is the native 3D contribution path. Supported Motionwright canvas rectangles, shapes and circles compile into bounded mesh geometry, explicit RGBA materials and a dedicated collection. Production then uses only curated commands from the pinned Semwright Blender driver:
+Blender is the native 3D contribution path. Supported Motionwright canvas rectangles, shapes and circles compile into bounded allowlisted primitives (`plane` and flattened `cylinder`), explicit transforms, RGBA materials and a dedicated collection. Production uses only curated commands from the pinned Semwright Blender driver:
 
-- `driver.blender.semantic.datablock.create`
-- `driver.blender.semantic.objects`
-- `driver.blender.mesh.geometry.replace`
-- `driver.blender.semantic.object.create`
+- `driver.blender.collection.create`
+- `driver.blender.object.create`
+- `driver.blender.object.transform`
+- `driver.blender.collection.link`
 - `driver.blender.material.create`
 - `driver.blender.material.assign`
 - `driver.blender.export.glb`
 
-The coordinator re-queries semantic refs after mutations instead of assuming old refs remain valid. Every accepted response must carry `driver:blender` provenance from Semwright. The exported GLB stays bound to the Motionwright project generation, revision and scene identity through local production receipts.
+Semwright 1.0 classifies arbitrary mesh-topology replacement as destructive and requires foreground human approval. Motionwright therefore does not use that path for its bounded rectangle/circle projection and does not attempt to bypass the approval boundary in CI. Every accepted response must carry `driver:blender` provenance from Semwright. The exported GLB stays bound to the Motionwright project generation, revision and scene identity through local production receipts.
 
 Unsupported text conversion, hierarchy, semantic relations, non-project coordinate spaces, opacity/stroke state and unknown node kinds fail closed. Motionwright does not expose arbitrary Blender Python or a generic operator escape hatch.
 

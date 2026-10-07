@@ -68,10 +68,9 @@ const MLT_COMMANDS: &[&str] = &[
 
 const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.collection.create",
-    "driver.blender.semantic.datablock.create",
-    "driver.blender.semantic.objects",
-    "driver.blender.mesh.geometry.replace",
-    "driver.blender.semantic.object.create",
+    "driver.blender.object.create",
+    "driver.blender.object.transform",
+    "driver.blender.collection.link",
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
@@ -1249,27 +1248,6 @@ impl ProductionCoordinator {
         })
     }
 
-    async fn blender_ref(
-        &self,
-        project_id: Uuid,
-        expected: &RevisionStamp,
-        request_id: &str,
-        root: &str,
-        name: &str,
-    ) -> NativeResult<Value> {
-        let response = self
-            .execute(
-                project_id,
-                expected,
-                request_id,
-                "driver.blender.semantic.objects",
-                json!({"root": root, "query": name, "limit": 8}),
-                false,
-            )
-            .await?;
-        response_named_ref(&response, name)
-    }
-
     pub async fn realize_blender_scene(
         &self,
         project_id: Uuid,
@@ -1298,76 +1276,50 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let mut objects = Vec::with_capacity(plan.meshes.len());
-        for (index, mesh) in plan.meshes.iter().enumerate() {
-            let mesh_data = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:data"),
-                    "driver.blender.semantic.datablock.create",
-                    json!({
-                        "root": "meshes",
-                        "name": mesh.name
-                    }),
-                    true,
-                )
-                .await?;
-            let mesh_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:lookup-before-geometry"),
-                    "meshes",
-                    &mesh.name,
-                )
-                .await?;
-            let geometry = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:geometry"),
-                    "driver.blender.mesh.geometry.replace",
-                    json!({
-                        "mesh_ref": mesh_ref,
-                        "vertices": mesh.vertices,
-                        "edges": mesh.edges,
-                        "faces": mesh.faces
-                    }),
-                    true,
-                )
-                .await?;
-            let current_mesh_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:lookup-after-geometry"),
-                    "meshes",
-                    &mesh.name,
-                )
-                .await?;
-            // Blender typed refs are generation-bound. Geometry replacement
-            // advances the semantic generation, so refresh the collection ref
-            // in the same generation used for object creation.
-            let current_collection_ref = self
-                .blender_ref(
-                    project_id,
-                    expected,
-                    &format!("{request_id}:mesh:{index}:collection-ref"),
-                    "collections",
-                    &plan.collection_name,
-                )
-                .await?;
+        let mut objects = Vec::with_capacity(plan.objects.len());
+        for (index, contribution) in plan.objects.iter().enumerate() {
+            // Semwright 1.0.0 requires foreground human approval for destructive
+            // arbitrary topology replacement. Motionwright's bounded Blender
+            // projection only needs rectangles and circles, so it intentionally
+            // composes allowlisted primitives plus reversible transforms instead.
             let object = self
                 .execute(
                     project_id,
                     expected,
-                    &format!("{request_id}:mesh:{index}:object"),
-                    "driver.blender.semantic.object.create",
+                    &format!("{request_id}:object:{index}:create"),
+                    "driver.blender.object.create",
                     json!({
-                        "name": mesh.name,
-                        "data_ref": current_mesh_ref,
-                        "collection_ref": current_collection_ref
+                        "name": contribution.name,
+                        "primitive": contribution.primitive.as_driver_name(),
+                        "location": contribution.location
+                    }),
+                    true,
+                )
+                .await?;
+            let transform = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:object:{index}:transform"),
+                    "driver.blender.object.transform",
+                    json!({
+                        "name": contribution.name,
+                        "location": contribution.location,
+                        "rotation": contribution.rotation,
+                        "scale": contribution.scale
+                    }),
+                    true,
+                )
+                .await?;
+            let link = self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:object:{index}:link"),
+                    "driver.blender.collection.link",
+                    json!({
+                        "object": contribution.name,
+                        "collection": plan.collection_name
                     }),
                     true,
                 )
@@ -1376,11 +1328,11 @@ impl ProductionCoordinator {
                 .execute(
                     project_id,
                     expected,
-                    &format!("{request_id}:mesh:{index}:material"),
+                    &format!("{request_id}:object:{index}:material"),
                     "driver.blender.material.create",
                     json!({
-                        "name": mesh.material_name,
-                        "color": mesh.color_rgba,
+                        "name": contribution.material_name,
+                        "color": contribution.color_rgba,
                         "roughness": 0.45,
                         "metallic": 0.0
                     }),
@@ -1391,20 +1343,21 @@ impl ProductionCoordinator {
                 .execute(
                     project_id,
                     expected,
-                    &format!("{request_id}:mesh:{index}:material-assign"),
+                    &format!("{request_id}:object:{index}:material-assign"),
                     "driver.blender.material.assign",
                     json!({
-                        "object": mesh.name,
-                        "material": mesh.material_name
+                        "object": contribution.name,
+                        "material": contribution.material_name
                     }),
                     true,
                 )
                 .await?;
             objects.push(json!({
-                "node_id": mesh.node_id,
-                "mesh_data": mesh_data,
-                "geometry": geometry,
+                "node_id": contribution.node_id,
+                "primitive": contribution.primitive,
                 "object": object,
+                "transform": transform,
+                "collection_link": link,
                 "material": material,
                 "material_assignment": assignment
             }));
@@ -1445,7 +1398,7 @@ impl ProductionCoordinator {
             || exported_path != export_path
             || exported_bytes <= 20
             || exported_bytes > BLENDER_GLTF_MAX_BYTES
-            || export_data.get("objects").and_then(Value::as_u64) != Some(plan.meshes.len() as u64)
+            || export_data.get("objects").and_then(Value::as_u64) != Some(plan.objects.len() as u64)
         {
             return Err(backend(
                 "Blender GLB export did not match the bounded Motionwright contribution",
@@ -2205,7 +2158,10 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         let blender = expected_authority("driver.blender.collection.create")
             .expect("scene-linked Blender collection creation must be explicitly enabled");
         assert_eq!(blender.provider, "driver:blender");
-        assert!(expected_authority("driver.blender.collection.link").is_none());
+        let link = expected_authority("driver.blender.collection.link")
+            .expect("bounded Blender collection linking must be explicitly enabled");
+        assert_eq!(link.provider, "driver:blender");
+        assert!(link.provider_generation_required);
 
         let (service, project, temp) = fixture_service();
         let mut connection = fake_connection(&temp, "project:other".into());

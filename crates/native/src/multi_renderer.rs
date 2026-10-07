@@ -1,15 +1,14 @@
 use motionwright_domain::{CanvasNode, CoordinateSpace, Project, RendererKind, Scene};
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
-use std::f64::consts::TAU;
 use uuid::Uuid;
 
 const PROJECT_WIDTH: f64 = 1920.0;
 const PROJECT_HEIGHT: f64 = 1080.0;
 const BLENDER_SCALE: f64 = 0.01;
+const BLENDER_FLAT_DEPTH_SCALE: f64 = 0.005;
 const MANIM_FRAME_WIDTH: f64 = 14.222_222_222_2;
 const MANIM_FRAME_HEIGHT: f64 = 8.0;
-const CIRCLE_SEGMENTS: usize = 32;
 const MAX_RENDERER_NODES: usize = 512;
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -110,16 +109,33 @@ fn hex_color(value: &str) -> NativeResult<[f64; 4]> {
     ])
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlenderPrimitive {
+    Plane,
+    Cylinder,
+}
+
+impl BlenderPrimitive {
+    pub fn as_driver_name(self) -> &'static str {
+        match self {
+            Self::Plane => "plane",
+            Self::Cylinder => "cylinder",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct BlenderMeshContribution {
+pub struct BlenderPrimitiveContribution {
     pub node_id: Uuid,
     pub name: String,
     pub material_name: String,
     pub color_rgba: [f64; 4],
-    pub vertices: Vec<[f64; 3]>,
-    pub edges: Vec<[u32; 2]>,
-    pub faces: Vec<Vec<u32>>,
+    pub primitive: BlenderPrimitive,
+    pub location: [f64; 3],
+    pub rotation: [f64; 3],
+    pub scale: [f64; 3],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -130,7 +146,7 @@ pub struct BlenderSceneContribution {
     pub revision: u64,
     pub scene_id: Uuid,
     pub collection_name: String,
-    pub meshes: Vec<BlenderMeshContribution>,
+    pub objects: Vec<BlenderPrimitiveContribution>,
 }
 
 fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
@@ -182,47 +198,31 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
     }
 }
 
-fn blender_vertex(node: &CanvasNode, x: f64, y: f64) -> [f64; 3] {
-    let (x, y) = project_xy(node, x, y);
-    [
-        (x - PROJECT_WIDTH / 2.0) * BLENDER_SCALE,
-        (PROJECT_HEIGHT / 2.0 - y) * BLENDER_SCALE,
-        f64::from(node.z_index) * 0.01,
-    ]
-}
-
-fn blender_rect(node: &CanvasNode) -> (Vec<[f64; 3]>, Vec<Vec<u32>>) {
-    let x0 = node.x;
-    let y0 = node.y;
-    let x1 = node.x + node.width;
-    let y1 = node.y + node.height;
-    (
-        vec![
-            blender_vertex(node, x0, y0),
-            blender_vertex(node, x1, y0),
-            blender_vertex(node, x1, y1),
-            blender_vertex(node, x0, y1),
-        ],
-        vec![vec![0, 1, 2, 3]],
-    )
-}
-
-fn blender_circle(node: &CanvasNode) -> (Vec<[f64; 3]>, Vec<Vec<u32>>) {
+fn blender_transform(
+    node: &CanvasNode,
+    primitive: BlenderPrimitive,
+) -> ([f64; 3], [f64; 3], [f64; 3]) {
     let cx = node.x + node.width / 2.0;
     let cy = node.y + node.height / 2.0;
-    let rx = node.width / 2.0;
-    let ry = node.height / 2.0;
-    let mut vertices = Vec::with_capacity(CIRCLE_SEGMENTS);
-    for index in 0..CIRCLE_SEGMENTS {
-        let angle = TAU * (index as f64) / (CIRCLE_SEGMENTS as f64);
-        vertices.push(blender_vertex(
-            node,
-            cx + rx * angle.cos(),
-            cy + ry * angle.sin(),
-        ));
-    }
-    let face = (0..CIRCLE_SEGMENTS as u32).collect::<Vec<_>>();
-    (vertices, vec![face])
+    let location = [
+        (cx - PROJECT_WIDTH / 2.0) * BLENDER_SCALE,
+        (PROJECT_HEIGHT / 2.0 - cy) * BLENDER_SCALE,
+        f64::from(node.z_index) * 0.01,
+    ];
+    let rotation = [0.0, 0.0, -node.rotation_deg.to_radians()];
+    let scale = match primitive {
+        BlenderPrimitive::Plane => [
+            node.width * BLENDER_SCALE / 2.0,
+            node.height * BLENDER_SCALE / 2.0,
+            1.0,
+        ],
+        BlenderPrimitive::Cylinder => [
+            node.width * BLENDER_SCALE / 2.0,
+            node.height * BLENDER_SCALE / 2.0,
+            BLENDER_FLAT_DEPTH_SCALE,
+        ],
+    };
+    (location, rotation, scale)
 }
 
 pub fn build_blender_contribution(
@@ -230,12 +230,12 @@ pub fn build_blender_contribution(
     scene_id: Uuid,
 ) -> NativeResult<BlenderSceneContribution> {
     let scene = renderer_scene(project, scene_id, &RendererKind::Blender)?;
-    let mut meshes = Vec::with_capacity(scene.nodes.len());
+    let mut objects = Vec::with_capacity(scene.nodes.len());
     for node in &scene.nodes {
         ensure_flat_semantics(node)?;
-        let (vertices, faces) = match node.kind.as_str() {
-            "shape" | "rectangle" => blender_rect(node),
-            "circle" => blender_circle(node),
+        let primitive = match node.kind.as_str() {
+            "shape" | "rectangle" => BlenderPrimitive::Plane,
+            "circle" => BlenderPrimitive::Cylinder,
             "text" => {
                 return Err(unsupported(format!(
                     "Blender scene {} contains text node {}; text is not silently converted to geometry",
@@ -256,14 +256,16 @@ pub fn build_blender_contribution(
             .fill
             .as_deref()
             .ok_or_else(|| unsupported("Blender geometry requires an explicit fill color"))?;
-        meshes.push(BlenderMeshContribution {
+        let (location, rotation, scale) = blender_transform(node, primitive);
+        objects.push(BlenderPrimitiveContribution {
             node_id: node.id,
             material_name,
             name,
             color_rgba: hex_color(fill)?,
-            vertices,
-            edges: vec![],
-            faces,
+            primitive,
+            location,
+            rotation,
+            scale,
         });
     }
     Ok(BlenderSceneContribution {
@@ -272,7 +274,7 @@ pub fn build_blender_contribution(
         revision: project.revision,
         scene_id,
         collection_name: format!("mw-scene-{}", scene.id.simple()),
-        meshes,
+        objects,
     })
 }
 
@@ -525,21 +527,21 @@ mod tests {
         let plan = build_blender_contribution(&project, scene).unwrap();
         assert_eq!(plan.project_id, project.id);
         assert_eq!(plan.revision, project.revision);
-        assert_eq!(plan.meshes.len(), 1);
-        assert_eq!(plan.meshes[0].vertices.len(), 4);
-        assert_eq!(plan.meshes[0].faces, vec![vec![0, 1, 2, 3]]);
-        assert_eq!(plan.meshes[0].color_rgba[3], 1.0);
-        assert!(plan.meshes[0].name.starts_with("rectangle-fixture-"));
+        assert_eq!(plan.objects.len(), 1);
+        assert_eq!(plan.objects[0].primitive, BlenderPrimitive::Plane);
+        assert_eq!(plan.objects[0].scale, [1.8, 0.8, 1.0]);
+        assert_eq!(plan.objects[0].color_rgba[3], 1.0);
+        assert!(plan.objects[0].name.starts_with("rectangle-fixture-"));
         assert!(
-            plan.meshes[0]
+            plan.objects[0]
                 .material_name
                 .starts_with("rectangle-fixture-")
         );
-        assert!(plan.meshes[0].material_name.ends_with("-material"));
+        assert!(plan.objects[0].material_name.ends_with("-material"));
         for name in [
             plan.collection_name.as_str(),
-            plan.meshes[0].name.as_str(),
-            plan.meshes[0].material_name.as_str(),
+            plan.objects[0].name.as_str(),
+            plan.objects[0].material_name.as_str(),
         ] {
             assert!(name.is_ascii());
             assert!(
