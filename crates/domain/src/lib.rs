@@ -265,11 +265,39 @@ impl Scene {
             }
         }
         self.camera.validate()?;
+        if self.beats.len() > 32 {
+            return Err(DomainError::Invalid(
+                "scene has more than 32 authored beats".into(),
+            ));
+        }
         let mut beat_ids = HashSet::new();
+        let mut previous: Option<(RationalTime, Uuid)> = None;
         for beat in &self.beats {
-            if !beat_ids.insert(beat.id) || beat.duration.num <= 0 || !non_negative(beat.start) {
+            if !beat_ids.insert(beat.id)
+                || beat.label.trim().is_empty()
+                || beat.label.len() > 160
+                || beat.objective.len() > 4_000
+                || beat.duration.num <= 0
+                || !non_negative(beat.start)
+            {
                 return Err(DomainError::Invalid("invalid or duplicate beat".into()));
             }
+            let end = beat
+                .start
+                .checked_add(beat.duration)
+                .map_err(|error| DomainError::Invalid(format!("beat time overflow: {error}")))?;
+            if end > self.duration {
+                return Err(DomainError::Invalid(
+                    "scene beat extends beyond the scene duration".into(),
+                ));
+            }
+            let key = (beat.start, beat.id);
+            if previous.is_some_and(|prior| prior > key) {
+                return Err(DomainError::Invalid(
+                    "scene beats must use deterministic timeline order".into(),
+                ));
+            }
+            previous = Some(key);
         }
         Ok(())
     }
@@ -521,10 +549,18 @@ impl Project {
         }
         self.validate_history()?;
         let mut scene_ids = HashSet::new();
+        let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
             scene.validate()?;
             if !scene_ids.insert(scene.id) {
                 return Err(DomainError::Invalid("duplicate scene id".into()));
+            }
+            for beat in &scene.beats {
+                if !resource_beat_ids.insert(beat.id) {
+                    return Err(DomainError::Invalid(
+                        "duplicate beat id across project resources".into(),
+                    ));
+                }
             }
         }
         let mut marker_ids = HashSet::new();
@@ -550,6 +586,13 @@ impl Project {
         validate_deliverables(&self.deliverables)?;
         self.brief.validate()?;
         self.narrative.validate()?;
+        for beat in &self.narrative.beats {
+            if !resource_beat_ids.insert(beat.id) {
+                return Err(DomainError::Invalid(
+                    "duplicate beat id across project resources".into(),
+                ));
+            }
+        }
         let claim_ids: HashSet<_> = self.brief.claims.iter().map(|claim| claim.id).collect();
         if self
             .narrative
@@ -1013,6 +1056,77 @@ impl Project {
                     .ok_or(DomainError::NotFound(resource))?;
                 scene.status = status.clone();
             }
+            Change::UpsertSceneBeat { scene_id, beat } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Timing])?;
+                if self
+                    .narrative
+                    .beats
+                    .iter()
+                    .any(|candidate| candidate.id == beat.id)
+                    || self.scenes.iter().any(|candidate| {
+                        candidate.id != *scene_id
+                            && candidate
+                                .beats
+                                .iter()
+                                .any(|existing| existing.id == beat.id)
+                    })
+                {
+                    return Err(DomainError::Invalid(
+                        "beat identity already belongs to another project resource".into(),
+                    ));
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or_else(|| DomainError::NotFound(resource.clone()))?;
+                let end = beat.start.checked_add(beat.duration).map_err(|error| {
+                    DomainError::Invalid(format!("beat time overflow: {error}"))
+                })?;
+                if beat.label.trim().is_empty()
+                    || beat.label.len() > 160
+                    || beat.objective.len() > 4_000
+                    || beat.duration.num <= 0
+                    || !non_negative(beat.start)
+                    || end > scene.duration
+                {
+                    return Err(DomainError::Invalid(
+                        "scene beat is outside editable bounds".into(),
+                    ));
+                }
+                if let Some(existing) = scene
+                    .beats
+                    .iter_mut()
+                    .find(|candidate| candidate.id == beat.id)
+                {
+                    *existing = beat.clone();
+                } else {
+                    if scene.beats.len() >= 32 {
+                        return Err(DomainError::Invalid(
+                            "scene has more than 32 authored beats".into(),
+                        ));
+                    }
+                    scene.beats.push(beat.clone());
+                }
+                scene.beats.sort_by(|left, right| {
+                    left.start.cmp(&right.start).then(left.id.cmp(&right.id))
+                });
+            }
+            Change::RemoveSceneBeat { scene_id, beat_id } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Timing])?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or_else(|| DomainError::NotFound(resource.clone()))?;
+                let before = scene.beats.len();
+                scene.beats.retain(|beat| beat.id != *beat_id);
+                if before == scene.beats.len() {
+                    return Err(DomainError::NotFound(format!("beat:{beat_id}")));
+                }
+            }
             Change::SetSceneDuration { scene_id, duration } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Timing])?;
@@ -1034,6 +1148,15 @@ impl Project {
                 {
                     return Err(DomainError::Invalid(
                         "scene duration would strand an authored keyframe".into(),
+                    ));
+                }
+                if scene.beats.iter().any(|beat| {
+                    beat.start
+                        .checked_add(beat.duration)
+                        .map_or(true, |end| end > *duration)
+                }) {
+                    return Err(DomainError::Invalid(
+                        "scene duration would strand an authored beat".into(),
                     ));
                 }
                 scene.duration = *duration;
@@ -1813,6 +1936,14 @@ pub enum Change {
         scene_id: Uuid,
         duration: RationalTime,
     },
+    UpsertSceneBeat {
+        scene_id: Uuid,
+        beat: Beat,
+    },
+    RemoveSceneBeat {
+        scene_id: Uuid,
+        beat_id: Uuid,
+    },
     AddCanvasNode {
         scene_id: Uuid,
         node: CanvasNode,
@@ -2321,6 +2452,141 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, DomainError::Invalid(_)));
         assert_eq!(project.scenes[0].duration, whole_seconds(5));
+    }
+
+    #[test]
+    fn scene_beats_upsert_sort_remove_and_stay_inside_scene_bounds() {
+        let mut project = Project::new("Scene beats").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Scene".into(),
+                objective: "Edit beats".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let late_id = Uuid::now_v7();
+        let early_id = Uuid::now_v7();
+
+        project
+            .apply_change(&Change::UpsertSceneBeat {
+                scene_id,
+                beat: Beat {
+                    id: late_id,
+                    label: "Late".into(),
+                    objective: "Close".into(),
+                    start: whole_seconds(3),
+                    duration: whole_seconds(2),
+                },
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::UpsertSceneBeat {
+                scene_id,
+                beat: Beat {
+                    id: early_id,
+                    label: "Early".into(),
+                    objective: "Open".into(),
+                    start: RationalTime::ZERO,
+                    duration: whole_seconds(2),
+                },
+            })
+            .unwrap();
+
+        assert_eq!(
+            project.scenes[0]
+                .beats
+                .iter()
+                .map(|beat| beat.id)
+                .collect::<Vec<_>>(),
+            vec![early_id, late_id]
+        );
+
+        project
+            .apply_change(&Change::UpsertSceneBeat {
+                scene_id,
+                beat: Beat {
+                    id: late_id,
+                    label: "Late revised".into(),
+                    objective: "Close precisely".into(),
+                    start: whole_seconds(2),
+                    duration: whole_seconds(3),
+                },
+            })
+            .unwrap();
+        assert_eq!(project.scenes[0].beats[1].label, "Late revised");
+
+        let outside = project
+            .apply_change(&Change::UpsertSceneBeat {
+                scene_id,
+                beat: Beat {
+                    id: Uuid::now_v7(),
+                    label: "Outside".into(),
+                    objective: "Invalid".into(),
+                    start: whole_seconds(4),
+                    duration: whole_seconds(2),
+                },
+            })
+            .unwrap_err();
+        assert!(matches!(outside, DomainError::Invalid(_)));
+        assert_eq!(project.scenes[0].beats.len(), 2);
+
+        project
+            .apply_change(&Change::RemoveSceneBeat {
+                scene_id,
+                beat_id: early_id,
+            })
+            .unwrap();
+        assert_eq!(project.scenes[0].beats.len(), 1);
+        assert_eq!(project.scenes[0].beats[0].id, late_id);
+    }
+
+    #[test]
+    fn scene_beat_timing_respects_locks_and_duration_changes() {
+        let mut project = Project::new("Scene beat locks").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Scene".into(),
+                objective: "Edit beats".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let beat_id = Uuid::now_v7();
+        project
+            .apply_change(&Change::UpsertSceneBeat {
+                scene_id,
+                beat: Beat {
+                    id: beat_id,
+                    label: "Ending".into(),
+                    objective: "Hold the ending".into(),
+                    start: whole_seconds(3),
+                    duration: whole_seconds(2),
+                },
+            })
+            .unwrap();
+
+        let duration_error = project
+            .apply_change(&Change::SetSceneDuration {
+                scene_id,
+                duration: whole_seconds(4),
+            })
+            .unwrap_err();
+        assert!(matches!(duration_error, DomainError::Invalid(_)));
+        assert_eq!(project.scenes[0].duration, whole_seconds(5));
+
+        project
+            .apply_change(&Change::SetLock {
+                resource: format!("scene:{scene_id}"),
+                kind: LockKind::Timing,
+                note: "Timing approved".into(),
+            })
+            .unwrap();
+        let locked = project
+            .apply_change(&Change::RemoveSceneBeat { scene_id, beat_id })
+            .unwrap_err();
+        assert!(matches!(locked, DomainError::Locked(_)));
+        assert_eq!(project.scenes[0].beats.len(), 1);
     }
 
     #[test]

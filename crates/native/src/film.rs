@@ -18,6 +18,7 @@ const CANVAS_WIDTH: f64 = 1920.0;
 const CANVAS_HEIGHT: f64 = 1080.0;
 const MAX_FILM_SECONDS: i64 = 600;
 const MAX_SEQUENCES: usize = 32;
+const MAX_TEMPORAL_SPANS: usize = 128;
 
 pub const MOTION_CANVAS_FONT_FAMILY: &str = "Instrument Sans Variable";
 pub const MOTION_CANVAS_MONO_FONT_FAMILY: &str = "IBM Plex Mono";
@@ -116,6 +117,10 @@ fn flush_run<'a>(runs: &mut Vec<Vec<&'a Scene>>, current: &mut Vec<&'a Scene>) {
     }
 }
 
+fn scene_span_cost(scene: &Scene) -> usize {
+    1 + scene.beats.len().max(1)
+}
+
 fn motion_canvas_runs(project: &Project) -> NativeResult<Vec<Vec<&Scene>>> {
     let mut runs = Vec::new();
     let mut current = Vec::new();
@@ -145,9 +150,14 @@ fn motion_canvas_runs(project: &Project) -> NativeResult<Vec<Vec<&Scene>>> {
         let starts_new = if let Some(first) = current.first() {
             let last_end = segment_end(current.last().expect("run is nonempty"))?;
             let candidate_duration = sub(end, first.start, "Film segment duration underflow")?;
+            let span_cost = current
+                .iter()
+                .map(|entry| scene_span_cost(entry))
+                .sum::<usize>();
             scene.start != last_end
                 || candidate_duration > max_duration
                 || current.len() >= MAX_SEQUENCES
+                || span_cost + scene_span_cost(scene) > MAX_TEMPORAL_SPANS
         } else {
             false
         };
@@ -174,6 +184,13 @@ fn canonical_position(node: &CanvasNode, scale: f64, output: &OutputProfile) -> 
     Point {
         x: node.x * scale + width / 2.0 - f64::from(output.width) / 2.0,
         y: node.y * scale + height / 2.0 - f64::from(output.height) / 2.0,
+    }
+}
+
+fn subject_id(node_id: Uuid, beat_scope: Option<Uuid>) -> String {
+    match beat_scope {
+        Some(beat_id) => format!("node-{}-beat-{}", node_id.simple(), beat_id.simple()),
+        None => uid("node", node_id),
     }
 }
 
@@ -327,9 +344,10 @@ fn subject(
     scale: f64,
     output: &OutputProfile,
     font_family: &str,
+    beat_scope: Option<Uuid>,
 ) -> NativeResult<(Subject, Vec<VisualConstraint>)> {
     validate_node_projection(node, font_family)?;
-    let id = uid("node", node.id);
+    let id = subject_id(node.id, beat_scope);
     let layer = layer_names
         .get(&node.z_index)
         .cloned()
@@ -418,7 +436,7 @@ fn subject(
         Subject {
             id,
             role: node.kind.clone(),
-            parent: node.parent_id.map(|id| uid("node", id)),
+            parent: node.parent_id.map(|id| subject_id(id, beat_scope)),
             layer,
             content,
             layout: SpatialIntent::Fixed {
@@ -532,6 +550,79 @@ fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
         .collect()
 }
 
+fn projected_shot(
+    project: &Project,
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    scale: f64,
+    output: &OutputProfile,
+    text_style: &BTreeMap<u64, String>,
+    font_family: &str,
+    archetype: Archetype,
+    shot_id: String,
+    span_id: String,
+    beat_scope: Option<Uuid>,
+) -> NativeResult<Shot> {
+    let (layers, layer_names) = layers(scene)?;
+    let mut subjects = Vec::with_capacity(scene.nodes.len());
+    let mut visual_constraints = Vec::new();
+    let profile_language = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.width == width && profile.height == height)
+        .map(|profile| profile.language.as_str())
+        .unwrap_or("und");
+    for node in &scene.nodes {
+        let (mapped, mut node_constraints) = subject(
+            node,
+            &layer_names,
+            text_style,
+            profile_language,
+            scale,
+            output,
+            font_family,
+            beat_scope,
+        )?;
+        subjects.push(mapped);
+        visual_constraints.append(&mut node_constraints);
+    }
+    Ok(Shot {
+        id: shot_id,
+        span_id,
+        archetype,
+        subjects,
+        layers,
+        annotations: vec![],
+        captions: vec![],
+        motion: vec![],
+        constraints: visual_constraints,
+    })
+}
+
+fn authored_beats_tile_scene(scene: &Scene) -> NativeResult<()> {
+    if scene.beats.is_empty() {
+        return Ok(());
+    }
+    let mut cursor = RationalTime::ZERO;
+    for beat in &scene.beats {
+        if beat.start != cursor {
+            return Err(unsupported(format!(
+                "Scene {} authored beats must tile the scene timeline exactly before native Film projection",
+                scene.id
+            )));
+        }
+        cursor = add(beat.start, beat.duration, "Scene beat end overflow")?;
+    }
+    if cursor != scene.duration {
+        return Err(unsupported(format!(
+            "Scene {} authored beats must cover the full scene duration before native Film projection",
+            scene.id
+        )));
+    }
+    Ok(())
+}
+
 fn build_segment(
     project: &Project,
     scenes: &[&Scene],
@@ -553,23 +644,22 @@ fn build_segment(
     let (text_style, type_scale) = text_styles(scenes, &options.font_family)?;
     let stroke = global_stroke(scenes)?;
 
-    let mut spans = Vec::with_capacity(scenes.len() * 2);
-    let mut constraints = Vec::with_capacity(scenes.len());
+    let span_capacity = scenes
+        .iter()
+        .map(|scene| scene_span_cost(scene))
+        .sum::<usize>();
+    let mut spans = Vec::with_capacity(span_capacity);
+    let mut constraints = Vec::with_capacity(span_capacity.saturating_sub(scenes.len()));
     let mut sequences = Vec::with_capacity(scenes.len());
 
     for scene in scenes {
-        if !scene.beats.is_empty() {
-            return Err(unsupported(format!(
-                "Scene {} has authored beat timing that requires explicit Film beat projection",
-                scene.id
-            )));
-        }
         if scene.nodes.is_empty() {
             return Err(unsupported(format!(
                 "Scene {} has no semantic canvas objects to render",
                 scene.id
             )));
         }
+        authored_beats_tile_scene(scene)?;
         let intent = intents.get(&scene.id).ok_or_else(|| {
             invalid(format!(
                 "Scene {} requires explicit narrative role and archetype for canonical Film",
@@ -578,65 +668,93 @@ fn build_segment(
         })?;
         let local_start = sub(scene.start, start, "Scene local Film start underflow")?;
         let sequence_span = uid("seqspan", scene.id);
-        let shot_span = uid("shotspan", scene.id);
-        for (span_id, parent) in [(sequence_span.clone(), false), (shot_span.clone(), true)] {
+        spans.push(TemporalSpan {
+            id: sequence_span.clone(),
+            minimum: scene.duration,
+            preferred: scene.duration,
+            maximum: scene.duration,
+            anchor: StartAnchor::Absolute { time: local_start },
+            preference_priority: 0,
+        });
+
+        let mut authoring_beats = Vec::with_capacity(scene.beats.len().max(1));
+        if scene.beats.is_empty() {
+            let shot_span = uid("shotspan", scene.id);
             spans.push(TemporalSpan {
-                id: span_id.clone(),
+                id: shot_span.clone(),
                 minimum: scene.duration,
                 preferred: scene.duration,
                 maximum: scene.duration,
                 anchor: StartAnchor::Absolute { time: local_start },
                 preference_priority: 0,
             });
-            if parent {
-                constraints.push(TemporalConstraint::Contains {
-                    id: uid("contains", scene.id),
-                    parent: sequence_span.clone(),
-                    child: span_id,
-                });
-            }
-        }
-
-        let (layers, layer_names) = layers(scene)?;
-        let mut subjects = Vec::with_capacity(scene.nodes.len());
-        let mut visual_constraints = Vec::new();
-        for node in &scene.nodes {
-            let (mapped, mut node_constraints) = subject(
-                node,
-                &layer_names,
-                &text_style,
-                project
-                    .deliverables
-                    .iter()
-                    .find(|profile| profile.width == width && profile.height == height)
-                    .map(|profile| profile.language.as_str())
-                    .unwrap_or("und"),
+            constraints.push(TemporalConstraint::Contains {
+                id: uid("contains", scene.id),
+                parent: sequence_span.clone(),
+                child: shot_span.clone(),
+            });
+            let shot = projected_shot(
+                project,
+                scene,
+                width,
+                height,
                 scale,
                 &output,
+                &text_style,
                 &options.font_family,
+                intent.archetype,
+                uid("shot", scene.id),
+                shot_span,
+                None,
             )?;
-            subjects.push(mapped);
-            visual_constraints.append(&mut node_constraints);
+            authoring_beats.push(AuthoringBeat {
+                id: uid("beat", scene.id),
+                role: intent.role,
+                shots: vec![shot],
+            });
+        } else {
+            for beat in &scene.beats {
+                let beat_start = add(local_start, beat.start, "Scene beat local start overflow")?;
+                let shot_span = format!("shotspan-{}-beat-{}", scene.id.simple(), beat.id.simple());
+                spans.push(TemporalSpan {
+                    id: shot_span.clone(),
+                    minimum: beat.duration,
+                    preferred: beat.duration,
+                    maximum: beat.duration,
+                    anchor: StartAnchor::Absolute { time: beat_start },
+                    preference_priority: 0,
+                });
+                constraints.push(TemporalConstraint::Contains {
+                    id: format!("contains-{}-beat-{}", scene.id.simple(), beat.id.simple()),
+                    parent: sequence_span.clone(),
+                    child: shot_span.clone(),
+                });
+                let shot = projected_shot(
+                    project,
+                    scene,
+                    width,
+                    height,
+                    scale,
+                    &output,
+                    &text_style,
+                    &options.font_family,
+                    intent.archetype,
+                    format!("shot-{}-beat-{}", scene.id.simple(), beat.id.simple()),
+                    shot_span,
+                    Some(beat.id),
+                )?;
+                authoring_beats.push(AuthoringBeat {
+                    id: format!("beat-{}-{}", scene.id.simple(), beat.id.simple()),
+                    role: intent.role,
+                    shots: vec![shot],
+                });
+            }
         }
 
         sequences.push(Sequence {
             id: uid("scene", scene.id),
             span_id: sequence_span,
-            beats: vec![AuthoringBeat {
-                id: uid("beat", scene.id),
-                role: intent.role,
-                shots: vec![Shot {
-                    id: uid("shot", scene.id),
-                    span_id: shot_span,
-                    archetype: intent.archetype,
-                    subjects,
-                    layers,
-                    annotations: vec![],
-                    captions: vec![],
-                    motion: vec![],
-                    constraints: visual_constraints,
-                }],
-            }],
+            beats: authoring_beats,
         });
     }
 
@@ -743,8 +861,8 @@ pub fn build_motion_canvas_segments(
 mod tests {
     use super::*;
     use motionwright_domain::{
-        CanvasKeyframe, CanvasNode, Change, MotionInterpolation, MotionProperty, NodeStyle,
-        RationalTime, RendererKind,
+        Beat as SceneBeat, CanvasKeyframe, CanvasNode, Change, MotionInterpolation, MotionProperty,
+        NodeStyle, RationalTime, RendererKind,
     };
     use std::collections::BTreeSet;
 
@@ -862,6 +980,106 @@ mod tests {
             Rational::new(3, 1).unwrap()
         );
         assert!(realize(&segments[0].film).is_ok());
+    }
+
+    #[test]
+    fn tiled_scene_beats_project_to_distinct_realized_film_shots() {
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        let first_beat = Uuid::now_v7();
+        let second_beat = Uuid::now_v7();
+        for beat in [
+            SceneBeat {
+                id: first_beat,
+                label: "Hook".into(),
+                objective: "Open".into(),
+                start: RationalTime::ZERO,
+                duration: RationalTime::new(1, 1).unwrap(),
+            },
+            SceneBeat {
+                id: second_beat,
+                label: "Proof".into(),
+                objective: "Prove".into(),
+                start: RationalTime::new(1, 1).unwrap(),
+                duration: RationalTime::new(1, 1).unwrap(),
+            },
+        ] {
+            project
+                .apply_change(&Change::UpsertSceneBeat { scene_id, beat })
+                .unwrap();
+        }
+
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let segments =
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap();
+        let sequence = &segments[0].film.sequences[0];
+        assert_eq!(sequence.beats.len(), 2);
+        assert_ne!(
+            sequence.beats[0].shots[0].subjects[0].id,
+            sequence.beats[1].shots[0].subjects[0].id
+        );
+        let realization = realize(&segments[0].film).unwrap();
+        let first_interval = realization
+            .schedule
+            .interval(&sequence.beats[0].shots[0].span_id)
+            .unwrap();
+        let second_interval = realization
+            .schedule
+            .interval(&sequence.beats[1].shots[0].span_id)
+            .unwrap();
+        assert_eq!(first_interval.start, Rational::ZERO);
+        assert_eq!(first_interval.end, Rational::new(1, 1).unwrap());
+        assert_eq!(second_interval.start, Rational::new(1, 1).unwrap());
+        assert_eq!(second_interval.end, Rational::new(2, 1).unwrap());
+    }
+
+    #[test]
+    fn incomplete_scene_beat_coverage_fails_closed_before_driver_dispatch() {
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        project
+            .apply_change(&Change::UpsertSceneBeat {
+                scene_id,
+                beat: SceneBeat {
+                    id: Uuid::now_v7(),
+                    label: "Partial".into(),
+                    objective: "Intentionally incomplete".into(),
+                    start: RationalTime::ZERO,
+                    duration: RationalTime::new(1, 1).unwrap(),
+                },
+            })
+            .unwrap();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("cover the full scene duration"));
     }
 
     #[test]

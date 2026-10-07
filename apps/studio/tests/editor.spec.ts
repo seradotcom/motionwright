@@ -122,6 +122,28 @@ test("design preview transport steps and plays without claiming a project edit",
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 });
 
+test("scene beats edit through project changes and stay synchronized with the timeline", async ({ page }) => {
+  await page.goto("/");
+  const revision = await page.locator(".revision-chip").first().innerText();
+  const firstBeat = page.locator(".scene-beat-row").first();
+
+  await firstBeat.getByRole("textbox", { name: "Beat label" }).fill("Reasoning gap revised");
+  await firstBeat.getByRole("button", { name: "Save beat", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: "Beat: Reasoning gap revised", exact: true })).toBeVisible();
+  await expect(page.locator(".revision-chip").first()).not.toHaveText(revision);
+
+  const afterEdit = await page.locator(".revision-chip").first().innerText();
+  await page.getByRole("button", { name: "Fill timing gap", exact: true }).click();
+  await expect(page.locator(".scene-beat-row")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Beat: New beat", exact: true })).toBeVisible();
+  await expect(page.locator(".revision-chip").first()).not.toHaveText(afterEdit);
+
+  await page.getByRole("button", { name: "Remove beat New beat", exact: true }).click();
+  await expect(page.locator(".scene-beat-row")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Beat: New beat", exact: true })).toHaveCount(0);
+});
+
 test("offline state is explicit while local editing remains available", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(() => window.dispatchEvent(new Event("offline")));

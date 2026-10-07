@@ -412,6 +412,8 @@ export type Change =
   | { type: "set_scene_renderer"; scene_id: string; renderer: RendererKind }
   | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
   | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
+  | { type: "upsert_scene_beat"; scene_id: string; beat: Beat }
+  | { type: "remove_scene_beat"; scene_id: string; beat_id: string }
   | { type: "add_canvas_node"; scene_id: string; node: CanvasNode }
   | { type: "remove_canvas_node"; scene_id: string; node_id: string }
   | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }

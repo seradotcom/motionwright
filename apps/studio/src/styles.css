@@ -1758,6 +1758,124 @@ select:focus {
   line-height: 1.45;
 }
 
+.scene-beat-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.scene-beat-editor-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scene-beat-editor-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.scene-beat-editor-head strong {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 740;
+}
+
+.scene-beat-editor-head span {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.beat-coverage {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 8px !important;
+  letter-spacing: 0.02em;
+}
+
+.beat-coverage.ready {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+  color: var(--success) !important;
+}
+
+.beat-coverage.needs-work {
+  border-color: color-mix(in srgb, var(--unknown) 48%, var(--border));
+  color: var(--unknown) !important;
+}
+
+.scene-beat-list {
+  display: grid;
+  gap: 6px;
+}
+
+.scene-beat-row {
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.scene-beat-row-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 5px;
+  align-items: center;
+}
+
+.scene-beat-row input,
+.scene-beat-row textarea {
+  width: 100%;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.inspector-section .scene-beat-row textarea {
+  min-height: 48px;
+  resize: vertical;
+}
+
+.scene-beat-time-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.scene-beat-time-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.scene-beat-time-grid span {
+  color: var(--dim);
+  font-size: 8px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.scene-beat-row-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.scene-beat-row-foot > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 8px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .lock-list {
   display: grid;
   gap: 5px;
