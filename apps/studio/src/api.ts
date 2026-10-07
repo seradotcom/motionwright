@@ -555,12 +555,69 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       ))) {
         throw new Error("scene duration would strand an authored keyframe");
       }
+      if (scene.beats.some((beat) => {
+        const start = Number(beat.start.num) / Number(beat.start.den);
+        const beatDuration = Number(beat.duration.num) / Number(beat.duration.den);
+        return !Number.isFinite(start + beatDuration) || start + beatDuration > duration;
+      })) {
+        throw new Error("scene duration would strand an authored beat");
+      }
       scene.duration = structuredClone(change.duration);
       let cursor = 0;
       next.scenes.forEach((entry) => {
         entry.start = rationalSeconds(cursor);
         cursor += Number(entry.duration.num) / Number(entry.duration.den);
       });
+      break;
+    }
+    case "upsert_scene_beat": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      const start = Number(change.beat.start.num) / Number(change.beat.start.den);
+      const duration = Number(change.beat.duration.num) / Number(change.beat.duration.den);
+      if (
+        !change.beat.label.trim() ||
+        change.beat.label.length > 160 ||
+        change.beat.objective.length > 4_000 ||
+        !Number.isFinite(start) ||
+        !Number.isFinite(duration) ||
+        start < 0 ||
+        duration <= 0 ||
+        start + duration > Number(scene.duration.num) / Number(scene.duration.den)
+      ) {
+        throw new Error("scene beat is outside editable bounds");
+      }
+      if (
+        next.narrative.beats.some((beat) => beat.id === change.beat.id) ||
+        next.scenes.some((entry) =>
+          entry.id !== scene.id && entry.beats.some((beat) => beat.id === change.beat.id)
+        )
+      ) {
+        throw new Error("beat identity already belongs to another project resource");
+      }
+      const existing = scene.beats.findIndex((beat) => beat.id === change.beat.id);
+      if (existing >= 0) {
+        scene.beats[existing] = structuredClone(change.beat);
+      } else {
+        if (scene.beats.length >= 32) throw new Error("scene has more than 32 authored beats");
+        scene.beats.push(structuredClone(change.beat));
+      }
+      scene.beats.sort((left, right) => {
+        const leftStart = Number(left.start.num) / Number(left.start.den);
+        const rightStart = Number(right.start.num) / Number(right.start.den);
+        return leftStart - rightStart || left.id.localeCompare(right.id);
+      });
+      break;
+    }
+    case "remove_scene_beat": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
+      if (!scene.beats.some((beat) => beat.id === change.beat_id)) {
+        throw new Error("resource not found: beat:" + change.beat_id);
+      }
+      scene.beats = scene.beats.filter((beat) => beat.id !== change.beat_id);
       break;
     }
     case "add_canvas_node": {

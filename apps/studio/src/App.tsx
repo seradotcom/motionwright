@@ -57,6 +57,7 @@ import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
+  Beat,
   Bootstrap,
   Change,
   PortableBundlePlan,
@@ -934,6 +935,218 @@ function ProjectRail({
   );
 }
 
+function SceneBeatRow({
+  scene,
+  beat,
+  locked,
+  commit,
+}: {
+  scene: Scene;
+  beat: Beat;
+  locked: boolean;
+  commit: (change: Change) => Promise<void>;
+}) {
+  const [label, setLabel] = useState(beat.label);
+  const [objective, setObjective] = useState(beat.objective);
+  const [start, setStart] = useState(seconds(beat.start));
+  const [duration, setDuration] = useState(seconds(beat.duration));
+
+  useEffect(() => {
+    setLabel(beat.label);
+    setObjective(beat.objective);
+    setStart(seconds(beat.start));
+    setDuration(seconds(beat.duration));
+  }, [beat.id, beat.label, beat.objective, beat.start.num, beat.start.den, beat.duration.num, beat.duration.den]);
+
+  const sceneDuration = seconds(scene.duration);
+  const valid =
+    label.trim().length > 0 &&
+    label.length <= 160 &&
+    objective.length <= 4_000 &&
+    Number.isFinite(start) &&
+    Number.isFinite(duration) &&
+    start >= 0 &&
+    duration > 0 &&
+    start + duration <= sceneDuration + 0.000001;
+  const dirty =
+    label !== beat.label ||
+    objective !== beat.objective ||
+    Math.abs(start - seconds(beat.start)) > 0.000001 ||
+    Math.abs(duration - seconds(beat.duration)) > 0.000001;
+
+  return (
+    <div className="scene-beat-row" data-beat-id={beat.id}>
+      <div className="scene-beat-row-head">
+        <input
+          aria-label="Beat label"
+          value={label}
+          disabled={locked}
+          maxLength={160}
+          onChange={(event) => setLabel(event.target.value)}
+        />
+        <button
+          type="button"
+          className="plain-icon"
+          aria-label={"Remove beat " + beat.label}
+          disabled={locked}
+          onClick={() => commit({ type: "remove_scene_beat", scene_id: scene.id, beat_id: beat.id })}
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <textarea
+        aria-label="Beat objective"
+        value={objective}
+        disabled={locked}
+        rows={2}
+        maxLength={4000}
+        onChange={(event) => setObjective(event.target.value)}
+      />
+      <div className="scene-beat-time-grid">
+        <label>
+          <span>Start</span>
+          <input
+            aria-label="Beat start seconds"
+            type="number"
+            min="0"
+            max={sceneDuration}
+            step="0.1"
+            value={start}
+            disabled={locked}
+            onChange={(event) => setStart(Number(event.target.value))}
+          />
+        </label>
+        <label>
+          <span>Duration</span>
+          <input
+            aria-label="Beat duration seconds"
+            type="number"
+            min="0.001"
+            max={sceneDuration}
+            step="0.1"
+            value={duration}
+            disabled={locked}
+            onChange={(event) => setDuration(Number(event.target.value))}
+          />
+        </label>
+      </div>
+      <div className="scene-beat-row-foot">
+        <span className="mono">{formatTime(start)} → {formatTime(start + duration)}</span>
+        <button
+          type="button"
+          className="button compact"
+          disabled={locked || !valid || !dirty}
+          onClick={() => commit({
+            type: "upsert_scene_beat",
+            scene_id: scene.id,
+            beat: {
+              ...beat,
+              label: label.trim(),
+              objective,
+              start: rationalSeconds(start),
+              duration: rationalSeconds(duration),
+            },
+          })}
+        >
+          Save beat
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SceneBeatEditor({
+  scene,
+  contentLocked,
+  timingLocked,
+  commit,
+}: {
+  scene: Scene;
+  contentLocked: boolean;
+  timingLocked: boolean;
+  commit: (change: Change) => Promise<void>;
+}) {
+  const sceneDuration = seconds(scene.duration);
+  const locked = contentLocked || timingLocked;
+  const beats = [...scene.beats].sort((left, right) =>
+    seconds(left.start) - seconds(right.start) || left.id.localeCompare(right.id)
+  );
+  let cursor = 0;
+  let exactCoverage = true;
+  let firstGap: { start: number; duration: number } | null = null;
+  for (const beat of beats) {
+    const start = seconds(beat.start);
+    const end = start + seconds(beat.duration);
+    if (start > cursor + 0.000001 && !firstGap) {
+      firstGap = { start: cursor, duration: start - cursor };
+    }
+    if (Math.abs(start - cursor) > 0.000001) exactCoverage = false;
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < sceneDuration - 0.000001 && !firstGap) {
+    firstGap = { start: cursor, duration: sceneDuration - cursor };
+  }
+  if (Math.abs(cursor - sceneDuration) > 0.000001) exactCoverage = false;
+  const nativeReady = beats.length === 0 || exactCoverage;
+
+  return (
+    <section className="scene-beat-editor" aria-label="Scene beats">
+      <div className="scene-beat-editor-head">
+        <div>
+          <strong>Scene beats</strong>
+          <span>{beats.length} authored · {formatTime(sceneDuration)}</span>
+        </div>
+        <span className={"beat-coverage " + (nativeReady ? "ready" : "needs-work")}>
+          {beats.length === 0 ? "scene span" : nativeReady ? "native-ready" : "timing gap"}
+        </span>
+      </div>
+      {beats.length === 0 ? (
+        <p className="inspector-empty">
+          No authored beats. Native Film currently preserves this as one full-scene shot.
+        </p>
+      ) : (
+        <div className="scene-beat-list">
+          {beats.map((beat) => (
+            <SceneBeatRow
+              key={beat.id}
+              scene={scene}
+              beat={beat}
+              locked={locked}
+              commit={commit}
+            />
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        className="button full"
+        disabled={locked || !firstGap || beats.length >= 32}
+        title={firstGap ? "Fill the first uncovered interval" : "No uncovered timing gap remains"}
+        onClick={() => {
+          if (!firstGap) return;
+          commit({
+            type: "upsert_scene_beat",
+            scene_id: scene.id,
+            beat: {
+              id: crypto.randomUUID(),
+              label: "New beat",
+              objective: "",
+              start: rationalSeconds(firstGap.start),
+              duration: rationalSeconds(firstGap.duration),
+            },
+          });
+        }}
+      >
+        <Plus size={12} /> Fill timing gap
+      </button>
+      <div className="renderer-note">
+        <Clock3 size={13} />
+        Authored beats may be incomplete while editing. Native Film dispatch requires exact, non-overlapping coverage.
+      </div>
+    </section>
+  );
+}
+
 function Inspector({
   project,
   scene,
@@ -960,6 +1173,7 @@ function Inspector({
   const resource = "scene:" + scene.id;
   const locks = project.locks.filter((lock) => lock.resource === resource);
   const timingLocked = locks.some((lock) => lock.kind === "timing");
+  const contentLocked = locks.some((lock) => lock.kind === "content");
   return (
     <aside className="inspector">
       <div className="inspector-heading">
@@ -1050,6 +1264,15 @@ function Inspector({
         >
           Commit objective
         </button>
+      </section>
+
+      <section className="inspector-section">
+        <SceneBeatEditor
+          scene={scene}
+          contentLocked={contentLocked}
+          timingLocked={timingLocked}
+          commit={commit}
+        />
       </section>
 
       <section className="inspector-section">
