@@ -133,6 +133,55 @@ pub struct BlenderSceneContribution {
     pub meshes: Vec<BlenderMeshContribution>,
 }
 
+fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
+    // Blender 4.x data-block names are bounded to 63 bytes. Preserve a
+    // human-readable fragment of Motionwright's semantic name while keeping a
+    // stable UUID-derived disambiguator so exact lookups survive export/readback.
+    let mut slug = String::with_capacity(label.len().min(40));
+    let mut separator = false;
+    for byte in label.bytes() {
+        let ch = if byte.is_ascii_alphanumeric() {
+            separator = false;
+            Some(byte as char)
+        } else if !separator && !slug.is_empty() {
+            separator = true;
+            Some('-')
+        } else {
+            None
+        };
+        if let Some(ch) = ch {
+            slug.push(ch);
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("node");
+    }
+
+    let uuid = id.simple().to_string();
+    let short = &uuid[..12];
+    let suffix = suffix.trim_matches('-');
+    let reserved = 1
+        + short.len()
+        + if suffix.is_empty() {
+            0
+        } else {
+            1 + suffix.len()
+        };
+    let max_slug = 63usize.saturating_sub(reserved);
+    slug.truncate(max_slug);
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if suffix.is_empty() {
+        format!("{slug}-{short}")
+    } else {
+        format!("{slug}-{short}-{suffix}")
+    }
+}
+
 fn blender_vertex(node: &CanvasNode, x: f64, y: f64) -> [f64; 3] {
     let (x, y) = project_xy(node, x, y);
     [
@@ -200,7 +249,8 @@ pub fn build_blender_contribution(
                 )));
             }
         };
-        let name = format!("mw-{}-{}", scene.id.simple(), node.id.simple());
+        let name = blender_semantic_name(&node.name, node.id, "");
+        let material_name = blender_semantic_name(&node.name, node.id, "material");
         let fill = node
             .style
             .fill
@@ -208,7 +258,7 @@ pub fn build_blender_contribution(
             .ok_or_else(|| unsupported("Blender geometry requires an explicit fill color"))?;
         meshes.push(BlenderMeshContribution {
             node_id: node.id,
-            material_name: format!("{name}-material"),
+            material_name,
             name,
             color_rgba: hex_color(fill)?,
             vertices,
@@ -227,7 +277,7 @@ pub fn build_blender_contribution(
 }
 
 pub fn blender_export_path(plan: &BlenderSceneContribution) -> String {
-    format!("motionwright/blender/scene-{}.glb", plan.scene_id.simple())
+    format!("motionwright-blender-scene-{}.glb", plan.scene_id.simple())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -479,8 +529,49 @@ mod tests {
         assert_eq!(plan.meshes[0].vertices.len(), 4);
         assert_eq!(plan.meshes[0].faces, vec![vec![0, 1, 2, 3]]);
         assert_eq!(plan.meshes[0].color_rgba[3], 1.0);
+        assert!(plan.meshes[0].name.starts_with("rectangle-fixture-"));
+        assert!(
+            plan.meshes[0]
+                .material_name
+                .starts_with("rectangle-fixture-")
+        );
         assert!(plan.meshes[0].material_name.ends_with("-material"));
-        assert!(blender_export_path(&plan).ends_with(".glb"));
+        for name in [
+            plan.collection_name.as_str(),
+            plan.meshes[0].name.as_str(),
+            plan.meshes[0].material_name.as_str(),
+        ] {
+            assert!(name.is_ascii());
+            assert!(
+                name.len() <= 63,
+                "Blender 4.x identifier exceeds 63 bytes: {name}"
+            );
+        }
+        let export_path = blender_export_path(&plan);
+        assert!(export_path.ends_with(".glb"));
+        assert!(!export_path.contains('/'));
+    }
+
+    #[test]
+    fn blender_semantic_names_preserve_readable_identity_with_bounded_uniqueness() {
+        let id = Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap();
+        let name = blender_semantic_name(
+            "Motionwright focus / export — extremely long semantic label that exceeds Blender bounds",
+            id,
+            "",
+        );
+        let material = blender_semantic_name(
+            "Motionwright focus / export — extremely long semantic label that exceeds Blender bounds",
+            id,
+            "material",
+        );
+        assert!(name.starts_with("Motionwright-focus-export-"));
+        assert!(material.starts_with("Motionwright-focus-export-"));
+        assert!(material.ends_with("-material"));
+        assert!(name.contains("0123456789ab"));
+        assert!(material.contains("0123456789ab"));
+        assert!(name.is_ascii() && material.is_ascii());
+        assert!(name.len() <= 63 && material.len() <= 63);
     }
 
     #[test]

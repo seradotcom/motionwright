@@ -37,6 +37,7 @@ const MOTION_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
 const MLT_MEZZANINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MLT_MASTER_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const BLENDER_GLTF_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
 const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
 
@@ -62,9 +63,10 @@ const MLT_COMMANDS: &[&str] = &[
 ];
 
 const BLENDER_COMMANDS: &[&str] = &[
+    "driver.blender.collection.create",
     "driver.blender.semantic.datablock.create",
     "driver.blender.semantic.objects",
-    "driver.blender.mesh.geometry.replace",
+    "driver.blender.mesh.geometry.initialize",
     "driver.blender.semantic.object.create",
     "driver.blender.material.create",
     "driver.blender.material.assign",
@@ -1272,15 +1274,11 @@ impl ProductionCoordinator {
                 project_id,
                 expected,
                 &format!("{request_id}:collection"),
-                "driver.blender.semantic.datablock.create",
-                json!({
-                    "root": "collections",
-                    "name": plan.collection_name
-                }),
+                "driver.blender.collection.create",
+                json!({"name": plan.collection_name}),
                 true,
             )
             .await?;
-
         let mut objects = Vec::with_capacity(plan.meshes.len());
         for (index, mesh) in plan.meshes.iter().enumerate() {
             let mesh_data = self
@@ -1310,7 +1308,7 @@ impl ProductionCoordinator {
                     project_id,
                     expected,
                     &format!("{request_id}:mesh:{index}:geometry"),
-                    "driver.blender.mesh.geometry.replace",
+                    "driver.blender.mesh.geometry.initialize",
                     json!({
                         "mesh_ref": mesh_ref,
                         "vertices": mesh.vertices,
@@ -1329,7 +1327,10 @@ impl ProductionCoordinator {
                     &mesh.name,
                 )
                 .await?;
-            let collection_ref = self
+            // Blender typed refs are generation-bound. Geometry initialization
+            // advances the semantic generation, so refresh the collection ref
+            // in the same generation used for object creation.
+            let current_collection_ref = self
                 .blender_ref(
                     project_id,
                     expected,
@@ -1347,7 +1348,7 @@ impl ProductionCoordinator {
                     json!({
                         "name": mesh.name,
                         "data_ref": current_mesh_ref,
-                        "collection_ref": collection_ref
+                        "collection_ref": current_collection_ref
                     }),
                     true,
                 )
@@ -1405,6 +1406,38 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
+        let export_data = response_data(&export)?.clone();
+        let exported_path = required_string(
+            &export_data,
+            "/path",
+            "Blender GLB export returned no artifact path",
+        )?;
+        let exported_sha256 = required_string(
+            &export_data,
+            "/sha256",
+            "Blender GLB export returned no artifact digest",
+        )?;
+        let exported_bytes = export_data
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| backend("Blender GLB export returned no artifact size"))?;
+        if export_data.get("changed").and_then(Value::as_bool) != Some(true)
+            || export_data.get("format").and_then(Value::as_str) != Some("glb")
+            || exported_path != export_path
+            || exported_bytes <= 20
+            || exported_bytes > BLENDER_GLTF_MAX_BYTES
+            || export_data.get("objects").and_then(Value::as_u64) != Some(plan.meshes.len() as u64)
+        {
+            return Err(backend(
+                "Blender GLB export did not match the bounded Motionwright contribution",
+            ));
+        }
+        let verified_path = verify_output_artifact(
+            &self.client.connection().output_root,
+            &exported_path,
+            &exported_sha256,
+            BLENDER_GLTF_MAX_BYTES,
+        )?;
 
         Ok(json!({
             "renderer": "blender",
@@ -1414,7 +1447,13 @@ impl ProductionCoordinator {
             "collection": collection,
             "objects": objects,
             "export_path": export_path,
-            "export": export
+            "export": export,
+            "artifact": {
+                "path": exported_path,
+                "sha256": exported_sha256,
+                "bytes": exported_bytes,
+                "verified_path": verified_path
+            }
         }))
     }
 
@@ -1955,6 +1994,11 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     #[cfg(unix)]
     #[tokio::test]
     async fn command_allowlist_and_resource_binding_fail_closed() {
+        let blender = expected_authority("driver.blender.collection.create")
+            .expect("scene-linked Blender collection creation must be explicitly enabled");
+        assert_eq!(blender.provider, "driver:blender");
+        assert!(expected_authority("driver.blender.collection.link").is_none());
+
         let (service, project, temp) = fixture_service();
         let mut connection = fake_connection(&temp, "project:other".into());
         let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();

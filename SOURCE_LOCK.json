@@ -4,8 +4,8 @@
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "b6bbc007ea45283917a0c857f6e918566e401523",
-      "branch_observed": "fix/motionwright-native-observation",
+      "revision": "937177b82a403ef9b6284065639d3b47ee5da941",
+      "branch_observed": "feat/motionwright-native-integration",
       "native_sdk_package": "semwright-native-sdk",
       "features_planned": [
         "driver",
@@ -13,7 +13,7 @@
         "effects"
       ],
       "license_observed": "MIT OR Apache-2.0",
-      "verification": "git fetch origin fix/motionwright-native-observation && git rev-parse FETCH_HEAD"
+      "verification": "git fetch origin feat/motionwright-native-integration && git rev-parse FETCH_HEAD"
     }
   },
   "notes": [
