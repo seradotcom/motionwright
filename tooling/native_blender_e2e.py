@@ -342,10 +342,9 @@ def main() -> None:
                 offset = next_offset
             ids = {item.get("id") for item in capabilities}
             required = {
+                "driver.blender.collection.create",
                 "driver.blender.semantic.datablock.create",
                 "driver.blender.semantic.objects",
-                "driver.blender.semantic.relations",
-                "driver.blender.semantic.relation.link",
                 "driver.blender.mesh.geometry.initialize",
                 "driver.blender.semantic.object.create",
                 "driver.blender.material.create",

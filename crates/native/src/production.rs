@@ -63,6 +63,7 @@ const MLT_COMMANDS: &[&str] = &[
 ];
 
 const BLENDER_COMMANDS: &[&str] = &[
+    "driver.blender.collection.create",
     "driver.blender.semantic.datablock.create",
     "driver.blender.semantic.objects",
     "driver.blender.mesh.geometry.initialize",
@@ -1235,84 +1236,6 @@ impl ProductionCoordinator {
         response_named_ref(&response, name)
     }
 
-    async fn blender_link_collection_to_scene(
-        &self,
-        project_id: Uuid,
-        expected: &RevisionStamp,
-        request_id: &str,
-        collection_ref: &str,
-    ) -> NativeResult<Value> {
-        let scenes = self
-            .execute(
-                project_id,
-                expected,
-                &format!("{request_id}:scenes"),
-                "driver.blender.semantic.objects",
-                json!({"root": "scenes", "limit": 2}),
-                false,
-            )
-            .await?;
-        let scene_items = response_data(&scenes)?
-            .get("items")
-            .and_then(Value::as_array)
-            .ok_or_else(|| backend("Blender scene inventory returned no items"))?;
-        if scene_items.len() != 1 {
-            return Err(Error::new(
-                ErrorCode::Unsupported,
-                "Blender production requires an isolated session with exactly one Scene",
-            ));
-        }
-        let scene_ref = required_string(
-            &scene_items[0],
-            "/ref",
-            "Blender scene inventory returned no typed Scene ref",
-        )?;
-
-        let scene_collection = self
-            .execute(
-                project_id,
-                expected,
-                &format!("{request_id}:root-collection"),
-                "driver.blender.semantic.relations",
-                json!({
-                    "ref": scene_ref,
-                    "property": "collection",
-                    "limit": 1,
-                    "offset": 0
-                }),
-                false,
-            )
-            .await?;
-        let collection_items = response_data(&scene_collection)?
-            .get("items")
-            .and_then(Value::as_array)
-            .ok_or_else(|| backend("Blender Scene.collection traversal returned no items"))?;
-        if collection_items.len() != 1 {
-            return Err(backend(
-                "Blender Scene.collection traversal did not return exactly one root collection",
-            ));
-        }
-        let scene_collection_ref = required_string(
-            &collection_items[0],
-            "/ref",
-            "Blender Scene.collection traversal returned no typed root collection ref",
-        )?;
-
-        self.execute(
-            project_id,
-            expected,
-            &format!("{request_id}:link"),
-            "driver.blender.semantic.relation.link",
-            json!({
-                "ref": scene_collection_ref,
-                "property": "children",
-                "target_ref": collection_ref
-            }),
-            true,
-        )
-        .await
-    }
-
     pub async fn realize_blender_scene(
         &self,
         project_id: Uuid,
@@ -1336,25 +1259,18 @@ impl ProductionCoordinator {
                 project_id,
                 expected,
                 &format!("{request_id}:collection"),
-                "driver.blender.semantic.datablock.create",
-                json!({
-                    "root": "collections",
-                    "name": plan.collection_name
-                }),
+                "driver.blender.collection.create",
+                json!({"name": plan.collection_name}),
                 true,
             )
             .await?;
-        let collection_ref = required_string(
-            response_data(&collection)?,
-            "/ref",
-            "Blender collection creation returned no typed Collection ref",
-        )?;
-        let collection_link = self
-            .blender_link_collection_to_scene(
+        let collection_ref = self
+            .blender_ref(
                 project_id,
                 expected,
-                &format!("{request_id}:collection"),
-                &collection_ref,
+                &format!("{request_id}:collection-ref"),
+                "collections",
+                &plan.collection_name,
             )
             .await?;
 
@@ -1512,7 +1428,6 @@ impl ProductionCoordinator {
             "project_revision": plan.revision,
             "scene_id": plan.scene_id,
             "collection": collection,
-            "collection_link": collection_link,
             "objects": objects,
             "export_path": export_path,
             "export": export,
@@ -2051,6 +1966,11 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     #[cfg(unix)]
     #[tokio::test]
     async fn command_allowlist_and_resource_binding_fail_closed() {
+        let blender = expected_authority("driver.blender.collection.create")
+            .expect("scene-linked Blender collection creation must be explicitly enabled");
+        assert_eq!(blender.provider, "driver:blender");
+        assert!(expected_authority("driver.blender.collection.link").is_none());
+
         let (service, project, temp) = fixture_service();
         let mut connection = fake_connection(&temp, "project:other".into());
         let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
