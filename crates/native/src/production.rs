@@ -1,8 +1,9 @@
 use crate::{
     film::{FilmBuildOptions, build_motion_canvas_segments},
-    multi_renderer::{blender_export_path, build_blender_contribution},
+    multi_renderer::{blender_export_path, build_blender_contribution, build_manim_plan},
 };
 use motionwright_domain::{AudioCodec, RevisionStamp, VideoCodec};
+use motionwright_manim_profile::ManimRenderProfile;
 use motionwright_service::StudioService;
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
 use semwright_media_time::Rate;
@@ -38,6 +39,9 @@ const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
 const MLT_MEZZANINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MLT_MASTER_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const BLENDER_GLTF_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const MANIM_VIDEO_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const MANIM_RENDER_POLL_DEADLINE_SECS: u64 = 330;
+const MANIM_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
 const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
 
@@ -71,6 +75,13 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+];
+
+const MANIM_COMMANDS: &[&str] = &[
+    "driver.manim-community.render.start",
+    "driver.manim-community.render.status",
+    "driver.manim-community.render.cancel",
+    "driver.manim-community.render.result",
 ];
 
 const WORKFLOW_READ_COMMANDS: &[&str] = &[
@@ -346,6 +357,12 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
             source: SourceKind::Driver,
             provider_generation_required: true,
         })
+    } else if MANIM_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "driver:manim-community",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if WORKFLOW_READ_COMMANDS.contains(&command)
         || WORKFLOW_ACTION_COMMANDS.contains(&command)
     {
@@ -522,12 +539,14 @@ impl ProductionClient {
             .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
         let stdout_task = tokio::spawn(read_bounded(stdout));
         let stderr_task = tokio::spawn(read_bounded(stderr));
-        let deadline =
-            if command.starts_with("driver.mlt-video.") || command.starts_with("driver.blender.") {
-                MLT_DEADLINE_SECS
-            } else {
-                DEFAULT_DEADLINE_SECS
-            };
+        let deadline = if command.starts_with("driver.mlt-video.")
+            || command.starts_with("driver.blender.")
+            || command.starts_with("driver.manim-community.")
+        {
+            MLT_DEADLINE_SECS
+        } else {
+            DEFAULT_DEADLINE_SECS
+        };
 
         let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
             Ok(result) => result.map_err(|_| backend("Semwright CLI process failed"))?,
@@ -1457,6 +1476,188 @@ impl ProductionCoordinator {
         }))
     }
 
+    pub async fn realize_manim_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        if request_id.trim().is_empty()
+            || request_id.len() > 96
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(invalid("Manim production request id is invalid"));
+        }
+        profile
+            .validate()
+            .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
+
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motionwright project changed since the Manim contribution was prepared",
+            ));
+        }
+
+        let projected = build_manim_plan(&project, scene_id)?;
+        let plan_value = serde_json::to_value(&projected)
+            .map_err(|_| invalid("Manim scene plan could not be encoded"))?;
+        let plan: motionwright_manim_profile::ManimScenePlan =
+            serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Manim scene plan does not match the Driver SDK profile"))?;
+        motionwright_manim_profile::validate_plan(&plan)
+            .map_err(|error| invalid(format!("Manim scene plan is invalid: {error}")))?;
+        let plan_bytes = serde_json::to_vec(&plan)
+            .map_err(|_| invalid("Manim scene plan could not be digested"))?;
+        let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
+
+        let started = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:start"),
+                "driver.manim-community.render.start",
+                json!({"plan": plan_value, "profile": profile}),
+                true,
+            )
+            .await?;
+        let job_ref = required_string(
+            response_data(&started)?,
+            "/job_ref",
+            "Manim render did not return a job reference",
+        )?;
+
+        let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
+        let mut poll = 0_u32;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Error::new(
+                    ErrorCode::Timeout,
+                    "Manim render did not reach a terminal state before the bounded deadline",
+                )
+                .uncertain());
+            }
+            let status = match self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:status:{poll}"),
+                    "driver.manim-community.render.status",
+                    json!({"job_ref": job_ref}),
+                    false,
+                )
+                .await
+            {
+                Ok(status) => status,
+                Err(error) if error.code == ErrorCode::Timeout => {
+                    poll = poll
+                        .checked_add(1)
+                        .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+                    sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match response_data(&status)?.get("state").and_then(Value::as_str) {
+                Some("succeeded") => break,
+                Some("failed") => {
+                    return Err(backend("Manim Community render reported failure"));
+                }
+                Some("cancelled") => {
+                    return Err(Error::new(
+                        ErrorCode::Cancelled,
+                        "Manim Community render was cancelled",
+                    ));
+                }
+                Some("rendering") | Some("cancelling") => {}
+                Some(_) => {
+                    return Err(backend("Manim Community returned an unsupported job state"));
+                }
+                None => {
+                    return Err(backend("Manim Community render status returned no state"));
+                }
+            }
+            poll = poll
+                .checked_add(1)
+                .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+            sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
+        }
+
+        let result = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{request_id}:result"),
+                "driver.manim-community.render.result",
+                json!({"job_ref": job_ref}),
+                false,
+            )
+            .await?;
+        let result_data = response_data(&result)?;
+        if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
+            return Err(backend(
+                "Manim render result is not a successful terminal artifact",
+            ));
+        }
+        let artifact = result_data
+            .get("artifact")
+            .cloned()
+            .ok_or_else(|| backend("Manim render result has no artifact"))?;
+        let relative_path = required_string(
+            &artifact,
+            "/relative_path",
+            "Manim render artifact has no relative path",
+        )?;
+        let sha256 = required_string(&artifact, "/sha256", "Manim render artifact has no digest")?;
+        let bytes = artifact
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| backend("Manim render artifact has no size"))?;
+        if artifact.get("media_type").and_then(Value::as_str) != Some("video/mp4")
+            || artifact.get("width").and_then(Value::as_u64) != Some(u64::from(profile.width))
+            || artifact.get("height").and_then(Value::as_u64) != Some(u64::from(profile.height))
+            || artifact.get("frame_rate").and_then(Value::as_u64)
+                != Some(u64::from(profile.frame_rate))
+            || artifact.get("plan_sha256").and_then(Value::as_str) != Some(plan_sha256.as_str())
+            || bytes == 0
+            || bytes > MANIM_VIDEO_MAX_BYTES
+        {
+            return Err(backend(
+                "Manim render artifact does not match the bounded Motionwright scene plan",
+            ));
+        }
+        let verified_path = verify_output_artifact(
+            &self.client.connection().output_root,
+            &relative_path,
+            &sha256,
+            MANIM_VIDEO_MAX_BYTES,
+        )?;
+
+        Ok(json!({
+            "renderer": "manim-community",
+            "native_driver": "driver:manim-community",
+            "runtime_contract": "Manim Community 0.21.0",
+            "project_revision": project.revision,
+            "scene_id": scene_id,
+            "job_ref": job_ref,
+            "plan_sha256": plan_sha256,
+            "profile": profile,
+            "result": result,
+            "artifact": {
+                "relative_path": relative_path,
+                "sha256": sha256,
+                "bytes": bytes,
+                "verified_path": verified_path
+            }
+        }))
+    }
+
     pub async fn execute(
         &self,
         project_id: Uuid,
@@ -1859,6 +2060,13 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             assert!(authority.provider_generation_required);
         }
         assert!(expected_authority("driver.blender.python.exec").is_none());
+
+        let manim = expected_authority("driver.manim-community.render.start")
+            .expect("bounded Manim render start must be explicitly enabled");
+        assert_eq!(manim.provider, "driver:manim-community");
+        assert_eq!(manim.source, SourceKind::Driver);
+        assert!(manim.provider_generation_required);
+        assert!(expected_authority("driver.manim-community.python.exec").is_none());
         assert!(expected_authority("driver.manim.render").is_none());
     }
 

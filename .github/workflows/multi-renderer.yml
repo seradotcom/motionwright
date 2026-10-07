@@ -8,6 +8,8 @@ on:
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
       - "crates/native/**"
+      - "crates/manim-profile/**"
+      - "crates/driver-manim-community/**"
       - "docs/renderers.md"
       - ".github/workflows/multi-renderer.yml"
   push:
@@ -18,6 +20,8 @@ on:
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
       - "crates/native/**"
+      - "crates/manim-profile/**"
+      - "crates/driver-manim-community/**"
       - "docs/renderers.md"
       - ".github/workflows/multi-renderer.yml"
   workflow_dispatch:
@@ -37,12 +41,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Source policy
         run: python3 tooling/source_policy.py
+      - name: Renderer profile and provider contracts
+        run: cargo test --locked -p motionwright-manim-profile -p motionwright-manim-community-driver
       - name: Blender and Manim projections
-        run: cargo test -p motionwright-native multi_renderer::tests --all-targets
+        run: cargo test --locked -p motionwright-native multi_renderer::tests --all-targets
       - name: Production driver boundaries
-        run: cargo test -p motionwright-native production::tests --all-targets
+        run: cargo test --locked -p motionwright-native production::tests --all-targets
       - name: Multi-renderer clippy
-        run: cargo clippy -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-native -p motionwright-manim-profile -p motionwright-manim-community-driver --all-targets -- -D warnings
 
   locked-blender-catalog:
     runs-on: ubuntu-24.04

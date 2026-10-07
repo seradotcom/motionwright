@@ -1275,14 +1275,16 @@
     {
       "id": "CR-MANIM-01",
       "area": "MANIM",
-      "implementation_assessment": "BLOCKED_UPSTREAM",
-      "verification_status": "BLOCKED_UPSTREAM",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "crates/native/src/multi_renderer.rs",
+        "crates/manim-profile/src/lib.rs",
+        "crates/driver-manim-community/src/main.rs",
+        "crates/native/src/production.rs",
         "docs/renderers.md",
-        ".github/workflows/multi-renderer.yml"
+        ".github/workflows/native-manim-e2e.yml"
       ],
-      "note": "Pinned Semwright has no native Manim driver."
+      "note": "Bounded Application Driver implemented; real-runtime CI remains the evidence gate until its exact-SHA run passes."
     },
     {
       "id": "CR-MANIM-02",
@@ -1342,26 +1344,30 @@
     {
       "id": "CR-MANIM-07",
       "area": "MANIM",
-      "implementation_assessment": "BLOCKED_UPSTREAM",
-      "verification_status": "BLOCKED_UPSTREAM",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "crates/native/src/multi_renderer.rs",
-        "docs/renderers.md",
-        ".github/workflows/multi-renderer.yml"
+        "crates/driver-manim-community/src/main.rs",
+        "crates/driver-manim-community/src/bin/runtime_runner.rs",
+        "crates/native/src/production.rs",
+        "tooling/native_manim_e2e.py",
+        ".github/workflows/native-manim-e2e.yml"
       ],
-      "note": "Native Manim runtime/readback/job evidence depends on a canonical upstream driver."
+      "note": "Native job lifecycle and artifact readback are implemented; exact-SHA real-runtime evidence is produced by the dedicated CI lane."
     },
     {
       "id": "CR-MANIM-08",
       "area": "MANIM",
-      "implementation_assessment": "BLOCKED_UPSTREAM",
-      "verification_status": "BLOCKED_UPSTREAM",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "crates/native/src/multi_renderer.rs",
-        "docs/renderers.md",
-        ".github/workflows/multi-renderer.yml"
+        "crates/manim-profile/src/lib.rs",
+        "crates/driver-manim-community/src/main.rs",
+        "crates/native/src/production.rs",
+        "tooling/native_manim_e2e.py",
+        ".github/workflows/native-manim-e2e.yml"
       ],
-      "note": "Native Manim runtime/readback/job evidence depends on a canonical upstream driver."
+      "note": "Typed plan, fixed-vocabulary compiler, bounded Host runtime and digest-verified MP4 path are implemented; real-runtime CI is the acceptance evidence gate."
     },
     {
       "id": "CR-GRAPH-01",

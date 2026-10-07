@@ -1,24 +1,26 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-06",
+  "generated_at": "2026-10-07",
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "937177b82a403ef9b6284065639d3b47ee5da941",
-      "branch_observed": "feat/motionwright-native-integration",
+      "revision": "8fa191250ae68274182570c65f067f7a60f85625",
+      "branch_observed": "main",
       "native_sdk_package": "semwright-native-sdk",
+      "driver_sdk_package": "semwright-driver-sdk",
       "features_planned": [
         "driver",
         "graph",
         "effects"
       ],
       "license_observed": "MIT OR Apache-2.0",
-      "verification": "git fetch origin feat/motionwright-native-integration && git rev-parse FETCH_HEAD"
+      "verification": "git fetch origin main && test $(git rev-parse origin/main) = 8fa191250ae68274182570c65f067f7a60f85625"
     }
   },
   "notes": [
     "Motionwright is an external consumer. It does not copy Semwright Core crates into this repository.",
-    "The exact revision is used for reproducible CI and must be intentionally updated.",
+    "The exact Semwright 1.0.0 release-preparation revision is used for reproducible CI and must be intentionally updated.",
+    "Motionwright uses Native SDK for application cooperation and public Driver SDK for the bounded Manim Community renderer provider.",
     "Application state, transactions, revisions and receipts remain Motionwright-owned."
   ]
 }

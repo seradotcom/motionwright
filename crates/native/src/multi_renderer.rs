@@ -607,6 +607,12 @@ mod tests {
         assert!(!source.contains("eval("));
         assert!(!source.contains("exec("));
         assert!(!source.contains("__import__"));
+
+        let wire = serde_json::to_value(&plan).unwrap();
+        let driver_plan: motionwright_manim_profile::ManimScenePlan =
+            serde_json::from_value(wire).unwrap();
+        let driver_source = motionwright_manim_profile::compile_manim_python(&driver_plan).unwrap();
+        assert_eq!(source, driver_source);
     }
 
     #[test]

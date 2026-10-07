@@ -1,0 +1,187 @@
+name: Native Manim Community round-trip
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'SOURCE_LOCK.json'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/domain/**'
+      - 'crates/service/**'
+      - 'crates/storage/**'
+      - 'crates/native/**'
+      - 'crates/manim-profile/**'
+      - 'crates/driver-manim-community/**'
+      - 'tooling/native_manim_e2e.py'
+      - '.github/workflows/native-manim-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-manim-roundtrip-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+  SEMWRIGHT_TEST_MANIM_RUNTIME: ${{ runner.temp }}/motionwright-manim-runtime
+
+jobs:
+  native-manim-roundtrip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-manim-1.98.1
+          cache-on-failure: true
+
+      - name: Install sandbox and Manim Community build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap ffmpeg fontconfig libcairo2-dev libpango1.0-dev pkg-config \
+            python3-pip python3-dev
+          bwrap --version
+          ffmpeg -version | head -1
+          python3 --version
+
+      - name: Provision read-only Manim Community 0.21.0 runtime bundle
+        run: |
+          runtime="$SEMWRIGHT_TEST_MANIM_RUNTIME"
+          mkdir -p "$runtime/site-packages"
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-compile \
+            --target "$runtime/site-packages" \
+            'manim==0.21.0'
+          cat > "$runtime/runtime.json" <<'JSON'
+          {"schema":1,"manim_version":"0.21.0"}
+          JSON
+          PYTHONPATH="$runtime/site-packages" \
+            PYTHONNOUSERSITE=1 \
+            PYTHONDONTWRITEBYTECODE=1 \
+            python3 -c 'import manim,sys; assert manim.__version__ == "0.21.0"; print(manim.__version__)'
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"])
+          rows = []
+          for path in sorted((root / "site-packages").rglob("*")):
+              if not path.is_file() or path.is_symlink():
+                  continue
+              rel = path.relative_to(root).as_posix()
+              h = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      h.update(chunk)
+              rows.append((rel, path.stat().st_size, h.hexdigest()))
+          payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()
+          receipt = {
+              "schema": 1,
+              "manim_version": "0.21.0",
+              "files": len(rows),
+              "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+          }
+          Path("verification/native-manim-e2e").mkdir(parents=True, exist_ok=True)
+          Path("verification/native-manim-e2e/runtime-inventory.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-manim-e2e/sandbox-profile.txt"
+
+      - name: Build exact Semwright Broker and sandbox
+        working-directory: _semwright
+        run: |
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
+
+      - name: Build and lint bounded Motionwright Manim provider
+        run: |
+          cargo build --locked -p motionwright-manim-community-driver --bins
+          cargo test --locked -p motionwright-manim-profile -p motionwright-manim-community-driver
+          cargo clippy --locked -p motionwright-manim-profile -p motionwright-manim-community-driver \
+            --all-targets -- -D warnings
+          cargo build --locked -p motionwright-native --example native-manim-e2e
+          cargo test --locked -p motionwright-native multi_renderer::tests -- --nocapture
+          cargo test --locked -p motionwright-native \
+            production::tests::production_allowlist_binds_blender_to_the_native_driver \
+            -- --nocapture
+
+      - name: Realize application-owned scene through real Broker and Manim Driver Host
+        env:
+          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+        run: |
+          python3 tooling/native_manim_e2e.py \
+            | tee verification/native-manim-e2e/run.log
+
+      - name: Verify Manim review evidence
+        run: |
+          test -s "verification/native-manim-e2e/${GITHUB_SHA}/result.json"
+          test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-evidence.json"
+          test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-community.mp4"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path("verification/native-manim-e2e") / os.environ["GITHUB_SHA"]
+          result = json.loads((root / "result.json").read_text())
+          assert result["native_manim_e2e"] == "PASS"
+          assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+          assert len(result["semwright_sha"]) == 40
+          assert result["semwright_version"] == "1.0.0"
+          assert result["manim_version"] == "0.21.0"
+          assert result["mp4"]["width"] == 640
+          assert result["mp4"]["height"] == 360
+          assert result["mp4"]["bytes"] > 0
+          assert len(result["mp4"]["sha256"]) == 64
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: motionwright-native-manim-${{ github.sha }}
+          path: verification/native-manim-e2e
+          if-no-files-found: error
+          retention-days: 14
