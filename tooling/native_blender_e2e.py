@@ -300,23 +300,46 @@ def main() -> None:
 
         try:
             wait_for_socket(daemon, socket, daemon_log)
-            discovered = run_json(
-                [
-                    str(SW_BINS / "semwright"),
-                    "--socket",
-                    str(socket),
-                    "--session-file",
-                    str(session),
-                    "--json",
-                    "capabilities",
-                    "search",
-                    "blender",
-                    "--provider",
-                    "driver:blender",
-                ],
-                env=env,
-            )
-            capabilities = discovered.get("data", {}).get("capabilities", [])
+            capabilities: list[dict] = []
+            offset = 0
+            catalog_revision = None
+            while True:
+                discovered = run_json(
+                    [
+                        str(SW_BINS / "semwright"),
+                        "--socket",
+                        str(socket),
+                        "--session-file",
+                        str(session),
+                        "--json",
+                        "capabilities",
+                        "search",
+                        "",
+                        "--provider",
+                        "driver:blender",
+                        "--limit",
+                        "100",
+                        "--offset",
+                        str(offset),
+                    ],
+                    env=env,
+                )
+                data = discovered.get("data", {})
+                revision = data.get("revision")
+                if catalog_revision is None:
+                    catalog_revision = revision
+                elif revision != catalog_revision:
+                    raise AssertionError("Blender capability catalog changed during discovery")
+                page = data.get("capabilities", [])
+                if not isinstance(page, list):
+                    raise AssertionError("Blender capability discovery returned a malformed page")
+                capabilities.extend(page)
+                next_offset = data.get("next_offset")
+                if next_offset is None:
+                    break
+                if not isinstance(next_offset, int) or next_offset <= offset:
+                    raise AssertionError("Blender capability discovery returned an invalid cursor")
+                offset = next_offset
             ids = {item.get("id") for item in capabilities}
             required = {
                 "driver.blender.semantic.datablock.create",
