@@ -434,7 +434,7 @@ mod tests {
                 fill: Some("#F5B84A".into()),
                 stroke: None,
                 stroke_width: 0.0,
-                font_family: (kind == "text").then(|| "system-ui".into()),
+                font_family: (kind == "text").then(|| "Instrument Sans Variable".into()),
                 font_size: (kind == "text").then_some(48.0),
                 font_weight: (kind == "text").then_some(600),
                 line_height: (kind == "text").then_some(1.0),

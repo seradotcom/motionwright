@@ -1,7 +1,14 @@
-import { CircleCheck, CircleDashed, FileOutput, Plus, Save, Trash2 } from "lucide-react";
+import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { exportCaptionSidecar, exportOtio } from "./api";
-import type { Change, DeliverableProfile, Project } from "./types";
+import { exportCaptionSidecar, exportOtio, renderMotionCanvas } from "./api";
+import type {
+  Change,
+  DeliverableProfile,
+  MotionCanvasArchetype,
+  MotionCanvasNarrativeRole,
+  MotionCanvasRenderEvidence,
+  Project,
+} from "./types";
 
 type Commit = (change: Change) => Promise<void>;
 
@@ -11,6 +18,37 @@ const codecLabel: Record<DeliverableProfile["video_codec"], string> = {
   prores_422_hq: "ProRes 422 HQ",
   vp9: "VP9",
   av1: "AV1",
+};
+
+const narrativeRoles: Array<{ value: MotionCanvasNarrativeRole; label: string }> = [
+  { value: "hook", label: "Hook" },
+  { value: "problem", label: "Problem" },
+  { value: "mechanism", label: "Mechanism" },
+  { value: "evidence", label: "Evidence" },
+  { value: "comparison", label: "Comparison" },
+  { value: "reveal", label: "Reveal" },
+  { value: "payoff", label: "Payoff" },
+  { value: "cta", label: "CTA" },
+];
+
+const motionArchetypes: Array<{ value: MotionCanvasArchetype; label: string }> = [
+  { value: "statement", label: "Statement" },
+  { value: "split_explanation", label: "Split explanation" },
+  { value: "architecture_reveal", label: "Architecture reveal" },
+  { value: "comparison", label: "Comparison" },
+  { value: "metric", label: "Metric" },
+  { value: "timeline", label: "Timeline" },
+  { value: "code_focus", label: "Code focus" },
+  { value: "diagram_build", label: "Diagram build" },
+  { value: "object_spotlight", label: "Object spotlight" },
+  { value: "evidence_frame", label: "Evidence frame" },
+  { value: "product_proof", label: "Product proof" },
+  { value: "endcard", label: "End card" },
+];
+
+type SceneIntentDraft = {
+  role: MotionCanvasNarrativeRole | "";
+  archetype: MotionCanvasArchetype | "";
 };
 
 function freshProfile(index: number): DeliverableProfile {
@@ -45,7 +83,12 @@ export default function DeliveryProfiles({
   const [sidecarPath, setSidecarPath] = useState("");
   const [otioPath, setOtioPath] = useState("");
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "new" | null>(null);
+  const [frameRate, setFrameRate] = useState("30/1");
+  const fontFamily = "Instrument Sans Variable";
+  const monoFontFamily = "IBM Plex Mono";
+  const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
+  const [renderEvidence, setRenderEvidence] = useState<MotionCanvasRenderEvidence | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "new" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +98,23 @@ export default function DeliveryProfiles({
     setDraft(current ? structuredClone(current) : null);
     setSidecarPath("");
     setOtioLosses([]);
-  }, [project.revision, selectedId]);
+    setRenderEvidence((currentEvidence) =>
+      currentEvidence?.generation === project.generation && currentEvidence.revision === project.revision
+        ? currentEvidence
+        : null,
+    );
+  }, [project.generation, project.revision, selectedId]);
+
+  const motionScenes = useMemo(
+    () => project.scenes.filter((scene) => scene.renderer === "motion-canvas"),
+    [project.scenes],
+  );
+
+  useEffect(() => {
+    setSceneIntents((current) => Object.fromEntries(
+      motionScenes.map((scene) => [scene.id, current[scene.id] ?? { role: "", archetype: "" }]),
+    ));
+  }, [motionScenes]);
 
   const unknownTimings = useMemo(
     () => project.audio.transcript.filter((segment) => segment.alignment.kind === "unknown").length,
@@ -66,6 +125,28 @@ export default function DeliveryProfiles({
     draft?.captions &&
     project.audio.transcript.length > 0 &&
     unknownTimings === 0,
+  );
+  const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) => {
+    const intent = sceneIntents[scene.id];
+    return Boolean(intent?.role && intent?.archetype);
+  });
+  const renderProfileCompatible = Boolean(
+    selected && selected.width * 9 === selected.height * 16,
+  );
+  const nativePaletteReady = useMemo(() => {
+    const names = new Set(project.visual_language.palette.map((token) => token.name.toLowerCase()));
+    return (names.has("text") || names.has("ink")) &&
+      (names.has("background") || names.has("surface"));
+  }, [project.visual_language.palette]);
+  const renderReady = Boolean(
+    desktopMode &&
+    selected &&
+    !dirty &&
+    renderProfileCompatible &&
+    renderIntentsComplete &&
+    nativePaletteReady &&
+    fontFamily.trim() &&
+    monoFontFamily.trim(),
   );
 
   const run = async (kind: typeof busy, operation: () => Promise<void>) => {
@@ -115,6 +196,40 @@ export default function DeliveryProfiles({
       const result = await exportOtio(project, otioPath.trim());
       setOtioLosses(result.loss_report);
       setMessage("OTIO cut written · " + result.scene_count + " scenes · " + result.path);
+    });
+  };
+
+  const startNativeRender = () => {
+    if (!selected || !renderReady) return;
+    void run("render", async () => {
+      const [num, den] = frameRate.split("/").map(Number);
+      if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
+        throw new Error("Choose a valid canonical frame rate.");
+      }
+      const intents = motionScenes.map((scene) => {
+        const intent = sceneIntents[scene.id];
+        if (!intent?.role || !intent.archetype) {
+          throw new Error("Every Motion Canvas scene requires an explicit narrative role and archetype.");
+        }
+        return {
+          scene_id: scene.id,
+          role: intent.role,
+          archetype: intent.archetype,
+        };
+      });
+      const result = await renderMotionCanvas(project, selected.id, {
+        frame_rate: { num, den },
+        font_family: fontFamily.trim(),
+        mono_font_family: monoFontFamily.trim(),
+        scene_intents: intents,
+      });
+      setRenderEvidence(result);
+      const frames = result.segments.reduce((sum, segment) => sum + segment.frame_count, 0);
+      setMessage(
+        "Native Motion Canvas evidence recorded · " + result.segments.length +
+        " segment" + (result.segments.length === 1 ? "" : "s") +
+        " · " + frames + " verified frames · revision r" + result.revision,
+      );
     });
   };
 
@@ -223,6 +338,132 @@ export default function DeliveryProfiles({
                 <Trash2 size={14} /> Remove
               </button>
             </div>
+
+            <section className="caption-export-panel" aria-label="Native Motion Canvas production">
+              <header>
+                <div>
+                  <strong>Native Motion Canvas production</strong>
+                  <span>Canonical Film → Semwright plan/apply → Driver Host render → native verification.</span>
+                </div>
+                <span className="status-pill status-current">SEMWRIGHT NATIVE</span>
+              </header>
+
+              <div className="delivery-field-grid">
+                <label>
+                  <span className="field-label">Frame rate</span>
+                  <select value={frameRate} onChange={(event) => setFrameRate(event.target.value)} disabled={busy !== null}>
+                    <option value="24/1">24 fps</option>
+                    <option value="25/1">25 fps</option>
+                    <option value="30000/1001">29.97 fps</option>
+                    <option value="30/1">30 fps</option>
+                    <option value="60000/1001">59.94 fps</option>
+                    <option value="60/1">60 fps</option>
+                  </select>
+                </label>
+                <label>
+                  <span className="field-label">Primary font</span>
+                  <input value={fontFamily} readOnly aria-readonly="true" />
+                </label>
+                <label>
+                  <span className="field-label">Mono font</span>
+                  <input value={monoFontFamily} readOnly aria-readonly="true" />
+                </label>
+              </div>
+
+              <div className="portable-project">
+                <header className="portable-heading">
+                  <div>
+                    <strong>Scene intent</strong>
+                    <span>Role and visual archetype are explicit authoring inputs; Motionwright does not infer them at render time.</span>
+                  </div>
+                  <span className={renderIntentsComplete ? "status-pill status-current" : "status-pill status-unknown"}>
+                    {renderIntentsComplete ? "COMPLETE" : "REQUIRED"}
+                  </span>
+                </header>
+                {motionScenes.map((scene) => {
+                  const intent = sceneIntents[scene.id] ?? { role: "", archetype: "" };
+                  return (
+                    <div className="portable-operation" key={scene.id}>
+                      <div className="portable-operation-copy">
+                        <strong>{scene.name}</strong>
+                        <span className="mono">scene:{scene.id.slice(0, 8)}</span>
+                      </div>
+                      <label>
+                        <span className="field-label">Narrative role</span>
+                        <select
+                          aria-label={scene.name + " narrative role"}
+                          value={intent.role}
+                          disabled={busy !== null}
+                          onChange={(event) => setSceneIntents((current) => ({
+                            ...current,
+                            [scene.id]: {
+                              ...(current[scene.id] ?? { role: "", archetype: "" }),
+                              role: event.target.value as MotionCanvasNarrativeRole | "",
+                            },
+                          }))}
+                        >
+                          <option value="">Choose role…</option>
+                          {narrativeRoles.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        <span className="field-label">Archetype</span>
+                        <select
+                          aria-label={scene.name + " motion archetype"}
+                          value={intent.archetype}
+                          disabled={busy !== null}
+                          onChange={(event) => setSceneIntents((current) => ({
+                            ...current,
+                            [scene.id]: {
+                              ...(current[scene.id] ?? { role: "", archetype: "" }),
+                              archetype: event.target.value as MotionCanvasArchetype | "",
+                            },
+                          }))}
+                        >
+                          <option value="">Choose archetype…</option>
+                          {motionArchetypes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="delivery-editor-actions">
+                <button
+                  type="button"
+                  className="button button-primary"
+                  disabled={!renderReady || busy !== null}
+                  onClick={startNativeRender}
+                >
+                  <Play size={14} /> {busy === "render" ? "Rendering…" : "Render native segments"}
+                </button>
+              </div>
+
+              {!desktopMode && (
+                <div className="delivery-truth-note"><CircleDashed size={14} /> Native production requires the desktop runtime and an owner-provisioned Semwright connection.</div>
+              )}
+              {dirty && (
+                <div className="delivery-truth-note"><CircleDashed size={14} /> Save the selected output profile before rendering it.</div>
+              )}
+              {!renderProfileCompatible && selected && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> Canonical Film currently requires a 16:9 profile; use a reframed branch for other aspect ratios.</div>
+              )}
+              {!nativePaletteReady && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> Native Motion Canvas production requires explicit ink/text and surface/background tokens in Visual language.</div>
+              )}
+              {motionScenes.length === 0 && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> This revision has no scenes assigned to Motion Canvas.</div>
+              )}
+              {renderEvidence && (
+                <div className="portable-plan" aria-label="Native render evidence">
+                  <div><span>Revision</span><strong className="mono">r{renderEvidence.revision}</strong></div>
+                  <div><span>Segments</span><strong>{renderEvidence.segments.length}</strong></div>
+                  <div><span>Frames</span><strong>{renderEvidence.segments.reduce((sum, segment) => sum + segment.frame_count, 0)}</strong></div>
+                  <div><span>Verification</span><strong>NATIVE · PASS</strong></div>
+                </div>
+              )}
+            </section>
 
             <section className="caption-export-panel" aria-label="Caption sidecar export">
               <header>

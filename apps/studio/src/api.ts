@@ -10,6 +10,8 @@ import type {
   ModelContextDisclosure,
   ModelRequestDraft,
   ModelRequestPreflight,
+  MotionCanvasFilmOptions,
+  MotionCanvasRenderEvidence,
   OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
@@ -406,6 +408,26 @@ export async function productionJobs(
     request: {
       project_id: project.id,
       limit,
+    },
+  });
+}
+
+export async function renderMotionCanvas(
+  project: Project,
+  deliverableId: string,
+  options: MotionCanvasFilmOptions,
+): Promise<MotionCanvasRenderEvidence> {
+  if (!isTauri()) {
+    throw new Error("Canonical Motion Canvas production requires the Motionwright desktop runtime.");
+  }
+  return invoke<MotionCanvasRenderEvidence>("render_motion_canvas", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      request_id: crypto.randomUUID(),
+      deliverable_id: deliverableId,
+      options,
     },
   });
 }

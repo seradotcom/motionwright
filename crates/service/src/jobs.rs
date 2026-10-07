@@ -135,7 +135,7 @@ fn state_from_data(value: &Value) -> Option<ProductionJobState> {
         .or_else(|| value.pointer("/job/state").and_then(Value::as_str))?;
     match state {
         "queued" => Some(ProductionJobState::Queued),
-        "starting" | "running" => Some(ProductionJobState::Running),
+        "starting" | "rendering" | "running" => Some(ProductionJobState::Running),
         "succeeded" | "completed" => Some(ProductionJobState::Succeeded),
         "failed" => Some(ProductionJobState::Failed),
         "cancelled" | "canceled" => Some(ProductionJobState::Cancelled),

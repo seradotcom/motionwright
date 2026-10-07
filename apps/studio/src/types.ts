@@ -288,6 +288,76 @@ export interface ProductionJobProjection {
   last_observation: ProductionObservationState;
 }
 
+export type MotionCanvasNarrativeRole =
+  | "hook" | "problem" | "mechanism" | "evidence"
+  | "comparison" | "reveal" | "payoff" | "cta";
+export type MotionCanvasArchetype =
+  | "statement" | "split_explanation" | "architecture_reveal" | "comparison"
+  | "metric" | "timeline" | "code_focus" | "diagram_build"
+  | "object_spotlight" | "evidence_frame" | "product_proof" | "endcard";
+export interface MotionCanvasSceneIntent {
+  scene_id: string;
+  role: MotionCanvasNarrativeRole;
+  archetype: MotionCanvasArchetype;
+}
+export interface MotionCanvasFilmOptions {
+  frame_rate: { num: number; den: number };
+  font_family: string;
+  mono_font_family: string;
+  scene_intents: MotionCanvasSceneIntent[];
+}
+export interface MotionCanvasSegmentEvidence {
+  segment_id: string;
+  scene_ids: string[];
+  frame_count: number;
+  plan_ref: string;
+  fingerprint: string;
+  job_ref: string;
+  artifact: Record<string, unknown>;
+  verification: Record<string, unknown>;
+}
+export interface MotionCanvasRenderEvidence {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  frame_rate: { num: number; den: number };
+  segments: MotionCanvasSegmentEvidence[];
+}
+
+export interface MltAudioArtifact {
+  relative_path: string;
+  sha256: string;
+  sample_rate: number;
+  channels: number;
+}
+
+export interface AvSyncCue {
+  id: string;
+  expected_us: number;
+}
+
+export interface AvSyncSpec {
+  window_us: number;
+  full_scan: boolean;
+  cues: AvSyncCue[];
+}
+
+export interface MltAvMasterEvidence {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  motion_segment_id: string;
+  frame_rate: { num: number; den: number };
+  frame_count: number;
+  mezzanine: Record<string, unknown>;
+  source_audio: MltAudioArtifact;
+  master: Record<string, unknown>;
+  decoded_audio: Record<string, unknown>;
+  sync: Record<string, unknown> | null;
+}
+
 export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";
 export type WorkflowAction =
   | "record_start"

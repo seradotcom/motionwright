@@ -32,7 +32,7 @@ const node = (
     fill: kind === "text" ? "#F5F5F2" : "#1D242C",
     stroke: kind === "text" ? null : "#5A6570",
     stroke_width: kind === "text" ? 0 : 1,
-    font_family: kind === "text" ? "system-ui" : null,
+    font_family: kind === "text" ? "Instrument Sans Variable" : null,
     font_size: kind === "text" ? 72 : null,
     font_weight: kind === "text" ? 700 : null,
     line_height: kind === "text" ? 1.05 : null,
@@ -254,7 +254,7 @@ export const fixtureBootstrap: Bootstrap = {
   project: structuredClone(fixtureProject),
   native_sdk: {
     application: "motionwright",
-    pinned_revision: "4d291de26724810017ce7b6d185326514cb79fa6",
+    pinned_revision: "b6bbc007ea45283917a0c857f6e918566e401523",
     mode: "browser-demo"
   }
 };

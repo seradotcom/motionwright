@@ -102,7 +102,7 @@ function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode 
       fill: kind === "text" || kind === "group" ? null : "#1D242C",
       stroke: kind === "text" ? null : "#5A6570",
       stroke_width: kind === "text" ? 0 : 1,
-      font_family: kind === "text" ? "system-ui" : null,
+      font_family: kind === "text" ? "Instrument Sans Variable" : null,
       font_size: kind === "text" ? 64 : null,
       font_weight: kind === "text" ? 700 : null,
       line_height: kind === "text" ? 1.05 : null,

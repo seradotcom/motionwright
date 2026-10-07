@@ -19,6 +19,9 @@ const CANVAS_HEIGHT: f64 = 1080.0;
 const MAX_FILM_SECONDS: i64 = 600;
 const MAX_SEQUENCES: usize = 32;
 
+pub const MOTION_CANVAS_FONT_FAMILY: &str = "Instrument Sans Variable";
+pub const MOTION_CANVAS_MONO_FONT_FAMILY: &str = "IBM Plex Mono";
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidArgument, message)
 }
@@ -69,6 +72,13 @@ impl FilmBuildOptions {
             .map_err(|error| contract("Film frame rate is invalid", error))?;
         if self.font_family.trim().is_empty() || self.mono_font_family.trim().is_empty() {
             return Err(invalid("Film fonts must be explicit"));
+        }
+        if self.font_family != MOTION_CANVAS_FONT_FAMILY
+            || self.mono_font_family != MOTION_CANVAS_MONO_FONT_FAMILY
+        {
+            return Err(unsupported(format!(
+                "Pinned Motion Canvas production requires bundled fonts {MOTION_CANVAS_FONT_FAMILY:?} and {MOTION_CANVAS_MONO_FONT_FAMILY:?}"
+            )));
         }
         let mut map = HashMap::new();
         for intent in &self.scene_intents {
@@ -478,6 +488,21 @@ fn output_profile(
     ))
 }
 
+fn visual_token(project: &Project, names: &[&str], purpose: &str) -> NativeResult<String> {
+    project
+        .visual_language
+        .palette
+        .iter()
+        .find(|token| names.iter().any(|name| token.name.eq_ignore_ascii_case(name)))
+        .map(|token| token.value.clone())
+        .ok_or_else(|| {
+            invalid(format!(
+                "Visual language requires an explicit {purpose} palette token ({}) before native Motion Canvas production",
+                names.join(" or ")
+            ))
+        })
+}
+
 fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
     if project.assets.len() > 128 {
         return Err(unsupported(
@@ -634,7 +659,16 @@ fn build_segment(
                 permitted_fallbacks: vec![],
             },
             type_scale,
-            colors: BTreeMap::new(),
+            colors: BTreeMap::from([
+                (
+                    "text".into(),
+                    visual_token(project, &["text", "ink"], "text/ink")?,
+                ),
+                (
+                    "background".into(),
+                    visual_token(project, &["background", "surface"], "background/surface")?,
+                ),
+            ]),
             spacing: BTreeMap::new(),
             stroke,
             corner_radius: 0.0,
@@ -741,7 +775,7 @@ mod tests {
                     Some("#5A6570".into())
                 },
                 stroke_width: if kind == "text" { 0.0 } else { 1.0 },
-                font_family: (kind == "text").then(|| "system-ui".into()),
+                font_family: (kind == "text").then(|| "Instrument Sans Variable".into()),
                 font_size: (kind == "text").then_some(64.0),
                 font_weight: (kind == "text").then_some(700),
                 line_height: (kind == "text").then_some(1.05),
@@ -796,8 +830,8 @@ mod tests {
             .unwrap();
         let options = FilmBuildOptions {
             frame_rate: Rate::new(30, 1).unwrap(),
-            font_family: "system-ui".into(),
-            mono_font_family: "monospace".into(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
             scene_intents: project
                 .scenes
                 .iter()
@@ -814,10 +848,43 @@ mod tests {
         assert_eq!(segments[0].frame_count, 90);
         assert_eq!(segments[0].film.sequences.len(), 2);
         assert_eq!(
+            segments[0].film.editorial.font.family,
+            MOTION_CANVAS_FONT_FAMILY
+        );
+        assert_eq!(
+            segments[0].film.editorial.mono_font.family,
+            MOTION_CANVAS_MONO_FONT_FAMILY
+        );
+        assert_eq!(segments[0].film.editorial.colors["text"], "#F2F4F3");
+        assert_eq!(segments[0].film.editorial.colors["background"], "#0F1216");
+        assert_eq!(
             segments[0].film.timing.duration,
             Rational::new(3, 1).unwrap()
         );
         assert!(realize(&segments[0].film).is_ok());
+    }
+
+    #[test]
+    fn unsupported_runtime_fonts_fail_before_driver_dispatch() {
+        let project = fixture_project();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: "system-ui".into(),
+            mono_font_family: "monospace".into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("bundled fonts"));
     }
 
     #[test]
@@ -833,8 +900,8 @@ mod tests {
         let master = project.deliverables[0].id;
         let options = FilmBuildOptions {
             frame_rate: Rate::new(30, 1).unwrap(),
-            font_family: "system-ui".into(),
-            mono_font_family: "monospace".into(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
             scene_intents: vec![SceneFilmIntent {
                 scene_id: project.scenes[0].id,
                 role: NarrativeRole::Hook,
@@ -859,8 +926,8 @@ mod tests {
         });
         let options = FilmBuildOptions {
             frame_rate: Rate::new(30, 1).unwrap(),
-            font_family: "system-ui".into(),
-            mono_font_family: "monospace".into(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
             scene_intents: project
                 .scenes
                 .iter()
@@ -883,8 +950,8 @@ mod tests {
         project.scenes[0].nodes[0].opacity = 0.5;
         let options = FilmBuildOptions {
             frame_rate: Rate::new(30, 1).unwrap(),
-            font_family: "system-ui".into(),
-            mono_font_family: "monospace".into(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
             scene_intents: project
                 .scenes
                 .iter()

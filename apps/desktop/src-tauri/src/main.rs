@@ -4,7 +4,10 @@ use motionwright_domain::{
 };
 use motionwright_native::{
     build_application,
-    production::{ProductionClient, ProductionConnection},
+    film::FilmBuildOptions,
+    production::{
+        MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
+    },
 };
 use motionwright_service::{
     ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
@@ -16,7 +19,7 @@ use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-const SEMWRIGHT_REVISION: &str = "4d291de26724810017ce7b6d185326514cb79fa6";
+const SEMWRIGHT_REVISION: &str = "b6bbc007ea45283917a0c857f6e918566e401523";
 
 #[derive(Clone)]
 struct AppState {
@@ -56,6 +59,16 @@ struct HistoryRequest {
 struct ProductionJobsRequest {
     project_id: Uuid,
     limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct MotionCanvasRenderRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    request_id: String,
+    deliverable_id: Uuid,
+    options: FilmBuildOptions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,6 +426,43 @@ fn production_jobs(
         .service
         .production_jobs(request.project_id, request.limit)
         .map_err(sanitized)
+}
+
+#[tauri::command]
+async fn render_motion_canvas(
+    state: State<'_, AppState>,
+    request: MotionCanvasRenderRequest,
+) -> Result<MotionCanvasRenderEvidence, String> {
+    let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
+        .ok_or_else(|| "Canonical Semwright production is not configured.".to_string())?;
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let expected = RevisionStamp {
+        resource: project.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+        .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
+    let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
+        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    coordinator
+        .render_motion_canvas_segments(
+            request.project_id,
+            &expected,
+            &request.request_id,
+            request.deliverable_id,
+            &request.options,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "Canonical Motion Canvas production was blocked: {}",
+                error.message
+            )
+        })
 }
 
 #[tauri::command]
@@ -874,6 +924,7 @@ fn main() {
             workflow_overview,
             workflow_action,
             production_jobs,
+            render_motion_canvas,
             import_asset_file,
             import_voice_file,
             export_project_bundle,
