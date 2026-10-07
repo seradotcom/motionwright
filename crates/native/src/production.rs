@@ -1264,16 +1264,6 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let collection_ref = self
-            .blender_ref(
-                project_id,
-                expected,
-                &format!("{request_id}:collection-ref"),
-                "collections",
-                &plan.collection_name,
-            )
-            .await?;
-
         let mut objects = Vec::with_capacity(plan.meshes.len());
         for (index, mesh) in plan.meshes.iter().enumerate() {
             let mesh_data = self
@@ -1322,6 +1312,18 @@ impl ProductionCoordinator {
                     &mesh.name,
                 )
                 .await?;
+            // Blender typed refs are generation-bound. Geometry initialization
+            // advances the semantic generation, so refresh the collection ref
+            // in the same generation used for object creation.
+            let current_collection_ref = self
+                .blender_ref(
+                    project_id,
+                    expected,
+                    &format!("{request_id}:mesh:{index}:collection-ref"),
+                    "collections",
+                    &plan.collection_name,
+                )
+                .await?;
             let object = self
                 .execute(
                     project_id,
@@ -1331,7 +1333,7 @@ impl ProductionCoordinator {
                     json!({
                         "name": mesh.name,
                         "data_ref": current_mesh_ref,
-                        "collection_ref": collection_ref
+                        "collection_ref": current_collection_ref
                     }),
                     true,
                 )
