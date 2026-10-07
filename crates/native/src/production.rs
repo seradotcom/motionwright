@@ -1749,20 +1749,6 @@ impl ProductionCoordinator {
     }
 }
 
-fn response_named_ref(value: &Value, name: &str) -> NativeResult<Value> {
-    value
-        .pointer("/result/data/items")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .find(|item| item.get("name").and_then(Value::as_str) == Some(name))
-        })
-        .and_then(|item| item.get("ref"))
-        .cloned()
-        .ok_or_else(|| backend("Blender semantic lookup returned no exact typed ref"))
-}
-
 fn storage_error(error: motionwright_storage::StorageError) -> Error {
     match error {
         motionwright_storage::StorageError::NotFound => {
@@ -2039,31 +2025,6 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(expected_authority("workflow.suggestion.dismiss").is_none());
         assert!(WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.replay"));
         assert!(!WORKFLOW_MUTATING_COMMANDS.contains(&"workflow.proposal.plan"));
-    }
-
-    #[test]
-    fn blender_response_refs_are_extracted_only_from_exact_lookup_results() {
-        let value = json!({
-            "result": {
-                "data": {
-                    "items": [{
-                        "name": "Mesh",
-                        "ref": {
-                            "root": "meshes",
-                            "name": "Mesh",
-                            "path": [],
-                            "generation": 1
-                        }
-                    }]
-                }
-            }
-        });
-        assert_eq!(
-            response_named_ref(&value, "Mesh").unwrap()["root"],
-            "meshes"
-        );
-        assert!(response_named_ref(&value, "Other").is_err());
-        assert!(response_named_ref(&json!({"result":{"data":{}}}), "Mesh").is_err());
     }
 
     #[cfg(unix)]

@@ -48,17 +48,6 @@ fn renderer_scene<'a>(
     Ok(scene)
 }
 
-fn project_xy(node: &CanvasNode, x: f64, y: f64) -> (f64, f64) {
-    let cx = node.x + node.width / 2.0;
-    let cy = node.y + node.height / 2.0;
-    let radians = node.rotation_deg.to_radians();
-    let dx = x - cx;
-    let dy = y - cy;
-    let rx = cx + dx * radians.cos() - dy * radians.sin();
-    let ry = cy + dx * radians.sin() + dy * radians.cos();
-    (rx, ry)
-}
-
 fn ensure_flat_semantics(node: &CanvasNode) -> NativeResult<()> {
     if !node.keyframes.is_empty() {
         return Err(unsupported(format!(
