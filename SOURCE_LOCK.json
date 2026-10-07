@@ -4,8 +4,8 @@
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "199b7bd1f9dda3e1784c6e7833d48ca5d1ad1b0d",
-      "branch_observed": "fix/motion-canvas-first-frame-observation",
+      "revision": "b6bbc007ea45283917a0c857f6e918566e401523",
+      "branch_observed": "fix/motionwright-native-observation",
       "native_sdk_package": "semwright-native-sdk",
       "features_planned": [
         "driver",
@@ -13,7 +13,7 @@
         "effects"
       ],
       "license_observed": "MIT OR Apache-2.0",
-      "verification": "git fetch origin fix/motion-canvas-first-frame-observation && git rev-parse FETCH_HEAD"
+      "verification": "git fetch origin fix/motionwright-native-observation && git rev-parse FETCH_HEAD"
     }
   },
   "notes": [
