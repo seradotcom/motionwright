@@ -20,9 +20,12 @@ import {
   MoreHorizontal,
   MoveRight,
   PanelLeftClose,
+  Pause,
   Play,
   Plus,
   RefreshCw,
+  SkipBack,
+  SkipForward,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -136,6 +139,17 @@ function formatTime(value: number) {
   const secs = Math.floor(value % 60);
   const frames = Math.floor((value % 1) * 24);
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}:${String(frames).padStart(2, "0")}`;
+}
+
+function projectTimelineDuration(project: Project) {
+  return Math.max(
+    1,
+    ...project.scenes.map((scene) => seconds(scene.start) + seconds(scene.duration)),
+    ...project.markers.map((marker) => seconds(marker.at)),
+    ...project.audio.voice_tracks.map((track) => seconds(track.measured_duration)),
+    ...project.audio.transcript.map((segment) => seconds(segment.end)),
+    ...project.audio.cues.map((cue) => seconds(cue.at)),
+  );
 }
 
 function stateLabel(state: ProjectState) {
@@ -1080,6 +1094,9 @@ function Timeline({
   playhead,
   setPlayhead,
   commit,
+  playing,
+  togglePlayback,
+  stepFrame,
 }: {
   project: Project;
   selectedSceneId: string | null;
@@ -1087,21 +1104,54 @@ function Timeline({
   playhead: number;
   setPlayhead: (value: number) => void;
   commit: (change: Change) => Promise<void>;
+  playing: boolean;
+  togglePlayback: () => void;
+  stepFrame: (direction: -1 | 1) => void;
 }) {
-  const duration = Math.max(
-    1,
-    ...project.scenes.map((scene) => seconds(scene.start) + seconds(scene.duration)),
-    ...project.markers.map((marker) => seconds(marker.at)),
-    ...project.audio.voice_tracks.map((track) => seconds(track.measured_duration)),
-    ...project.audio.transcript.map((segment) => seconds(segment.end)),
-    ...project.audio.cues.map((cue) => seconds(cue.at)),
-  );
+  const [selection, setSelection] = useState<{
+    kind: "transcript" | "beat" | "cue" | "marker";
+    id: string;
+    label: string;
+  } | null>(null);
+  const duration = projectTimelineDuration(project);
   const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
   const measuredVoice = project.audio.voice_tracks;
   const measuredAssetIds = new Set(measuredVoice.map((track) => track.asset_id));
   const pendingAudio = project.assets.filter(
     (asset) => asset.media_type.startsWith("audio/") && !measuredAssetIds.has(asset.id),
   );
+  const beatEntries = project.scenes.flatMap((scene) =>
+    scene.beats.map((beat) => {
+      const sceneStart = seconds(scene.start);
+      const sceneEnd = sceneStart + seconds(scene.duration);
+      const start = Math.min(sceneEnd, sceneStart + seconds(beat.start));
+      const end = Math.min(sceneEnd, start + seconds(beat.duration));
+      return { scene, beat, start, end };
+    }),
+  );
+
+  const sceneAtTime = (time: number) =>
+    project.scenes.find((scene) => {
+      const start = seconds(scene.start);
+      const end = start + seconds(scene.duration);
+      return time >= start && time < end;
+    }) ?? null;
+
+  const selectAt = (
+    time: number,
+    nextSelection: { kind: "transcript" | "beat" | "cue" | "marker"; id: string; label: string },
+    sceneId?: string,
+  ) => {
+    const bounded = Math.max(0, Math.min(duration, time));
+    setPlayhead(bounded);
+    setSelection(nextSelection);
+    const targetScene = sceneId
+      ? project.scenes.find((scene) => scene.id === sceneId) ?? null
+      : sceneAtTime(bounded);
+    if (targetScene && targetScene.id !== selectedSceneId) {
+      selectScene(targetScene.id, false);
+    }
+  };
 
   return (
     <section className="timeline-panel" aria-label="Timeline">
@@ -1111,7 +1161,29 @@ function Timeline({
           Timeline
           <span className="muted">shared clock</span>
         </div>
+        <div className="timeline-selection-context" aria-live="polite">
+          {selection ? (
+            <>
+              <span>{selection.kind}</span>
+              <strong>{selection.label}</strong>
+            </>
+          ) : (
+            <>
+              <span>context</span>
+              <strong>{project.scenes.find((scene) => scene.id === selectedSceneId)?.name ?? "project"}</strong>
+            </>
+          )}
+        </div>
         <div className="timeline-transport">
+          <IconButton label="Step back one frame" onClick={() => stepFrame(-1)}>
+            <SkipBack size={13} />
+          </IconButton>
+          <IconButton label={playing ? "Pause design preview" : "Play design preview"} onClick={togglePlayback}>
+            {playing ? <Pause size={13} /> : <Play size={13} />}
+          </IconButton>
+          <IconButton label="Step forward one frame" onClick={() => stepFrame(1)}>
+            <SkipForward size={13} />
+          </IconButton>
           <button
             type="button"
             className="button compact"
@@ -1130,8 +1202,10 @@ function Timeline({
         <div className="track-labels" aria-hidden="true">
           <div className="ruler-label">time</div>
           <div><span>VO</span><span className="track-type">audio</span></div>
+          <div><span>Transcript</span><span className="track-type">text</span></div>
+          <div><span>Beats</span><span className="track-type">story</span></div>
           <div><span>Scenes</span><span className="track-type">semantic</span></div>
-          <div><span>Markers</span><span className="track-type">review</span></div>
+          <div><span>Review</span><span className="track-type">cues · markers</span></div>
         </div>
         <div
           className="track-area"
@@ -1139,12 +1213,9 @@ function Timeline({
             const bounds = event.currentTarget.getBoundingClientRect();
             const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
             const nextPlayhead = ratio * duration;
+            setSelection(null);
             setPlayhead(nextPlayhead);
-            const sceneAtPlayhead = project.scenes.find((scene) => {
-              const start = seconds(scene.start);
-              const end = start + seconds(scene.duration);
-              return nextPlayhead >= start && nextPlayhead < end;
-            });
+            const sceneAtPlayhead = sceneAtTime(nextPlayhead);
             if (sceneAtPlayhead && sceneAtPlayhead.id !== selectedSceneId) {
               selectScene(sceneAtPlayhead.id, false);
             }
@@ -1182,6 +1253,66 @@ function Timeline({
               </div>
             )}
           </div>
+          <div className="track transcript-track">
+            {project.audio.transcript.length === 0 ? (
+              <span className="timeline-empty-lane">No measured or manually aligned transcript</span>
+            ) : (
+              project.audio.transcript.map((segment) => {
+                const start = seconds(segment.start);
+                const end = seconds(segment.end);
+                const selected = selection?.kind === "transcript" && selection.id === segment.id;
+                return (
+                  <button
+                    key={segment.id}
+                    type="button"
+                    className={"timeline-transcript" + (selected ? " selected" : "")}
+                    style={{
+                      left: (start / duration) * 100 + "%",
+                      width: (Math.max(0.1, end - start) / duration) * 100 + "%",
+                    }}
+                    aria-label={"Transcript: " + segment.text}
+                    aria-pressed={selected}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => selectAt(start, { kind: "transcript", id: segment.id, label: segment.text })}
+                    title={segment.text}
+                  >
+                    {segment.text}
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <div className="track beat-track">
+            {beatEntries.length === 0 ? (
+              <span className="timeline-empty-lane">No scene beats authored</span>
+            ) : (
+              beatEntries.map(({ scene, beat, start, end }) => {
+                const selected = selection?.kind === "beat" && selection.id === beat.id;
+                return (
+                  <button
+                    key={beat.id}
+                    type="button"
+                    className={"timeline-beat" + (selected ? " selected" : "")}
+                    style={{
+                      left: (start / duration) * 100 + "%",
+                      width: (Math.max(0.1, end - start) / duration) * 100 + "%",
+                    }}
+                    aria-label={"Beat: " + beat.label}
+                    aria-pressed={selected}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => selectAt(
+                      start,
+                      { kind: "beat", id: beat.id, label: beat.label },
+                      scene.id,
+                    )}
+                    title={beat.objective}
+                  >
+                    <span>{beat.label}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
           <div className="track scene-track">
             {project.scenes.map((scene, index) => (
               <button
@@ -1193,25 +1324,57 @@ function Timeline({
                   width: (seconds(scene.duration) / duration) * 100 + "%",
                 }}
                 onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => selectScene(scene.id)}
+                onClick={() => {
+                  setSelection(null);
+                  selectScene(scene.id);
+                }}
               >
                 <span>{scene.name}</span>
                 <small>{rendererLabels[scene.renderer]}</small>
               </button>
             ))}
           </div>
-          <div className="track marker-track">
-            {project.markers.map((marker) => (
-              <span
-                key={marker.id}
-                className="timeline-marker"
-                style={{ left: (seconds(marker.at) / duration) * 100 + "%" }}
-                title={marker.label}
-              >
-                <i />
-                <b>{marker.label}</b>
-              </span>
-            ))}
+          <div className="track review-track">
+            {project.audio.cues.map((cue) => {
+              const at = seconds(cue.at);
+              const selected = selection?.kind === "cue" && selection.id === cue.id;
+              return (
+                <button
+                  key={cue.id}
+                  type="button"
+                  className={"timeline-cue" + (selected ? " selected" : "")}
+                  style={{ left: (at / duration) * 100 + "%" }}
+                  aria-label={"Cue: " + cue.label}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => selectAt(at, { kind: "cue", id: cue.id, label: cue.label })}
+                  title={cue.label + " · " + cue.evidence}
+                >
+                  <i />
+                  <b>{cue.label}</b>
+                </button>
+              );
+            })}
+            {project.markers.map((marker) => {
+              const at = seconds(marker.at);
+              const selected = selection?.kind === "marker" && selection.id === marker.id;
+              return (
+                <button
+                  key={marker.id}
+                  type="button"
+                  className={"timeline-marker" + (selected ? " selected" : "")}
+                  style={{ left: (at / duration) * 100 + "%" }}
+                  aria-label={"Marker: " + marker.label}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => selectAt(at, { kind: "marker", id: marker.id, label: marker.label })}
+                  title={marker.label}
+                >
+                  <i />
+                  <b>{marker.label}</b>
+                </button>
+              );
+            })}
           </div>
           <div className="splice-line" style={{ left: (playhead / duration) * 100 + "%" }}>
             <span />
@@ -1221,12 +1384,12 @@ function Timeline({
     </section>
   );
 }
-
 export default function App() {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -1282,6 +1445,70 @@ export default function App() {
     const scene = project?.scenes.find((candidate) => candidate.id === id);
     if (scene) setPlayhead(seconds(scene.start));
   }, [project]);
+
+  const stepFrame = useCallback((direction: -1 | 1) => {
+    if (!project) return;
+    setPlaying(false);
+    const next = Math.max(
+      0,
+      Math.min(projectTimelineDuration(project), playhead + direction * (1 / 24)),
+    );
+    setPlayhead(next);
+    const scene = project.scenes.find((candidate) => {
+      const start = seconds(candidate.start);
+      return next >= start && next < start + seconds(candidate.duration);
+    });
+    if (scene) setSelectedSceneId(scene.id);
+  }, [playhead, project]);
+
+  useEffect(() => {
+    if (!playing || !project) return;
+    const duration = projectTimelineDuration(project);
+    const timer = window.setInterval(() => {
+      setPlayhead((current) => {
+        const next = Math.min(duration, current + 0.1);
+        const scene = project.scenes.find((candidate) => {
+          const start = seconds(candidate.start);
+          return next >= start && next < start + seconds(candidate.duration);
+        });
+        if (scene) setSelectedSceneId(scene.id);
+        if (next >= duration) setPlaying(false);
+        return next;
+      });
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [playing, project]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        target &&
+        (target.isContentEditable ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT")
+      ) {
+        return;
+      }
+      if (event.code === "Space") {
+        event.preventDefault();
+        setPlaying((current) => !current);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        stepFrame(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        stepFrame(1);
+      } else if (event.key.toLowerCase() === "k") {
+        setPlaying(false);
+      } else if (event.key.toLowerCase() === "l") {
+        setPlaying(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stepFrame]);
 
   const commit = useCallback(async (change: Change) => {
     if (!boot || busy) return;
@@ -1391,6 +1618,7 @@ export default function App() {
               setBoot({ ...boot, project: imported });
               setSelectedSceneId(imported.scenes[0]?.id ?? null);
               setPlayhead(0);
+              setPlaying(false);
             }}
           />
         );
@@ -1478,6 +1706,9 @@ export default function App() {
         playhead={playhead}
         setPlayhead={setPlayhead}
         commit={commit}
+        playing={playing}
+        togglePlayback={() => setPlaying((current) => !current)}
+        stepFrame={stepFrame}
       />
     </main>
   );

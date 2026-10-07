@@ -86,7 +86,15 @@ export const fixtureProject: Project = {
       duration: { num: "7", den: "1" },
       renderer: "motion-canvas",
       status: "approved",
-      beats: [],
+      beats: [
+        {
+          id: id("211"),
+          label: "Reasoning gap",
+          objective: "Name the divide between planning and reliable software action.",
+          start: { num: "1", den: "1" },
+          duration: { num: "2", den: "1" },
+        },
+      ],
       nodes: [
         node("111", "Reasoning headline", "text", 160, 160, 920, 120, "AI agents can reason.", 2),
         { ...node("112", "Agent trace", "shape", 180, 360, 860, 170, null, 1), opacity: 0.82 }
@@ -101,7 +109,15 @@ export const fixtureProject: Project = {
       duration: { num: "9", den: "1" },
       renderer: "motion-canvas",
       status: "review",
-      beats: [],
+      beats: [
+        {
+          id: id("212"),
+          label: "Pixel failure",
+          objective: "Make brittle coordinate automation concrete before the semantic contrast.",
+          start: { num: "1", den: "1" },
+          duration: { num: "3", den: "1" },
+        },
+      ],
       nodes: [
         { ...node("121", "Pixel grid", "grid", 180, 170, 520, 420, null, 1), opacity: 0.55 },
         node("122", "Semantic tree", "tree", 760, 170, 520, 420, null, 2)
@@ -116,7 +132,15 @@ export const fixtureProject: Project = {
       duration: { num: "12", den: "1" },
       renderer: "blender",
       status: "draft",
-      beats: [],
+      beats: [
+        {
+          id: id("213"),
+          label: "Native handoff",
+          objective: "Follow intent through policy and the native application boundary.",
+          start: { num: "2", den: "1" },
+          duration: { num: "3", den: "1" },
+        },
+      ],
       nodes: [
         node("131", "Pipeline", "diagram", 120, 190, 1120, 300, null, 1)
       ],
@@ -130,7 +154,15 @@ export const fixtureProject: Project = {
       duration: { num: "8", den: "1" },
       renderer: "manim-community",
       status: "draft",
-      beats: [],
+      beats: [
+        {
+          id: id("214"),
+          label: "Revision trail",
+          objective: "Resolve the story on provenance and rebuildable project state.",
+          start: { num: "1", den: "1" },
+          duration: { num: "2", den: "1" },
+        },
+      ],
       nodes: [],
       camera: { ...camera },
     }
@@ -168,7 +200,22 @@ export const fixtureProject: Project = {
     voice_tracks: [],
     active_voice_track_id: null,
     transcript: [],
-    cues: [],
+    cues: [
+      {
+        id: id("221"),
+        label: "Problem contrast",
+        at: { num: "8", den: "1" },
+        source_segment_id: null,
+        evidence: "manual",
+      },
+      {
+        id: id("222"),
+        label: "Broker handoff",
+        at: { num: "18", den: "1" },
+        source_segment_id: null,
+        evidence: "manual",
+      },
+    ],
     mix: {
       voice_gain_db: 0,
       music_gain_db: -12,
