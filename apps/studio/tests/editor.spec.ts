@@ -122,15 +122,22 @@ test("design preview transport steps and plays without claiming a project edit",
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 });
 
-test("scene beats edit through project changes and stay synchronized with the timeline", async ({ page }) => {
+test("scene beat locks are enforced while unlocked beats stay synchronized with the timeline", async ({ page }) => {
   await page.goto("/");
+
+  const lockedBeat = page.locator(".scene-beat-row").first();
+  await expect(lockedBeat.getByRole("textbox", { name: "Beat label" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Fill timing gap", exact: true })).toBeDisabled();
+
+  await page.locator(".tree-row").filter({ hasText: "Pixels are brittle" }).click();
   const revision = await page.locator(".revision-chip").first().innerText();
   const firstBeat = page.locator(".scene-beat-row").first();
+  await expect(firstBeat.getByRole("textbox", { name: "Beat label" })).toBeEnabled();
 
-  await firstBeat.getByRole("textbox", { name: "Beat label" }).fill("Reasoning gap revised");
+  await firstBeat.getByRole("textbox", { name: "Beat label" }).fill("Pixel failure revised");
   await firstBeat.getByRole("button", { name: "Save beat", exact: true }).click();
 
-  await expect(page.getByRole("button", { name: "Beat: Reasoning gap revised", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Beat: Pixel failure revised", exact: true })).toBeVisible();
   await expect(page.locator(".revision-chip").first()).not.toHaveText(revision);
 
   const afterEdit = await page.locator(".revision-chip").first().innerText();
