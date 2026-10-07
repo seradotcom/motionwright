@@ -92,6 +92,21 @@ def semwright_version() -> str:
         return tomllib.load(stream)["workspace"]["package"]["version"]
 
 
+def preserve_native_failure_evidence(output_root: Path) -> None:
+    """Retain bounded, driver-produced evidence before the temporary workspace is removed."""
+    candidates = sorted(output_root.glob("render-*/native-observations.ndjson"))
+    if len(candidates) != 1:
+        return
+    observations = candidates[0]
+    if observations.stat().st_size > 8 * 1024 * 1024:
+        return
+    shutil.copyfile(observations, EVIDENCE / "native-observations.ndjson")
+    for name in ["native-observations-receipt.json", "artifact-manifest.json"]:
+        source = observations.parent / name
+        if source.is_file() and source.stat().st_size <= 1024 * 1024:
+            shutil.copyfile(source, EVIDENCE / name)
+
+
 def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -296,17 +311,21 @@ def main() -> None:
                 },
             )
 
-            result = run_json(
-                [
-                    str(MW_BIN),
-                    "render",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "motionwright-render-evidence.json"),
-                ],
-                env=env,
-                timeout=420,
-            )
+            try:
+                result = run_json(
+                    [
+                        str(MW_BIN),
+                        "render",
+                        str(database),
+                        str(connection_path),
+                        str(EVIDENCE / "motionwright-render-evidence.json"),
+                    ],
+                    env=env,
+                    timeout=420,
+                )
+            except (AssertionError, subprocess.TimeoutExpired):
+                preserve_native_failure_evidence(paths["output"])
+                raise
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 
