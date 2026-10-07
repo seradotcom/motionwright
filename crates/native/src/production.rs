@@ -65,7 +65,7 @@ const MLT_COMMANDS: &[&str] = &[
 const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.semantic.datablock.create",
     "driver.blender.semantic.objects",
-    "driver.blender.mesh.geometry.replace",
+    "driver.blender.mesh.geometry.initialize",
     "driver.blender.semantic.object.create",
     "driver.blender.material.create",
     "driver.blender.material.assign",
@@ -1296,7 +1296,7 @@ impl ProductionCoordinator {
                     project_id,
                     expected,
                     &format!("{request_id}:mesh:{index}:geometry"),
-                    "driver.blender.mesh.geometry.replace",
+                    "driver.blender.mesh.geometry.initialize",
                     json!({
                         "mesh_ref": mesh_ref,
                         "vertices": mesh.vertices,

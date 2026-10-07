@@ -344,7 +344,7 @@ def main() -> None:
             required = {
                 "driver.blender.semantic.datablock.create",
                 "driver.blender.semantic.objects",
-                "driver.blender.mesh.geometry.replace",
+                "driver.blender.mesh.geometry.initialize",
                 "driver.blender.semantic.object.create",
                 "driver.blender.material.create",
                 "driver.blender.material.assign",
