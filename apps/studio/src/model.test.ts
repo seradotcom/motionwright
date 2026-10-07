@@ -43,7 +43,10 @@ describe("creative project fixture", () => {
   it("does not fake measured audio in the browser fixture", () => {
     expect(fixtureProject.audio.voice_tracks).toEqual([]);
     expect(fixtureProject.audio.transcript).toEqual([]);
-    expect(fixtureProject.audio.cues).toEqual([]);
+    expect(fixtureProject.audio.cues.length).toBeGreaterThan(0);
+    expect(fixtureProject.audio.cues.every((cue) =>
+      cue.evidence === "manual" && cue.source_segment_id === null
+    )).toBe(true);
   });
 
   it("reduces UI time values before they cross the application boundary", () => {
