@@ -29,9 +29,9 @@ parking_lot = "0.12"
 async-trait = "0.1"
 symphonia = { version = "0.6.1", features = ["all"] }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync"] }
-semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "0e62baf8af62247b98e41b8e6c1111ad05400c4e", package = "semwright-native-sdk" }
-semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "0e62baf8af62247b98e41b8e6c1111ad05400c4e", package = "semwright-media-time" }
-semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "0e62baf8af62247b98e41b8e6c1111ad05400c4e", package = "semwright-project-graph" }
-semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "0e62baf8af62247b98e41b8e6c1111ad05400c4e", package = "semwright-effect-conformance" }
-semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "0e62baf8af62247b98e41b8e6c1111ad05400c4e", package = "semwright-motion-authoring" }
-semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "0e62baf8af62247b98e41b8e6c1111ad05400c4e", package = "semwright-semantic-composition" }
+semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "f51a3eec7d0b11519e70142862815e5c6a690045", package = "semwright-native-sdk" }
+semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "f51a3eec7d0b11519e70142862815e5c6a690045", package = "semwright-media-time" }
+semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "f51a3eec7d0b11519e70142862815e5c6a690045", package = "semwright-project-graph" }
+semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "f51a3eec7d0b11519e70142862815e5c6a690045", package = "semwright-effect-conformance" }
+semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "f51a3eec7d0b11519e70142862815e5c6a690045", package = "semwright-motion-authoring" }
+semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "f51a3eec7d0b11519e70142862815e5c6a690045", package = "semwright-semantic-composition" }

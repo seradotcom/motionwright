@@ -4,7 +4,7 @@
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "0e62baf8af62247b98e41b8e6c1111ad05400c4e",
+      "revision": "f51a3eec7d0b11519e70142862815e5c6a690045",
       "branch_observed": "fix/motion-canvas-first-frame-observation",
       "native_sdk_package": "semwright-native-sdk",
       "features_planned": [
