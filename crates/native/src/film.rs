@@ -336,16 +336,25 @@ fn layers(scene: &Scene) -> NativeResult<(Vec<Layer>, BTreeMap<i32, String>)> {
     Ok((output, names))
 }
 
+struct SubjectProjectionContext<'a> {
+    text_style: &'a BTreeMap<u64, String>,
+    profile_language: &'a str,
+    scale: f64,
+    output: &'a OutputProfile,
+    font_family: &'a str,
+}
+
 fn subject(
     node: &CanvasNode,
     layer_names: &BTreeMap<i32, String>,
-    text_style: &BTreeMap<u64, String>,
-    profile_language: &str,
-    scale: f64,
-    output: &OutputProfile,
-    font_family: &str,
+    context: &SubjectProjectionContext<'_>,
     beat_scope: Option<Uuid>,
 ) -> NativeResult<(Subject, Vec<VisualConstraint>)> {
+    let text_style = context.text_style;
+    let profile_language = context.profile_language;
+    let scale = context.scale;
+    let output = context.output;
+    let font_family = context.font_family;
     validate_node_projection(node, font_family)?;
     let id = subject_id(node.id, beat_scope);
     let layer = layer_names
@@ -550,19 +559,25 @@ fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
         .collect()
 }
 
-fn projected_shot(
-    project: &Project,
-    scene: &Scene,
-    width: u32,
-    height: u32,
+struct ShotProjectionContext<'a> {
     scale: f64,
-    output: &OutputProfile,
-    text_style: &BTreeMap<u64, String>,
-    font_family: &str,
+    output: &'a OutputProfile,
+    text_style: &'a BTreeMap<u64, String>,
+    font_family: &'a str,
+}
+
+struct ShotIdentity {
     archetype: Archetype,
     shot_id: String,
     span_id: String,
     beat_scope: Option<Uuid>,
+}
+
+fn projected_shot(
+    project: &Project,
+    scene: &Scene,
+    context: &ShotProjectionContext<'_>,
+    identity: ShotIdentity,
 ) -> NativeResult<Shot> {
     let (layers, layer_names) = layers(scene)?;
     let mut subjects = Vec::with_capacity(scene.nodes.len());
@@ -570,27 +585,28 @@ fn projected_shot(
     let profile_language = project
         .deliverables
         .iter()
-        .find(|profile| profile.width == width && profile.height == height)
+        .find(|profile| {
+            profile.width == context.output.width && profile.height == context.output.height
+        })
         .map(|profile| profile.language.as_str())
         .unwrap_or("und");
+    let subject_context = SubjectProjectionContext {
+        text_style: context.text_style,
+        profile_language,
+        scale: context.scale,
+        output: context.output,
+        font_family: context.font_family,
+    };
     for node in &scene.nodes {
-        let (mapped, mut node_constraints) = subject(
-            node,
-            &layer_names,
-            text_style,
-            profile_language,
-            scale,
-            output,
-            font_family,
-            beat_scope,
-        )?;
+        let (mapped, mut node_constraints) =
+            subject(node, &layer_names, &subject_context, identity.beat_scope)?;
         subjects.push(mapped);
         visual_constraints.append(&mut node_constraints);
     }
     Ok(Shot {
-        id: shot_id,
-        span_id,
-        archetype,
+        id: identity.shot_id,
+        span_id: identity.span_id,
+        archetype: identity.archetype,
         subjects,
         layers,
         annotations: vec![],
@@ -643,6 +659,12 @@ fn build_segment(
     let (output, scale) = output_profile(width, height, options.frame_rate, scenes)?;
     let (text_style, type_scale) = text_styles(scenes, &options.font_family)?;
     let stroke = global_stroke(scenes)?;
+    let shot_context = ShotProjectionContext {
+        scale,
+        output: &output,
+        text_style: &text_style,
+        font_family: &options.font_family,
+    };
 
     let span_capacity = scenes
         .iter()
@@ -696,16 +718,13 @@ fn build_segment(
             let shot = projected_shot(
                 project,
                 scene,
-                width,
-                height,
-                scale,
-                &output,
-                &text_style,
-                &options.font_family,
-                intent.archetype,
-                uid("shot", scene.id),
-                shot_span,
-                None,
+                &shot_context,
+                ShotIdentity {
+                    archetype: intent.archetype,
+                    shot_id: uid("shot", scene.id),
+                    span_id: shot_span,
+                    beat_scope: None,
+                },
             )?;
             authoring_beats.push(AuthoringBeat {
                 id: uid("beat", scene.id),
@@ -732,16 +751,13 @@ fn build_segment(
                 let shot = projected_shot(
                     project,
                     scene,
-                    width,
-                    height,
-                    scale,
-                    &output,
-                    &text_style,
-                    &options.font_family,
-                    intent.archetype,
-                    format!("shot-{}-beat-{}", scene.id.simple(), beat.id.simple()),
-                    shot_span,
-                    Some(beat.id),
+                    &shot_context,
+                    ShotIdentity {
+                        archetype: intent.archetype,
+                        shot_id: format!("shot-{}-beat-{}", scene.id.simple(), beat.id.simple()),
+                        span_id: shot_span,
+                        beat_scope: Some(beat.id),
+                    },
                 )?;
                 authoring_beats.push(AuthoringBeat {
                     id: format!("beat-{}-{}", scene.id.simple(), beat.id.simple()),
