@@ -601,6 +601,10 @@ fn response_data(value: &Value) -> NativeResult<&Value> {
         .ok_or_else(|| backend("Canonical production response is missing provider data"))
 }
 
+fn retryable_motion_status_error(error: &Error) -> bool {
+    error.code == ErrorCode::Timeout
+}
+
 fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<String> {
     value
         .pointer(pointer)
@@ -793,7 +797,7 @@ impl ProductionCoordinator {
                     )
                     .uncertain());
                 }
-                let status = self
+                let status = match self
                     .execute(
                         project_id,
                         expected,
@@ -802,7 +806,18 @@ impl ProductionCoordinator {
                         json!({"job_ref": job_ref}),
                         false,
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(status) => status,
+                    Err(error) if retryable_motion_status_error(&error) => {
+                        poll = poll.checked_add(1).ok_or_else(|| {
+                            backend("Motion Canvas render poll counter overflowed")
+                        })?;
+                        sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 let data = response_data(&status)?.clone();
                 match data.get("state").and_then(Value::as_str) {
                     Some("succeeded") => break data,
@@ -1822,6 +1837,17 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             )
             .unwrap()
             .project
+    }
+
+    #[test]
+    fn motion_status_retry_is_narrowly_limited_to_timeouts() {
+        let timeout = Error::new(ErrorCode::Timeout, "status observation timed out").uncertain();
+        let unavailable = Error::new(ErrorCode::Unavailable, "driver unavailable");
+        let backend_failed = Error::new(ErrorCode::BackendFailed, "renderer failed");
+
+        assert!(retryable_motion_status_error(&timeout));
+        assert!(!retryable_motion_status_error(&unavailable));
+        assert!(!retryable_motion_status_error(&backend_failed));
     }
 
     #[test]

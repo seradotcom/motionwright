@@ -19,7 +19,7 @@ use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-const SEMWRIGHT_REVISION: &str = "3890902ee0705c15fa91f15c9f9a989189d63ef7";
+const SEMWRIGHT_REVISION: &str = "937177b82a403ef9b6284065639d3b47ee5da941";
 
 #[derive(Clone)]
 struct AppState {

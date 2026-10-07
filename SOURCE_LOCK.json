@@ -4,8 +4,8 @@
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "3890902ee0705c15fa91f15c9f9a989189d63ef7",
-      "branch_observed": "feat/blender-mesh-initialize",
+      "revision": "937177b82a403ef9b6284065639d3b47ee5da941",
+      "branch_observed": "feat/motionwright-native-integration",
       "native_sdk_package": "semwright-native-sdk",
       "features_planned": [
         "driver",
@@ -13,7 +13,7 @@
         "effects"
       ],
       "license_observed": "MIT OR Apache-2.0",
-      "verification": "git fetch origin feat/blender-mesh-initialize && git rev-parse FETCH_HEAD"
+      "verification": "git fetch origin feat/motionwright-native-integration && git rev-parse FETCH_HEAD"
     }
   },
   "notes": [
