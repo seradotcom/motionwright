@@ -92,10 +92,26 @@ def semwright_version() -> str:
         return tomllib.load(stream)["workspace"]["package"]["version"]
 
 
-def preserve_native_failure_evidence(output_root: Path) -> None:
+def preserve_native_failure_evidence(sandbox_root: Path) -> None:
     """Retain bounded, driver-produced evidence before the temporary workspace is removed."""
-    candidates = sorted(output_root.glob("render-*/native-observations.ndjson"))
+    candidates = sorted(sandbox_root.rglob("native-observations.ndjson"))
     if len(candidates) != 1:
+        write_private_json(
+            EVIDENCE / "native-failure-files.json",
+            {
+                "observation_candidates": [
+                    str(path.relative_to(sandbox_root)) for path in candidates[:16]
+                ],
+                "files": [
+                    {
+                        "path": str(path.relative_to(sandbox_root)),
+                        "bytes": path.stat().st_size,
+                    }
+                    for path in sorted(sandbox_root.rglob("*"))
+                    if path.is_file()
+                ][:256],
+            },
+        )
         return
     observations = candidates[0]
     if observations.stat().st_size > 8 * 1024 * 1024:
@@ -324,7 +340,7 @@ def main() -> None:
                     timeout=420,
                 )
             except (AssertionError, subprocess.TimeoutExpired):
-                preserve_native_failure_evidence(paths["output"])
+                preserve_native_failure_evidence(root)
                 raise
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
