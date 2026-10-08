@@ -74,3 +74,5 @@ Renderer/runtime prerequisites remain independently owned. Motionwright does not
 ## Media delivery
 
 Configuring a profile never creates a media-success claim. The current direct pinned MLT final-master path is deliberately narrower than the profile model and accepts H.264/AAC, 48 kHz, Rec.709, MP4 only; other combinations remain versioned intent and fail as unsupported until a native production path proves them.
+
+The desktop can now invoke the existing native MLT master over exactly one verified Motion Canvas segment plus a measured, SHA-256-bound 48 kHz stereo WAV voice track from the saved delivery profile, with exact rational timing and no arbitrary input paths. [Desktop native AV mastering](desktop-av-master.md) describes the owner-authorized staging, fail-closed constraints, evidence and still-open limitations.

@@ -15,6 +15,7 @@ import type {
   MotionCanvasFilmOptions,
   MotionCanvasRenderEvidence,
   MotionCanvasProjectionPreflight,
+  MltAvMasterEvidence,
   OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
@@ -576,6 +577,34 @@ export async function projectHistoryRecent(
     .filter((event) => event.revision <= throughRevision)
     .sort((left, right) => right.revision - left.revision)
     .slice(0, bounded));
+}
+
+/** Produce a canonical H.264/AAC master from one already-authenticated native
+ * segment and an exact imported measured voice take. No caller file paths.
+ */
+export async function assembleNativeAvMaster(
+  project: Project,
+  deliverableId: string,
+  voiceTrackId: string,
+  previewToken: string,
+): Promise<MltAvMasterEvidence> {
+  if (!isTauri()) {
+    throw new Error("Native AV mastering requires the desktop Semwright runtime.");
+  }
+  const requestId = crypto.randomUUID();
+  const grant = await issueEffectGrant("render_local", project, requestId);
+  return invoke<MltAvMasterEvidence>("assemble_av_master", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      request_id: requestId,
+      effect_grant: grant.token,
+      deliverable_id: deliverableId,
+      preview_token: previewToken,
+      voice_track_id: voiceTrackId,
+    },
+  });
 }
 
 /** Fetch one source-verified PNG. This cannot read an arbitrary disk path.

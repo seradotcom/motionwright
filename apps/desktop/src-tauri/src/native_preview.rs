@@ -78,6 +78,9 @@ struct GrantEntry {
     directory: String,
     output_root: PathBuf,
     frames: Arc<Vec<FrameMeta>>,
+    /// This canonical response was recorded after the authorized Semwright
+    /// render and verification, not deserialized from a WebView request.
+    source_evidence: MotionCanvasRenderEvidence,
 }
 
 #[derive(Default)]
@@ -220,6 +223,7 @@ impl NativePreviewRegistry {
                 directory,
                 output_root: output_root.to_path_buf(),
                 frames: Arc::new(frames),
+                source_evidence: evidence.clone(),
             };
             if let Ok(mut entries) = self.inner.grants.lock() {
                 if entries.len() >= MAX_GRANTS {
@@ -235,6 +239,39 @@ impl NativePreviewRegistry {
             }
         }
         granted
+    }
+
+    /// Resolve the canonical rendering evidence behind an unguessable session
+    /// handle. The WebView can never substitute a forged renderer response.
+    pub fn master_source(
+        &self,
+        project: &Project,
+        token: Uuid,
+        deliverable_id: Uuid,
+    ) -> Result<MotionCanvasRenderEvidence, String> {
+        let entry = self
+            .inner
+            .grants
+            .lock()
+            .map_err(|_| "Native preview registry is unavailable.")?
+            .iter()
+            .find(|record| record.token == token)
+            .cloned()
+            .ok_or("Native render session is no longer available.")?;
+        if entry.project_id != project.id
+            || entry.generation != project.generation
+            || entry.revision != project.revision
+            || entry.deliverable_id != deliverable_id
+            || entry.source_evidence.project_resource != project.resource_key()
+            || entry.source_evidence.generation != project.generation
+            || entry.source_evidence.revision != project.revision
+            || entry.source_evidence.deliverable_id != deliverable_id
+            || entry.source_evidence.segments.len() != 1
+            || entry.source_evidence.segments[0].frame_count != entry.frames.len() as u64
+        {
+            return Err("Native master source belongs to another project revision or requires an unsupported multi-segment assembly.".into());
+        }
+        Ok(entry.source_evidence)
     }
 
     /// A grant never accepts caller-provided paths, hashes or media MIME types.
@@ -396,6 +433,49 @@ mod tests {
                         ..read
                     }
                 )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn av_master_source_uses_authenticated_session_evidence_not_client_media() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = project();
+        let (registry, evidence) = sample(temp.path(), &project);
+        let profile = evidence.deliverable_id;
+        let grants = registry.register(temp.path(), &project.resource_key(), &evidence);
+        assert_eq!(grants.len(), 1);
+        let original = registry
+            .master_source(&project, grants[0].token, profile)
+            .unwrap();
+        assert_eq!(original.project_resource, project.resource_key());
+        assert_eq!(original.segments[0].job_ref, "canonical-job");
+        assert_eq!(original.segments[0].frame_count, 1);
+        assert!(
+            registry
+                .master_source(&project, Uuid::new_v4(), profile)
+                .is_err()
+        );
+        assert!(
+            registry
+                .master_source(&project, grants[0].token, Uuid::new_v4())
+                .is_err()
+        );
+        let mut stale = project.clone();
+        stale.revision += 1;
+        assert!(
+            registry
+                .master_source(&stale, grants[0].token, profile)
+                .is_err()
+        );
+
+        let mut unsupported = evidence.clone();
+        unsupported.segments.push(unsupported.segments[0].clone());
+        let multi = registry.register(temp.path(), &project.resource_key(), &unsupported);
+        assert!(!multi.is_empty());
+        assert!(
+            registry
+                .master_source(&project, multi[0].token, profile)
                 .is_err()
         );
     }

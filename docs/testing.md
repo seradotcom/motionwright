@@ -38,6 +38,10 @@ The storage tests create a 260-change SQLite journal and verify descending keyse
 
 The native projection preflight uses the exact pinned Semwright Film adapter and current Motionwright project revision, with no native render dispatch or effect grant. Chromium tests exercise the typed read-only contract, supported/unsupported status and invalidation when creative inputs change. Native Film support is a semantic planning result, never certified renderer pixels or human acceptance; see [preflight semantics](film-preflight.md).
 
+## Canonical desktop AV mastering
+
+The desktop MLT AV workflow passes only an authenticated native frame-session token and an already-saved, measured 48 kHz stereo WAV voice take ID. Rust tests validate source CAS digests, refuse stale/mono/non-WAV/unbound inputs, reject WAV length/rate/symlink/tamper, and check rational audio/video duration to one sample. The browser tests use an explicitly synthetic Tauri bridge to prove the UI never supplies arbitrary source paths or master evidence. Actual Semwright Broker/MLT H.264/AAC MP4 output remains covered by the exact-SHA [native AV master E2E lane](desktop-av-master.md) and requires independent product acceptance.
+
 ## Source-verified rendered frame readback
 
 The native-preview Rust unit tests verify owner-root manifest SHA-256, registered single-frame PNG bytes, stale revision rejection, size/path validation and tamper rejection. The browser regression deliberately uses synthetic Tauri frame bytes, testing only UI mode, seek and error handling. The real Native Motion Canvas E2E lane independently rehashes every rendered PNG against the actual Semwright artifact manifest. See [native frame preview](native-frame-preview.md). These checks are not real-time AV playback or human visual acceptance.

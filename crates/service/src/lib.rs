@@ -17,6 +17,14 @@ pub struct VoiceImportMetadata {
     pub label: String,
 }
 
+/// Backend-only verified measured voice input for canonical MLT mastering.
+/// Never serialized to the WebView; the path is not an API credential.
+pub struct VerifiedMasterVoice {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
 use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
@@ -25,7 +33,13 @@ pub use motionwright_storage::{
     ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
-use std::{fs, fs::File, io::Read, path::Path, sync::Arc};
+use std::{
+    fs,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 const MAX_SVG_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
@@ -361,6 +375,68 @@ impl StudioService {
         )
     }
 
+    /// Return an existing immutable, SHA-256-verified WAV source bound to a
+    /// measured 48 kHz stereo voice take and exact application revision.
+    /// This is only called by the owner's trusted desktop mastering command.
+    pub fn verified_master_voice(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        track_id: Uuid,
+    ) -> StorageResult<VerifiedMasterVoice> {
+        const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+        let store = self.store.lock();
+        let project = store.load_project(project_id)?;
+        if expected.resource != project.resource_key() || expected.generation != project.generation
+        {
+            return Err(StorageError::GenerationConflict);
+        }
+        if expected.revision != project.revision {
+            return Err(StorageError::Conflict {
+                expected: expected.revision,
+                actual: project.revision,
+            });
+        }
+        let track = project
+            .audio
+            .voice_tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .ok_or_else(|| invalid_import("Selected measured voice take is unavailable"))?;
+        if track.sample_rate_hz != 48_000 || track.channels != 2 {
+            return Err(invalid_import(
+                "Native AV mastering requires measured 48 kHz stereo audio",
+            ));
+        }
+        let asset = project
+            .assets
+            .iter()
+            .find(|asset| asset.id == track.asset_id)
+            .ok_or_else(|| invalid_import("Measured voice asset is missing from the project"))?;
+        if asset.content_sha256.as_deref() != Some(track.source_sha256.as_str())
+            || !matches!(
+                asset.media_type.as_str(),
+                "audio/wav" | "audio/wave" | "audio/x-wav"
+            )
+        {
+            return Err(invalid_import(
+                "Native AV mastering requires the exact SHA-256-bound imported WAV asset",
+            ));
+        }
+        let path = store.verified_blob_path(&track.source_sha256)?;
+        let size_bytes = fs::metadata(&path)?.len();
+        if size_bytes < 44 || size_bytes > MAX_SOURCE_BYTES {
+            return Err(invalid_import(
+                "Measured WAV exceeds the bounded AV master input size",
+            ));
+        }
+        Ok(VerifiedMasterVoice {
+            path,
+            sha256: track.source_sha256.clone(),
+            size_bytes,
+        })
+    }
+
     pub fn import_voice_file(
         &self,
         project_id: Uuid,
@@ -636,6 +712,80 @@ mod audio_import_tests {
     }
 
     #[test]
+    fn native_master_voice_requires_exact_measured_stereo_wav_blob_and_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("Native AV voice").unwrap();
+
+        let mono_path = temp.path().join("mono.wav");
+        write_pcm16_wav(&mono_path, 48_000, 1, 1024, 0);
+        let mono = service
+            .import_voice_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "mono-measure",
+                &mono_path,
+                VoiceImportMetadata {
+                    name: "mono.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Mono".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let mono_track = mono.audio.voice_tracks[0].id;
+        assert!(
+            service
+                .verified_master_voice(mono.id, &RevisionStamp::from(&mono), mono_track,)
+                .is_err()
+        );
+
+        let stereo_path = temp.path().join("stereo.wav");
+        write_pcm16_wav(&stereo_path, 48_000, 2, 1024, 19);
+        let stereo = service
+            .import_voice_file(
+                mono.id,
+                &RevisionStamp::from(&mono),
+                "stereo-measure",
+                &stereo_path,
+                VoiceImportMetadata {
+                    name: "stereo.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Stereo".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let track = stereo.audio.voice_tracks.last().unwrap();
+        let source = service
+            .verified_master_voice(stereo.id, &RevisionStamp::from(&stereo), track.id)
+            .unwrap();
+        assert_eq!(source.sha256, track.source_sha256);
+        assert_eq!(
+            fs::read(&source.path).unwrap(),
+            fs::read(&stereo_path).unwrap()
+        );
+        assert!(source.size_bytes > 44);
+        assert!(
+            service
+                .verified_master_voice(stereo.id, &RevisionStamp::from(&mono), track.id,)
+                .is_err()
+        );
+        assert!(
+            service
+                .verified_master_voice(stereo.id, &RevisionStamp::from(&stereo), Uuid::now_v7(),)
+                .is_err()
+        );
+
+        fs::write(source.path, b"changed bytes").unwrap();
+        assert!(
+            service
+                .verified_master_voice(stereo.id, &RevisionStamp::from(&stereo), track.id,)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn measured_voice_import_preserves_prior_take_and_exact_blob_binding() {
         let temp = tempfile::tempdir().unwrap();
         let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
@@ -710,6 +860,79 @@ mod audio_import_tests {
         assert_eq!(active.channels, 2);
         assert_eq!(active.measured_duration, RationalTime::new(1, 2).unwrap());
         assert_ne!(active.source_sha256, first_track.source_sha256);
+    }
+
+    #[test]
+    fn av_master_voice_source_requires_exact_measured_stereo_wav_and_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("Mastering voice").unwrap();
+        let mono_path = temp.path().join("mono.wav");
+        write_pcm16_wav(&mono_path, 48_000, 1, 48_000, 0);
+        let mono = service
+            .import_voice_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "mono-mastering-input",
+                &mono_path,
+                VoiceImportMetadata {
+                    name: "mono.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Mono take".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(
+            service
+                .verified_master_voice(
+                    mono.id,
+                    &RevisionStamp::from(&mono),
+                    mono.audio.voice_tracks[0].id,
+                )
+                .is_err()
+        );
+
+        let stereo_path = temp.path().join("stereo.wav");
+        write_pcm16_wav(&stereo_path, 48_000, 2, 48_000, 1);
+        let stereo = service
+            .import_voice_file(
+                mono.id,
+                &RevisionStamp::from(&mono),
+                "stereo-mastering-input",
+                &stereo_path,
+                VoiceImportMetadata {
+                    name: "stereo.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Stereo take".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let measured = stereo.audio.voice_tracks.last().unwrap();
+        let source = service
+            .verified_master_voice(stereo.id, &RevisionStamp::from(&stereo), measured.id)
+            .unwrap();
+        assert_eq!(source.sha256, measured.source_sha256);
+        assert!(source.size_bytes > 44);
+        assert_eq!(
+            fs::read(&source.path).unwrap(),
+            fs::read(&stereo_path).unwrap()
+        );
+        assert!(
+            service
+                .verified_master_voice(stereo.id, &RevisionStamp::from(&mono), measured.id)
+                .is_err()
+        );
+        assert!(
+            service
+                .verified_master_voice(
+                    stereo.id,
+                    &RevisionStamp::from(&stereo),
+                    uuid::Uuid::new_v4()
+                )
+                .is_err()
+        );
     }
 
     #[test]
