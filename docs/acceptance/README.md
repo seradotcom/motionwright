@@ -36,3 +36,5 @@ Every product acceptance case begins as NOT_RUN. PASS requires non-empty evidenc
 Run python3 tooling/acceptance_policy.py.
 
 The policy enforces exact ledger cardinality and IDs, evidence-path existence, and prevents VERIFIED or product PASS without evidence. Product PASS additionally requires independent review.
+
+For actual installed-device testing, use the [private independent acceptance intake](REVIEW_INTAKE.md) (`tooling/acceptance_session.py`). It generates a separate session with all 60 cases `NOT_RUN`, binds evidence by tested Motionwright/Semwright SHAs and SHA-256 files, rejects missing/forged evidence, and **does not** copy private specification text or automatically change this public ledger. Automated CI checks of the intake are not product PASS evidence.
