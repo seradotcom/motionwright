@@ -237,7 +237,13 @@ function PreviewSurface({
   const [sourceChoice, setSourceChoice] = useState<{
     mode: "design" | "frames" | "av";
     scope: string;
-  }>({ mode: "design", scope: "" });
+  }>({ mode: "design", scope: previewScope });
+  // Reset during the first render of a *changed* source scope. Doing so in
+  // an effect would briefly remount a prior Blob when switching away/back to
+  // an earlier profile, before the effect gets a chance to clear consent.
+  if (sourceChoice.scope !== previewScope) {
+    setSourceChoice({ mode: "design", scope: previewScope });
+  }
   const previewSource = sourceChoice.scope === previewScope ? sourceChoice.mode : "design";
   const selectPreviewSource = (mode: "design" | "frames" | "av") =>
     setSourceChoice({ mode, scope: previewScope });
