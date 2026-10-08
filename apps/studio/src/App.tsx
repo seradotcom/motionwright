@@ -1669,6 +1669,20 @@ export default function App() {
     if (scene) setPlayhead(seconds(scene.start));
   }, [project]);
 
+  // All visual workspaces seek the same project-global editorial clock.
+  // A seek is a view operation, not a creative project mutation.
+  const seekTo = useCallback((requestedSeconds: number) => {
+    if (!project || !Number.isFinite(requestedSeconds)) return;
+    const next = Math.max(0, Math.min(projectTimelineDuration(project), requestedSeconds));
+    setPlaying(false);
+    setPlayhead(next);
+    const scene = project.scenes.find((candidate) => {
+      const start = seconds(candidate.start);
+      return next >= start && next < start + seconds(candidate.duration);
+    });
+    if (scene) setSelectedSceneId(scene.id);
+  }, [project]);
+
   const stepFrame = useCallback((direction: -1 | 1) => {
     if (!project) return;
     setPlaying(false);
@@ -1804,12 +1818,14 @@ export default function App() {
             commit={commit}
             desktopMode={boot.native_sdk.mode === "tauri"}
             importVoice={ingestVoice}
+            playhead={playhead}
+            onSeek={seekTo}
           />
         );
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} />;
       case "Canvas":
-        return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} />;
+        return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":
         return <PreviewSurface scene={selectedScene} project={project} playhead={playhead} />;
       case "Jobs":
@@ -1927,7 +1943,7 @@ export default function App() {
         selectedSceneId={selectedSceneId}
         selectScene={selectScene}
         playhead={playhead}
-        setPlayhead={setPlayhead}
+        setPlayhead={seekTo}
         commit={commit}
         playing={playing}
         togglePlayback={() => setPlaying((current) => !current)}

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleDashed,
   FileAudio,
+  LocateFixed,
   Plus,
   Save,
   Trash2,
@@ -32,7 +33,14 @@ const secondsLabel = (time: RationalTime) => {
   return Number.isFinite(value) ? value.toFixed(3) + " s" : "UNKNOWN";
 };
 
-function TranscriptRow({ segment, commit }: { segment: TranscriptSegment; commit: Commit }) {
+function TranscriptRow({
+  segment, commit, playhead, onSeek,
+}: {
+  segment: TranscriptSegment;
+  commit: Commit;
+  playhead: number;
+  onSeek: (absoluteSeconds: number) => void;
+}) {
   const [text, setText] = useState(segment.text);
   const [speaker, setSpeaker] = useState(segment.speaker ?? "");
   const [start, setStart] = useState(String(valueOf(segment.start)));
@@ -47,8 +55,9 @@ function TranscriptRow({ segment, commit }: { segment: TranscriptSegment; commit
 
   const valid = text.trim() && Number(start) >= 0 && Number(end) > Number(start);
 
+  const isCurrent = playhead >= valueOf(segment.start) && playhead < valueOf(segment.end);
   return (
-    <div className="audio-transcript-row">
+    <div className={"audio-transcript-row" + (isCurrent ? " playback-current" : "")} aria-current={isCurrent ? "true" : undefined}>
       <div className="audio-time-pair">
         <input aria-label={"Start " + segment.id} value={start} inputMode="decimal" onChange={(event) => setStart(event.target.value)} />
         <span>→</span>
@@ -58,6 +67,15 @@ function TranscriptRow({ segment, commit }: { segment: TranscriptSegment; commit
       <textarea aria-label={"Transcript " + segment.id} value={text} maxLength={8000} onChange={(event) => setText(event.target.value)} />
       <span className={"evidence-chip evidence-" + segment.alignment.kind}>{segment.alignment.kind.toUpperCase()}</span>
       <div className="audio-row-actions">
+        <button
+          type="button"
+          className="icon-action"
+          title="Seek project timeline to transcript start"
+          aria-label={"Seek to transcript at " + secondsLabel(segment.start)}
+          onClick={() => onSeek(valueOf(segment.start))}
+        >
+          <LocateFixed size={14} />
+        </button>
         <button
           type="button"
           className="icon-action"
@@ -90,7 +108,14 @@ function TranscriptRow({ segment, commit }: { segment: TranscriptSegment; commit
   );
 }
 
-function CueRow({ cue, commit }: { cue: AudioCue; commit: Commit }) {
+function CueRow({
+  cue, commit, playhead, onSeek,
+}: {
+  cue: AudioCue;
+  commit: Commit;
+  playhead: number;
+  onSeek: (absoluteSeconds: number) => void;
+}) {
   const [label, setLabel] = useState(cue.label);
   const [at, setAt] = useState(String(valueOf(cue.at)));
   useEffect(() => {
@@ -98,11 +123,21 @@ function CueRow({ cue, commit }: { cue: AudioCue; commit: Commit }) {
     setAt(String(valueOf(cue.at)));
   }, [cue]);
   const valid = label.trim() && Number(at) >= 0;
+  const isCurrent = Math.abs(playhead - valueOf(cue.at)) < 1 / 24;
   return (
-    <div className="audio-cue-row">
+    <div className={"audio-cue-row" + (isCurrent ? " playback-current" : "")} aria-current={isCurrent ? "true" : undefined}>
       <input aria-label={"Cue time " + cue.id} value={at} inputMode="decimal" onChange={(event) => setAt(event.target.value)} />
       <input aria-label={"Cue label " + cue.id} value={label} maxLength={512} onChange={(event) => setLabel(event.target.value)} />
       <span className={"evidence-chip evidence-" + cue.evidence}>{cue.evidence.toUpperCase()}</span>
+      <button
+        type="button"
+        className="icon-action"
+        title="Seek project timeline to cue"
+        aria-label={"Seek to cue " + cue.label}
+        onClick={() => onSeek(valueOf(cue.at))}
+      >
+        <LocateFixed size={14} />
+      </button>
       <button
         type="button"
         className="icon-action"
@@ -132,11 +167,15 @@ export default function AudioWorkspace({
   commit,
   desktopMode,
   importVoice,
+  playhead,
+  onSeek,
 }: {
   project: Project;
   commit: Commit;
   desktopMode: boolean;
   importVoice: (path: string, label?: string) => Promise<void>;
+  playhead: number;
+  onSeek: (absoluteSeconds: number) => void;
 }) {
   const activeId = project.audio.active_voice_track_id;
   const active = project.audio.voice_tracks.find((track) => track.id === activeId) ?? null;
@@ -301,7 +340,11 @@ export default function AudioWorkspace({
           <h2>Voice, transcript and cue evidence</h2>
           <p>Real files are measured before admission. Transcript timing is never inferred from speaking speed.</p>
         </div>
-        <span className="audio-source-count">{project.audio.voice_tracks.length} take{project.audio.voice_tracks.length === 1 ? "" : "s"}</span>
+        <div className="audio-playhead-chip">
+          <span className="section-kicker">SHARED EDITORIAL TIME</span>
+          <strong className="mono">{playhead.toFixed(2)} s</strong>
+          <small>{project.audio.voice_tracks.length} measured take{project.audio.voice_tracks.length === 1 ? "" : "s"} · not source playback</small>
+        </div>
       </header>
 
       <div className="audio-import-strip">
@@ -458,7 +501,7 @@ export default function AudioWorkspace({
               <div><strong>Transcript alignment</strong><span>Saving edited timing records manual evidence.</span></div>
               <span className="mono">{active ? "take:" + active.id.slice(0, 8) : "no-active-take"}</span>
             </header>
-            {activeSegments.map((segment) => <TranscriptRow key={segment.id} segment={segment} commit={commit} />)}
+            {activeSegments.map((segment) => <TranscriptRow key={segment.id} segment={segment} commit={commit} playhead={playhead} onSeek={onSeek} />)}
             <div className="audio-transcript-new">
               <div className="audio-time-pair">
                 <input aria-label="New transcript start" value={newStart} inputMode="decimal" placeholder="start s" onChange={(event) => setNewStart(event.target.value)} />
@@ -475,7 +518,7 @@ export default function AudioWorkspace({
 
           <section className="audio-editor-section">
             <header><div><strong>Stable cues</strong><span>Cue IDs survive text and label edits.</span></div><span>{project.audio.cues.length}</span></header>
-            {project.audio.cues.map((cue) => <CueRow key={cue.id} cue={cue} commit={commit} />)}
+            {project.audio.cues.map((cue) => <CueRow key={cue.id} cue={cue} commit={commit} playhead={playhead} onSeek={onSeek} />)}
             <div className="audio-cue-new">
               <input aria-label="New cue time" value={newCueAt} inputMode="decimal" placeholder="time s" onChange={(event) => setNewCueAt(event.target.value)} />
               <input aria-label="New cue label" value={newCueLabel} maxLength={512} placeholder="Cue label" onChange={(event) => setNewCueLabel(event.target.value)} />

@@ -461,3 +461,55 @@ test("OpenTimelineIO export stays filesystem-gated and never implies lossless in
   await expect(section.getByText(/browser demo does not fabricate an OTIO file/)).toBeVisible();
   await expect(section.getByText(/Unsupported Motionwright semantics are returned as a loss report/)).toBeVisible();
 });
+
+test("audio cue seeking and canvas share the same global editorial clock", async ({ page }) => {
+  await page.goto("/");
+  const timelineTimecode = page.locator(".timeline-header .timecode");
+  const revision = await page.locator(".revision-chip").first().innerText();
+
+  await page.getByRole("button", { name: "Audio", exact: true }).click();
+  await page.getByRole("button", { name: "Seek to cue Broker handoff" }).click();
+  await expect(timelineTimecode).toHaveText("00:18:00");
+  await expect(page.locator(".audio-cue-row").filter({ hasText: "Broker handoff" })).toHaveAttribute("aria-current", "true");
+  await expect(page.locator(".tree-row").filter({ hasText: "Semwright acts natively" })).toHaveClass(/selected/);
+
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  await expect(page.getByRole("slider", { name: "Motion playhead" })).toHaveValue("2");
+  await expect(page.locator(".motion-playhead .mono")).toHaveText("2.00s / 12.00s");
+
+  await page.getByRole("button", { name: "Audio", exact: true }).click();
+  await page.getByRole("button", { name: "Seek to cue Problem contrast" }).click();
+  await expect(timelineTimecode).toHaveText("00:08:00");
+
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  await expect(page.getByRole("slider", { name: "Motion playhead" })).toHaveValue("1");
+  await expect(page.locator(".motion-playhead .mono")).toHaveText("1.00s / 9.00s");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+});
+
+test("canvas scrubbing and keyframe jumps use scene-relative time without splitting the clock", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".tree-row").filter({ hasText: "Pixels are brittle" }).click();
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+
+  const timelineTimecode = page.locator(".timeline-header .timecode");
+  const slider = page.getByRole("slider", { name: "Motion playhead" });
+  const revision = await page.locator(".revision-chip").first().innerText();
+
+  await expect(slider).toHaveValue("0");
+  await slider.focus();
+  await slider.press("End");
+  await expect(timelineTimecode).toHaveText("00:15:23");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+
+  await page.getByRole("button", { name: "Add or replace keyframe at playhead" }).click();
+  await expect(page.locator(".motion-keyframe-row").first()).toContainText("8.999");
+  await expect(page.locator(".revision-chip").first()).not.toHaveText(revision);
+
+  const afterKeyframe = await page.locator(".revision-chip").first().innerText();
+  await slider.press("Home");
+  await expect(timelineTimecode).toHaveText("00:07:00");
+  await page.locator(".motion-keyframe-jump").first().click();
+  await expect(timelineTimecode).toHaveText("00:15:23");
+  await expect(page.locator(".revision-chip").first()).toHaveText(afterKeyframe);
+});
