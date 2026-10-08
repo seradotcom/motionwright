@@ -1,5 +1,8 @@
+mod av_delivery;
 mod av_master;
 mod effect_grants;
+
+use av_delivery::{MasterExportReceipt, MasterExportRequest, NativeMasterDeliveryRegistry};
 mod native_preview;
 
 use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
@@ -36,6 +39,7 @@ struct AppState {
     service: StudioService,
     effect_grants: EffectGrantRegistry,
     preview: NativePreviewRegistry,
+    av_delivery: NativeMasterDeliveryRegistry,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +104,14 @@ struct MotionCanvasRenderRequest {
     effect_grant: Uuid,
     deliverable_id: Uuid,
     options: FilmBuildOptions,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeAvMasterResponse {
+    #[serde(flatten)]
+    evidence: MltAvMasterEvidence,
+    /// Owner-minted session-only export handle; never a filesystem path.
+    export_token: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -849,7 +861,7 @@ async fn render_motion_canvas(
 async fn assemble_av_master(
     state: State<'_, AppState>,
     request: AssembleAvMasterRequest,
-) -> Result<MltAvMasterEvidence, String> {
+) -> Result<NativeAvMasterResponse, String> {
     let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
         .ok_or_else(|| "Canonical Semwright AV mastering is not configured.".to_string())?;
     let project = state
@@ -909,6 +921,7 @@ async fn assemble_av_master(
         return Err("Canonical Semwright output root belongs to another project.".into());
     }
     let output_root = connection.output_root.clone();
+    let export_root = output_root.clone();
     let service = state.service.clone();
     let id = request.project_id;
     let track = request.voice_track_id;
@@ -935,7 +948,7 @@ async fn assemble_av_master(
     );
     let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
         .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
-    coordinator
+    let evidence = coordinator
         .assemble_mlt_av_master(
             request.project_id,
             &expected,
@@ -948,7 +961,59 @@ async fn assemble_av_master(
             },
         )
         .await
-        .map_err(|error| format!("Canonical AV mastering failed: {}", error.message))
+        .map_err(|error| format!("Canonical AV mastering failed: {}", error.message))?;
+    let token = state.av_delivery.register(&export_root, &evidence);
+    Ok(NativeAvMasterResponse {
+        evidence,
+        export_token: token,
+    })
+}
+
+/// Deliver a previous verified canonical master to an explicitly named
+/// destination. The source is resolved from a scoped session handle rather
+/// than any WebView-provided path, and files are created without overwrite.
+#[tauri::command]
+async fn export_native_av_master(
+    state: State<'_, AppState>,
+    request: MasterExportRequest,
+) -> Result<MasterExportReceipt, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Native master export belongs to a previous creative revision.".into());
+    }
+    let source = state.av_delivery.resolve(&project, request.export_token)?;
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        scope,
+        request.destination.trim(),
+    )?;
+    let destination = request.destination;
+    let receipt = tauri::async_runtime::spawn_blocking(move || source.copy_to(&destination))
+        .await
+        .map_err(|_| "Native master export task failed.".to_string())??;
+    let latest = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if latest.generation != request.generation || latest.revision != request.revision {
+        // The new file exists and is digest-verified, but is no longer the
+        // current project revision. Preserve it and mark historical in UI.
+        return Ok(MasterExportReceipt {
+            source_current: false,
+            ..receipt
+        });
+    }
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -1534,6 +1599,7 @@ fn main() {
                 service,
                 effect_grants: EffectGrantRegistry::default(),
                 preview: NativePreviewRegistry::default(),
+                av_delivery: NativeMasterDeliveryRegistry::default(),
             });
             Ok(())
         })
@@ -1550,6 +1616,7 @@ fn main() {
             motion_canvas_preflight,
             render_motion_canvas,
             assemble_av_master,
+            export_native_av_master,
             preview_native_frame,
             import_asset_file,
             import_voice_file,

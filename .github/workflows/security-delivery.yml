@@ -153,6 +153,8 @@ jobs:
         run: cargo test --locked -p motionwright-desktop native_preview
       - name: Measured WAV / native AV master source regressions
         run: cargo test --locked -p motionwright-desktop av_master
+      - name: Verified MP4 local delivery security regressions
+        run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Clippy desktop boundary
         run: cargo clippy -p motionwright-desktop --all-targets -- -D warnings
 

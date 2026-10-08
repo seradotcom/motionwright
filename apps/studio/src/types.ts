@@ -393,7 +393,17 @@ export interface AvSyncSpec {
   cues: AvSyncCue[];
 }
 
+export interface MasterExportReceipt {
+  destination: string;
+  size_bytes: number;
+  sha256: string;
+  revision: number;
+  deliverable_id: string;
+  source_current: boolean;
+}
 export interface MltAvMasterEvidence {
+  /** Ephemeral, source-verified desktop delivery handle; never a path. */
+  export_token?: string | null;
   project_resource: string;
   generation: string;
   revision: number;

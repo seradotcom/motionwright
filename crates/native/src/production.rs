@@ -296,6 +296,18 @@ fn verify_output_artifact(
     Ok(path)
 }
 
+/// Resolve only an exact digest-verified media artifact within the canonical
+/// owner output root. Intended for tightly scoped desktop delivery of an
+/// existing native master, never as a generic WebView filesystem command.
+pub fn verified_native_media_path(
+    root: &Path,
+    relative: &str,
+    expected_sha256: &str,
+    max_bytes: u64,
+) -> NativeResult<PathBuf> {
+    verify_output_artifact(root, relative, expected_sha256, max_bytes)
+}
+
 impl ProductionConnection {
     pub fn load(path: impl AsRef<Path>) -> NativeResult<Self> {
         let path = path.as_ref();

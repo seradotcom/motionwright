@@ -66,6 +66,7 @@ import type {
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
   MltAvMasterEvidence,
+  MasterExportReceipt,
   Project,
   ProjectState,
   RationalTime,
@@ -587,6 +588,8 @@ function DeliverView({
   onRenderEvidence,
   avEvidence,
   onAvEvidence,
+  exportEvidence,
+  onExportEvidence,
 }: {
   project: Project;
   commit: (change: Change) => Promise<void>;
@@ -596,6 +599,8 @@ function DeliverView({
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
   onAvEvidence: (evidence: MltAvMasterEvidence) => void;
+  exportEvidence: MasterExportReceipt | null;
+  onExportEvidence: (receipt: MasterExportReceipt) => void;
 }) {
   const [exportPath, setExportPath] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -670,7 +675,8 @@ function DeliverView({
 
       <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
-        avEvidence={avEvidence} onAvEvidence={onAvEvidence} />
+        avEvidence={avEvidence} onAvEvidence={onAvEvidence}
+        exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
 
       <section className="portable-project" aria-label="Portable project">
         <header className="portable-heading">
@@ -1744,6 +1750,7 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
   const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
+  const [nativeExportReceipt, setNativeExportReceipt] = useState<MasterExportReceipt | null>(null);
   const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
   const [busy, setBusy] = useState(false);
@@ -1764,6 +1771,7 @@ export default function App() {
       setTimecodeMode("ndf");
       setNativeRenderReceipt(null);
       setNativeAvReceipt(null);
+      setNativeExportReceipt(null);
     } catch (reason) {
       setBootError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1999,9 +2007,12 @@ export default function App() {
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}
             avEvidence={nativeAvReceipt}
             onAvEvidence={(result) => setNativeAvReceipt(result)}
+            exportEvidence={nativeExportReceipt}
+            onExportEvidence={(result) => setNativeExportReceipt(result)}
             onImported={(imported) => {
               setNativeRenderReceipt(null);
               setNativeAvReceipt(null);
+              setNativeExportReceipt(null);
               setBoot({ ...boot, project: imported });
               setSelectedSceneId(imported.scenes[0]?.id ?? null);
               setPlayhead(0);

@@ -16,6 +16,7 @@ import type {
   MotionCanvasRenderEvidence,
   MotionCanvasProjectionPreflight,
   MltAvMasterEvidence,
+  MasterExportReceipt,
   OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
@@ -603,6 +604,32 @@ export async function assembleNativeAvMaster(
       deliverable_id: deliverableId,
       preview_token: previewToken,
       voice_track_id: voiceTrackId,
+    },
+  });
+}
+
+/** Deliver one session-authenticated MP4 to an explicit absolute, create-new
+ * local destination. The WebView never names the hidden source artifact.
+ */
+export async function exportVerifiedNativeMaster(
+  project: Project,
+  exportToken: string,
+  destination: string,
+): Promise<MasterExportReceipt> {
+  if (!isTauri()) {
+    throw new Error("Verified native MP4 delivery requires the desktop runtime.");
+  }
+  const absolutePath = destination.trim();
+  if (!absolutePath) throw new Error("Choose an absolute .mp4 delivery destination.");
+  const grant = await issueEffectGrant("deliver_local", project, absolutePath);
+  return invoke<MasterExportReceipt>("export_native_av_master", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      effect_grant: grant.token,
+      export_token: exportToken,
+      destination: absolutePath,
     },
   });
 }
