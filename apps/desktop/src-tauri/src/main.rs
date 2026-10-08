@@ -1,5 +1,8 @@
+mod av_master;
 mod effect_grants;
 mod native_preview;
+
+use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
@@ -10,7 +13,8 @@ use motionwright_native::{
     build_application,
     film::{FilmBuildOptions, build_motion_canvas_segments},
     production::{
-        MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
+        MltAvMasterEvidence, MltAvMasterRequest, MotionCanvasRenderEvidence, ProductionClient,
+        ProductionConnection, ProductionCoordinator,
     },
 };
 use motionwright_service::{
@@ -105,6 +109,21 @@ struct FilmPreflightRequest {
     revision: u64,
     deliverable_id: Uuid,
     options: FilmBuildOptions,
+}
+
+/// No caller path, arbitrary render evidence or claimed audio SHA is accepted:
+/// both source artifacts are resolved inside the owner desktop service.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssembleAvMasterRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    request_id: String,
+    effect_grant: Uuid,
+    deliverable_id: Uuid,
+    preview_token: Uuid,
+    voice_track_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -827,6 +846,112 @@ async fn render_motion_canvas(
 /// Exact bytes of one verified PNG from the current project revision. No
 /// caller-provided paths, no general-purpose filesystem or network capability.
 #[tauri::command]
+async fn assemble_av_master(
+    state: State<'_, AppState>,
+    request: AssembleAvMasterRequest,
+) -> Result<MltAvMasterEvidence, String> {
+    let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
+        .ok_or_else(|| "Canonical Semwright AV mastering is not configured.".to_string())?;
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("AV master input was invalidated by a project revision.".into());
+    }
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.id == request.deliverable_id)
+        .ok_or_else(|| "AV mastering requires a saved output profile.".to_string())?;
+    if profile.voice_track_id != Some(request.voice_track_id) {
+        return Err(
+            "Bind the selected measured voice take to this exact saved delivery profile.".into(),
+        );
+    }
+    let motion =
+        state
+            .preview
+            .master_source(&project, request.preview_token, request.deliverable_id)?;
+    let selected_voice = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| track.id == request.voice_track_id)
+        .ok_or_else(|| "The measured voice take is unavailable for AV mastering.".to_string())?;
+    let segment = motion
+        .segments
+        .first()
+        .ok_or_else(|| "Native AV mastering requires one verified visual segment.".to_string())?;
+    validate_master_voice_timing(
+        selected_voice.measured_duration,
+        segment.frame_count,
+        motion.frame_rate.num,
+        motion.frame_rate.den,
+    )?;
+
+    // This is a production mutation and consumes only the corresponding
+    // one-time revision/request-scoped local render effect capability.
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::RenderLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        request.request_id.trim(),
+    )?;
+    let expected = RevisionStamp {
+        resource: project.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+        .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
+    if connection.resource != project.resource_key() {
+        return Err("Canonical Semwright output root belongs to another project.".into());
+    }
+    let output_root = connection.output_root.clone();
+    let service = state.service.clone();
+    let id = request.project_id;
+    let track = request.voice_track_id;
+    let base = expected.clone();
+    let audio = tauri::async_runtime::spawn_blocking(move || {
+        let source = service
+            .verified_master_voice(id, &base, track)
+            .map_err(sanitized)?;
+        stage_measured_wav(&output_root, &source)
+    })
+    .await
+    .map_err(|_| "Verified WAV preparation task failed.".to_string())??;
+
+    // Stable source-bound command identity, separate from the one-time UI
+    // effect token. Retrying the same logical master cannot silently create
+    // another canonical Driver Host mutation under a fresh random request ID.
+    let canonical_request_id = canonical_av_request_id(
+        project.id,
+        project.generation,
+        project.revision,
+        request.deliverable_id,
+        &segment.fingerprint,
+        &selected_voice.source_sha256,
+    );
+    let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
+        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    coordinator
+        .assemble_mlt_av_master(
+            request.project_id,
+            &expected,
+            MltAvMasterRequest {
+                request_id: &canonical_request_id,
+                deliverable_id: request.deliverable_id,
+                motion: &motion,
+                audio: &audio,
+                sync: None,
+            },
+        )
+        .await
+        .map_err(|error| format!("Canonical AV mastering failed: {}", error.message))
+}
+
+#[tauri::command]
 async fn preview_native_frame(
     state: State<'_, AppState>,
     request: NativeFrameRequest,
@@ -1424,6 +1549,7 @@ fn main() {
             production_jobs,
             motion_canvas_preflight,
             render_motion_canvas,
+            assemble_av_master,
             preview_native_frame,
             import_asset_file,
             import_voice_file,

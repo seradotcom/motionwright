@@ -1,6 +1,12 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { exportCaptionSidecar, exportOtio, preflightMotionCanvas, renderMotionCanvas } from "./api";
+import {
+  assembleNativeAvMaster,
+  exportCaptionSidecar,
+  exportOtio,
+  preflightMotionCanvas,
+  renderMotionCanvas,
+} from "./api";
 import type {
   Change,
   DeliverableProfile,
@@ -9,6 +15,7 @@ import type {
   MotionCanvasRenderEvidence,
   MotionCanvasProjectionPreflight,
   MotionCanvasFilmOptions,
+  MltAvMasterEvidence,
   Project,
 } from "./types";
 
@@ -90,12 +97,16 @@ export default function DeliveryProfiles({
   desktopMode,
   renderEvidence,
   onRenderEvidence,
+  avEvidence,
+  onAvEvidence,
 }: {
   project: Project;
   commit: Commit;
   desktopMode: boolean;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
+  avEvidence: MltAvMasterEvidence | null;
+  onAvEvidence: (evidence: MltAvMasterEvidence) => void;
 }) {
   const [selectedId, setSelectedId] = useState(() =>
     project.deliverables.find((profile) => profile.id === renderEvidence?.deliverable_id)?.id
@@ -110,7 +121,7 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "master" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -196,6 +207,44 @@ export default function DeliveryProfiles({
     fontFamily.trim() &&
     monoFontFamily.trim(),
   );
+
+  const selectedVoice = project.audio.voice_tracks.find((track) =>
+    track.id === selected?.voice_track_id
+  ) ?? null;
+  const voiceAsset = selectedVoice
+    ? project.assets.find((asset) => asset.id === selectedVoice.asset_id) ?? null
+    : null;
+  const verifiedWavIntent = Boolean(selectedVoice && voiceAsset
+    && voiceAsset.content_sha256 === selectedVoice.source_sha256
+    && ["audio/wav", "audio/wave", "audio/x-wav"].includes(voiceAsset.media_type)
+    && selectedVoice.sample_rate_hz === 48_000 && selectedVoice.channels === 2);
+  const currentMotion = visibleEvidence?.revision === project.revision ? visibleEvidence : null;
+  const masterPreviewToken = currentMotion?.segments.length === 1
+    ? currentMotion.preview?.find((handle) =>
+      handle.segment_id === currentMotion.segments[0].segment_id)?.token ?? null
+    : null;
+  const voiceDurationSeconds = selectedVoice
+    ? Number(selectedVoice.measured_duration.num) / Number(selectedVoice.measured_duration.den)
+    : Number.NaN;
+  const motionFrameRate = currentMotion
+    ? currentMotion.frame_rate.num / currentMotion.frame_rate.den : Number.NaN;
+  const nativeVideoSeconds = currentMotion?.segments.length === 1
+    ? currentMotion.segments[0].frame_count / motionFrameRate : Number.NaN;
+  const voiceAligned = Number.isFinite(voiceDurationSeconds)
+    && Number.isFinite(nativeVideoSeconds)
+    && Math.abs(voiceDurationSeconds - nativeVideoSeconds) <= 1 / 48_000;
+  const masterProfileSupported = Boolean(selected
+    && selected.video_codec === "h264"
+    && selected.audio_codec === "aac"
+    && selected.audio_sample_rate_hz === 48000
+    && selected.color_space === "rec709"
+    && selected.container === "mp4");
+  const masterReady = Boolean(desktopMode && selected && !dirty
+    && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
+  const currentAv = avEvidence?.generation === project.generation
+    && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
+  const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
+  const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
 
   const preflightKey = JSON.stringify([
     project.id,
@@ -313,6 +362,18 @@ export default function DeliveryProfiles({
       setMessage(report.verdict === "projection_ready"
         ? "Semantic Film projection is supported at this revision. Native rendering is a separate operation."
         : "Semantic Film projection rejected this revision. No render or native job was dispatched.");
+    });
+  };
+
+  const assembleMaster = () => {
+    if (!selected || !selectedVoice || !masterPreviewToken || !masterReady) return;
+    void run("master", async () => {
+      const result = await assembleNativeAvMaster(
+        project, selected.id, selectedVoice.id, masterPreviewToken,
+      );
+      onAvEvidence(result);
+      setMessage("Native H.264/AAC MP4 master recorded for r" + result.revision
+        + " with " + result.frame_count + " native frames. Verify output metadata before distribution.");
     });
   };
 
@@ -789,6 +850,59 @@ export default function DeliveryProfiles({
                   <div><span>Verification</span><strong>{visibleEvidence.revision === project.revision ? "NATIVE · PASS" : "STALE · HISTORICAL"}</strong></div>
                 </div>
               )}
+            </section>
+
+            <section className="caption-export-panel" aria-label="Canonical audiovisual mastering">
+              <header>
+                <div>
+                  <strong>Native audiovisual master</strong>
+                  <span>Verified Motion Canvas segment + measured source WAV → Semwright MLT → H.264/AAC MP4.</span>
+                </div>
+                <span className="status-pill status-unknown">OWNER-GRANTED</span>
+              </header>
+              <div className="delivery-editor-actions">
+                <button className="button button-primary" type="button"
+                  disabled={!masterReady || busy !== null}
+                  onClick={assembleMaster}>
+                  <Play size={14} />
+                  {busy === "master" ? "Mastering…" : "Assemble native AV master"}
+                </button>
+              </div>
+              {!masterPreviewToken && (
+                <div className="delivery-truth-note">
+                  <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.
+                </div>
+              )}
+              {!verifiedWavIntent && (
+                <div className="delivery-truth-note">
+                  <CircleDashed size={14} /> Bind one saved, imported measured 48 kHz stereo WAV voice take to the output profile.
+                </div>
+              )}
+              {masterPreviewToken && verifiedWavIntent && !voiceAligned && (
+                <div className="delivery-truth-note warning">
+                  <CircleDashed size={14} /> The measured voice duration must match the exact native video cut (within one 48 kHz sample). Edit the cut or re-author audio; no silent padding or retiming.
+                </div>
+              )}
+              {!masterProfileSupported && (
+                <div className="delivery-truth-note warning">
+                  <CircleDashed size={14} /> This certified path requires H.264 video, AAC audio, 48 kHz, Rec.709 and MP4.
+                </div>
+              )}
+              {currentAv && (
+                <div className="portable-plan" aria-label="Native AV master evidence">
+                  <div><span>Revision</span><strong className="mono">r{currentAv.revision}</strong></div>
+                  <div><span>Frames</span><strong>{currentAv.frame_count}</strong></div>
+                  <div><span>Native master</span><strong>{masterDigest
+                    ? masterDigest.slice(0, 16) + "… SHA-256"
+                    : "Recorded · inspect canonical result"}</strong></div>
+                  <div><span>Applicability</span><strong>
+                    {currentAv.revision === project.revision ? "CURRENT · NATIVE" : "STALE · HISTORICAL"}
+                  </strong></div>
+                </div>
+              )}
+              <div className="delivery-truth-note">
+                <CircleDashed size={14} /> This is a Semwright-verified file in the owner output root, not a streamed player or a user-selected filesystem path. No human mix approval or cue-level sync proof is implied.
+              </div>
             </section>
 
             <section className="caption-export-panel" aria-label="Caption sidecar export">

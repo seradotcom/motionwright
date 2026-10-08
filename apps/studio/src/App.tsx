@@ -65,6 +65,7 @@ import type {
   Change,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
+  MltAvMasterEvidence,
   Project,
   ProjectState,
   RationalTime,
@@ -584,6 +585,8 @@ function DeliverView({
   onImported,
   renderEvidence,
   onRenderEvidence,
+  avEvidence,
+  onAvEvidence,
 }: {
   project: Project;
   commit: (change: Change) => Promise<void>;
@@ -591,6 +594,8 @@ function DeliverView({
   onImported: (project: Project) => void;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
+  avEvidence: MltAvMasterEvidence | null;
+  onAvEvidence: (evidence: MltAvMasterEvidence) => void;
 }) {
   const [exportPath, setExportPath] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -664,7 +669,8 @@ function DeliverView({
       </header>
 
       <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
-        renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence} />
+        renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
+        avEvidence={avEvidence} onAvEvidence={onAvEvidence} />
 
       <section className="portable-project" aria-label="Portable project">
         <header className="portable-heading">
@@ -1737,6 +1743,7 @@ export default function App() {
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
+  const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
   const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
   const [busy, setBusy] = useState(false);
@@ -1756,6 +1763,7 @@ export default function App() {
       setTimebaseProfileId(value.project.deliverables[0]?.id ?? null);
       setTimecodeMode("ndf");
       setNativeRenderReceipt(null);
+      setNativeAvReceipt(null);
     } catch (reason) {
       setBootError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1989,8 +1997,11 @@ export default function App() {
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}
+            avEvidence={nativeAvReceipt}
+            onAvEvidence={(result) => setNativeAvReceipt(result)}
             onImported={(imported) => {
               setNativeRenderReceipt(null);
+              setNativeAvReceipt(null);
               setBoot({ ...boot, project: imported });
               setSelectedSceneId(imported.scenes[0]?.id ?? null);
               setPlayhead(0);
