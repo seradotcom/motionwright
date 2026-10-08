@@ -14,6 +14,7 @@ import type {
   ModelRequestPreflight,
   MotionCanvasFilmOptions,
   MotionCanvasRenderEvidence,
+  MotionCanvasProjectionPreflight,
   OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
@@ -505,6 +506,26 @@ export async function productionJobs(
     request: {
       project_id: project.id,
       limit,
+    },
+  });
+}
+
+/** Read-only semantic Film projection. It cannot establish real render support. */
+export async function preflightMotionCanvas(
+  project: Project,
+  deliverableId: string,
+  options: MotionCanvasFilmOptions,
+): Promise<MotionCanvasProjectionPreflight> {
+  if (!isTauri()) {
+    throw new Error("Canonical Film preflight requires the Motionwright desktop runtime.");
+  }
+  return invoke<MotionCanvasProjectionPreflight>("motion_canvas_preflight", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      deliverable_id: deliverableId,
+      options,
     },
   });
 }

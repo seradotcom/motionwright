@@ -1,12 +1,14 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { exportCaptionSidecar, exportOtio, renderMotionCanvas } from "./api";
+import { exportCaptionSidecar, exportOtio, preflightMotionCanvas, renderMotionCanvas } from "./api";
 import type {
   Change,
   DeliverableProfile,
   MotionCanvasArchetype,
   MotionCanvasNarrativeRole,
   MotionCanvasRenderEvidence,
+  MotionCanvasProjectionPreflight,
+  MotionCanvasFilmOptions,
   Project,
 } from "./types";
 
@@ -108,7 +110,11 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "new" | null>(null);
+  const [preflight, setPreflight] = useState<{
+    key: string;
+    report: MotionCanvasProjectionPreflight;
+  } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -191,6 +197,44 @@ export default function DeliveryProfiles({
     monoFontFamily.trim(),
   );
 
+  const preflightKey = JSON.stringify([
+    project.id,
+    project.generation,
+    project.revision,
+    selected?.id,
+    selected?.frame_rate,
+    motionScenes.map((scene) => scene.id),
+    sceneIntents,
+    fontFamily,
+    monoFontFamily,
+  ]);
+  const currentPreflight = preflight?.key === preflightKey ? preflight.report : null;
+
+  function filmOptions(): MotionCanvasFilmOptions {
+    if (!selected) throw new Error("Select a saved profile before building a Film projection.");
+    const num = Number(selected.frame_rate.num);
+    const den = Number(selected.frame_rate.den);
+    if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
+      throw new Error("The saved delivery profile has an invalid canonical frame rate.");
+    }
+    return {
+      frame_rate: { num, den },
+      font_family: fontFamily.trim(),
+      mono_font_family: monoFontFamily.trim(),
+      scene_intents: motionScenes.map((scene) => {
+        const intent = sceneIntents[scene.id];
+        if (!intent?.role || !intent.archetype) {
+          throw new Error("Every Motion Canvas scene requires an explicit role and archetype.");
+        }
+        return {
+          scene_id: scene.id,
+          role: intent.role,
+          archetype: intent.archetype,
+        };
+      }),
+    };
+  }
+
   const run = async (kind: typeof busy, operation: () => Promise<void>) => {
     setBusy(kind);
     setMessage(null);
@@ -260,31 +304,22 @@ export default function DeliveryProfiles({
     });
   };
 
+  const inspectNativeProjection = () => {
+    if (!selected || !renderReady) return;
+    const key = preflightKey;
+    void run("preflight", async () => {
+      const report = await preflightMotionCanvas(project, selected.id, filmOptions());
+      setPreflight({ key, report });
+      setMessage(report.verdict === "projection_ready"
+        ? "Semantic Film projection is supported at this revision. Native rendering is a separate operation."
+        : "Semantic Film projection rejected this revision. No render or native job was dispatched.");
+    });
+  };
+
   const startNativeRender = () => {
     if (!selected || !renderReady) return;
     void run("render", async () => {
-      const num = Number(selected.frame_rate.num);
-      const den = Number(selected.frame_rate.den);
-      if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
-        throw new Error("The saved delivery profile has an invalid canonical frame rate.");
-      }
-      const intents = motionScenes.map((scene) => {
-        const intent = sceneIntents[scene.id];
-        if (!intent?.role || !intent.archetype) {
-          throw new Error("Every Motion Canvas scene requires an explicit narrative role and archetype.");
-        }
-        return {
-          scene_id: scene.id,
-          role: intent.role,
-          archetype: intent.archetype,
-        };
-      });
-      const result = await renderMotionCanvas(project, selected.id, {
-        frame_rate: { num, den },
-        font_family: fontFamily.trim(),
-        mono_font_family: monoFontFamily.trim(),
-        scene_intents: intents,
-      });
+      const result = await renderMotionCanvas(project, selected.id, filmOptions());
       onRenderEvidence(result);
       const frames = result.segments.reduce((sum, segment) => sum + segment.frame_count, 0);
       setMessage(
@@ -692,13 +727,44 @@ export default function DeliveryProfiles({
               <div className="delivery-editor-actions">
                 <button
                   type="button"
-                  className="button button-primary"
+                  className="button"
                   disabled={!renderReady || busy !== null}
+                  onClick={inspectNativeProjection}
+                >
+                  <CircleDashed size={14} /> {busy === "preflight" ? "Checking Film…" : "Check Film projection"}
+                </button>
+                <button
+                  type="button"
+                  className="button button-primary"
+                  disabled={!renderReady || busy !== null || currentPreflight?.verdict === "unsupported"}
                   onClick={startNativeRender}
+                  title={currentPreflight?.verdict === "unsupported"
+                    ? "The current semantic Film projection is rejected. Change the scene/profile and check again."
+                    : "Start an authorized native render using the saved project revision."}
                 >
                   <Play size={14} /> {busy === "render" ? "Rendering…" : "Render native segments"}
                 </button>
               </div>
+              {currentPreflight && (
+                <div className={"delivery-truth-note " +
+                  (currentPreflight.verdict === "unsupported" ? "warning" : "")}
+                  role="status" aria-label="Native Film preflight result">
+                  {currentPreflight.verdict === "projection_ready" ? (
+                    <>
+                      <CircleCheck size={14} aria-hidden="true" />
+                      Film projection supported: {currentPreflight.segment_count} segment(s),
+                      {" "}{currentPreflight.total_frames} planned frames at r{currentPreflight.revision}.
+                      Renderer execution, actual pixels and AV mastering are not yet proven by this check.
+                    </>
+                  ) : (
+                    <>
+                      <CircleDashed size={14} aria-hidden="true" />
+                      Film projection unsupported: {currentPreflight.reason ?? "Review scene constraints and output profile."}
+                      No native job was dispatched.
+                    </>
+                  )}
+                </div>
+              )}
 
               {!desktopMode && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Native production requires the desktop runtime and an owner-provisioned Semwright connection.</div>
