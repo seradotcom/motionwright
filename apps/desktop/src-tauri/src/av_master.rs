@@ -193,9 +193,14 @@ pub fn stage_measured_wav(
 
     let relative = format!("mw-source-audio-{}.wav", Uuid::new_v4().simple());
     let destination = owner_output_root.join(&relative);
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut open = OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    let mut output = open
         .open(&destination)
         .map_err(|_| "Native output audio could not be created safely.")?;
     let transfer = (|| -> Result<(), String> {
@@ -356,6 +361,19 @@ mod tests {
         assert_eq!(artifact.sample_rate, 48_000);
         assert_eq!(artifact.channels, 2);
         assert_eq!(artifact.sha256, voice.sha256);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(root.path().join(&artifact.relative_path))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "staged source WAV must remain owner-private"
+            );
+        }
         assert_eq!(
             fs::read(root.path().join(artifact.relative_path)).unwrap(),
             bytes
