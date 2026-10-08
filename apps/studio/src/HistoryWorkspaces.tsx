@@ -1,7 +1,8 @@
-import { Braces, CircleDashed, GitBranch, MessageSquareText, ShieldCheck } from "lucide-react";
+import { Braces, CircleDashed, Clock3, GitBranch, MessageSquareText, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { projectHistory } from "./api";
 import type { Change, Project, ProjectEvent, ReviewKind, ReviewStatus, Scene } from "./types";
+import { rationalSeconds, seconds } from "./types";
 
 type Commit = (change: Change) => Promise<void>;
 
@@ -223,21 +224,46 @@ export function ReviewWorkspace({
   project,
   scene,
   commit,
+  playhead,
+  onSeek,
 }: {
   project: Project;
   scene: Scene | null;
   commit: Commit;
+  playhead: number;
+  onSeek: (absoluteSeconds: number) => void;
 }) {
   const [kind, setKind] = useState<ReviewKind>("creative");
+  const [anchorScope, setAnchorScope] = useState<"selection" | "project">("selection");
+  const [timeMode, setTimeMode] = useState<"resource" | "playhead" | "range">("resource");
+  const [rangeStart, setRangeStart] = useState("");
+  const [rangeEnd, setRangeEnd] = useState("");
   const [body, setBody] = useState("");
   const [resolutions, setResolutions] = useState<Record<string, string>>({});
 
-  const resource = scene ? "scene:" + scene.id : "project:" + project.id;
+  const resource = anchorScope === "project" || !scene ? "project:" + project.id : "scene:" + scene.id;
   const sortedReviews = useMemo(
     () => [...project.reviews].sort((left, right) => right.created_at.localeCompare(left.created_at)),
     [project.reviews],
   );
   const sceneLocks = scene ? project.locks.filter((lock) => lock.resource === resource) : [];
+  const projectDuration = Math.max(
+    1,
+    ...project.scenes.map((item) => seconds(item.start) + seconds(item.duration)),
+    ...project.audio.voice_tracks.map((track) => seconds(track.measured_duration)),
+    ...project.audio.transcript.map((segment) => seconds(segment.end)),
+    ...project.audio.cues.map((cue) => seconds(cue.at)),
+    ...project.markers.map((marker) => seconds(marker.at)),
+  );
+  const boundsStart = scene && anchorScope === "selection" ? seconds(scene.start) : 0;
+  const boundsEnd = scene && anchorScope === "selection"
+    ? seconds(scene.start) + seconds(scene.duration) : projectDuration;
+  const pointValid = Number.isFinite(playhead) && playhead >= boundsStart && playhead <= boundsEnd;
+  const startSeconds = Number(rangeStart);
+  const endSeconds = Number(rangeEnd);
+  const rangeValid = rangeStart.trim() !== "" && rangeEnd.trim() !== ""
+    && Number.isFinite(startSeconds) && Number.isFinite(endSeconds)
+    && startSeconds >= boundsStart && endSeconds >= startSeconds && endSeconds <= boundsEnd;
 
   return (
     <div className="workspace-scroll review-view">
@@ -263,9 +289,72 @@ export function ReviewWorkspace({
                 </select>
               </label>
               <label>
-                <span className="field-label">Anchor</span>
-                <div className="read-field mono">{resource}</div>
+                <span className="field-label">Anchor scope</span>
+                <select aria-label="Review resource scope" value={anchorScope}
+                  onChange={(event) => setAnchorScope(event.target.value as typeof anchorScope)}>
+                  <option value="selection">{scene ? "Selected scene" : "Current project"}</option>
+                  <option value="project">Whole project</option>
+                </select>
+                <span className="review-resource-name mono">{resource}</span>
               </label>
+            </div>
+            <div className="review-time-form">
+              <label>
+                <span className="field-label">Time anchor</span>
+                <select
+                  aria-label="Review time anchor"
+                  value={timeMode}
+                  onChange={(event) => {
+                    const mode = event.target.value as typeof timeMode;
+                    setTimeMode(mode);
+                    if (mode === "range") {
+                      const start = Math.min(playhead, projectDuration);
+                      setRangeStart(start.toFixed(3));
+                      setRangeEnd(Math.min(projectDuration, start + 1).toFixed(3));
+                    }
+                  }}
+                >
+                  <option value="resource">Resource only</option>
+                  <option value="playhead">Current playhead (project time)</option>
+                  <option value="range">Explicit project time range</option>
+                </select>
+              </label>
+              {timeMode === "playhead" && (
+                <div className={"review-time-hint" + (!pointValid ? " invalid" : "")}>
+                  <Clock3 size={13} aria-hidden="true" />
+                  {pointValid
+                    ? "At " + playhead.toFixed(3) + "s on the project clock; captured when added."
+                    : "Playhead is outside the selected scene. Choose project scope or seek within the scene."}
+                </div>
+              )}
+              {timeMode === "range" && (
+                <>
+                  <div className="review-time-fields">
+                    <label>
+                      <span className="field-label">Start (project seconds)</span>
+                      <input
+                        aria-label="Review range start"
+                        inputMode="decimal"
+                        value={rangeStart}
+                        onChange={(event) => setRangeStart(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span className="field-label">End (project seconds)</span>
+                      <input
+                        aria-label="Review range end"
+                        inputMode="decimal"
+                        value={rangeEnd}
+                        onChange={(event) => setRangeEnd(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className={"review-time-hint" + (!rangeValid ? " invalid" : "")}>
+                    Allowed {boundsStart.toFixed(3)}–{boundsEnd.toFixed(3)}s on the project clock.
+                    End must not precede start; choose project scope for cross-scene reviews.
+                  </div>
+                </>
+              )}
             </div>
             <label>
               <span className="field-label">Comment</span>
@@ -283,15 +372,17 @@ export function ReviewWorkspace({
               <button
                 className="button button-primary"
                 type="button"
-                disabled={!body.trim()}
+                disabled={!body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
                 onClick={async () => {
                   await commit({
                     type: "add_review",
                     kind,
                     resource,
                     body: body.trim(),
-                    start: null,
-                    end: null,
+                    start: timeMode === "resource"
+                      ? null
+                      : rationalSeconds(timeMode === "playhead" ? playhead : startSeconds),
+                    end: timeMode === "range" ? rationalSeconds(endSeconds) : null,
                     locale: null,
                     profile_id: null,
                   });
@@ -325,6 +416,8 @@ export function ReviewWorkspace({
           {sortedReviews.map((review) => {
             const branch = project.branches.find((candidate) => candidate.id === review.anchor.branch_id);
             const resolution = resolutions[review.id] ?? "";
+            const sameBranch = review.anchor.branch_id === project.active_branch;
+            const isHistorical = review.status === "needs_recheck" || !sameBranch;
             return (
               <article className="critique-copy" key={review.id}>
                 <div className="section-title-row">
@@ -338,6 +431,33 @@ export function ReviewWorkspace({
                   <span>{branch?.name ?? review.anchor.branch_id.slice(0, 8)} · r{review.anchor.revision}</span>
                   <span className="mono">{review.anchor.resource}</span>
                 </div>
+                {review.anchor.start && (
+                  <div className="review-time-actions">
+                    <span className="mono">
+                      {seconds(review.anchor.start).toFixed(3)}s
+                      {review.anchor.end ? " – " + seconds(review.anchor.end).toFixed(3) + "s" : " · point"}
+                    </span>
+                    <button
+                      className="button compact"
+                      type="button"
+                      aria-label={"Seek to review time: " + review.body.slice(0, 60)}
+                      disabled={!sameBranch}
+                      title={sameBranch
+                        ? "Seek to stored project timestamp. This does not revalidate the historical content."
+                        : "Select the review's original branch before seeking."}
+                      onClick={() => onSeek(seconds(review.anchor.start!))}
+                    >
+                      <Clock3 size={13} aria-hidden="true" /> Jump to time
+                    </button>
+                  </div>
+                )}
+                {isHistorical && review.anchor.start && (
+                  <p className="review-history-note">
+                    {sameBranch
+                      ? "Historical edit: this timestamp may no longer describe the same content."
+                      : "Other branch: select the original branch before navigating to the stored time."}
+                  </p>
+                )}
                 {review.resolution ? <p><strong>Resolution:</strong> {review.resolution}</p> : null}
                 {review.status !== "resolved" ? (
                   <div className="inline-save-field">

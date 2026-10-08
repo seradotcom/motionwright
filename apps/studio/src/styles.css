@@ -1530,6 +1530,18 @@ select:focus {
   margin: 0;
 }
 
+.review-resource-name { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.review-time-form { display: grid; gap: 8px; }
+.review-time-form > label { display: grid; gap: 5px; }
+.review-time-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.review-time-fields > label { display: grid; gap: 5px; }
+.review-time-fields input { min-width: 0; }
+.review-time-hint { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.review-time-hint.invalid { color: var(--warning); }
+.review-time-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 5px 0; }
+.review-time-actions .mono { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.review-history-note { color: var(--warning) !important; font-size: 10px; }
+
 .deliver-list {
   border-top: 1px solid var(--border);
 }

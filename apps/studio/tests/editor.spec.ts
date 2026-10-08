@@ -513,3 +513,67 @@ test("canvas scrubbing and keyframe jumps use scene-relative time without splitt
   await expect(timelineTimecode).toHaveText("00:15:23");
   await expect(page.locator(".revision-chip").first()).toHaveText(afterKeyframe);
 });
+
+test("review point anchors capture the global timeline and seek without making an edit", async ({ page }) => {
+  await page.goto("/");
+  const timecode = page.locator(".timeline-header .timecode");
+
+  await page.getByRole("button", { name: "Audio", exact: true }).click();
+  await page.getByRole("button", { name: "Seek to cue Broker handoff" }).click();
+  await expect(timecode).toHaveText("00:18:00");
+
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByLabel("Review time anchor").selectOption("playhead");
+  await expect(page.getByText("At 18.000s on the project clock; captured when added.")).toBeVisible();
+  await page.getByLabel("Review comment").fill("Check the handoff pacing at this instant");
+  await page.getByRole("button", { name: "Add anchored review" }).click();
+
+  const review = page.locator(".critique-copy").filter({ hasText: "Check the handoff pacing at this instant" });
+  await expect(review).toContainText("18.000s · point");
+  const revision = await page.locator(".revision-chip").first().innerText();
+
+  await page.locator(".tree-row").filter({ hasText: "Pixels are brittle" }).click();
+  await expect(timecode).toHaveText("00:07:00");
+  await review.getByRole("button", { name: "Seek to review time: Check the handoff pacing at this instant" }).click();
+  await expect(timecode).toHaveText("00:18:00");
+  await expect(page.locator(".tree-row").filter({ hasText: "Semwright acts natively" })).toHaveClass(/selected/);
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+});
+
+test("review time ranges are validated and historical anchors do not imply renewed approval", async ({ page }) => {
+  await page.goto("/");
+  const timecode = page.locator(".timeline-header .timecode");
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByLabel("Review resource scope").selectOption("project");
+  await page.getByLabel("Review time anchor").selectOption("range");
+  const start = page.getByLabel("Review range start");
+  const end = page.getByLabel("Review range end");
+  const submit = page.getByRole("button", { name: "Add anchored review" });
+  await page.getByLabel("Review comment").fill("Check the full composite cut");
+
+  await start.fill("21");
+  await end.fill("20");
+  await expect(submit).toBeDisabled();
+  await end.fill("999999");
+  await expect(submit).toBeDisabled();
+  await end.fill("22.5");
+  await expect(submit).toBeEnabled();
+  await submit.click();
+
+  const review = page.locator(".critique-copy").filter({ hasText: "Check the full composite cut" });
+  await expect(review).toContainText("21.000s – 22.500s");
+  await review.getByRole("button", { name: "Seek to review time: Check the full composite cut" }).click();
+  await expect(timecode).toHaveText("00:21:00");
+
+  await review.getByRole("textbox", { name: /Resolution for review/ }).fill("Approved only at the reviewed revision");
+  await review.getByRole("button", { name: "Resolve" }).click();
+  await expect(review).toContainText("RESOLVED");
+
+  await page.getByRole("button", { name: "Brief", exact: true }).click();
+  await page.getByLabel("Project title").fill("Rethought compositing script");
+  await page.getByRole("button", { name: "Save title" }).click();
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await expect(page.locator(".critique-copy").filter({ hasText: "Check the full composite cut" })).toContainText(
+    "Historical edit: this timestamp may no longer describe the same content.",
+  );
+});

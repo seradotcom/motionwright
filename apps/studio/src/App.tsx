@@ -1846,7 +1846,7 @@ export default function App() {
       case "Dependencies":
         return <DependenciesView project={project} />;
       case "Review":
-        return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} />;
+        return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Deliver":
         return (
           <DeliverView
