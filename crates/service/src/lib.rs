@@ -20,9 +20,9 @@ pub struct VoiceImportMetadata {
 use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
-    BlobDescriptor, BundleImportPlan, ImportPlan, PortableBlob, ProductionReceipt,
-    ProductionReceiptInput, ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent,
-    ProjectPage, ProjectSummary,
+    BlobDescriptor, BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan,
+    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProjectBackup, ProjectBundleManifest,
+    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{fs, fs::File, io::Read, path::Path, sync::Arc};
@@ -203,6 +203,34 @@ impl StudioService {
 
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> StorageResult<BlobDescriptor> {
         self.store.lock().ingest_blob_file(source)
+    }
+
+    pub fn put_derived_cache_file(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+        source: impl AsRef<Path>,
+        work_units: u64,
+    ) -> StorageResult<DerivedCacheRecord> {
+        self.store.lock().put_derived_cache_file(
+            scope,
+            kind,
+            fingerprint_sha256,
+            source,
+            work_units,
+        )
+    }
+
+    pub fn lookup_derived_cache(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+    ) -> StorageResult<Option<DerivedCacheHit>> {
+        self.store
+            .lock()
+            .lookup_derived_cache(scope, kind, fingerprint_sha256)
     }
 
     pub fn import_asset_file(

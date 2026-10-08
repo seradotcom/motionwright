@@ -24,10 +24,10 @@ Every product acceptance case begins as NOT_RUN. PASS requires non-empty evidenc
 
 ## Known open evidence
 
-- Native Manim execution/readback/jobs are blocked until a canonical Semwright Manim driver exists. The declarative compiler is not called a native renderer.
+- Native Manim Community now has a bounded Semwright Application Driver plus real execution/readback/job CI. That closes the former upstream-driver blocker, but product-level creative acceptance and independent review remain separate.
 - Canonical Graph/Effects consumer compatibility is green, but that is not artifact-level Graph admission or a product Effect Conformance PASS.
 - Workflow Distillation V1/V2/V3 is implemented behind the canonical Broker/Policy boundary, but live product-level recorder -> compile/proposal -> replay -> promotion acceptance evidence is still required.
-- Production/performance datasets, three-project coverage and revision-ten maintenance acceptance remain separate from unit/contract CI.
+- Three unrelated S/M/L datasets and revision-ten persistence now have a dedicated CI evidence lane. Exact-scope derived preview-index cache reuse also records validated bytes, validation cost and avoided semantic regeneration units; renderer-frame savings and human review remain separate acceptance work.
 - Platform/account/worker/remote-review acceptance remains separate from the local workstation boundary.
 
 ## Policy
