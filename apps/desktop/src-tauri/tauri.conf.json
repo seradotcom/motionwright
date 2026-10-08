@@ -27,7 +27,14 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": false,
     "targets": ["deb", "appimage"],
+    "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "icon": ["icons/icon.png"],
     "category": "Video",
     "shortDescription": "Semwright-native creative production studio",

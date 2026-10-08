@@ -79,6 +79,8 @@ docs/
 
 The workstation is intentionally kept light. Source-format checks and small unit checks may run locally. Cargo builds/tests/clippy/docs, browser suites, Tauri bundling, native driver integration, rendering, coverage, fuzzing and large media fixtures run in GitHub Actions.
 
+Candidate packaging is also CI-only. Linux AppImage/Debian, current-user Windows NSIS and macOS DMG artifacts are hashed into exact-source receipts; they are not automatically published, signed, notarized or promoted to a release.
+
 ## Licensing
 
 Motionwright is licensed under **GNU AGPL v3.0 or later**. Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
