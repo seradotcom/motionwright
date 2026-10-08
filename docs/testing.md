@@ -51,9 +51,17 @@ preview-index regeneration units avoided. It also mutates a delivery render inpu
 cache miss for the changed fingerprint. This evidence does not claim avoided renderer frames,
 GPU time or wall-clock render savings; renderer-level cold/warm evidence remains separate.
 
+The same workflow has a separate `waveform-lazy` job for long-audio evidence. It builds the
+benchmark first, then measures only the resulting runtime process while it imports a real one-hour
+8 kHz PCM source, generates the cache-bound proxy and requests a distant page. CI requires the
+source to exceed 50 MB, the proxy to stay below 64 KiB, a returned page to stay at 256 peaks or
+less, and maximum resident memory to remain below 192 MiB. The second page must come from the
+cache and complete inside the declared two-second CI bound. These figures prove the current
+fixture and algorithm; they are not a universal desktop performance claim.
+
 Human feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
 comparative claims against other editors. See `docs/derived-cache.md` for cache identity,
-invalidation and recovery rules.
+invalidation and recovery rules and `docs/audio.md` for waveform semantics.
 
 
 ## Variants and localization evidence lane

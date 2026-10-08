@@ -8,6 +8,7 @@ on:
       - "crates/service/**"
       - "tooling/**"
       - "docs/testing.md"
+      - "docs/audio.md"
       - ".github/workflows/performance-acceptance.yml"
   push:
     branches: ["main", "feat/**"]
@@ -17,6 +18,7 @@ on:
       - "crates/service/**"
       - "tooling/**"
       - "docs/testing.md"
+      - "docs/audio.md"
       - ".github/workflows/performance-acceptance.yml"
   workflow_dispatch:
   schedule:
@@ -83,4 +85,64 @@ jobs:
         with:
           name: performance-acceptance-evidence
           path: verification/performance
+          if-no-files-found: error
+
+  waveform-lazy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Source and acceptance policy
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/acceptance_policy.py
+      - name: Build bounded-memory waveform benchmark
+        run: cargo build -p motionwright-service --example waveform_bench --release
+      - name: One-hour audio proxy and paged read
+        run: |
+          mkdir -p verification/waveform
+          /usr/bin/time -v -o verification/waveform/resource-usage.txt \
+            target/release/examples/waveform_bench \
+            > verification/waveform/report.json
+      - name: Validate lazy waveform evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          report=json.loads(Path("verification/waveform/report.json").read_text())
+          usage=Path("verification/waveform/resource-usage.txt").read_text()
+          match=re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", usage)
+          assert match, usage
+          rss_kib=int(match.group(1))
+
+          assert report["schema"]=="motionwright.waveform-performance.v1"
+          assert report["duration_seconds"]==3600
+          assert report["sample_rate_hz"]==8000 and report["channels"]==1
+          assert report["source_bytes"]>50_000_000
+          assert report["frames"]==28_800_000
+          assert report["peak_count"]>10_000
+          assert report["proxy_bytes"]<64*1024
+          assert report["page_size"]==256
+          assert report["first_page_peaks"]==256
+          assert 0<report["distant_page_peaks"]<=256
+          assert report["algorithm"]=="sample-peak-max-abs-v1"
+          assert len(report["source_sha256"])==64
+          assert rss_kib < 192*1024, f"RSS too high for paged waveform proxy: {rss_kib} KiB"
+          assert report["cached_distant_page_micros"] < 2_000_000
+          print(
+              "waveform-evidence=ok duration=60m "
+              f"source_bytes={report['source_bytes']} proxy_bytes={report['proxy_bytes']} "
+              f"page_peaks={report['page_size']} rss_kib={rss_kib} "
+              f"cached_page_us={report['cached_distant_page_micros']}"
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waveform-performance-evidence
+          path: verification/waveform
           if-no-files-found: error

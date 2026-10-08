@@ -376,6 +376,9 @@ test("audio workspace keeps measurement claims honest and versions mix intent", 
   await expect(page.getByText("No measured take", { exact: true })).toBeVisible();
   await expect(page.getByText("Desktop runtime required for measured file import.", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Import + measure", exact: true })).toBeDisabled();
+  const waveform = page.getByRole("region", { name: "Measured sample peak waveform" });
+  await expect(waveform).toContainText("No active measured take. No waveform is synthesized.");
+  await expect(waveform.getByRole("img")).toHaveCount(0);
 
   const before = await page.locator(".revision-chip").first().innerText();
   await page.getByLabel("Voice gain dB").fill("-2");

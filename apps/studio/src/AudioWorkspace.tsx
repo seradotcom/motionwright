@@ -1,6 +1,8 @@
 import {
   AudioLines,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleDashed,
   FileAudio,
   Plus,
@@ -15,10 +17,14 @@ import type {
   Project,
   RationalTime,
   TranscriptSegment,
+  WaveformPage,
 } from "./types";
 import { rationalSeconds } from "./types";
+import { waveformPage as loadWaveformPage } from "./api";
 
 type Commit = (change: Change) => Promise<void>;
+
+const WAVEFORM_PAGE_SIZE = 192;
 
 const valueOf = (time: RationalTime) => Number(time.num) / Number(time.den);
 const secondsLabel = (time: RationalTime) => {
@@ -155,6 +161,43 @@ export default function AudioWorkspace({
   const [musicGain, setMusicGain] = useState(String(project.audio.mix.music_gain_db));
   const [targetLufs, setTargetLufs] = useState(project.audio.mix.target_lufs == null ? "" : String(project.audio.mix.target_lufs));
   const [targetPeak, setTargetPeak] = useState(project.audio.mix.target_true_peak_dbfs == null ? "" : String(project.audio.mix.target_true_peak_dbfs));
+  const [waveform, setWaveform] = useState<WaveformPage | null>(null);
+  const [waveformPageIndex, setWaveformPageIndex] = useState(0);
+  const [waveformBusy, setWaveformBusy] = useState(false);
+  const [waveformError, setWaveformError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWaveformPageIndex(0);
+    setWaveform(null);
+    setWaveformError(null);
+  }, [active?.id]);
+
+  useEffect(() => {
+    if (!desktopMode || !active) {
+      setWaveform(null);
+      setWaveformBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setWaveformBusy(true);
+    setWaveformError(null);
+    void loadWaveformPage(project, active.id, waveformPageIndex, WAVEFORM_PAGE_SIZE)
+      .then((page) => {
+        if (cancelled) return;
+        setWaveform(page);
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setWaveform(null);
+        setWaveformError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (!cancelled) setWaveformBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopMode, active?.id, waveformPageIndex, project.id]);
 
   useEffect(() => {
     setVoiceGain(String(project.audio.mix.voice_gain_db));
@@ -236,6 +279,19 @@ export default function AudioWorkspace({
   ) && [targetLufs, targetPeak].every(
     (value) => value.trim() === "" || Number.isFinite(Number(value)),
   );
+  const waveformPageCount = waveform
+    ? Math.max(1, Math.ceil(waveform.peak_count / waveform.page_size))
+    : 0;
+  const waveformStartSeconds = waveform
+    ? (waveform.start_peak * waveform.frames_per_peak) / waveform.sample_rate_hz
+    : 0;
+  const waveformEndSeconds = waveform
+    ? Math.min(
+        waveform.total_frames / waveform.sample_rate_hz,
+        ((waveform.start_peak + waveform.peaks.length) * waveform.frames_per_peak)
+          / waveform.sample_rate_hz,
+      )
+    : 0;
 
   return (
     <section className="audio-workspace" aria-label="Audio workspace">
@@ -314,6 +370,87 @@ export default function AudioWorkspace({
             <div><span>Loudness</span><strong>{active?.loudness_lufs == null ? "UNKNOWN" : active.loudness_lufs.toFixed(1) + " LUFS"}</strong></div>
             <div><span>True peak</span><strong>{active?.true_peak_dbfs == null ? "UNKNOWN" : active.true_peak_dbfs.toFixed(2) + " dBFS"}</strong></div>
             <div><span>Alignment</span><strong>{activeSegments.length ? activeSegments.length + " SEGMENTS" : "NONE"}</strong></div>
+          </section>
+
+          <section className="waveform-proxy-section" aria-label="Measured sample peak waveform">
+            <header>
+              <div>
+                <strong>Measured waveform proxy</strong>
+                <span>Sample-peak max-abs from immutable source bytes · not LUFS or true-peak evidence.</span>
+              </div>
+              {waveform && (
+                <span className="mono">
+                  {waveformStartSeconds.toFixed(2)}–{waveformEndSeconds.toFixed(2)} s
+                </span>
+              )}
+            </header>
+            {!active && (
+              <div className="waveform-proxy-state">
+                <AudioLines size={18} />
+                <span>No active measured take. No waveform is synthesized.</span>
+              </div>
+            )}
+            {active && !desktopMode && (
+              <div className="waveform-proxy-state">
+                <CircleDashed size={18} />
+                <span>Desktop runtime required for measured waveform proxy.</span>
+              </div>
+            )}
+            {active && desktopMode && waveformBusy && !waveform && (
+              <div className="waveform-proxy-state" role="status" aria-live="polite">
+                <CircleDashed size={18} />
+                <span>Decoding immutable source into a paged proxy…</span>
+              </div>
+            )}
+            {active && desktopMode && waveformError && (
+              <div className="waveform-proxy-state error" role="alert">
+                <CircleDashed size={18} />
+                <span>Waveform evidence unavailable: {waveformError}</span>
+              </div>
+            )}
+            {active && desktopMode && waveform && (
+              <>
+                <div
+                  className="waveform-proxy-bars"
+                  role="img"
+                  aria-label={"Measured sample-peak waveform page " + (waveform.page_index + 1) + " of " + waveformPageCount}
+                >
+                  {waveform.peaks.map((peak, index) => (
+                    <span
+                      key={waveform.start_peak + index}
+                      style={{ height: Math.max(2, Math.min(100, peak * 100)) + "%" }}
+                      title={(((waveform.start_peak + index) * waveform.frames_per_peak / waveform.sample_rate_hz).toFixed(3)) + " s · " + (peak * 100).toFixed(1) + "% sample peak"}
+                    />
+                  ))}
+                </div>
+                <footer className="waveform-proxy-footer">
+                  <span>
+                    {waveform.peaks.length.toLocaleString()} peaks loaded · {waveform.frames_per_peak.toLocaleString()} frames/peak
+                  </span>
+                  <div className="waveform-page-controls" aria-label="Waveform page controls">
+                    <button
+                      type="button"
+                      className="icon-action"
+                      aria-label="Previous waveform page"
+                      disabled={waveformBusy || !waveform.has_previous}
+                      onClick={() => setWaveformPageIndex((value) => Math.max(0, value - 1))}
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    <span className="mono">Page {waveform.page_index + 1} / {waveformPageCount}</span>
+                    <button
+                      type="button"
+                      className="icon-action"
+                      aria-label="Next waveform page"
+                      disabled={waveformBusy || !waveform.has_next}
+                      onClick={() => setWaveformPageIndex((value) => value + 1)}
+                    >
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                </footer>
+              </>
+            )}
           </section>
 
           <section className="audio-editor-section">

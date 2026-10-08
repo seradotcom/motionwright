@@ -3841,6 +3841,71 @@ select:focus {
 .audio-meter-ledger > div:last-child { border-right: 0; }
 .audio-meter-ledger span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
 .audio-meter-ledger strong { font-size: 12px; }
+.waveform-proxy-section {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.waveform-proxy-section > header {
+  min-height: 47px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.waveform-proxy-section > header > div { display: grid; gap: 3px; }
+.waveform-proxy-section > header span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.waveform-proxy-state {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.waveform-proxy-state.error { color: var(--danger); }
+.waveform-proxy-bars {
+  height: 124px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 12px;
+  overflow: hidden;
+  background:
+    linear-gradient(to bottom, transparent 49.5%, var(--border-soft) 49.5%, var(--border-soft) 50.5%, transparent 50.5%),
+    var(--bg);
+}
+.waveform-proxy-bars > span {
+  flex: 1 1 0;
+  min-width: 1px;
+  max-width: 7px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.82;
+}
+.waveform-proxy-footer {
+  min-height: 39px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 10px 5px 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 10px;
+}
+.waveform-page-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.waveform-page-controls .mono { min-width: 88px; text-align: center; }
 .audio-editor-section { border-bottom: 1px solid var(--border); }
 .audio-editor-section > header > div { display: grid; gap: 3px; }
 .audio-transcript-row {
