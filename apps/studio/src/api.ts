@@ -20,6 +20,7 @@ import type {
   Project,
   ProjectEvent,
   ProductionJobProjection,
+  ProductionRuntimeCompatibility,
   WaveformPage,
   WorkflowAction,
   WorkflowActionResult,
@@ -428,6 +429,27 @@ export async function exportOtio(project: Project, path: string): Promise<OtioEx
       effect_grant: grant.token,
     },
   });
+}
+
+export async function productionRuntimeCompatibility(
+  project: Project,
+): Promise<ProductionRuntimeCompatibility> {
+  if (isTauri()) {
+    return invoke<ProductionRuntimeCompatibility>("production_runtime_status", {
+      request: { project_id: project.id },
+    });
+  }
+  return {
+    status: "browser_demo",
+    reason:
+      "Browser demo mode cannot inspect an owner-provisioned Semwright executable. No runtime compatibility is fabricated.",
+    expected_version: fixtureBootstrap.native_sdk.version,
+    observed_version: null,
+    version_compatible: null,
+    pinned_revision: fixtureBootstrap.native_sdk.pinned_revision,
+    connection_identity: null,
+    executable_sha256: null,
+  };
 }
 
 export async function workflowOverview(project: Project): Promise<WorkflowOverview> {

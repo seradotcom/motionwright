@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyChange, workflowAction, workflowOverview } from "./api";
+import { applyChange, productionRuntimeCompatibility, workflowAction, workflowOverview } from "./api";
 import { fixtureProject } from "./fixture";
 import { rationalSeconds, seconds } from "./types";
 
@@ -120,6 +120,16 @@ describe("creative project fixture", () => {
       property: "opacity",
     });
     expect(removed.scenes[0].nodes[0].keyframes).toEqual([]);
+  });
+
+  it("does not fabricate Semwright runtime compatibility in browser mode", async () => {
+    const runtime = await productionRuntimeCompatibility(fixtureProject);
+    expect(runtime.status).toBe("browser_demo");
+    expect(runtime.observed_version).toBeNull();
+    expect(runtime.version_compatible).toBeNull();
+    expect(runtime.connection_identity).toBeNull();
+    expect(runtime.executable_sha256).toBeNull();
+    expect(runtime.pinned_revision).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it("does not fabricate canonical workflow evidence in browser mode", async () => {

@@ -1,5 +1,6 @@
 import { CircleCheck, CircleDashed, LockKeyhole, Package, ShieldCheck, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { productionRuntimeCompatibility } from "./api";
 import type {
   Bootstrap,
   Change,
@@ -9,6 +10,7 @@ import type {
   HandoffBinding,
   HandoffDirection,
   Project,
+  ProductionRuntimeCompatibility,
   RightsStatus,
 } from "./types";
 
@@ -65,6 +67,9 @@ export default function IntegrationsWorkspace({
 }) {
   const [draft, setDraft] = useState<ExtensionProfile>(newDraft);
   const [showForm, setShowForm] = useState(false);
+  const [runtimeCompatibility, setRuntimeCompatibility] =
+    useState<ProductionRuntimeCompatibility | null>(null);
+  const [runtimeProbeFailed, setRuntimeProbeFailed] = useState(false);
   const [handoffDraft, setHandoffDraft] = useState<HandoffBinding>(() => ({
     id: crypto.randomUUID(),
     system: "launchwright",
@@ -87,6 +92,91 @@ export default function IntegrationsWorkspace({
     () => new Set(project.extensions.filter((extension) => extension.enabled).map((extension) => extension.kind)),
     [project.extensions],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    setRuntimeCompatibility(null);
+    setRuntimeProbeFailed(false);
+    void productionRuntimeCompatibility(project)
+      .then((status) => {
+        if (!cancelled) setRuntimeCompatibility(status);
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimeProbeFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, nativeSdk.mode]);
+
+  const runtimePresentation = useMemo(() => {
+    if (runtimeProbeFailed) {
+      return {
+        status: "UNAVAILABLE",
+        tone: "stale" as const,
+        body: "The desktop bridge could not return the bounded Semwright runtime probe. No compatibility is assumed.",
+      };
+    }
+    if (!runtimeCompatibility) {
+      return {
+        status: "CHECKING",
+        tone: "unknown" as const,
+        body: "Validating the owner-provisioned connection and digest-pinned Semwright CLI without mutating project state.",
+      };
+    }
+    const sourcePin =
+      " Motionwright source pin " + runtimeCompatibility.pinned_revision.slice(0, 12) +
+      "… is dependency evidence, not a binary source-revision attestation.";
+    switch (runtimeCompatibility.status) {
+      case "ready":
+        return {
+          status: "READY",
+          tone: "current" as const,
+          body:
+            "Semwright CLI " + runtimeCompatibility.observed_version +
+            " matches supported " + runtimeCompatibility.expected_version +
+            "; executable " + (runtimeCompatibility.executable_sha256?.slice(0, 12) ?? "unknown") +
+            "… and connection " + (runtimeCompatibility.connection_identity?.slice(0, 12) ?? "unknown") +
+            "… were locally validated." + sourcePin,
+        };
+      case "incompatible":
+        return {
+          status: "INCOMPATIBLE",
+          tone: "stale" as const,
+          body: (runtimeCompatibility.reason ?? "The configured Semwright CLI version is not supported.") + sourcePin,
+        };
+      case "browser_demo":
+        return {
+          status: "BROWSER DEMO",
+          tone: "unknown" as const,
+          body: runtimeCompatibility.reason ?? "Runtime compatibility is unavailable outside the desktop shell.",
+        };
+      case "unconfigured":
+        return {
+          status: "UNCONFIGURED",
+          tone: "unknown" as const,
+          body: runtimeCompatibility.reason ?? "No canonical Semwright connection is configured.",
+        };
+      case "resource_mismatch":
+        return {
+          status: "WRONG RESOURCE",
+          tone: "stale" as const,
+          body: (runtimeCompatibility.reason ?? "The configured connection belongs to another project.") + sourcePin,
+        };
+      case "invalid":
+        return {
+          status: "INVALID",
+          tone: "stale" as const,
+          body: (runtimeCompatibility.reason ?? "The owner-provisioned connection failed validation.") + sourcePin,
+        };
+      case "unavailable":
+        return {
+          status: "UNAVAILABLE",
+          tone: "stale" as const,
+          body: (runtimeCompatibility.reason ?? "The bounded Semwright runtime probe could not complete.") + sourcePin,
+        };
+    }
+  }, [runtimeCompatibility, runtimeProbeFailed]);
 
   const saveDraft = async () => {
     if (!validDraft) return;
@@ -150,7 +240,13 @@ export default function IntegrationsWorkspace({
             name="Semwright Native SDK"
             status={nativeSdk.mode === "tauri" ? "CONNECTED" : "BROWSER DEMO"}
             tone={nativeSdk.mode === "tauri" ? "current" : "unknown"}
-            body={"Exact source pin " + nativeSdk.pinned_revision.slice(0, 12) + "…; application state and transactions remain Motionwright-owned."}
+            body={"Semwright " + nativeSdk.version + " · exact source pin " + nativeSdk.pinned_revision.slice(0, 12) + "…; application state and transactions remain Motionwright-owned."}
+          />
+          <BoundaryRow
+            name="Semwright production runtime"
+            status={runtimePresentation.status}
+            tone={runtimePresentation.tone}
+            body={runtimePresentation.body}
           />
           <BoundaryRow
             name="Remote Semwright Platform"

@@ -32,6 +32,8 @@ const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
 const MAX_ARGS_BYTES: usize = 220_000;
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
+const MAX_RUNTIME_VERSION_BYTES: usize = 4_096;
+const RUNTIME_PROBE_DEADLINE_SECS: u64 = 5;
 const DEFAULT_DEADLINE_SECS: u64 = 45;
 const MLT_DEADLINE_SECS: u64 = 330;
 const MOTION_RENDER_TIMEOUT_MS: u64 = 300_000;
@@ -393,10 +395,42 @@ where
     Ok(bytes)
 }
 
+fn parse_semwright_cli_version(stdout: &[u8]) -> NativeResult<String> {
+    if stdout.len() > MAX_RUNTIME_VERSION_BYTES {
+        return Err(backend(
+            "Semwright CLI version response exceeded the transport budget",
+        ));
+    }
+    let output = std::str::from_utf8(stdout)
+        .map_err(|_| backend("Semwright CLI version response is not UTF-8"))?
+        .trim();
+    let version = output
+        .strip_prefix("semwright ")
+        .filter(|value| !value.is_empty() && value.len() <= 64)
+        .ok_or_else(|| backend("Semwright CLI returned an invalid version response"))?;
+    if !version
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+    {
+        return Err(backend("Semwright CLI returned an invalid version token"));
+    }
+    Ok(version.to_owned())
+}
+
 #[derive(Debug, Clone)]
 pub struct BrokerResult {
     pub value: Value,
     pub request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemwrightRuntimeProbe {
+    pub connection_identity: String,
+    pub executable_sha256: String,
+    pub observed_version: String,
+    pub expected_version: String,
+    pub version_compatible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,6 +520,85 @@ impl ProductionClient {
 
     pub fn connection(&self) -> &ProductionConnection {
         &self.connection
+    }
+
+    pub async fn probe_runtime(
+        &self,
+        expected_version: &str,
+    ) -> NativeResult<SemwrightRuntimeProbe> {
+        if expected_version.is_empty()
+            || expected_version.len() > 64
+            || !expected_version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            return Err(invalid("Expected Semwright CLI version is invalid"));
+        }
+        self.connection.validate()?;
+        let connection_identity = self.connection.identity()?;
+
+        let mut child = Command::new(&self.connection.executable);
+        child
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = child.spawn().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
+        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| backend("Semwright CLI stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
+        let stdout_task = tokio::spawn(read_bounded(stdout));
+        let stderr_task = tokio::spawn(read_bounded(stderr));
+
+        let status = match timeout(
+            Duration::from_secs(RUNTIME_PROBE_DEADLINE_SECS),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|_| backend("Semwright CLI version probe failed"))?,
+            Err(_) => {
+                let _ = child.kill().await;
+                return Err(Error::new(
+                    ErrorCode::Timeout,
+                    "Semwright CLI version probe timed out",
+                ));
+            }
+        };
+        let stdout = stdout_task
+            .await
+            .map_err(|_| backend("Semwright CLI version output task failed"))?
+            .map_err(|_| backend("Semwright CLI version output could not be read"))?;
+        let stderr = stderr_task
+            .await
+            .map_err(|_| backend("Semwright CLI version diagnostic task failed"))?
+            .map_err(|_| backend("Semwright CLI version diagnostics could not be read"))?;
+        if stdout.len() > MAX_RUNTIME_VERSION_BYTES || stderr.len() > MAX_RUNTIME_VERSION_BYTES {
+            return Err(backend(
+                "Semwright CLI version response exceeded the transport budget",
+            ));
+        }
+        if !status.success() {
+            return Err(backend("Semwright CLI version probe failed"));
+        }
+
+        let observed_version = parse_semwright_cli_version(&stdout)?;
+        Ok(SemwrightRuntimeProbe {
+            connection_identity,
+            executable_sha256: self.connection.executable_sha256.clone(),
+            version_compatible: observed_version == expected_version,
+            observed_version,
+            expected_version: expected_version.to_owned(),
+        })
     }
 
     pub async fn execute(
@@ -1989,6 +2102,53 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             )
             .unwrap()
             .project
+    }
+
+    #[test]
+    fn runtime_version_parser_is_strict_and_bounded() {
+        assert_eq!(
+            parse_semwright_cli_version(b"semwright 1.0.0\n").unwrap(),
+            "1.0.0"
+        );
+        assert!(parse_semwright_cli_version(b"semwright\n").is_err());
+        assert!(parse_semwright_cli_version(b"other 1.0.0\n").is_err());
+        assert!(parse_semwright_cli_version(b"semwright 1.0.0 injected\n").is_err());
+        assert!(parse_semwright_cli_version(&vec![b'a'; MAX_RUNTIME_VERSION_BYTES + 1]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_probe_revalidates_digest_and_reports_version_compatibility() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut connection = fake_connection(&temp, "project:test".into());
+        fs::write(
+            &connection.executable,
+            b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'semwright 1.0.0\\n'\n  exit 0\nfi\nexit 2\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&connection.executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&connection.executable, permissions).unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+
+        let client = ProductionClient::new(connection.clone()).unwrap();
+        let probe = client.probe_runtime("1.0.0").await.unwrap();
+        assert_eq!(probe.observed_version, "1.0.0");
+        assert_eq!(probe.expected_version, "1.0.0");
+        assert!(probe.version_compatible);
+        assert_eq!(probe.executable_sha256, connection.executable_sha256);
+        assert_eq!(probe.connection_identity, connection.identity().unwrap());
+
+        let mismatch = client.probe_runtime("1.1.0").await.unwrap();
+        assert!(!mismatch.version_compatible);
+
+        fs::write(
+            &connection.executable,
+            b"#!/bin/sh\nprintf 'semwright 1.0.0\\n'\n",
+        )
+        .unwrap();
+        let error = client.probe_runtime("1.0.0").await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
     }
 
     #[test]

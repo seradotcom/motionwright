@@ -69,6 +69,8 @@ The dedicated Candidate Packages workflow builds release-shaped desktop bundles 
 
 Candidate artifacts are CI evidence, not releases. The workflow does not create a tag, GitHub Release, updater feed or automatic publication. Linux AppImage is the default no-root path; the Debian package is an explicit system-package alternative. Windows NSIS is fixed to current-user installation rather than relying on an implicit default. macOS users retain normal platform protections; no Gatekeeper bypass or ad-hoc "fix" is part of the product instructions.
 
+Renderer/runtime prerequisites remain independently owned. Motionwright does not silently install Semwright or renderer runtimes. In the desktop app, Integrations performs a bounded read-only compatibility check against the owner-provisioned Semwright connection: the executable digest is revalidated, the exact binary is queried with `--version`, and the observed version is compared with the `SOURCE_LOCK.json` version. This is compatibility evidence only; it is not signing, notarization or source-revision attestation.
+
 ## Media delivery
 
 Configuring a profile never creates a media-success claim. The current direct pinned MLT final-master path is deliberately narrower than the profile model and accepts H.264/AAC, 48 kHz, Rec.709, MP4 only; other combinations remain versioned intent and fail as unsupported until a native production path proves them.

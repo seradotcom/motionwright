@@ -23,6 +23,7 @@ use tauri::{Manager, State};
 use uuid::Uuid;
 
 const SEMWRIGHT_REVISION: &str = "8fa191250ae68274182570c65f067f7a60f85625";
+const SEMWRIGHT_VERSION: &str = "1.0.0";
 
 #[derive(Clone)]
 struct AppState {
@@ -34,6 +35,7 @@ struct AppState {
 struct NativeSdkInfo {
     application: &'static str,
     pinned_revision: &'static str,
+    version: &'static str,
     mode: &'static str,
 }
 
@@ -95,6 +97,23 @@ struct ModelRequestPreflightRequest {
 #[derive(Debug, Deserialize)]
 struct WorkflowOverviewRequest {
     project_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductionRuntimeStatusRequest {
+    project_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+struct ProductionRuntimeStatusResponse {
+    status: &'static str,
+    reason: Option<String>,
+    expected_version: &'static str,
+    observed_version: Option<String>,
+    version_compatible: Option<bool>,
+    pinned_revision: &'static str,
+    connection_identity: Option<String>,
+    executable_sha256: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +298,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
         native_sdk: NativeSdkInfo {
             application: motionwright_native::APP_ID,
             pinned_revision: SEMWRIGHT_REVISION,
+            version: SEMWRIGHT_VERSION,
             mode: "tauri",
         },
     })
@@ -334,6 +354,104 @@ fn model_request_preflight(
         .service
         .model_request_preflight(request.project_id, &request.draft)
         .map_err(sanitized)
+}
+
+#[tauri::command]
+async fn production_runtime_status(
+    state: State<'_, AppState>,
+    request: ProductionRuntimeStatusRequest,
+) -> Result<ProductionRuntimeStatusResponse, String> {
+    let Some(connection_path) = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION") else {
+        return Ok(ProductionRuntimeStatusResponse {
+            status: "unconfigured",
+            reason: Some(
+                "Set MOTIONWRIGHT_SEMWRIGHT_CONNECTION to an owner-provisioned canonical Semwright connection file."
+                    .into(),
+            ),
+            expected_version: SEMWRIGHT_VERSION,
+            observed_version: None,
+            version_compatible: None,
+            pinned_revision: SEMWRIGHT_REVISION,
+            connection_identity: None,
+            executable_sha256: None,
+        });
+    };
+
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let connection = match ProductionConnection::load(PathBuf::from(connection_path)) {
+        Ok(connection) => connection,
+        Err(_) => {
+            return Ok(ProductionRuntimeStatusResponse {
+                status: "invalid",
+                reason: Some(
+                    "The owner-provisioned Semwright connection failed local validation.".into(),
+                ),
+                expected_version: SEMWRIGHT_VERSION,
+                observed_version: None,
+                version_compatible: None,
+                pinned_revision: SEMWRIGHT_REVISION,
+                connection_identity: None,
+                executable_sha256: None,
+            });
+        }
+    };
+    if connection.resource != project.resource_key() {
+        return Ok(ProductionRuntimeStatusResponse {
+            status: "resource_mismatch",
+            reason: Some(
+                "The canonical Semwright connection is bound to another Motionwright resource."
+                    .into(),
+            ),
+            expected_version: SEMWRIGHT_VERSION,
+            observed_version: None,
+            version_compatible: None,
+            pinned_revision: SEMWRIGHT_REVISION,
+            connection_identity: None,
+            executable_sha256: Some(connection.executable_sha256.clone()),
+        });
+    }
+
+    let client = ProductionClient::new(connection)
+        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    match client.probe_runtime(SEMWRIGHT_VERSION).await {
+        Ok(probe) => Ok(ProductionRuntimeStatusResponse {
+            status: if probe.version_compatible {
+                "ready"
+            } else {
+                "incompatible"
+            },
+            reason: if probe.version_compatible {
+                None
+            } else {
+                Some(format!(
+                    "Semwright CLI {} is present, but Motionwright currently supports {}.",
+                    probe.observed_version, probe.expected_version
+                ))
+            },
+            expected_version: SEMWRIGHT_VERSION,
+            observed_version: Some(probe.observed_version),
+            version_compatible: Some(probe.version_compatible),
+            pinned_revision: SEMWRIGHT_REVISION,
+            connection_identity: Some(probe.connection_identity),
+            executable_sha256: Some(probe.executable_sha256),
+        }),
+        Err(_) => Ok(ProductionRuntimeStatusResponse {
+            status: "unavailable",
+            reason: Some(
+                "The digest-pinned Semwright CLI could not complete a bounded read-only version probe."
+                    .into(),
+            ),
+            expected_version: SEMWRIGHT_VERSION,
+            observed_version: None,
+            version_compatible: None,
+            pinned_revision: SEMWRIGHT_REVISION,
+            connection_identity: None,
+            executable_sha256: Some(client.connection().executable_sha256.clone()),
+        }),
+    }
 }
 
 #[tauri::command]
@@ -1126,6 +1244,7 @@ fn main() {
             issue_effect_grant,
             project_history,
             model_request_preflight,
+            production_runtime_status,
             workflow_overview,
             workflow_action,
             production_jobs,

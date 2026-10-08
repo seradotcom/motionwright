@@ -510,11 +510,32 @@ export interface ProjectEvent {
   created_at: string;
 }
 
+export type ProductionRuntimeStatus =
+  | "ready"
+  | "incompatible"
+  | "unconfigured"
+  | "invalid"
+  | "resource_mismatch"
+  | "unavailable"
+  | "browser_demo";
+
+export interface ProductionRuntimeCompatibility {
+  status: ProductionRuntimeStatus;
+  reason: string | null;
+  expected_version: string;
+  observed_version: string | null;
+  version_compatible: boolean | null;
+  pinned_revision: string;
+  connection_identity: string | null;
+  executable_sha256: string | null;
+}
+
 export interface Bootstrap {
   project: Project;
   native_sdk: {
     application: string;
     pinned_revision: string;
+    version: string;
     mode: "tauri" | "browser-demo";
   };
 }

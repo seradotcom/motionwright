@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-07",
+  "generated_at": "2026-10-08",
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
       "revision": "8fa191250ae68274182570c65f067f7a60f85625",
+      "version": "1.0.0",
       "branch_observed": "main",
       "native_sdk_package": "semwright-native-sdk",
       "driver_sdk_package": "semwright-driver-sdk",
