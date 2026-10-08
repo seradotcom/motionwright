@@ -24,7 +24,7 @@ The desktop editor is organized around:
 - **Jobs** — durable production receipts with execution state separated from CURRENT / STALE applicability.
 - **Workflows** — explicit Semwright recording, trace compilation, advisory patterns/suggestions, exact proposal acceptance, candidate verification, replay and promotion through canonical Broker/Policy gates; no background recording or parallel workflow store.
 - **Alternatives** — synchronized A/B/C comparison and explicit selection/merge into reviewable changes.
-- **Changes** — revision history, branches, semantic diffs, conflict-aware merges and restore-as-new-change.
+- **Changes** — recent-first paged committed event history, branches, semantic diffs, conflict-aware merges and restore-as-new-change (see [journal pagination](docs/history-pagination.md)).
 - **Dependencies** — canonical Project Graph projections and honest CURRENT / STALE / UNKNOWN status.
 - **Review** — technical findings separated from creative critique and comments anchored to frame/object/beat/revision.
 - **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, explicit native Motion Canvas segment production, fail-closed WebVTT/SRT sidecars, and portable project exports.

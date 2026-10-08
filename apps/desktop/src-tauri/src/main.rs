@@ -70,6 +70,13 @@ struct HistoryRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct RecentHistoryRequest {
+    project_id: Uuid,
+    through_revision: u64,
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
 struct ProductionJobsRequest {
     project_id: Uuid,
     limit: usize,
@@ -322,6 +329,17 @@ fn project_history(
     state
         .service
         .history(request.project_id, request.after_revision, request.limit)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
+fn project_history_recent(
+    state: State<'_, AppState>,
+    request: RecentHistoryRequest,
+) -> Result<Vec<ProjectEvent>, String> {
+    state
+        .service
+        .history_recent(request.project_id, request.through_revision, request.limit)
         .map_err(sanitized)
 }
 
@@ -1125,6 +1143,7 @@ fn main() {
             bootstrap,
             issue_effect_grant,
             project_history,
+            project_history_recent,
             model_request_preflight,
             workflow_overview,
             workflow_action,

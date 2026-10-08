@@ -1,6 +1,7 @@
 import { Braces, CircleDashed, Clock3, GitBranch, MessageSquareText, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { projectHistory } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { projectHistoryRecent } from "./api";
+import { HISTORY_PAGE_SIZE, validateRecentHistoryPage } from "./historyPaging";
 import type { Change, Project, ProjectEvent, ReviewKind, ReviewStatus, Scene } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
@@ -34,28 +35,73 @@ export function ChangesWorkspace({ project, commit }: { project: Project; commit
   const [events, setEvents] = useState<ProjectEvent[]>([]);
   const [branchName, setBranchName] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [hasEarlier, setHasEarlier] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyRetry, setHistoryRetry] = useState(0);
+  const inFlightEarlier = useRef(false);
+  // Ignore late pages after a project open, branch change or creative revision.
+  const requestKey = project.id + "/" + project.generation + "/" + project.revision;
+  const activeRequestKey = useRef(requestKey);
+  activeRequestKey.current = requestKey;
 
   const activeBranch = project.branches.find((branch) => branch.id === project.active_branch) ?? null;
 
   useEffect(() => {
     let cancelled = false;
+    const key = requestKey;
+    inFlightEarlier.current = false;
+    setEvents([]);
     setLoadingHistory(true);
+    setLoadingEarlier(false);
+    setHasEarlier(false);
     setHistoryError(null);
-    projectHistory(project, 0, 100)
-      .then((next) => {
-        if (!cancelled) setEvents(next);
+    projectHistoryRecent(project, project.revision, HISTORY_PAGE_SIZE + 1)
+      .then((returned) => {
+        if (cancelled || activeRequestKey.current !== key) return;
+        const page = validateRecentHistoryPage(returned, project.revision);
+        setEvents(page.events);
+        setHasEarlier(page.hasEarlier);
       })
       .catch((reason) => {
-        if (!cancelled) setHistoryError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled && activeRequestKey.current === key) {
+          setHistoryError(reason instanceof Error ? reason.message : String(reason));
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoadingHistory(false);
+        if (!cancelled && activeRequestKey.current === key) setLoadingHistory(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id, project.revision]);
+    return () => { cancelled = true; };
+  }, [project.id, project.generation, project.revision, historyRetry]);
+
+  const loadEarlier = async () => {
+    const lastRevision = events.at(-1)?.revision;
+    if (!hasEarlier || loadingHistory || inFlightEarlier.current || lastRevision == null || lastRevision < 2) return;
+    const key = requestKey;
+    const through = lastRevision - 1;
+    inFlightEarlier.current = true;
+    setLoadingEarlier(true);
+    setHistoryError(null);
+    try {
+      const returned = await projectHistoryRecent(project, through, HISTORY_PAGE_SIZE + 1);
+      const page = validateRecentHistoryPage(returned, through);
+      if (activeRequestKey.current !== key) return;
+      setEvents((current) => {
+        if (current.at(-1)?.revision !== lastRevision) return current;
+        return [...current, ...page.events];
+      });
+      setHasEarlier(page.hasEarlier);
+    } catch (reason) {
+      if (activeRequestKey.current === key) {
+        setHistoryError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (activeRequestKey.current === key) {
+        setLoadingEarlier(false);
+        inFlightEarlier.current = false;
+      }
+    }
+  };
 
   return (
     <div className="workspace-scroll table-view">
@@ -187,19 +233,25 @@ export function ChangesWorkspace({ project, commit }: { project: Project; commit
       <section className="changes-section">
         <div className="section-title-row">
           <span className="section-label">Committed event journal</span>
-          <span className="count-label">{loadingHistory ? "loading" : events.length + " loaded"}</span>
+          <span className="count-label" aria-live="polite">
+            {loadingHistory ? "Reading latest…" : events.length + " recent" + (hasEarlier ? " · older available" : "")}
+          </span>
         </div>
-        {historyError ? (
+        {historyError && (
           <div className="error-banner inline-error" role="alert">
-            <strong>History unavailable.</strong>
+            <strong>History read failed.</strong>
             <span>{historyError}</span>
+            <button className="button compact" type="button"
+              onClick={() => events.length > 0 ? void loadEarlier() : setHistoryRetry((value) => value + 1)}>
+              Retry history read
+            </button>
           </div>
-        ) : (
-          <div className="data-table" role="table" aria-label="Project event journal">
+        )}
+        <div className="data-table" role="table" aria-label="Project event journal">
             <div className="data-row event-row data-head" role="row">
               <span>Revision</span><span>Change</span><span>Target</span><span>Committed</span>
             </div>
-            {[...events].reverse().map((event) => (
+            {events.map((event) => (
               <div className="data-row event-row" role="row" key={event.revision}>
                 <span className="mono">r{event.revision}</span>
                 <span>{event.change.type.replaceAll("_", " ")}</span>
@@ -207,14 +259,30 @@ export function ChangesWorkspace({ project, commit }: { project: Project; commit
                 <span>{new Date(event.created_at).toLocaleString()}</span>
               </div>
             ))}
-            {!loadingHistory && events.length === 0 ? (
+            {!loadingHistory && !historyError && events.length === 0 ? (
               <div className="journal-empty">
                 <Braces size={16} />
                 <span>No committed changes are stored for this project yet.</span>
               </div>
             ) : null}
           </div>
-        )}
+        <div className="journal-pagination" role="group" aria-label="Journal history pagination">
+          <span className="journal-range" aria-live="polite">
+            {loadingHistory ? "Loading the newest committed changes" :
+              events.length === 0 ? "No history rows loaded" :
+              "Showing " + events.length + " committed revisions, newest first"}
+          </span>
+          {hasEarlier && (
+            <button className="button compact" type="button"
+              disabled={loadingHistory || loadingEarlier}
+              onClick={() => void loadEarlier()}>
+              {loadingEarlier ? "Reading earlier…" : "Load earlier changes"}
+            </button>
+          )}
+          {!hasEarlier && !loadingHistory && !historyError && events.length > 0 && (
+            <span className="journal-range">Beginning of recorded history</span>
+          )}
+        </div>
       </section>
     </div>
   );

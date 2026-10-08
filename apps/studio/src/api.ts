@@ -510,6 +510,31 @@ export async function renderMotionCanvas(
   });
 }
 
+// Most-recent-first keyset read, bounded to the same max 256 events as storage.
+export async function projectHistoryRecent(
+  project: Project,
+  throughRevision = project.revision,
+  limit = 101,
+): Promise<ProjectEvent[]> {
+  const bounded = Math.max(1, Math.min(256, Math.trunc(limit)));
+  if (!Number.isSafeInteger(throughRevision) || throughRevision < 0) {
+    throw new Error("invalid history revision cursor");
+  }
+  if (isTauri()) {
+    return invoke<ProjectEvent[]>("project_history_recent", {
+      request: {
+        project_id: project.id,
+        through_revision: throughRevision,
+        limit: bounded,
+      },
+    });
+  }
+  return structuredClone(browserEvents
+    .filter((event) => event.revision <= throughRevision)
+    .sort((left, right) => right.revision - left.revision)
+    .slice(0, bounded));
+}
+
 export async function projectHistory(
   project: Project,
   afterRevision = 0,
