@@ -346,7 +346,7 @@ test("delivery variants keep lineage, replan alternate aspect ratios and require
 
   await page.getByRole("button", { name: "Derive selected", exact: true }).click();
   await expect(page.locator(".delivery-truth-note").filter({ hasText: "Derived from Master 16:9" })).toBeVisible();
-  await expect(page.getByLabel("Framing")).toHaveValue("replan");
+  await expect(page.getByLabel("Framing", { exact: true })).toHaveValue("replan");
   await expect(page.getByLabel("Frame rate", { exact: true })).toHaveValue("30/1");
 
   await page.getByLabel("Profile name").fill("Portrait campaign");
@@ -358,7 +358,7 @@ test("delivery variants keep lineage, replan alternate aspect ratios and require
   await expect(page.getByRole("button", { name: /Portrait campaign/ })).toBeVisible();
   await expect(page.getByText(/original remains independently inspectable/)).toBeVisible();
 
-  await page.getByLabel("Framing").selectOption("crop");
+  await page.getByLabel("Framing", { exact: true }).selectOption("crop");
   await expect(page.getByText("Approve crop")).toBeVisible();
   await page.getByRole("button", { name: "Save profile", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("crop framing requires explicit approval");
