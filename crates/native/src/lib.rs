@@ -95,6 +95,10 @@ fn storage_error(error: StorageError) -> Error {
             ErrorCode::BackendFailed,
             "Motionwright storage schema is newer than this application",
         ),
+        StorageError::InvalidDerivedCache(_) => Error::new(
+            ErrorCode::BackendFailed,
+            "Motionwright derived cache validation failed",
+        ),
         StorageError::Sql(_) | StorageError::Io(_) => {
             Error::new(ErrorCode::BackendFailed, "Motionwright storage failed")
         }
