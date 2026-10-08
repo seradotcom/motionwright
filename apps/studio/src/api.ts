@@ -6,6 +6,8 @@ import type {
   CaptionExportResult,
   Change,
   DataClass,
+  EffectGrantReceipt,
+  EffectKind,
   LockKind,
   ModelContextDisclosure,
   ModelRequestDraft,
@@ -259,6 +261,37 @@ export async function modelRequestPreflight(
   };
 }
 
+async function issueEffectGrant(
+  effect: EffectKind,
+  project: Project | null,
+  subject: string,
+): Promise<EffectGrantReceipt> {
+  if (!isTauri()) {
+    throw new Error("Native effect grants require the Motionwright desktop runtime.");
+  }
+  return invoke<EffectGrantReceipt>("issue_effect_grant", {
+    request: {
+      effect,
+      project_id: project?.id ?? null,
+      generation: project?.generation ?? null,
+      revision: project?.revision ?? null,
+      subject: subject.trim(),
+    },
+  });
+}
+
+const workflowCommand = (action: WorkflowAction): string => ({
+  record_start: "workflow.record.start",
+  record_stop: "workflow.record.stop",
+  compile: "workflow.compile",
+  suggestion_compile: "workflow.suggestion.compile",
+  proposal_plan: "workflow.proposal.plan",
+  proposal_accept: "workflow.proposal.accept",
+  verify: "workflow.verify",
+  replay: "workflow.replay",
+  promote: "workflow.promote",
+})[action];
+
 export async function importAssetFile(
   project: Project,
   path: string,
@@ -268,11 +301,13 @@ export async function importAssetFile(
   if (!isTauri()) {
     throw new Error("Local asset import requires the Motionwright desktop runtime.");
   }
+  const grant = await issueEffectGrant("import_local", project, path);
   return invoke<Project>("import_asset_file", {
     request: {
       project_id: project.id,
       generation: project.generation,
       revision: project.revision,
+      effect_grant: grant.token,
       path,
       name: name ?? null,
       media_type: mediaType ?? null,
@@ -288,11 +323,13 @@ export async function importVoiceFile(
   if (!isTauri()) {
     throw new Error("Measured voice import requires the Motionwright desktop runtime.");
   }
+  const grant = await issueEffectGrant("import_local", project, path);
   return invoke<Project>("import_voice_file", {
     request: {
       project_id: project.id,
       generation: project.generation,
       revision: project.revision,
+      effect_grant: grant.token,
       path,
       name: null,
       media_type: null,
@@ -325,10 +362,14 @@ export async function exportProjectBundle(
   if (!isTauri()) {
     throw new Error("Portable project bundles require the Motionwright desktop runtime.");
   }
+  const grant = await issueEffectGrant("deliver_local", project, destination);
   return invoke<PortableBundleExport>("export_project_bundle", {
     request: {
       project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
       path: destination,
+      effect_grant: grant.token,
     },
   });
 }
@@ -346,8 +387,9 @@ export async function importProjectBundle(path: string): Promise<Project> {
   if (!isTauri()) {
     throw new Error("Portable project bundles require the Motionwright desktop runtime.");
   }
+  const grant = await issueEffectGrant("import_local", null, path);
   return invoke<Project>("import_project_bundle", {
-    request: { path },
+    request: { path, effect_grant: grant.token },
   });
 }
 
@@ -359,11 +401,15 @@ export async function exportCaptionSidecar(
   if (!isTauri()) {
     throw new Error("Caption sidecar export requires the Motionwright desktop runtime.");
   }
+  const grant = await issueEffectGrant("deliver_local", project, path);
   return invoke<CaptionExportResult>("export_caption_sidecar", {
     request: {
       project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
       profile_id: profileId,
       path,
+      effect_grant: grant.token,
     },
   });
 }
@@ -372,10 +418,14 @@ export async function exportOtio(project: Project, path: string): Promise<OtioEx
   if (!isTauri()) {
     throw new Error("OpenTimelineIO export requires the Motionwright desktop runtime.");
   }
+  const grant = await issueEffectGrant("deliver_local", project, path);
   return invoke<OtioExportResult>("export_otio", {
     request: {
       project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
       path,
+      effect_grant: grant.token,
     },
   });
 }
@@ -408,10 +458,17 @@ export async function workflowAction(
   if (!isTauri()) {
     throw new Error("Canonical workflow actions require the Motionwright desktop runtime.");
   }
+  const mutating = action !== "proposal_plan";
+  const grant = mutating
+    ? await issueEffectGrant("workflow_mutation", project, workflowCommand(action))
+    : null;
   return invoke<WorkflowActionResult>("workflow_action", {
     request: {
       project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
       action,
+      effect_grant: grant?.token ?? null,
       args,
     },
   });
@@ -438,12 +495,15 @@ export async function renderMotionCanvas(
   if (!isTauri()) {
     throw new Error("Canonical Motion Canvas production requires the Motionwright desktop runtime.");
   }
+  const requestId = crypto.randomUUID();
+  const grant = await issueEffectGrant("render_local", project, requestId);
   return invoke<MotionCanvasRenderEvidence>("render_motion_canvas", {
     request: {
       project_id: project.id,
       generation: project.generation,
       revision: project.revision,
-      request_id: crypto.randomUUID(),
+      request_id: requestId,
+      effect_grant: grant.token,
       deliverable_id: deliverableId,
       options,
     },
@@ -474,12 +534,14 @@ export async function projectHistory(
 export async function applyChange(project: Project, change: Change): Promise<Project> {
   const requestId = crypto.randomUUID();
   if (isTauri()) {
+    const grant = await issueEffectGrant("project_edit", project, requestId);
     return invoke<Project>("apply_change", {
       request: {
         project_id: project.id,
         generation: project.generation,
         revision: project.revision,
         request_id: requestId,
+        effect_grant: grant.token,
         change
       }
     });

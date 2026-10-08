@@ -1969,11 +1969,15 @@
     {
       "id": "CR-SEC-03",
       "area": "SEC",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
+        "apps/desktop/src-tauri/src/effect_grants.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/api.ts",
         "crates/native/src/production.rs",
         "crates/service/src/models.rs",
+        "docs/security/R30_EFFECT_GRANTS.md",
         "tooling/source_policy.py"
       ]
     },
