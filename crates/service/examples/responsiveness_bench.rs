@@ -82,7 +82,7 @@ fn canvas_node(scene_index: usize, node_index: usize) -> CanvasNode {
     CanvasNode {
         id: Uuid::now_v7(),
         name: format!("S{:02} object {:03}", scene_index + 1, node_index + 1),
-        kind: if node_index % 5 == 0 {
+        kind: if node_index.is_multiple_of(5) {
             "text".into()
         } else {
             "shape".into()
@@ -94,7 +94,9 @@ fn canvas_node(scene_index: usize, node_index: usize) -> CanvasNode {
         height: 54.0,
         rotation_deg: 0.0,
         opacity: 1.0,
-        text: (node_index % 5 == 0).then(|| format!("Object {}", node_index + 1)),
+        text: node_index
+            .is_multiple_of(5)
+            .then(|| format!("Object {}", node_index + 1)),
         coordinate_space: CoordinateSpace::ProjectPixels,
         z_index: i32::try_from(node_index).expect("bounded S-profile z-index"),
         style: NodeStyle::default(),
@@ -187,11 +189,7 @@ fn main() {
                         objective:
                             "Preserve authored timing while the inspector remains responsive."
                                 .into(),
-                        start: RationalTime::new(
-                            i64::try_from(beat_index).expect("bounded beat index"),
-                            1,
-                        )
-                        .unwrap(),
+                        start: RationalTime::new(i64::from(beat_index), 1).unwrap(),
                         duration: RationalTime::new(1, 1).unwrap(),
                     },
                 },
