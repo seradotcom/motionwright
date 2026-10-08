@@ -2,7 +2,9 @@ use crate::{
     film::{FilmBuildOptions, build_motion_canvas_segments},
     multi_renderer::{blender_export_path, build_blender_contribution, build_manim_plan},
 };
-use motionwright_domain::{AudioCodec, RevisionStamp, VideoCodec};
+use motionwright_domain::{
+    AudioCodec, OutputColorSpace, OutputContainer, RevisionStamp, VideoCodec,
+};
 use motionwright_manim_profile::ManimRenderProfile;
 use motionwright_service::StudioService;
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
@@ -985,16 +987,26 @@ impl ProductionCoordinator {
         if deliverable.video_codec != VideoCodec::H264
             || deliverable.audio_codec != AudioCodec::Aac
             || deliverable.audio_sample_rate_hz != 48_000
+            || deliverable.container != OutputContainer::Mp4
+            || deliverable.color_space != OutputColorSpace::Rec709
         {
             return Err(Error::new(
                 ErrorCode::Unsupported,
-                "Pinned MLT final-master path requires an H.264/AAC 48 kHz deliverable",
+                "Pinned MLT final-master path requires an H.264/AAC 48 kHz Rec.709 MP4 deliverable",
             ));
         }
         motion
             .frame_rate
             .validate()
             .map_err(|error| invalid(format!("MLT frame rate is invalid: {error}")))?;
+        if i64::from(motion.frame_rate.num) != deliverable.frame_rate.num
+            || i64::from(motion.frame_rate.den) != deliverable.frame_rate.den
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motion Canvas evidence frame rate does not match the selected deliverable profile",
+            ));
+        }
         if motion.segments.len() != 1 {
             return Err(Error::new(
                 ErrorCode::Unsupported,

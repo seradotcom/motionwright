@@ -1385,7 +1385,21 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                                 "audio_codec":{"type":"string","enum":["aac","pcm_s16_le","opus"]},
                                 "audio_sample_rate_hz":{"type":"integer","enum":[44100,48000,96000]},
                                 "brand_profile":{"anyOf":[{"type":"null"},{"type":"string","minLength":1,"maxLength":256}]},
-                                "cut_label":{"anyOf":[{"type":"null"},{"type":"string","minLength":1,"maxLength":256}]}
+                                "cut_label":{"anyOf":[{"type":"null"},{"type":"string","minLength":1,"maxLength":256}]},
+                                "parent_profile_id":{"anyOf":[{"type":"null"},{"type":"string","maxLength":64}]},
+                                "source_revision":{"anyOf":[{"type":"null"},{"type":"integer","minimum":0}]},
+                                "framing_strategy":{"type":"string","enum":["replan","crop"]},
+                                "crop_approved":{"type":"boolean"},
+                                "timing_locked":{"type":"boolean"},
+                                "voice_track_id":{"anyOf":[{"type":"null"},{"type":"string","maxLength":64}]},
+                                "text_overrides":{"type":"object","maxProperties":4096,"additionalProperties":{"type":"string","minLength":1,"maxLength":16384}},
+                                "included_scene_ids":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":64}},
+                                "protected_scene_ids":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":64}},
+                                "burn_in_captions":{"type":"boolean"},
+                                "frame_rate":{"type":"object","properties":{"num":{"type":"string","pattern":"^-?(0|[1-9][0-9]{0,18})$"},"den":{"type":"string","pattern":"^[1-9][0-9]{0,18}$"}},"required":["num","den"],"additionalProperties":false},
+                                "color_space":{"type":"string","enum":["rec709","display_p3","rec2020"]},
+                                "container":{"type":"string","enum":["mp4","mov","webm","mkv"]},
+                                "adaptation_notes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1000}}
                             },
                             "required":["id","name","width","height","language","captions","caption_format","video_codec","audio_codec","audio_sample_rate_hz","brand_profile","cut_label"],
                             "additionalProperties":false
@@ -1869,7 +1883,21 @@ mod tests {
                     "audio_codec": "aac",
                     "audio_sample_rate_hz": 48000,
                     "brand_profile": "launch",
-                    "cut_label": "social"
+                    "cut_label": "social",
+                    "parent_profile_id": null,
+                    "source_revision": null,
+                    "framing_strategy": "replan",
+                    "crop_approved": false,
+                    "timing_locked": true,
+                    "voice_track_id": null,
+                    "text_overrides": {},
+                    "included_scene_ids": [],
+                    "protected_scene_ids": [],
+                    "burn_in_captions": false,
+                    "frame_rate": {"num": "30", "den": "1"},
+                    "color_space": "rec709",
+                    "container": "mp4",
+                    "adaptation_notes": []
                 }
             }),
         )
@@ -1877,7 +1905,11 @@ mod tests {
         assert!(matches!(
             profile,
             Change::UpsertDeliverable {
-                profile: motionwright_domain::DeliverableProfile { id, .. }
+                profile: motionwright_domain::DeliverableProfile {
+                    id,
+                    timing_locked: true,
+                    ..
+                }
             } if id == profile_id
         ));
 

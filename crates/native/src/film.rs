@@ -1,5 +1,6 @@
 use motionwright_domain::{
-    BlendMode, CanvasNode, CoordinateSpace, Project, RationalTime, RendererKind, Scene,
+    BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy, Project,
+    RationalTime, RendererKind, Scene,
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
@@ -111,7 +112,37 @@ fn max_film_duration() -> NativeResult<RationalTime> {
         .map_err(|error| contract("Canonical Film duration bound is invalid", error))
 }
 
-fn flush_run<'a>(runs: &mut Vec<Vec<&'a Scene>>, current: &mut Vec<&'a Scene>) {
+fn variant_scene_sequence(
+    project: &Project,
+    profile: &DeliverableProfile,
+) -> NativeResult<Vec<Scene>> {
+    let source = if profile.included_scene_ids.is_empty() {
+        project.scenes.iter().collect::<Vec<_>>()
+    } else {
+        profile
+            .included_scene_ids
+            .iter()
+            .map(|scene_id| {
+                project
+                    .scenes
+                    .iter()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or_else(|| invalid("Deliverable cut references an unknown scene"))
+            })
+            .collect::<NativeResult<Vec<_>>>()?
+    };
+    let mut cursor = RationalTime::ZERO;
+    let mut output = Vec::with_capacity(source.len());
+    for scene in source {
+        let mut projected = scene.clone();
+        projected.start = cursor;
+        cursor = add(cursor, projected.duration, "Variant scene timing overflow")?;
+        output.push(projected);
+    }
+    Ok(output)
+}
+
+fn flush_run(runs: &mut Vec<Vec<Scene>>, current: &mut Vec<Scene>) {
     if !current.is_empty() {
         runs.push(std::mem::take(current));
     }
@@ -121,21 +152,17 @@ fn scene_span_cost(scene: &Scene) -> usize {
     1 + scene.beats.len().max(1)
 }
 
-fn motion_canvas_runs(project: &Project) -> NativeResult<Vec<Vec<&Scene>>> {
+fn motion_canvas_runs(
+    project: &Project,
+    profile: &DeliverableProfile,
+) -> NativeResult<Vec<Vec<Scene>>> {
+    let sequence = variant_scene_sequence(project, profile)?;
     let mut runs = Vec::new();
     let mut current = Vec::new();
-    let mut previous_end: Option<RationalTime> = None;
     let max_duration = max_film_duration()?;
 
-    for scene in &project.scenes {
-        let end = segment_end(scene)?;
-        if let Some(previous) = previous_end
-            && scene.start < previous
-        {
-            return Err(invalid("Project timeline contains overlapping scenes"));
-        }
-        previous_end = Some(end);
-
+    for scene in sequence {
+        let end = segment_end(&scene)?;
         if scene.renderer != RendererKind::MotionCanvas {
             flush_run(&mut runs, &mut current);
             continue;
@@ -150,14 +177,11 @@ fn motion_canvas_runs(project: &Project) -> NativeResult<Vec<Vec<&Scene>>> {
         let starts_new = if let Some(first) = current.first() {
             let last_end = segment_end(current.last().expect("run is nonempty"))?;
             let candidate_duration = sub(end, first.start, "Film segment duration underflow")?;
-            let span_cost = current
-                .iter()
-                .map(|entry| scene_span_cost(entry))
-                .sum::<usize>();
+            let span_cost = current.iter().map(scene_span_cost).sum::<usize>();
             scene.start != last_end
                 || candidate_duration > max_duration
                 || current.len() >= MAX_SEQUENCES
-                || span_cost + scene_span_cost(scene) > MAX_TEMPORAL_SPANS
+                || span_cost + scene_span_cost(&scene) > MAX_TEMPORAL_SPANS
         } else {
             false
         };
@@ -178,12 +202,56 @@ fn layer_id(order: i32) -> String {
     }
 }
 
-fn canonical_position(node: &CanvasNode, scale: f64, output: &OutputProfile) -> Point {
-    let width = node.width * scale;
-    let height = node.height * scale;
+#[derive(Debug, Clone, Copy)]
+struct LayoutProjection {
+    position_scale_x: f64,
+    position_scale_y: f64,
+    object_scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    enforce_safe_area: bool,
+}
+
+fn layout_projection(profile: &DeliverableProfile) -> LayoutProjection {
+    let output_width = f64::from(profile.width);
+    let output_height = f64::from(profile.height);
+    match profile.framing_strategy {
+        FramingStrategy::Replan => {
+            let scale_x = output_width / CANVAS_WIDTH;
+            let scale_y = output_height / CANVAS_HEIGHT;
+            LayoutProjection {
+                position_scale_x: scale_x,
+                position_scale_y: scale_y,
+                object_scale: scale_x.min(scale_y),
+                offset_x: 0.0,
+                offset_y: 0.0,
+                enforce_safe_area: true,
+            }
+        }
+        FramingStrategy::Crop => {
+            let scale = (output_width / CANVAS_WIDTH).max(output_height / CANVAS_HEIGHT);
+            LayoutProjection {
+                position_scale_x: scale,
+                position_scale_y: scale,
+                object_scale: scale,
+                offset_x: (output_width - CANVAS_WIDTH * scale) / 2.0,
+                offset_y: (output_height - CANVAS_HEIGHT * scale) / 2.0,
+                enforce_safe_area: false,
+            }
+        }
+    }
+}
+
+fn canonical_position(
+    node: &CanvasNode,
+    projection: LayoutProjection,
+    output: &OutputProfile,
+) -> Point {
+    let center_x = (node.x + node.width / 2.0) * projection.position_scale_x + projection.offset_x;
+    let center_y = (node.y + node.height / 2.0) * projection.position_scale_y + projection.offset_y;
     Point {
-        x: node.x * scale + width / 2.0 - f64::from(output.width) / 2.0,
-        y: node.y * scale + height / 2.0 - f64::from(output.height) / 2.0,
+        x: center_x - f64::from(output.width) / 2.0,
+        y: center_y - f64::from(output.height) / 2.0,
     }
 }
 
@@ -196,13 +264,20 @@ fn subject_id(node_id: Uuid, beat_scope: Option<Uuid>) -> String {
 
 fn validate_static_safe_area(
     node: &CanvasNode,
-    scale: f64,
+    projection: LayoutProjection,
     output: &OutputProfile,
 ) -> NativeResult<()> {
-    let left = node.x * scale;
-    let top = node.y * scale;
-    let right = left + node.width * scale;
-    let bottom = top + node.height * scale;
+    if !projection.enforce_safe_area {
+        return Ok(());
+    }
+    let center_x = (node.x + node.width / 2.0) * projection.position_scale_x + projection.offset_x;
+    let center_y = (node.y + node.height / 2.0) * projection.position_scale_y + projection.offset_y;
+    let width = node.width * projection.object_scale;
+    let height = node.height * projection.object_scale;
+    let left = center_x - width / 2.0;
+    let top = center_y - height / 2.0;
+    let right = center_x + width / 2.0;
+    let bottom = center_y + height / 2.0;
     let epsilon = 1e-6;
     if left + epsilon < output.safe_area.left
         || top + epsilon < output.safe_area.top
@@ -210,7 +285,7 @@ fn validate_static_safe_area(
         || bottom - epsilon > f64::from(output.height) - output.safe_area.bottom
     {
         return Err(unsupported(format!(
-            "Canvas node {} exceeds the deterministic Motionwright safe area",
+            "Canvas node {} exceeds the deterministic Motionwright safe area after variant replan",
             node.id
         )));
     }
@@ -266,6 +341,7 @@ fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResul
 fn text_styles(
     scenes: &[&Scene],
     font_family: &str,
+    object_scale: f64,
 ) -> NativeResult<(BTreeMap<u64, String>, BTreeMap<String, f64>)> {
     let mut sizes = BTreeSet::new();
     for scene in scenes {
@@ -298,7 +374,7 @@ fn text_styles(
     for (index, size) in ordered.into_iter().enumerate() {
         let id = format!("text-{index}");
         by_bits.insert(size.to_bits(), id.clone());
-        type_scale.insert(id, size);
+        type_scale.insert(id, size * object_scale);
     }
     if type_scale.is_empty() {
         type_scale.insert("body".into(), 16.0);
@@ -306,7 +382,7 @@ fn text_styles(
     Ok((by_bits, type_scale))
 }
 
-fn global_stroke(scenes: &[&Scene]) -> NativeResult<f64> {
+fn global_stroke(scenes: &[&Scene], object_scale: f64) -> NativeResult<f64> {
     let mut stroke: Option<f64> = None;
     for scene in scenes {
         for node in &scene.nodes {
@@ -329,7 +405,7 @@ fn global_stroke(scenes: &[&Scene]) -> NativeResult<f64> {
             }
         }
     }
-    Ok(stroke.unwrap_or(0.0))
+    Ok(stroke.unwrap_or(0.0) * object_scale)
 }
 
 fn layers(scene: &Scene) -> NativeResult<(Vec<Layer>, BTreeMap<i32, String>)> {
@@ -361,8 +437,8 @@ fn layers(scene: &Scene) -> NativeResult<(Vec<Layer>, BTreeMap<i32, String>)> {
 
 struct SubjectProjectionContext<'a> {
     text_style: &'a BTreeMap<u64, String>,
-    profile_language: &'a str,
-    scale: f64,
+    profile: &'a DeliverableProfile,
+    projection: LayoutProjection,
     output: &'a OutputProfile,
     font_family: &'a str,
 }
@@ -374,12 +450,12 @@ fn subject(
     beat_scope: Option<Uuid>,
 ) -> NativeResult<(Subject, Vec<VisualConstraint>)> {
     let text_style = context.text_style;
-    let profile_language = context.profile_language;
-    let scale = context.scale;
+    let profile_language = context.profile.language.as_str();
+    let projection = context.projection;
     let output = context.output;
     let font_family = context.font_family;
     validate_node_projection(node, font_family)?;
-    validate_static_safe_area(node, scale, output)?;
+    validate_static_safe_area(node, projection, output)?;
     let id = subject_id(node.id, beat_scope);
     let layer = layer_names
         .get(&node.z_index)
@@ -387,9 +463,11 @@ fn subject(
         .ok_or_else(|| invalid("Canvas node layer projection is missing"))?;
     let content = match node.kind.as_str() {
         "text" => {
-            let text = node
-                .text
-                .as_ref()
+            let text = context
+                .profile
+                .text_overrides
+                .get(&node.id)
+                .or(node.text.as_ref())
                 .filter(|text| !text.is_empty())
                 .ok_or_else(|| invalid(format!("Text node {} has no text", node.id)))?;
             if text.len() > 16_384 {
@@ -474,10 +552,10 @@ fn subject(
             layer,
             content,
             layout: SpatialIntent::Fixed {
-                position: canonical_position(node, scale, output),
+                position: canonical_position(node, projection, output),
                 size: Size {
-                    width: node.width * scale,
-                    height: node.height * scale,
+                    width: node.width * projection.object_scale,
+                    height: node.height * projection.object_scale,
                 },
             },
             initially_visible: true,
@@ -496,17 +574,18 @@ fn aspect(width: u32, height: u32) -> AspectFamily {
 }
 
 fn output_profile(
-    width: u32,
-    height: u32,
+    profile: &DeliverableProfile,
     frame_rate: Rate,
     scenes: &[&Scene],
-) -> NativeResult<(OutputProfile, f64)> {
-    if u64::from(width) * 1080 != u64::from(height) * 1920 {
-        return Err(unsupported(
-            "Canonical Motion Canvas projection currently requires a 16:9 deliverable; use a reframed branch for vertical or square output",
+) -> NativeResult<(OutputProfile, LayoutProjection)> {
+    if i64::from(frame_rate.num) != profile.frame_rate.num
+        || i64::from(frame_rate.den) != profile.frame_rate.den
+    {
+        return Err(invalid(
+            "Film frame rate must match the versioned deliverable profile",
         ));
     }
-    let scale = f64::from(width) / CANVAS_WIDTH;
+    let projection = layout_projection(profile);
     let safe_margin = scenes
         .iter()
         .map(|scene| scene.camera.safe_margin)
@@ -525,18 +604,18 @@ fn output_profile(
     }
     Ok((
         OutputProfile {
-            width,
-            height,
+            width: profile.width,
+            height: profile.height,
             frame_rate,
-            aspect: aspect(width, height),
+            aspect: aspect(profile.width, profile.height),
             safe_area: Insets {
-                top: f64::from(height) * safe_margin,
-                right: f64::from(width) * safe_margin,
-                bottom: f64::from(height) * safe_margin,
-                left: f64::from(width) * safe_margin,
+                top: f64::from(profile.height) * safe_margin,
+                right: f64::from(profile.width) * safe_margin,
+                bottom: f64::from(profile.height) * safe_margin,
+                left: f64::from(profile.width) * safe_margin,
             },
         },
-        scale,
+        projection,
     ))
 }
 
@@ -585,7 +664,8 @@ fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
 }
 
 struct ShotProjectionContext<'a> {
-    scale: f64,
+    profile: &'a DeliverableProfile,
+    projection: LayoutProjection,
     output: &'a OutputProfile,
     text_style: &'a BTreeMap<u64, String>,
     font_family: &'a str,
@@ -599,7 +679,6 @@ struct ShotIdentity {
 }
 
 fn projected_shot(
-    project: &Project,
     scene: &Scene,
     context: &ShotProjectionContext<'_>,
     identity: ShotIdentity,
@@ -607,18 +686,10 @@ fn projected_shot(
     let (layers, layer_names) = layers(scene)?;
     let mut subjects = Vec::with_capacity(scene.nodes.len());
     let mut visual_constraints = Vec::new();
-    let profile_language = project
-        .deliverables
-        .iter()
-        .find(|profile| {
-            profile.width == context.output.width && profile.height == context.output.height
-        })
-        .map(|profile| profile.language.as_str())
-        .unwrap_or("und");
     let subject_context = SubjectProjectionContext {
         text_style: context.text_style,
-        profile_language,
-        scale: context.scale,
+        profile: context.profile,
+        projection: context.projection,
         output: context.output,
         font_family: context.font_family,
     };
@@ -666,35 +737,33 @@ fn authored_beats_tile_scene(scene: &Scene) -> NativeResult<()> {
 
 fn build_segment(
     project: &Project,
-    scenes: &[&Scene],
+    scenes: &[Scene],
     segment_index: usize,
-    width: u32,
-    height: u32,
+    profile: &DeliverableProfile,
     options: &FilmBuildOptions,
     intents: &HashMap<Uuid, &SceneFilmIntent>,
 ) -> NativeResult<MotionCanvasSegment> {
     let first = scenes
         .first()
-        .copied()
         .ok_or_else(|| invalid("Cannot build an empty Motion Canvas segment"))?;
-    let last = scenes.last().copied().expect("segment is nonempty");
+    let last = scenes.last().expect("segment is nonempty");
     let start = first.start;
     let end = segment_end(last)?;
     let duration = sub(end, start, "Film segment duration underflow")?;
-    let (output, scale) = output_profile(width, height, options.frame_rate, scenes)?;
-    let (text_style, type_scale) = text_styles(scenes, &options.font_family)?;
-    let stroke = global_stroke(scenes)?;
+    let scene_refs = scenes.iter().collect::<Vec<_>>();
+    let (output, projection) = output_profile(profile, options.frame_rate, &scene_refs)?;
+    let (text_style, type_scale) =
+        text_styles(&scene_refs, &options.font_family, projection.object_scale)?;
+    let stroke = global_stroke(&scene_refs, projection.object_scale)?;
     let shot_context = ShotProjectionContext {
-        scale,
+        profile,
+        projection,
         output: &output,
         text_style: &text_style,
         font_family: &options.font_family,
     };
 
-    let span_capacity = scenes
-        .iter()
-        .map(|scene| scene_span_cost(scene))
-        .sum::<usize>();
+    let span_capacity = scenes.iter().map(scene_span_cost).sum::<usize>();
     let mut spans = Vec::with_capacity(span_capacity);
     let mut constraints = Vec::with_capacity(span_capacity.saturating_sub(scenes.len()));
     let mut sequences = Vec::with_capacity(scenes.len());
@@ -741,7 +810,6 @@ fn build_segment(
                 child: shot_span.clone(),
             });
             let shot = projected_shot(
-                project,
                 scene,
                 &shot_context,
                 ShotIdentity {
@@ -774,7 +842,6 @@ fn build_segment(
                     child: shot_span.clone(),
                 });
                 let shot = projected_shot(
-                    project,
                     scene,
                     &shot_context,
                     ShotIdentity {
@@ -881,19 +948,11 @@ pub fn build_motion_canvas_segments(
         .iter()
         .find(|profile| profile.id == deliverable_id)
         .ok_or_else(|| invalid("Deliverable profile not found"))?;
-    let runs = motion_canvas_runs(project)?;
+    let runs = motion_canvas_runs(project, deliverable)?;
     runs.iter()
         .enumerate()
         .map(|(index, scenes)| {
-            build_segment(
-                project,
-                scenes,
-                index,
-                deliverable.width,
-                deliverable.height,
-                options,
-                &intents,
-            )
+            build_segment(project, scenes, index, deliverable, options, &intents)
         })
         .collect()
 }
@@ -1263,5 +1322,125 @@ mod tests {
         let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn portrait_replan_projects_without_implicit_crop() {
+        let project = fixture_project();
+        let vertical = project
+            .deliverables
+            .iter()
+            .find(|profile| profile.name == "Vertical 9:16")
+            .unwrap();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let segments = build_motion_canvas_segments(&project, vertical.id, &options).unwrap();
+        assert_eq!(segments[0].film.output.width, 1080);
+        assert_eq!(segments[0].film.output.height, 1920);
+        assert_eq!(segments[0].film.output.aspect, AspectFamily::Portrait);
+        assert_eq!(segments[0].frame_count, 90);
+        assert!(realize(&segments[0].film).is_ok());
+    }
+
+    #[test]
+    fn localized_text_override_enters_canonical_film() {
+        let mut project = fixture_project();
+        let vertical_id = project.deliverables[1].id;
+        let text_node = project.scenes[0].nodes[0].id;
+        let mut vertical = project.deliverables[1].clone();
+        vertical.language = "es-MX".into();
+        vertical
+            .text_overrides
+            .insert(text_node, "Movimiento editable".into());
+        project
+            .apply_change(&Change::UpsertDeliverable { profile: vertical })
+            .unwrap();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let segments = build_motion_canvas_segments(&project, vertical_id, &options).unwrap();
+        let subject = &segments[0].film.sequences[0].beats[0].shots[0].subjects[0];
+        match &subject.content {
+            SubjectContent::Text { runs, language, .. } => {
+                assert_eq!(runs[0].text, "Movimiento editable");
+                assert_eq!(language, "es-MX");
+            }
+            other => panic!("expected text subject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn narrative_cut_reflows_selected_scenes_to_zero_based_timeline() {
+        let mut project = fixture_project();
+        let second = project.scenes[1].id;
+        let profile_id = project.deliverables[0].id;
+        let mut cut = project.deliverables[0].clone();
+        cut.included_scene_ids = vec![second];
+        cut.cut_label = Some("proof-only".into());
+        project
+            .apply_change(&Change::UpsertDeliverable { profile: cut })
+            .unwrap();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: vec![SceneFilmIntent {
+                scene_id: second,
+                role: NarrativeRole::Evidence,
+                archetype: Archetype::Statement,
+            }],
+        };
+        let segments = build_motion_canvas_segments(&project, profile_id, &options).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].scene_ids, vec![second]);
+        assert_eq!(segments[0].global_start, Rational::ZERO);
+        assert_eq!(segments[0].duration, Rational::new(1, 1).unwrap());
+        assert_eq!(segments[0].frame_count, 30);
+    }
+
+    #[test]
+    fn native_render_rejects_frame_rate_drift_from_profile() {
+        let project = fixture_project();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(24, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("versioned deliverable profile"));
     }
 }

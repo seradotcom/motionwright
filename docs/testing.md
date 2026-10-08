@@ -48,3 +48,10 @@ The report is deliberately incomplete where the product is incomplete. It record
 cache evidence as open until a real cache can report both avoided work and validation cost. Human
 feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
 comparative claims against other editors.
+
+
+## Variants and localization evidence lane
+
+The Variants and Localization workflow is the exact-source regression lane for delivery derivation. It runs domain invariants for crop approval, locale voice/timing separation, protected narrative cuts and dependency invalidation; canonical Film projection for portrait/localized/cut output; Native SDK contract tests; Studio unit/type/build; and the focused Chromium delivery-variant acceptance.
+
+That lane is deliberately separate from product-level human acceptance. A green workflow proves the implemented contracts for that SHA; it does not manufacture creative approval for an actual campaign or localized voice.

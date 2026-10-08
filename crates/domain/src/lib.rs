@@ -13,7 +13,7 @@ pub use integrations::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -388,6 +388,34 @@ pub struct DeliverableProfile {
     pub brand_profile: Option<String>,
     #[serde(default)]
     pub cut_label: Option<String>,
+    #[serde(default)]
+    pub parent_profile_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_revision: Option<u64>,
+    #[serde(default)]
+    pub framing_strategy: FramingStrategy,
+    #[serde(default)]
+    pub crop_approved: bool,
+    #[serde(default)]
+    pub timing_locked: bool,
+    #[serde(default)]
+    pub voice_track_id: Option<Uuid>,
+    #[serde(default)]
+    pub text_overrides: BTreeMap<Uuid, String>,
+    #[serde(default)]
+    pub included_scene_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub protected_scene_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub burn_in_captions: bool,
+    #[serde(default = "default_frame_rate")]
+    pub frame_rate: RationalTime,
+    #[serde(default)]
+    pub color_space: OutputColorSpace,
+    #[serde(default)]
+    pub container: OutputContainer,
+    #[serde(default)]
+    pub adaptation_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -478,6 +506,20 @@ impl Project {
                     audio_sample_rate_hz: default_audio_sample_rate_hz(),
                     brand_profile: None,
                     cut_label: None,
+                    parent_profile_id: None,
+                    source_revision: None,
+                    framing_strategy: FramingStrategy::Replan,
+                    crop_approved: false,
+                    timing_locked: false,
+                    voice_track_id: None,
+                    text_overrides: BTreeMap::new(),
+                    included_scene_ids: vec![],
+                    protected_scene_ids: vec![],
+                    burn_in_captions: false,
+                    frame_rate: default_frame_rate(),
+                    color_space: OutputColorSpace::Rec709,
+                    container: OutputContainer::Mp4,
+                    adaptation_notes: vec![],
                 },
                 DeliverableProfile {
                     id: Uuid::now_v7(),
@@ -492,6 +534,20 @@ impl Project {
                     audio_sample_rate_hz: default_audio_sample_rate_hz(),
                     brand_profile: None,
                     cut_label: None,
+                    parent_profile_id: None,
+                    source_revision: None,
+                    framing_strategy: FramingStrategy::Replan,
+                    crop_approved: false,
+                    timing_locked: false,
+                    voice_track_id: None,
+                    text_overrides: BTreeMap::new(),
+                    included_scene_ids: vec![],
+                    protected_scene_ids: vec![],
+                    burn_in_captions: false,
+                    frame_rate: default_frame_rate(),
+                    color_space: OutputColorSpace::Rec709,
+                    container: OutputContainer::Mp4,
+                    adaptation_notes: vec![],
                 },
                 DeliverableProfile {
                     id: Uuid::now_v7(),
@@ -506,6 +562,20 @@ impl Project {
                     audio_sample_rate_hz: default_audio_sample_rate_hz(),
                     brand_profile: None,
                     cut_label: None,
+                    parent_profile_id: None,
+                    source_revision: None,
+                    framing_strategy: FramingStrategy::Replan,
+                    crop_approved: false,
+                    timing_locked: false,
+                    voice_track_id: None,
+                    text_overrides: BTreeMap::new(),
+                    included_scene_ids: vec![],
+                    protected_scene_ids: vec![],
+                    burn_in_captions: false,
+                    frame_rate: default_frame_rate(),
+                    color_space: OutputColorSpace::Rec709,
+                    container: OutputContainer::Mp4,
+                    adaptation_notes: vec![],
                 },
             ],
             brief: Brief::default(),
@@ -584,6 +654,7 @@ impl Project {
             }
         }
         validate_deliverables(&self.deliverables)?;
+        validate_deliverable_context(self)?;
         self.brief.validate()?;
         self.narrative.validate()?;
         for beat in &self.narrative.beats {

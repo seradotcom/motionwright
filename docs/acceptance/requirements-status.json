@@ -1844,90 +1844,105 @@
     {
       "id": "CR-VARIANT-01",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
         "crates/domain/src/delivery.rs",
+        "crates/native/src/film.rs",
         "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-02",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
         "crates/domain/src/delivery.rs",
+        "crates/native/src/film.rs",
         "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-03",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
         "crates/domain/src/delivery.rs",
         "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        "docs/delivery.md",
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-04",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
         "crates/domain/src/delivery.rs",
+        "crates/native/src/film.rs",
         "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-05",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
         "crates/domain/src/delivery.rs",
-        "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        "docs/delivery.md",
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-06",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
         "crates/domain/src/delivery.rs",
+        "crates/native/src/production.rs",
         "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-07",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
+        "crates/domain/src/lib.rs",
         "crates/domain/src/delivery.rs",
         "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        ".github/workflows/variants-localization.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-VARIANT-08",
       "area": "VARIANT",
-      "implementation_assessment": "PARTIAL_OR_GAP",
+      "implementation_assessment": "EVIDENCE_PRESENT",
       "verification_status": "CI_PARTIAL",
       "evidence": [
-        "crates/domain/src/delivery.rs",
-        "apps/studio/src/DeliveryProfiles.tsx",
-        "docs/delivery.md"
-      ]
+        "crates/storage/src/lib.rs",
+        "apps/studio/src/App.tsx",
+        "docs/delivery.md",
+        ".github/workflows/project-portability.yml"
+      ],
+      "note": "Implementation evidence exists; exact-SHA CI supports the contract, while product-level acceptance remains independently gated."
     },
     {
       "id": "CR-SEC-01",

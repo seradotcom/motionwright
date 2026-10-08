@@ -1,0 +1,89 @@
+name: Variants and Localization
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/domain/**"
+      - "crates/native/**"
+      - "apps/studio/**"
+      - "docs/delivery.md"
+      - "docs/canonical-film.md"
+      - "docs/production.md"
+      - "docs/testing.md"
+      - "docs/acceptance/**"
+      - "tooling/acceptance_policy.py"
+      - ".github/workflows/variants-localization.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/domain/**"
+      - "crates/native/**"
+      - "apps/studio/**"
+      - "docs/delivery.md"
+      - "docs/canonical-film.md"
+      - "docs/production.md"
+      - "docs/testing.md"
+      - "docs/acceptance/**"
+      - "tooling/acceptance_policy.py"
+      - ".github/workflows/variants-localization.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  variant-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Public source policy
+        run: python3 tooling/source_policy.py
+      - name: Acceptance ledger policy
+        run: python3 tooling/acceptance_policy.py
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Delivery domain invariants
+        run: cargo test -p motionwright-domain delivery::tests --all-targets
+      - name: Native variant and SDK contracts
+        run: cargo test -p motionwright-native --lib
+      - name: Variant clippy
+        run: cargo clippy -p motionwright-domain -p motionwright-native --all-targets -- -D warnings
+
+  variant-studio:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Studio unit contracts
+        run: npm test
+      - name: Studio typecheck and build
+        run: npm run build
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Delivery variant browser acceptance
+        run: npx playwright test --grep "delivery variants"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: variants-localization-browser-evidence
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore

@@ -65,6 +65,20 @@ function freshProfile(index: number): DeliverableProfile {
     audio_sample_rate_hz: 48000,
     brand_profile: null,
     cut_label: null,
+    parent_profile_id: null,
+    source_revision: null,
+    framing_strategy: "replan",
+    crop_approved: false,
+    timing_locked: false,
+    voice_track_id: null,
+    text_overrides: {},
+    included_scene_ids: [],
+    protected_scene_ids: [],
+    burn_in_captions: false,
+    frame_rate: { num: "30", den: "1" },
+    color_space: "rec709",
+    container: "mp4",
+    adaptation_notes: [],
   };
 }
 
@@ -83,7 +97,6 @@ export default function DeliveryProfiles({
   const [sidecarPath, setSidecarPath] = useState("");
   const [otioPath, setOtioPath] = useState("");
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
-  const [frameRate, setFrameRate] = useState("30/1");
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
@@ -105,10 +118,25 @@ export default function DeliveryProfiles({
     );
   }, [project.generation, project.revision, selectedId]);
 
-  const motionScenes = useMemo(
-    () => project.scenes.filter((scene) => scene.renderer === "motion-canvas"),
-    [project.scenes],
-  );
+  const motionScenes = useMemo(() => {
+    const selectedSceneIds = selected?.included_scene_ids ?? [];
+    const included = selectedSceneIds.length > 0 ? new Set(selectedSceneIds) : null;
+    return project.scenes.filter(
+      (scene) => scene.renderer === "motion-canvas" && (!included || included.has(scene.id)),
+    );
+  }, [project.scenes, selected]);
+
+  const textNodes = useMemo(() => {
+    const selectedSceneIds = draft?.included_scene_ids ?? [];
+    const included = selectedSceneIds.length > 0 ? new Set(selectedSceneIds) : null;
+    return project.scenes
+      .filter((scene) => !included || included.has(scene.id))
+      .flatMap((scene) =>
+        scene.nodes
+          .filter((node) => node.kind === "text")
+          .map((node) => ({ scene, node })),
+      );
+  }, [draft?.included_scene_ids, project.scenes]);
 
   useEffect(() => {
     setSceneIntents((current) => Object.fromEntries(
@@ -116,23 +144,35 @@ export default function DeliveryProfiles({
     ));
   }, [motionScenes]);
 
-  const unknownTimings = useMemo(
-    () => project.audio.transcript.filter((segment) => segment.alignment.kind === "unknown").length,
-    [project.audio.transcript],
+  const profileTranscript = useMemo(
+    () => draft?.voice_track_id
+      ? project.audio.transcript.filter((segment) => segment.voice_track_id === draft.voice_track_id)
+      : project.audio.transcript,
+    [draft?.voice_track_id, project.audio.transcript],
   );
+  const transcriptTrackCount = useMemo(
+    () => new Set(profileTranscript.map((segment) => segment.voice_track_id)).size,
+    [profileTranscript],
+  );
+  const unknownTimings = useMemo(
+    () => profileTranscript.filter((segment) => segment.alignment.kind === "unknown").length,
+    [profileTranscript],
+  );
+  const parentProfile = draft?.parent_profile_id
+    ? project.deliverables.find((profile) => profile.id === draft.parent_profile_id) ?? null
+    : null;
+  const localizedVariant = Boolean(draft && parentProfile && draft.language !== parentProfile.language);
   const dirty = Boolean(selected && draft && JSON.stringify(selected) !== JSON.stringify(draft));
   const captionReady = Boolean(
     draft?.captions &&
-    project.audio.transcript.length > 0 &&
-    unknownTimings === 0,
+    profileTranscript.length > 0 &&
+    unknownTimings === 0 &&
+    (draft.voice_track_id !== null || transcriptTrackCount <= 1),
   );
   const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) => {
     const intent = sceneIntents[scene.id];
     return Boolean(intent?.role && intent?.archetype);
   });
-  const renderProfileCompatible = Boolean(
-    selected && selected.width * 9 === selected.height * 16,
-  );
   const nativePaletteReady = useMemo(() => {
     const names = new Set(project.visual_language.palette.map((token) => token.name.toLowerCase()));
     return (names.has("text") || names.has("ink")) &&
@@ -142,7 +182,6 @@ export default function DeliveryProfiles({
     desktopMode &&
     selected &&
     !dirty &&
-    renderProfileCompatible &&
     renderIntentsComplete &&
     nativePaletteReady &&
     fontFamily.trim() &&
@@ -167,6 +206,25 @@ export default function DeliveryProfiles({
     await commit({ type: "upsert_deliverable", profile });
     setSelectedId(profile.id);
   });
+
+  const deriveProfile = () => {
+    if (!selected) return;
+    void run("new", async () => {
+      const profile = structuredClone(selected);
+      profile.id = crypto.randomUUID();
+      profile.name = selected.name + " variant";
+      profile.parent_profile_id = selected.id;
+      profile.source_revision = project.revision;
+      profile.framing_strategy = "replan";
+      profile.crop_approved = false;
+      profile.timing_locked = true;
+      profile.adaptation_notes = [
+        "Derived from " + selected.name + " at revision r" + project.revision + ".",
+      ];
+      await commit({ type: "upsert_deliverable", profile });
+      setSelectedId(profile.id);
+    });
+  };
 
   const saveProfile = () => {
     if (!draft) return;
@@ -202,9 +260,10 @@ export default function DeliveryProfiles({
   const startNativeRender = () => {
     if (!selected || !renderReady) return;
     void run("render", async () => {
-      const [num, den] = frameRate.split("/").map(Number);
+      const num = Number(selected.frame_rate.num);
+      const den = Number(selected.frame_rate.den);
       if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
-        throw new Error("Choose a valid canonical frame rate.");
+        throw new Error("The saved delivery profile has an invalid canonical frame rate.");
       }
       const intents = motionScenes.map((scene) => {
         const intent = sceneIntents[scene.id];
@@ -240,9 +299,14 @@ export default function DeliveryProfiles({
           <strong>Output profiles</strong>
           <span>Versioned intent for frame, language, codecs and portable captions.</span>
         </div>
-        <button type="button" className="button" disabled={busy !== null} onClick={createProfile}>
-          <Plus size={14} /> New profile
-        </button>
+        <div className="delivery-editor-actions">
+          <button type="button" className="button" disabled={!selected || busy !== null} onClick={deriveProfile}>
+            <Plus size={14} /> Derive selected
+          </button>
+          <button type="button" className="button" disabled={busy !== null} onClick={createProfile}>
+            <Plus size={14} /> New profile
+          </button>
+        </div>
       </header>
 
       <div className="delivery-profile-layout">
@@ -277,6 +341,12 @@ export default function DeliveryProfiles({
               </span>
             </div>
 
+            {parentProfile && (
+              <div className="delivery-truth-note">
+                Derived from {parentProfile.name} · source revision r{draft.source_revision ?? "?"} · original remains independently inspectable.
+              </div>
+            )}
+
             <div className="delivery-field-grid">
               <label className="span-2">
                 <span className="field-label">Profile name</span>
@@ -293,6 +363,55 @@ export default function DeliveryProfiles({
               <label>
                 <span className="field-label">Language / locale</span>
                 <input value={draft.language} maxLength={64} onChange={(event) => setDraft({ ...draft, language: event.target.value })} />
+              </label>
+              <label>
+                <span className="field-label">Framing</span>
+                <select
+                  aria-label="Framing"
+                  value={draft.framing_strategy}
+                  onChange={(event) => {
+                    const framing = event.target.value as DeliverableProfile["framing_strategy"];
+                    setDraft({ ...draft, framing_strategy: framing, crop_approved: framing === "crop" ? draft.crop_approved : false });
+                  }}
+                >
+                  <option value="replan">Replan composition</option>
+                  <option value="crop">Approved crop</option>
+                </select>
+              </label>
+              <label>
+                <span className="field-label">Frame rate</span>
+                <select
+                  aria-label="Frame rate"
+                  value={draft.frame_rate.num + "/" + draft.frame_rate.den}
+                  onChange={(event) => {
+                    const [num, den] = event.target.value.split("/");
+                    setDraft({ ...draft, frame_rate: { num, den } });
+                  }}
+                >
+                  <option value="24/1">24 fps</option>
+                  <option value="25/1">25 fps</option>
+                  <option value="30000/1001">29.97 fps</option>
+                  <option value="30/1">30 fps</option>
+                  <option value="60000/1001">59.94 fps</option>
+                  <option value="60/1">60 fps</option>
+                </select>
+              </label>
+              <label>
+                <span className="field-label">Color space</span>
+                <select value={draft.color_space} onChange={(event) => setDraft({ ...draft, color_space: event.target.value as DeliverableProfile["color_space"] })}>
+                  <option value="rec709">Rec.709</option>
+                  <option value="display_p3">Display P3</option>
+                  <option value="rec2020">Rec.2020</option>
+                </select>
+              </label>
+              <label>
+                <span className="field-label">Container</span>
+                <select value={draft.container} onChange={(event) => setDraft({ ...draft, container: event.target.value as DeliverableProfile["container"] })}>
+                  <option value="mp4">MP4</option>
+                  <option value="mov">MOV</option>
+                  <option value="webm">WebM</option>
+                  <option value="mkv">Matroska</option>
+                </select>
               </label>
               <label>
                 <span className="field-label">Video codec</span>
@@ -321,6 +440,18 @@ export default function DeliveryProfiles({
                 </select>
               </label>
               <label>
+                <span className="field-label">Voice take</span>
+                <select
+                  value={draft.voice_track_id ?? ""}
+                  onChange={(event) => setDraft({ ...draft, voice_track_id: event.target.value || null })}
+                >
+                  <option value="">Unbound / single transcript only</option>
+                  {project.audio.voice_tracks.map((track) => (
+                    <option key={track.id} value={track.id}>{track.label} · {track.measured_duration.num}/{track.measured_duration.den}s</option>
+                  ))}
+                </select>
+              </label>
+              <label>
                 <span className="field-label">Cut label</span>
                 <input value={draft.cut_label ?? ""} maxLength={256} placeholder="e.g. social-short" onChange={(event) => setDraft({ ...draft, cut_label: event.target.value.trim() ? event.target.value : null })} />
               </label>
@@ -328,7 +459,140 @@ export default function DeliveryProfiles({
                 <span className="field-label">Brand profile</span>
                 <input value={draft.brand_profile ?? ""} maxLength={256} placeholder="Optional" onChange={(event) => setDraft({ ...draft, brand_profile: event.target.value.trim() ? event.target.value : null })} />
               </label>
+              <label className="delivery-inline-check">
+                <input
+                  type="checkbox"
+                  checked={draft.timing_locked}
+                  onChange={(event) => setDraft({ ...draft, timing_locked: event.target.checked })}
+                />
+                <span><strong>Lock source timing</strong><small>Reject changed measured VO duration instead of silently stretching it.</small></span>
+              </label>
+              <label className="delivery-inline-check">
+                <input
+                  type="checkbox"
+                  checked={draft.crop_approved}
+                  disabled={draft.framing_strategy !== "crop"}
+                  onChange={(event) => setDraft({ ...draft, crop_approved: event.target.checked })}
+                />
+                <span><strong>Approve crop</strong><small>Required only when framing is explicitly set to crop.</small></span>
+              </label>
+              <label className="span-2">
+                <span className="field-label">Adaptation notes · one decision per line</span>
+                <textarea
+                  rows={3}
+                  value={draft.adaptation_notes.join("\n")}
+                  placeholder="Why this variant differs from its parent."
+                  onChange={(event) => setDraft({
+                    ...draft,
+                    adaptation_notes: event.target.value.split("\n").map((value) => value.trim()).filter(Boolean),
+                  })}
+                />
+              </label>
             </div>
+
+            <section className="caption-export-panel" aria-label="Variant content">
+              <header>
+                <div>
+                  <strong>Variant content</strong>
+                  <span>Choose the narrative cut and protect scenes that must survive shortening.</span>
+                </div>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => setDraft({
+                    ...draft,
+                    included_scene_ids: draft.included_scene_ids.length > 0 ? [] : project.scenes.map((scene) => scene.id),
+                  })}
+                >
+                  {draft.included_scene_ids.length > 0 ? "Use full sequence" : "Customize cut"}
+                </button>
+              </header>
+              <div className="variant-scene-ledger">
+                {project.scenes.map((scene) => {
+                  const customCut = draft.included_scene_ids.length > 0;
+                  const included = !customCut || draft.included_scene_ids.includes(scene.id);
+                  const protectedScene = draft.protected_scene_ids.includes(scene.id);
+                  return (
+                    <div className="variant-scene-row" key={scene.id}>
+                      <div>
+                        <strong>{scene.name}</strong>
+                        <span>{scene.objective}</span>
+                      </div>
+                      <label className="caption-toggle">
+                        <input
+                          type="checkbox"
+                          checked={included}
+                          disabled={!customCut}
+                          onChange={(event) => {
+                            const ids = event.target.checked
+                              ? [...draft.included_scene_ids, scene.id]
+                              : draft.included_scene_ids.filter((id) => id !== scene.id);
+                            setDraft({ ...draft, included_scene_ids: ids });
+                          }}
+                        />
+                        Include
+                      </label>
+                      <label className="caption-toggle">
+                        <input
+                          type="checkbox"
+                          checked={protectedScene}
+                          onChange={(event) => {
+                            const ids = event.target.checked
+                              ? [...draft.protected_scene_ids, scene.id]
+                              : draft.protected_scene_ids.filter((id) => id !== scene.id);
+                            setDraft({ ...draft, protected_scene_ids: ids });
+                          }}
+                        />
+                        Protect
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+              {draft.included_scene_ids.length > 0 && draft.protected_scene_ids.some((id) => !draft.included_scene_ids.includes(id)) && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> A protected scene is outside this cut. Saving will remain blocked until it is included.</div>
+              )}
+            </section>
+
+            {(localizedVariant || Object.keys(draft.text_overrides).length > 0) && (
+              <section className="caption-export-panel" aria-label="Localized text">
+                <header>
+                  <div>
+                    <strong>Localized canvas text</strong>
+                    <span>Every text object is explicit for a locale derivative; native verification still enforces no truncation.</span>
+                  </div>
+                  <span className={localizedVariant ? "status-pill status-unknown" : "status-pill status-current"}>
+                    {localizedVariant ? "LOCALE VARIANT" : "OVERRIDES"}
+                  </span>
+                </header>
+                <div className="localized-text-ledger">
+                  {textNodes.map(({ scene, node }) => (
+                    <label key={node.id}>
+                      <span>
+                        <strong>{scene.name} · {node.name}</strong>
+                        <small>{node.text ?? "No source text"}</small>
+                      </span>
+                      <input
+                        value={draft.text_overrides[node.id] ?? ""}
+                        placeholder={localizedVariant ? "Required localized text" : "Optional override"}
+                        onChange={(event) => {
+                          const text_overrides = { ...draft.text_overrides };
+                          if (event.target.value) text_overrides[node.id] = event.target.value;
+                          else delete text_overrides[node.id];
+                          setDraft({ ...draft, text_overrides });
+                        }}
+                      />
+                    </label>
+                  ))}
+                </div>
+                {localizedVariant && textNodes.some(({ node }) => !draft.text_overrides[node.id]?.trim()) && (
+                  <div className="delivery-truth-note warning"><CircleDashed size={14} /> Localized derivatives require explicit text for every canvas text object.</div>
+                )}
+                {localizedVariant && parentProfile?.voice_track_id && draft.voice_track_id === parentProfile.voice_track_id && (
+                  <div className="delivery-truth-note warning"><CircleDashed size={14} /> Choose a locale-specific voice take. Parent-language timing cannot be relabeled as localized evidence.</div>
+                )}
+              </section>
+            )}
 
             <div className="delivery-editor-actions">
               <button type="button" className="button button-primary" disabled={!dirty || busy !== null} onClick={saveProfile}>
@@ -350,15 +614,8 @@ export default function DeliveryProfiles({
 
               <div className="delivery-field-grid">
                 <label>
-                  <span className="field-label">Frame rate</span>
-                  <select value={frameRate} onChange={(event) => setFrameRate(event.target.value)} disabled={busy !== null}>
-                    <option value="24/1">24 fps</option>
-                    <option value="25/1">25 fps</option>
-                    <option value="30000/1001">29.97 fps</option>
-                    <option value="30/1">30 fps</option>
-                    <option value="60000/1001">59.94 fps</option>
-                    <option value="60/1">60 fps</option>
-                  </select>
+                  <span className="field-label">Saved frame rate</span>
+                  <input value={selected.frame_rate.num + "/" + selected.frame_rate.den + " fps"} readOnly aria-readonly="true" />
                 </label>
                 <label>
                   <span className="field-label">Primary font</span>
@@ -446,8 +703,8 @@ export default function DeliveryProfiles({
               {dirty && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Save the selected output profile before rendering it.</div>
               )}
-              {!renderProfileCompatible && selected && (
-                <div className="delivery-truth-note warning"><CircleDashed size={14} /> Canonical Film currently requires a 16:9 profile; use a reframed branch for other aspect ratios.</div>
+              {selected.framing_strategy === "crop" && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> This profile uses an explicitly approved crop. Replan is the default for alternate aspect ratios.</div>
               )}
               {!nativePaletteReady && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> Native Motion Canvas production requires explicit ink/text and surface/background tokens in Visual language.</div>
@@ -471,10 +728,21 @@ export default function DeliveryProfiles({
                   <strong>Caption sidecar</strong>
                   <span>Generated only from transcript segments with known timing evidence.</span>
                 </div>
-                <label className="caption-toggle">
-                  <input type="checkbox" checked={draft.captions} onChange={(event) => setDraft({ ...draft, captions: event.target.checked })} />
-                  Captions
-                </label>
+                <div className="caption-toggle-group">
+                  <label className="caption-toggle">
+                    <input type="checkbox" checked={draft.captions} onChange={(event) => setDraft({ ...draft, captions: event.target.checked })} />
+                    Sidecar
+                  </label>
+                  <label className="caption-toggle">
+                    <input
+                      type="checkbox"
+                      checked={draft.burn_in_captions}
+                      disabled={!draft.captions}
+                      onChange={(event) => setDraft({ ...draft, burn_in_captions: event.target.checked })}
+                    />
+                    Burn-in
+                  </label>
+                </div>
               </header>
               <div className="caption-controls">
                 <label>
@@ -509,8 +777,11 @@ export default function DeliveryProfiles({
               {!desktopMode && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Desktop filesystem capability is required.</div>
               )}
-              {draft.captions && project.audio.transcript.length === 0 && (
-                <div className="delivery-truth-note"><CircleDashed size={14} /> No transcript segments exist; no caption file is implied.</div>
+              {draft.captions && profileTranscript.length === 0 && (
+                <div className="delivery-truth-note"><CircleDashed size={14} /> The selected voice take has no transcript segments; no caption file is implied.</div>
+              )}
+              {draft.captions && !draft.voice_track_id && transcriptTrackCount > 1 && (
+                <div className="delivery-truth-note warning"><CircleDashed size={14} /> Multiple transcript tracks exist. Bind this profile to one voice take before exporting captions.</div>
               )}
               {draft.captions && unknownTimings > 0 && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> {unknownTimings} transcript segment{unknownTimings === 1 ? "" : "s"} still have UNKNOWN timing.</div>

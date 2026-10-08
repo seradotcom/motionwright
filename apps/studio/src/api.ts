@@ -809,13 +809,104 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     case "upsert_deliverable": {
       assertUnlocked(next, projectResource(next), ["content"]);
       const profile = structuredClone(change.profile);
+      const frameRate = Number(profile.frame_rate.num) / Number(profile.frame_rate.den);
       if (
         !profile.name.trim() || profile.name.length > 160 ||
         !profile.language.trim() || profile.language.length > 64 ||
         !Number.isInteger(profile.width) || !Number.isInteger(profile.height) ||
         profile.width <= 0 || profile.height <= 0 || profile.width > 16384 || profile.height > 16384 ||
-        ![44100, 48000, 96000].includes(profile.audio_sample_rate_hz)
+        ![44100, 48000, 96000].includes(profile.audio_sample_rate_hz) ||
+        !Number.isFinite(frameRate) || frameRate <= 0 || frameRate > 240 ||
+        profile.adaptation_notes.length > 64 ||
+        profile.adaptation_notes.some((note) => !note.trim() || note.length > 1000)
       ) throw new Error("deliverable profile is invalid");
+      if (profile.parent_profile_id === profile.id) {
+        throw new Error("deliverable profile cannot derive from itself");
+      }
+      if ((profile.parent_profile_id === null) !== (profile.source_revision === null)) {
+        throw new Error("derived deliverable profiles require both parent and source revision");
+      }
+      if (profile.source_revision !== null && profile.source_revision > next.revision) {
+        throw new Error("deliverable source revision is newer than project state");
+      }
+      if (profile.parent_profile_id && profile.adaptation_notes.length === 0) {
+        throw new Error("derived deliverable profile requires at least one adaptation note");
+      }
+      if (profile.framing_strategy === "crop" && !profile.crop_approved) {
+        throw new Error("crop framing requires explicit approval");
+      }
+      if (profile.voice_track_id && !next.audio.voice_tracks.some((track) => track.id === profile.voice_track_id)) {
+        throw new Error("deliverable voice track does not exist");
+      }
+      const includedSceneIds = profile.included_scene_ids.length > 0
+        ? new Set(profile.included_scene_ids)
+        : null;
+      const textNodes = next.scenes
+        .filter((scene) => !includedSceneIds || includedSceneIds.has(scene.id))
+        .flatMap((scene) => scene.nodes.filter((node) => node.kind === "text"));
+      const allTextNodeIds = new Set(next.scenes.flatMap((scene) => scene.nodes).filter((node) => node.kind === "text").map((node) => node.id));
+      if (Object.keys(profile.text_overrides).some((nodeId) => !allTextNodeIds.has(nodeId))) {
+        throw new Error("deliverable text override targets an unknown text node");
+      }
+      const included = new Set(profile.included_scene_ids);
+      const protectedIds = new Set(profile.protected_scene_ids);
+      if (included.size !== profile.included_scene_ids.length || protectedIds.size !== profile.protected_scene_ids.length) {
+        throw new Error("deliverable scene lists cannot contain duplicates");
+      }
+      let lastSceneIndex = -1;
+      for (const sceneId of profile.included_scene_ids) {
+        const sceneIndex = next.scenes.findIndex((scene) => scene.id === sceneId);
+        if (sceneIndex < 0) throw new Error("deliverable cut references an unknown scene");
+        if (sceneIndex <= lastSceneIndex) throw new Error("deliverable cut must preserve approved project scene order");
+        lastSceneIndex = sceneIndex;
+      }
+      for (const sceneId of profile.protected_scene_ids) {
+        if (!next.scenes.some((scene) => scene.id === sceneId)) {
+          throw new Error("deliverable protected scene does not exist");
+        }
+        if (profile.included_scene_ids.length > 0 && !included.has(sceneId)) {
+          throw new Error("deliverable cut cannot omit a protected narrative scene");
+        }
+      }
+      const parent = profile.parent_profile_id
+        ? next.deliverables.find((candidate) => candidate.id === profile.parent_profile_id) ?? null
+        : null;
+      if (profile.parent_profile_id && !parent) {
+        throw new Error("deliverable parent profile does not exist");
+      }
+      if (parent && profile.language !== parent.language) {
+        if (parent.voice_track_id && profile.voice_track_id === parent.voice_track_id) {
+          throw new Error("localized deliverable cannot reuse the parent language voice track");
+        }
+        if (textNodes.some((node) => !profile.text_overrides[node.id]?.trim())) {
+          throw new Error("localized deliverable requires explicit text for every canvas text node in its cut");
+        }
+        if (profile.timing_locked && parent.voice_track_id) {
+          if (!profile.voice_track_id) {
+            throw new Error("localized deliverable with locked timing requires an explicit locale voice track");
+          }
+          const parentVoice = next.audio.voice_tracks.find((track) => track.id === parent.voice_track_id);
+          const localizedVoice = next.audio.voice_tracks.find((track) => track.id === profile.voice_track_id);
+          if (!parentVoice || !localizedVoice) throw new Error("deliverable voice track does not exist");
+          if (
+            parentVoice.measured_duration.num !== localizedVoice.measured_duration.num ||
+            parentVoice.measured_duration.den !== localizedVoice.measured_duration.den
+          ) {
+            throw new Error("localized deliverable cannot keep source timing when measured voice duration changes; re-time the variant or disable timing lock");
+          }
+        }
+      }
+      const lineage = new Map(next.deliverables.map((candidate) => [candidate.id, candidate]));
+      lineage.set(profile.id, profile);
+      const visited = new Set<string>();
+      let cursor = profile.parent_profile_id;
+      while (cursor) {
+        if (visited.has(cursor)) throw new Error("deliverable profile lineage contains a cycle");
+        visited.add(cursor);
+        const ancestor = lineage.get(cursor);
+        if (!ancestor) throw new Error("deliverable parent profile does not exist");
+        cursor = ancestor.parent_profile_id;
+      }
       const duplicate = next.deliverables.find(
         (candidate) => candidate.id !== profile.id && candidate.name.trim().toLowerCase() === profile.name.trim().toLowerCase(),
       );

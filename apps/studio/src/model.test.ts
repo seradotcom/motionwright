@@ -21,6 +21,9 @@ describe("creative project fixture", () => {
       "Square 1:1",
     ]);
     expect(fixtureProject.deliverables.every((profile) => profile.width > 0 && profile.height > 0)).toBe(true);
+    expect(fixtureProject.deliverables.every((profile) => profile.framing_strategy === "replan")).toBe(true);
+    expect(fixtureProject.deliverables.every((profile) => profile.frame_rate.num === "30" && profile.frame_rate.den === "1")).toBe(true);
+    expect(fixtureProject.deliverables.every((profile) => profile.container === "mp4" && profile.color_space === "rec709")).toBe(true);
   });
 
   it("never represents project truth only as color", () => {
