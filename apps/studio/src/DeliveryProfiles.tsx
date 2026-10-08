@@ -86,12 +86,18 @@ export default function DeliveryProfiles({
   project,
   commit,
   desktopMode,
+  renderEvidence,
+  onRenderEvidence,
 }: {
   project: Project;
   commit: Commit;
   desktopMode: boolean;
+  renderEvidence: MotionCanvasRenderEvidence | null;
+  onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
 }) {
-  const [selectedId, setSelectedId] = useState(project.deliverables[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState(() =>
+    project.deliverables.find((profile) => profile.id === renderEvidence?.deliverable_id)?.id
+      ?? project.deliverables[0]?.id ?? "");
   const selected = project.deliverables.find((profile) => profile.id === selectedId) ?? project.deliverables[0] ?? null;
   const [draft, setDraft] = useState<DeliverableProfile | null>(() => selected ? structuredClone(selected) : null);
   const [sidecarPath, setSidecarPath] = useState("");
@@ -100,7 +106,8 @@ export default function DeliveryProfiles({
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
-  const [renderEvidence, setRenderEvidence] = useState<MotionCanvasRenderEvidence | null>(null);
+  const visibleEvidence = renderEvidence?.generation === project.generation
+    && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
   const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "new" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -111,11 +118,7 @@ export default function DeliveryProfiles({
     setDraft(current ? structuredClone(current) : null);
     setSidecarPath("");
     setOtioLosses([]);
-    setRenderEvidence((currentEvidence) =>
-      currentEvidence?.generation === project.generation && currentEvidence.revision === project.revision
-        ? currentEvidence
-        : null,
-    );
+
   }, [project.generation, project.revision, selectedId]);
 
   const motionScenes = useMemo(() => {
@@ -282,7 +285,7 @@ export default function DeliveryProfiles({
         mono_font_family: monoFontFamily.trim(),
         scene_intents: intents,
       });
-      setRenderEvidence(result);
+      onRenderEvidence(result);
       const frames = result.segments.reduce((sum, segment) => sum + segment.frame_count, 0);
       setMessage(
         "Native Motion Canvas evidence recorded · " + result.segments.length +
@@ -712,12 +715,12 @@ export default function DeliveryProfiles({
               {motionScenes.length === 0 && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> This revision has no scenes assigned to Motion Canvas.</div>
               )}
-              {renderEvidence && (
+              {visibleEvidence && (
                 <div className="portable-plan" aria-label="Native render evidence">
-                  <div><span>Revision</span><strong className="mono">r{renderEvidence.revision}</strong></div>
-                  <div><span>Segments</span><strong>{renderEvidence.segments.length}</strong></div>
-                  <div><span>Frames</span><strong>{renderEvidence.segments.reduce((sum, segment) => sum + segment.frame_count, 0)}</strong></div>
-                  <div><span>Verification</span><strong>NATIVE · PASS</strong></div>
+                  <div><span>Revision</span><strong className="mono">r{visibleEvidence.revision}</strong></div>
+                  <div><span>Segments</span><strong>{visibleEvidence.segments.length}</strong></div>
+                  <div><span>Frames</span><strong>{visibleEvidence.segments.reduce((sum, segment) => sum + segment.frame_count, 0)}</strong></div>
+                  <div><span>Verification</span><strong>{visibleEvidence.revision === project.revision ? "NATIVE · PASS" : "STALE · HISTORICAL"}</strong></div>
                 </div>
               )}
             </section>
