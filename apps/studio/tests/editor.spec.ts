@@ -355,7 +355,7 @@ test("delivery variants keep lineage, replan alternate aspect ratios and require
   await page.getByLabel("Cut label").fill("social-vertical");
   await page.getByRole("button", { name: "Save profile", exact: true }).click();
 
-  await expect(page.getByRole("button", { name: /Portrait campaign/ })).toBeVisible();
+  await expect(page.locator(".delivery-profile-row").filter({ hasText: "Portrait campaign" })).toBeVisible();
   await expect(page.getByText(/original remains independently inspectable/)).toBeVisible();
 
   await page.getByLabel("Framing", { exact: true }).selectOption("crop");
