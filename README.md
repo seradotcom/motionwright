@@ -29,6 +29,10 @@ The desktop editor is organized around:
 - **Review** — technical findings separated from creative critique and comments anchored to frame/object/beat/revision.
 - **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, [read-only canonical Film preflight](docs/film-preflight.md), explicit native Motion Canvas segment production and [single-segment H.264/AAC mastering](docs/desktop-av-master.md) from measured voice with [bounded real MP4/AAC playback](docs/native-av-review.md) and [verified local MP4 delivery](docs/master-verified-export.md), fail-closed WebVTT/SRT sidecars, and portable project exports.
 
+## Product acceptance and independent evidence
+
+The public repository tracks 208 requirement IDs and 60 independent product acceptance IDs without publishing the private specification. Automated implementation tests do **not** promote acceptance cases to PASS. The [private review intake](docs/acceptance/REVIEW_INTAKE.md) creates source-SHA-bound, separately reviewed evidence records outside the public checkout, validates actual file SHA-256 and never self-certifies a result. Current independent acceptance remains `NOT_RUN` until executed and reviewed.
+
 ## Native SDK
 
 Motionwright pins Semwright exactly in [SOURCE_LOCK.json](SOURCE_LOCK.json). The Rust integration consumes the public `semwright-native-sdk` crate from that Git revision rather than depending on a private worktree path.
