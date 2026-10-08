@@ -2058,13 +2058,16 @@ dependencies = [
 name = "motionwright-desktop"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "motionwright-domain",
  "motionwright-native",
  "motionwright-service",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
+ "tempfile",
  "uuid",
 ]
 

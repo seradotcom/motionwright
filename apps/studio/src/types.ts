@@ -342,6 +342,12 @@ export interface MotionCanvasSegmentEvidence {
   artifact: Record<string, unknown>;
   verification: Record<string, unknown>;
 }
+export interface NativePreviewGrant {
+  token: string;
+  segment_id: string;
+  scene_ids: string[];
+  frame_count: number;
+}
 export interface MotionCanvasRenderEvidence {
   project_resource: string;
   generation: string;
@@ -349,6 +355,8 @@ export interface MotionCanvasRenderEvidence {
   deliverable_id: string;
   frame_rate: { num: number; den: number };
   segments: MotionCanvasSegmentEvidence[];
+  /** Desktop-session-only readback handles, not canonical render evidence. */
+  preview?: NativePreviewGrant[];
 }
 
 export interface MltAudioArtifact {
