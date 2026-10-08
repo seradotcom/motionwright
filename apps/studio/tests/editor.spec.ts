@@ -345,7 +345,7 @@ test("delivery variants keep lineage, replan alternate aspect ratios and require
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
 
   await page.getByRole("button", { name: "Derive selected", exact: true }).click();
-  await expect(page.getByText(/Derived from Master 16:9/)).toBeVisible();
+  await expect(page.locator(".delivery-truth-note").filter({ hasText: "Derived from Master 16:9" })).toBeVisible();
   await expect(page.getByLabel("Framing")).toHaveValue("replan");
   await expect(page.getByLabel("Frame rate", { exact: true })).toHaveValue("30/1");
 

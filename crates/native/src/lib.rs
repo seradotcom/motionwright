@@ -1396,7 +1396,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                                 "included_scene_ids":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":64}},
                                 "protected_scene_ids":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":64}},
                                 "burn_in_captions":{"type":"boolean"},
-                                "frame_rate":{"type":"object","properties":{"num":{"type":"integer","minimum":1},"den":{"type":"integer","minimum":1}},"required":["num","den"],"additionalProperties":false},
+                                "frame_rate":{"type":"object","properties":{"num":{"type":"string","pattern":"^-?(0|[1-9][0-9]{0,18})$"},"den":{"type":"string","pattern":"^[1-9][0-9]{0,18}$"}},"required":["num","den"],"additionalProperties":false},
                                 "color_space":{"type":"string","enum":["rec709","display_p3","rec2020"]},
                                 "container":{"type":"string","enum":["mp4","mov","webm","mkv"]},
                                 "adaptation_notes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1000}}
@@ -1894,7 +1894,7 @@ mod tests {
                     "included_scene_ids": [],
                     "protected_scene_ids": [],
                     "burn_in_captions": false,
-                    "frame_rate": {"num": 30, "den": 1},
+                    "frame_rate": {"num": "30", "den": "1"},
                     "color_space": "rec709",
                     "container": "mp4",
                     "adaptation_notes": []
