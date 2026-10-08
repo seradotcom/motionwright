@@ -130,12 +130,31 @@ export default function ProductionJobsWorkspace({
   const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshRef = useRef<() => void>(() => {});
+  // Survives React Strict Mode's effect cleanup/setup; it never caches a settled read.
+  const pendingReadRef = useRef<{
+    key: string;
+    promise: Promise<ProductionJobProjection[]>;
+  } | null>(null);
 
   useEffect(() => {
     let disposed = false;
     let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let latestJobs: ProductionJobProjection[] = [];
+    const requestKey = JSON.stringify([project.id, project.generation, project.revision]);
+
+    function readOnce(): Promise<ProductionJobProjection[]> {
+      const pending = pendingReadRef.current;
+      if (pending?.key === requestKey) return pending.promise;
+      const promise = productionJobs(project);
+      pendingReadRef.current = { key: requestKey, promise };
+      const release = () => {
+        if (pendingReadRef.current?.promise === promise) pendingReadRef.current = null;
+      };
+      // Observe both settlements without creating an unhandled rejection.
+      void promise.then(release, release);
+      return promise;
+    }
 
     function clearTimer() {
       if (timer !== null) window.clearTimeout(timer);
@@ -161,7 +180,7 @@ export default function ProductionJobsWorkspace({
       if (!initial) setRefreshing(true);
       let succeeded = false;
       try {
-        const next = await productionJobs(project);
+        const next = await readOnce();
         if (disposed) return;
         latestJobs = next;
         setJobs(next);
