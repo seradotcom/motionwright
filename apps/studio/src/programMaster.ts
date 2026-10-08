@@ -77,6 +77,14 @@ export function programMasterAtPlayhead(
     totalDuration += duration;
   }
   if (!selectedFound || !finitePositive(totalDuration)) return null;
+  const sceneStart = seconds(scene.start);
+  const sceneEnd = sceneStart + seconds(scene.duration);
+  if (!Number.isFinite(sceneStart) || !Number.isFinite(sceneEnd)
+    || playhead < sceneStart || playhead >= sceneEnd) {
+    // A selected scene whose clock does not contain the global playhead is
+    // not a truthful source for a decoded monitor frame.
+    return null;
+  }
   const nativeDuration = master.frame_count / fps;
   if (!finitePositive(nativeDuration)
     || Math.abs(nativeDuration - totalDuration) > 1 / fps + 1e-7) return null;

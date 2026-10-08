@@ -60,6 +60,8 @@ describe("source-bound Program AV monitor clock projection", () => {
     expect(programMasterAtPlayhead(project, first, project.deliverables[1], visual, av, 0)).toBeNull();
     expect(programMasterAtPlayhead({ ...project, revision: project.revision + 1 }, first, profile, visual, av, 0)).toBeNull();
     expect(programMasterAtPlayhead(project, project.scenes[2], profile, visual, av, 16)).toBeNull();
+    expect(programMasterAtPlayhead(project, second, profile, visual, av, 0)).toBeNull();
+    expect(programMasterAtPlayhead(project, first, profile, visual, av, 7)).toBeNull();
     expect(programMasterAtPlayhead(project, first, profile, visual, { ...av, motion_segment_id: "other" }, 0)).toBeNull();
   });
 
