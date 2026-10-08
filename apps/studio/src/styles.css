@@ -931,8 +931,17 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--unknown);
 }
+.preview-evidence svg { flex: 0 0 auto; }
+.preview-evidence.receipt-current { color: var(--success); }
+.preview-evidence.receipt-stale { color: var(--warning); }
+.preview-evidence.receipt-other_profile { color: var(--info); }
+.preview-footer .button.compact { min-height: 25px; flex: 0 0 auto; }
 
 .empty-stage,
 .empty-workspace {

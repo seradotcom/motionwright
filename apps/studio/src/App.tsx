@@ -53,6 +53,7 @@ import CanvasWorkspace from "./CanvasWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
+import { resolveSceneRenderReceipt } from "./renderReceipt";
 import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
@@ -61,6 +62,7 @@ import type {
   Bootstrap,
   Change,
   PortableBundlePlan,
+  MotionCanvasRenderEvidence,
   Project,
   ProjectState,
   RationalTime,
@@ -198,6 +200,8 @@ function PreviewSurface({
   rate,
   mode,
   profile,
+  renderEvidence,
+  onInspectRender,
 }: {
   scene: Scene | null;
   project: Project;
@@ -205,7 +209,10 @@ function PreviewSurface({
   rate: RationalTime;
   mode: TimecodeMode;
   profile: Project["deliverables"][number] | null;
+  renderEvidence: MotionCanvasRenderEvidence | null;
+  onInspectRender: () => void;
 }) {
+  const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
 
   return (
@@ -265,9 +272,31 @@ function PreviewSurface({
       <footer className="preview-footer">
         <span>{profile ? profile.width + " × " + profile.height : "No output profile selected"}</span>
         <span>{timebaseLabel(rate, mode)} · editorial display</span>
-        <span className="preview-evidence">
-          <CircleDashed size={13} /> No render evidence attached
+        <span className={"preview-evidence receipt-" + (receipt?.kind ?? "none")} aria-label="Scene native render receipt">
+          {receipt?.kind === "current" ? (
+            <>
+              <CircleCheck size={13} aria-hidden="true" />
+              Native segment receipt · {receipt.segment.frame_count} frames · r{receipt.revision} · metadata only
+            </>
+          ) : receipt?.kind === "stale" ? (
+            <>
+              <CircleDashed size={13} aria-hidden="true" />
+              STALE receipt r{receipt.revision} · project is r{project.revision}
+            </>
+          ) : receipt?.kind === "other_profile" ? (
+            <>
+              <CircleDashed size={13} aria-hidden="true" />
+              Receipt for {receipt.profileName} · different display profile
+            </>
+          ) : (
+            <><CircleDashed size={13} aria-hidden="true" /> No render evidence attached</>
+          )}
         </span>
+        {receipt && (
+          <button className="button compact" type="button" onClick={onInspectRender}>
+            Inspect receipt in Deliver
+          </button>
+        )}
       </footer>
     </section>
   );
@@ -532,11 +561,15 @@ function DeliverView({
   commit,
   desktopMode,
   onImported,
+  renderEvidence,
+  onRenderEvidence,
 }: {
   project: Project;
   commit: (change: Change) => Promise<void>;
   desktopMode: boolean;
   onImported: (project: Project) => void;
+  renderEvidence: MotionCanvasRenderEvidence | null;
+  onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
 }) {
   const [exportPath, setExportPath] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -609,7 +642,8 @@ function DeliverView({
         <span className="count-label">{project.deliverables.length} profiles</span>
       </header>
 
-      <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode} />
+      <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
+        renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence} />
 
       <section className="portable-project" aria-label="Portable project">
         <header className="portable-heading">
@@ -1681,6 +1715,7 @@ export default function App() {
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
   const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
   const [busy, setBusy] = useState(false);
@@ -1699,6 +1734,7 @@ export default function App() {
       setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
       setTimebaseProfileId(value.project.deliverables[0]?.id ?? null);
       setTimecodeMode("ndf");
+      setNativeRenderReceipt(null);
     } catch (reason) {
       setBootError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1903,7 +1939,8 @@ export default function App() {
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":
         return <PreviewSurface scene={selectedScene} project={project} playhead={playhead}
-          rate={timebaseRate} mode={displayMode} profile={selectedProfile} />;
+          rate={timebaseRate} mode={displayMode} profile={selectedProfile}
+          renderEvidence={nativeRenderReceipt} onInspectRender={() => setWorkspace("Deliver")} />;
       case "Jobs":
         return (
           <ProductionJobsWorkspace
@@ -1929,7 +1966,10 @@ export default function App() {
             project={project}
             commit={commit}
             desktopMode={boot.native_sdk.mode === "tauri"}
+            renderEvidence={nativeRenderReceipt}
+            onRenderEvidence={(result) => setNativeRenderReceipt(result)}
             onImported={(imported) => {
+              setNativeRenderReceipt(null);
               setBoot({ ...boot, project: imported });
               setSelectedSceneId(imported.scenes[0]?.id ?? null);
               setPlayhead(0);
