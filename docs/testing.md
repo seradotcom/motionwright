@@ -44,7 +44,7 @@ The desktop native MP4 delivery boundary accepts only a minted session grant for
 
 ## Canonical desktop AV mastering
 
-The desktop MLT AV workflow passes only an authenticated native frame-session token and an already-saved, measured 48 kHz stereo WAV voice take ID. Rust tests validate source CAS digests, refuse stale/mono/non-WAV/unbound inputs, reject WAV length/rate/symlink/tamper, and check rational audio/video duration to one sample. The browser tests use an explicitly synthetic Tauri bridge to prove the UI never supplies arbitrary source paths or master evidence. Actual Semwright Broker/MLT H.264/AAC MP4 output remains covered by the exact-SHA [native AV master E2E lane](desktop-av-master.md) and requires independent product acceptance.
+The desktop MLT AV workflow passes only an authenticated native frame-session token and an already-saved, measured 48 kHz stereo WAV voice take ID. Rust tests validate source CAS digests, refuse stale/mono/non-WAV/unbound inputs, reject WAV length/rate/symlink/tamper, verify deterministic staging and bounded idempotent reuse of exact source SHA, refuse corrupted prior files, and check rational audio/video duration to one sample. The browser tests use an explicitly synthetic Tauri bridge to prove the UI never supplies arbitrary source paths or master evidence. Actual Semwright Broker/MLT H.264/AAC MP4 output remains covered by the exact-SHA [native AV master E2E lane](desktop-av-master.md) and requires independent product acceptance.
 
 ## Source-verified rendered frame readback
 

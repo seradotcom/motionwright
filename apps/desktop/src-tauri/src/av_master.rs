@@ -1,4 +1,4 @@
-use motionwright_native::production::MltAudioArtifact;
+use motionwright_native::production::{MltAudioArtifact, verified_native_media_path};
 use motionwright_service::VerifiedMasterVoice;
 use sha2::{Digest, Sha256};
 use std::{
@@ -170,6 +170,7 @@ fn validate_bounded_wav(file: &mut File, actual_bytes: u64) -> Result<(), String
 pub fn stage_measured_wav(
     owner_output_root: &Path,
     voice: &VerifiedMasterVoice,
+    master_identity: &str,
 ) -> Result<MltAudioArtifact, String> {
     let root = fs::symlink_metadata(owner_output_root)
         .map_err(|_| "Canonical output root is inaccessible.")?;
@@ -191,7 +192,17 @@ pub fn stage_measured_wav(
         .rewind()
         .map_err(|_| "Measured voice could not be rewound.")?;
 
-    let relative = format!("mw-source-audio-{}.wav", Uuid::new_v4().simple());
+    let Some(identity_digest) = master_identity.strip_prefix("mwav-") else {
+        return Err("Canonical mastering identity is malformed.".into());
+    };
+    if identity_digest.len() != 64
+        || !identity_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("Canonical mastering identity is malformed.".into());
+    }
+    let relative = format!("mw-source-audio-{master_identity}.wav");
     let destination = owner_output_root.join(&relative);
     let mut open = OpenOptions::new();
     open.write(true).create_new(true);
@@ -200,9 +211,43 @@ pub fn stage_measured_wav(
         use std::os::unix::fs::OpenOptionsExt;
         open.mode(0o600);
     }
-    let mut output = open
-        .open(&destination)
-        .map_err(|_| "Native output audio could not be created safely.")?;
+    let mut output = match open.open(&destination) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Idempotent input path for the *same* canonical request digest.
+            // Refuse unverified/partial/symlinked/foreign artifacts rather than
+            // replacing them, so the Broker receives the same payload on retry.
+            let previous = verified_native_media_path(
+                owner_output_root,
+                &relative,
+                &voice.sha256,
+                MAX_AUDIO_SOURCE_BYTES,
+            )
+            .map_err(|_| {
+                "Previously staged source WAV is missing or changed; reconcile the native request before retrying."
+                    .to_string()
+            })?;
+            let metadata = fs::metadata(previous)
+                .map_err(|_| "Previously staged source WAV is unreadable.".to_string())?;
+            if metadata.len() != voice.size_bytes {
+                return Err("Previously staged source WAV byte count changed.".into());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err("Previously staged source WAV lost owner-only permissions.".into());
+                }
+            }
+            return Ok(MltAudioArtifact {
+                relative_path: relative,
+                sha256: voice.sha256.clone(),
+                sample_rate: 48_000,
+                channels: 2,
+            });
+        }
+        Err(_) => return Err("Native output audio could not be created safely.".into()),
+    };
     let transfer = (|| -> Result<(), String> {
         let mut hashed = Sha256::new();
         let mut count = 0_u64;
@@ -345,6 +390,17 @@ mod tests {
         assert!(validate_master_voice_timing(exact, 60, 30, 0).is_err());
     }
 
+    fn fixture_master_identity() -> String {
+        canonical_av_request_id(
+            Uuid::nil(),
+            Uuid::nil(),
+            12,
+            Uuid::nil(),
+            "reviewed-visual-input",
+            &"a".repeat(64),
+        )
+    }
+
     #[test]
     fn stages_exact_verified_wav_once_and_rejects_wrong_sha() {
         let root = tempfile::tempdir().unwrap();
@@ -357,7 +413,11 @@ mod tests {
             size_bytes: bytes.len() as u64,
             sha256: hex::encode(Sha256::digest(&bytes)),
         };
-        let artifact = stage_measured_wav(root.path(), &voice).unwrap();
+        let identity = fixture_master_identity();
+        let artifact = stage_measured_wav(root.path(), &voice, &identity).unwrap();
+        let repeated = stage_measured_wav(root.path(), &voice, &identity).unwrap();
+        assert_eq!(artifact.relative_path, repeated.relative_path);
+        assert_eq!(artifact.sha256, repeated.sha256);
         assert_eq!(artifact.sample_rate, 48_000);
         assert_eq!(artifact.channels, 2);
         assert_eq!(artifact.sha256, voice.sha256);
@@ -382,7 +442,54 @@ mod tests {
             sha256: "0".repeat(64),
             ..voice
         };
-        assert!(stage_measured_wav(root.path(), &tampered).is_err());
+        assert!(stage_measured_wav(root.path(), &tampered, &identity).is_err());
+    }
+
+    #[test]
+    fn refuses_corrupted_prior_stage_and_malformed_request_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let source_root = tempfile::tempdir().unwrap();
+        let bytes = wav_data();
+        let source = source_root.path().join("original.wav");
+        fs::write(&source, &bytes).unwrap();
+        let voice = VerifiedMasterVoice {
+            path: source,
+            size_bytes: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        };
+        let identity = fixture_master_identity();
+        let original = stage_measured_wav(root.path(), &voice, &identity).unwrap();
+        let path = root.path().join(original.relative_path);
+        let corrupted = b"interrupted-private-stage";
+        fs::write(&path, corrupted).unwrap();
+        assert!(stage_measured_wav(root.path(), &voice, &identity).is_err());
+        assert_eq!(fs::read(&path).unwrap(), corrupted);
+        assert!(stage_measured_wav(root.path(), &voice, "../../unsafe").is_err());
+        assert!(stage_measured_wav(root.path(), &voice, "mwav-no-hash").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_substituted_prior_master_stage() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let src_root = tempfile::tempdir().unwrap();
+        let bytes = wav_data();
+        let source = src_root.path().join("voice.wav");
+        fs::write(&source, &bytes).unwrap();
+        let voice = VerifiedMasterVoice {
+            path: source,
+            size_bytes: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        };
+        let identity = fixture_master_identity();
+        let first = stage_measured_wav(root.path(), &voice, &identity).unwrap();
+        let staged = root.path().join(first.relative_path);
+        let keep = root.path().join("preserved-existing-audio.wav");
+        fs::rename(&staged, &keep).unwrap();
+        symlink(&keep, &staged).unwrap();
+        assert!(stage_measured_wav(root.path(), &voice, &identity).is_err());
+        assert_eq!(fs::read(&keep).unwrap(), bytes);
     }
 
     #[test]
@@ -431,7 +538,7 @@ mod tests {
             size_bytes: bytes.len() as u64,
             sha256: hex::encode(Sha256::digest(&bytes)),
         };
-        assert!(stage_measured_wav(root.path(), &source).is_err());
+        assert!(stage_measured_wav(root.path(), &source, &fixture_master_identity()).is_err());
     }
 
     #[test]

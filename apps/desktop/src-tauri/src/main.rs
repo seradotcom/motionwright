@@ -920,24 +920,9 @@ async fn assemble_av_master(
     if connection.resource != project.resource_key() {
         return Err("Canonical Semwright output root belongs to another project.".into());
     }
-    let output_root = connection.output_root.clone();
-    let export_root = output_root.clone();
-    let service = state.service.clone();
-    let id = request.project_id;
-    let track = request.voice_track_id;
-    let base = expected.clone();
-    let audio = tauri::async_runtime::spawn_blocking(move || {
-        let source = service
-            .verified_master_voice(id, &base, track)
-            .map_err(sanitized)?;
-        stage_measured_wav(&output_root, &source)
-    })
-    .await
-    .map_err(|_| "Verified WAV preparation task failed.".to_string())??;
-
-    // Stable source-bound command identity, separate from the one-time UI
-    // effect token. Retrying the same logical master cannot silently create
-    // another canonical Driver Host mutation under a fresh random request ID.
+    // Source-bound native request identity is calculated *before* the WAV
+    // handoff. Otherwise a fresh staging name could accidentally alter the
+    // canonical Broker payload for a retry of the same logical master.
     let canonical_request_id = canonical_av_request_id(
         project.id,
         project.generation,
@@ -946,6 +931,21 @@ async fn assemble_av_master(
         &segment.fingerprint,
         &selected_voice.source_sha256,
     );
+    let output_root = connection.output_root.clone();
+    let export_root = output_root.clone();
+    let service = state.service.clone();
+    let id = request.project_id;
+    let track = request.voice_track_id;
+    let base = expected.clone();
+    let stable_identity = canonical_request_id.clone();
+    let audio = tauri::async_runtime::spawn_blocking(move || {
+        let source = service
+            .verified_master_voice(id, &base, track)
+            .map_err(sanitized)?;
+        stage_measured_wav(&output_root, &source, &stable_identity)
+    })
+    .await
+    .map_err(|_| "Verified WAV preparation task failed.".to_string())??;
     let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
         .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
     let evidence = coordinator
