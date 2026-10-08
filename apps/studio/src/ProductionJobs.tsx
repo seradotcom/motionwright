@@ -6,8 +6,9 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { productionJobs } from "./api";
+import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
 import type {
   ProductionJobProjection,
   ProductionJobState,
@@ -125,27 +126,84 @@ export default function ProductionJobsWorkspace({
 }) {
   const [jobs, setJobs] = useState<ProductionJobProjection[]>([]);
   const [loading, setLoading] = useState(desktopMode);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const refreshRef = useRef<() => void>(() => {});
 
   useEffect(() => {
-    let active = true;
+    let disposed = false;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let latestJobs: ProductionJobProjection[] = [];
+
+    function clearTimer() {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+    }
+
+    function scheduleRead() {
+      clearTimer();
+      if (!disposed && shouldAutoRecheckReceipts(
+        desktopMode, document.visibilityState === "visible", latestJobs,
+      )) {
+        timer = window.setTimeout(() => {
+          timer = null;
+          void readReceipts(false);
+        }, RECEIPT_RECHECK_MS);
+      }
+    }
+
+    async function readReceipts(initial: boolean) {
+      if (disposed || inFlight) return;
+      clearTimer();
+      inFlight = true;
+      if (!initial) setRefreshing(true);
+      let succeeded = false;
+      try {
+        const next = await productionJobs(project);
+        if (disposed) return;
+        latestJobs = next;
+        setJobs(next);
+        setLastReadAt(new Date().toISOString());
+        setError(null);
+        succeeded = true;
+      } catch (reason) {
+        if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
+        // Preserve the last successful snapshot, but stop automatic rereads on failure.
+      } finally {
+        inFlight = false;
+        if (!disposed) {
+          setLoading(false);
+          setRefreshing(false);
+          if (succeeded) scheduleRead();
+        }
+      }
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState !== "visible") {
+        clearTimer();
+      } else if (shouldAutoRecheckReceipts(desktopMode, true, latestJobs)) {
+        void readReceipts(false);
+      }
+    }
+
+    // Invalidate rows from the previous project or revision before the new read.
+    setJobs([]);
+    setLastReadAt(null);
     setError(null);
     setLoading(desktopMode);
-    productionJobs(project)
-      .then((next) => {
-        if (active) setJobs(next);
-      })
-      .catch((reason) => {
-        if (active) {
-          setJobs([]);
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    setRefreshing(false);
+    refreshRef.current = () => { void readReceipts(false); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    void readReceipts(true);
+
     return () => {
-      active = false;
+      disposed = true;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      refreshRef.current = () => {};
     };
   }, [project.id, project.generation, project.revision, desktopMode]);
 
@@ -159,9 +217,27 @@ export default function ProductionJobsWorkspace({
             execution, cancellation and runtime-state authority.
           </p>
         </div>
-        <span className="count-label" aria-live="polite">
-          {loading ? "Reading receipts…" : jobs.length + (jobs.length === 1 ? " job" : " jobs")}
-        </span>
+        <div className="jobs-heading-actions">
+          <span className="count-label" aria-live="polite">
+            {loading ? "Reading receipts…" : jobs.length + (jobs.length === 1 ? " job" : " jobs")}
+          </span>
+          <span className="jobs-read-at">
+            {lastReadAt ? "Local receipts read " + observedAt(lastReadAt) : "No successful receipt read yet"}
+          </span>
+          <button
+            type="button"
+            className="button compact"
+            aria-label="Refresh production receipts"
+            disabled={!desktopMode || loading || refreshing}
+            title={desktopMode
+              ? "Read persisted Motionwright receipts only; this does not query the driver."
+              : "Native receipt storage requires the desktop runtime."}
+            onClick={() => refreshRef.current()}
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+            {refreshing ? "Reading…" : "Refresh receipts"}
+          </button>
+        </div>
       </header>
 
       <div className="jobs-authority-strip">
@@ -170,7 +246,8 @@ export default function ProductionJobsWorkspace({
           <strong>Execution state and result applicability are separate.</strong>
           <span>
             A late successful render can be STALE. A cancellation request stays unconfirmed until
-            the canonical driver reports CANCELLED.
+            the canonical driver reports CANCELLED. This panel rereads local receipts while active
+            jobs are visible; it never queries or advances the native job itself.
           </span>
         </div>
       </div>
@@ -181,18 +258,21 @@ export default function ProductionJobsWorkspace({
           <div>
             <strong>Job receipts could not be read.</strong>
             <span>{error}</span>
+            {lastReadAt && <span>Last successful local receipt snapshot is still shown; it may be out of date.</span>}
           </div>
         </div>
       )}
 
-      {!error && !loading && jobs.length === 0 ? (
+      {!loading && jobs.length === 0 ? (
         <div className="jobs-empty">
           <CircleDashed size={20} aria-hidden="true" />
           <strong>No canonical render job receipts yet.</strong>
           <span>
-            {desktopMode
-              ? "Start production through the Semwright-backed production boundary to create traceable job evidence."
-              : "Browser demo mode intentionally does not fabricate runtime jobs or render evidence."}
+            {error
+              ? "Receipt read failed. Use Refresh receipts to try again; no driver action was dispatched."
+              : desktopMode
+                ? "Start production through the Semwright-backed production boundary to create traceable job evidence."
+                : "Browser demo mode intentionally does not fabricate runtime jobs or render evidence."}
           </span>
         </div>
       ) : (

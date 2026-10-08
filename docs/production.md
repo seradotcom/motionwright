@@ -41,4 +41,4 @@ The projection keeps execution state separate from result applicability. CANCEL_
 
 Only safe correlation metadata is copied into dispatch/error receipts for job commands: the job reference when one already exists. Render arguments, private logs, session contents and arbitrary filesystem paths are not added to the job projection. Progress and artifact indicators appear only when the canonical driver actually returned them.
 
-The same derived ledger is available to the desktop UI and through the Semwright Native SDK production-jobs observation scope. That scope exposes Motionwright-owned receipt history; it does not create runtime authority.
+The same derived ledger is available to the desktop UI and through the Semwright Native SDK production-jobs observation scope. That scope exposes Motionwright-owned receipt history; it does not create runtime authority. The visible-workspace reread policy, manual refresh semantics and failure boundaries are described in [local receipt rechecks](production-receipt-refresh.md).

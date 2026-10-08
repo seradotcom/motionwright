@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { fixtureBootstrap } from "../src/fixture";
 
 test("editor exposes real workspaces and browser-demo mutations", async ({ page }) => {
   await page.goto("/");
@@ -300,6 +301,8 @@ test("production jobs workspace never fabricates runtime evidence in browser dem
   await expect(page.getByText("No canonical render job receipts yet.", { exact: true })).toBeVisible();
   await expect(page.getByText(/Browser demo mode intentionally does not fabricate runtime jobs/)).toBeVisible();
   await expect(page.getByText(/A cancellation request stays unconfirmed until/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh production receipts" })).toBeDisabled();
+  await expect(page.getByText(/Local receipts read/)).toBeVisible();
 });
 
 test("portable project delivery is truthful in browser demo mode", async ({ page }) => {
@@ -576,4 +579,89 @@ test("review time ranges are validated and historical anchors do not imply renew
   await expect(page.locator(".critique-copy").filter({ hasText: "Check the full composite cut" })).toContainText(
     "Historical edit: this timestamp may no longer describe the same content.",
   );
+});
+
+test("desktop job receipts reread active jobs and preserve explicit manual refresh for terminal receipts", async ({ page }) => {
+  // Synthetic Tauri bridge: this tests the UI's read cadence, not actual driver status.
+  const job = {
+    job_ref: "job-test-42",
+    provider: "driver:motion-canvas",
+    root_request_id: "request-test-42",
+    generation: fixtureBootstrap.project.generation,
+    revision: fixtureBootstrap.project.revision,
+    state: "running",
+    cancellation_requested: false,
+    applicability: "current",
+    last_command: "render.status",
+    created_at: "2026-10-08T01:00:00Z",
+    last_observed_at: "2026-10-08T01:01:00Z",
+    local_observations: 2,
+    provider_generation: 3,
+    progress: { completed: 12, total: 60, message: null },
+    artifact_available: false,
+    result_available: false,
+    last_observation: "observed",
+  };
+  const boot = {
+    ...fixtureBootstrap,
+    native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" },
+  };
+
+  await page.clock.install();
+  await page.addInitScript(({ initialBoot, initialJob }) => {
+    const mock = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string) => Promise<unknown> };
+      __TEST_RECEIPTS__: { calls: number; jobs: Array<Record<string, unknown>> };
+    };
+    mock.__TEST_RECEIPTS__ = { calls: 0, jobs: [structuredClone(initialJob)] };
+    mock.__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "bootstrap") return structuredClone(initialBoot);
+        if (command === "production_jobs") {
+          mock.__TEST_RECEIPTS__.calls += 1;
+          return structuredClone(mock.__TEST_RECEIPTS__.jobs);
+        }
+        throw new Error("Unsupported synthetic command: " + command);
+      },
+    };
+  }, { initialBoot: boot, initialJob: job });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Jobs", exact: true }).click();
+
+  const ledger = page.getByRole("table", { name: "Canonical production job receipts" });
+  await expect(ledger).toContainText("RUNNING");
+  await expect(ledger).toContainText("Progress 12 / 60");
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as { __TEST_RECEIPTS__: { calls: number } }
+  ).__TEST_RECEIPTS__.calls)).toBe(1);
+  const revision = await page.locator(".revision-chip").first().innerText();
+
+  await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __TEST_RECEIPTS__: { jobs: Array<Record<string, unknown>> };
+    }).__TEST_RECEIPTS__;
+    mock.jobs[0].state = "succeeded";
+    mock.jobs[0].progress = { completed: 60, total: 60, message: null };
+    mock.jobs[0].result_available = true;
+  });
+  await page.clock.fastForward(12_500);
+  await expect(ledger).toContainText("SUCCEEDED");
+  await expect(ledger).toContainText("Progress 60 / 60");
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as { __TEST_RECEIPTS__: { calls: number } }
+  ).__TEST_RECEIPTS__.calls)).toBe(2);
+
+  await page.clock.fastForward(25_000);
+  expect(await page.evaluate(() => (
+    window as unknown as { __TEST_RECEIPTS__: { calls: number } }
+  ).__TEST_RECEIPTS__.calls)).toBe(2);
+
+  await page.evaluate(() => {
+    (window as unknown as {
+      __TEST_RECEIPTS__: { jobs: Array<Record<string, unknown>> };
+    }).__TEST_RECEIPTS__.jobs[0].state = "failed";
+  });
+  await page.getByRole("button", { name: "Refresh production receipts" }).click();
+  await expect(ledger).toContainText("FAILED");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 });
