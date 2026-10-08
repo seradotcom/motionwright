@@ -790,6 +790,50 @@ mod tests {
     }
 
     #[test]
+    fn model_scope_rejects_foreign_project_resources_without_disclosing_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("scope.sqlite3")).unwrap();
+        let first = store.create_named_project("First project").unwrap();
+        let second = store.create_named_project("Second project").unwrap();
+        let second = store
+            .apply(
+                second.id,
+                &RevisionStamp::from(&second),
+                "foreign-scene",
+                &Change::AddScene {
+                    name: "Foreign scene".into(),
+                    objective: "Hidden cross-project objective".into(),
+                    duration_seconds: 5,
+                },
+            )
+            .unwrap()
+            .project;
+
+        let result = build_model_request_preflight(
+            &store,
+            &first,
+            &ModelRequestDraft {
+                provider_kind: ModelProviderKind::ExternalAgent,
+                provider: "external-agent".into(),
+                model: "client-selected".into(),
+                resource_refs: vec![format!("scene:{}", second.scenes[0].id)],
+                data_classes: vec![DataClass::Text],
+                budget: InvocationBudget {
+                    max_calls: 1,
+                    max_tokens: 500,
+                    max_cost_microunits: None,
+                },
+            },
+        );
+
+        let error = result.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("unknown scene"));
+        assert!(!message.contains("Foreign scene"));
+        assert!(!message.contains("Hidden cross-project objective"));
+    }
+
+    #[test]
     fn incompatible_source_class_fails_closed_without_fallback() {
         let temp = tempfile::tempdir().unwrap();
         let mut store = Store::open(temp.path().join("classes.sqlite3")).unwrap();

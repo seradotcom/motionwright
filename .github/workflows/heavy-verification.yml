@@ -21,18 +21,36 @@ jobs:
       - name: Install coverage and audit tools
         run: |
           cargo install cargo-llvm-cov --locked
-          cargo install cargo-audit --locked
+          cargo install cargo-audit --version 0.22.2 --locked
       - name: Coverage
         run: |
           cargo llvm-cov --workspace --exclude motionwright-desktop --all-targets --lcov --output-path lcov.info
           cargo llvm-cov report
       - name: Dependency advisory audit
-        run: cargo audit
+        run: |
+          mkdir -p ci-evidence
+          set +e
+          cargo audit --json > ci-evidence/cargo-audit.json
+          audit_status=$?
+          set -e
+          python3 tooling/security_advisory_policy.py \
+            --audit-json ci-evidence/cargo-audit.json \
+            --output ci-evidence/security-advisory-policy.json
+          if [ "$audit_status" -ne 0 ]; then
+            echo "cargo audit reported a vulnerability; the policy evidence above is not a waiver."
+            exit "$audit_status"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: rust-coverage
           path: lcov.info
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-security-advisory-evidence
+          path: ci-evidence
+          if-no-files-found: ignore
 
   release-shaped-desktop:
     runs-on: ubuntu-24.04

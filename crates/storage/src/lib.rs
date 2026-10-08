@@ -63,6 +63,114 @@ pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_BLOBS: usize = 4096;
 const MAX_BUNDLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
+const MAX_SECRET_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+
+fn secret_token_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+fn has_prefixed_secret(bytes: &[u8], prefix: &[u8], min_suffix: usize) -> bool {
+    bytes
+        .windows(prefix.len())
+        .enumerate()
+        .any(|(index, window)| {
+            if window != prefix {
+                return false;
+            }
+            bytes[index + prefix.len()..]
+                .iter()
+                .take_while(|byte| secret_token_char(**byte))
+                .count()
+                >= min_suffix
+        })
+}
+
+fn contains_credential_like_material(bytes: &[u8]) -> bool {
+    let private_key = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
+    if bytes
+        .windows(private_key.len())
+        .any(|window| window == private_key)
+    {
+        return true;
+    }
+
+    for prefix in [b"ghp_".as_slice(), b"gho_", b"ghu_", b"ghs_"] {
+        if has_prefixed_secret(bytes, prefix, 20) {
+            return true;
+        }
+    }
+    for prefix in [b"xoxb-".as_slice(), b"xoxa-", b"xoxp-", b"xoxr-", b"xoxs-"] {
+        if has_prefixed_secret(bytes, prefix, 20) {
+            return true;
+        }
+    }
+    if has_prefixed_secret(bytes, b"sk-", 24) {
+        return true;
+    }
+    bytes.windows(20).any(|window| {
+        window.starts_with(b"AKIA")
+            && window[4..]
+                .iter()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+    })
+}
+
+fn ensure_secret_free_bytes(bytes: &[u8], context: &str) -> Result<()> {
+    if contains_credential_like_material(bytes) {
+        return Err(StorageError::InvalidBackup(format!(
+            "{context} contains credential-like material and cannot enter a portable bundle"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_backup_secret_free(backup: &ProjectBackup) -> Result<()> {
+    let encoded = serde_json::to_vec(backup)?;
+    if encoded.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+        return Err(StorageError::BlobTooLarge {
+            size: encoded.len() as u64,
+            limit: MAX_BUNDLE_MANIFEST_BYTES,
+        });
+    }
+    ensure_secret_free_bytes(&encoded, "portable project metadata")
+}
+
+fn media_type_requires_secret_scan(media_type: &str) -> bool {
+    let media_type = media_type.to_ascii_lowercase();
+    media_type.starts_with("text/")
+        || [
+            "json",
+            "javascript",
+            "typescript",
+            "python",
+            "rust",
+            "xml",
+            "svg",
+            "yaml",
+            "toml",
+            "shell",
+        ]
+        .iter()
+        .any(|needle| media_type.contains(needle))
+}
+
+fn project_blob_requires_secret_scan(project: &Project, digest: &str) -> bool {
+    project.assets.iter().any(|asset| {
+        asset.content_sha256.as_deref() == Some(digest)
+            && media_type_requires_secret_scan(&asset.media_type)
+    })
+}
+
+fn ensure_secret_free_file(path: &Path, context: &str) -> Result<()> {
+    let size = ensure_regular_file(path, context)?.len();
+    if size > MAX_SECRET_SCAN_BYTES {
+        return Err(StorageError::BlobTooLarge {
+            size,
+            limit: MAX_SECRET_SCAN_BYTES,
+        });
+    }
+    ensure_secret_free_bytes(&fs::read(path)?, context)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectSummary {
@@ -359,6 +467,7 @@ impl Store {
             return Err(StorageError::DestinationExists);
         }
         let backup = self.export_project(id)?;
+        ensure_backup_secret_free(&backup)?;
         let mut digests = BTreeSet::new();
         for asset in &backup.project.assets {
             let digest = asset.content_sha256.as_deref().ok_or_else(|| {
@@ -373,6 +482,9 @@ impl Store {
             let source = self.blob_path(&digest)?;
             if !source.is_file() {
                 return Err(StorageError::BlobMissing { digest });
+            }
+            if project_blob_requires_secret_scan(&backup.project, &digest) {
+                ensure_secret_free_file(&source, "portable text-like asset")?;
             }
             let descriptor = hash_file(&source)?;
             if descriptor.sha256 != digest {
@@ -465,6 +577,7 @@ impl Store {
                 "portable bundle contains too many blobs".into(),
             ));
         }
+        ensure_backup_secret_free(&manifest.backup)?;
         let project_plan = self.inspect_import(&manifest.backup)?;
         let mut expected = BTreeSet::new();
         for asset in &manifest.backup.project.assets {
@@ -500,6 +613,9 @@ impl Store {
                     size: total_blob_bytes,
                     limit: MAX_BUNDLE_TOTAL_BYTES,
                 });
+            }
+            if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
+                ensure_secret_free_file(&path, "portable text-like asset")?;
             }
             let descriptor = hash_file(&path)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
@@ -1374,6 +1490,104 @@ mod tests {
             destination.events_since(project.id, 0, 10).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn portable_bundle_rejects_credential_like_project_metadata_without_creating_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("source.sqlite3")).unwrap();
+        let token = format!("ghp_{}", "A".repeat(24));
+        let project = store
+            .create_named_project(&format!("Sensitive {token}"))
+            .unwrap();
+        let bundle = temp.path().join("portable");
+
+        let error = store
+            .export_project_bundle(project.id, &bundle)
+            .unwrap_err();
+        assert!(matches!(error, StorageError::InvalidBackup(_)));
+        assert!(!error.to_string().contains(&token));
+        assert!(!bundle.exists());
+    }
+
+    #[test]
+    fn portable_bundle_import_rejects_credential_like_metadata_before_project_creation() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let mut source = Store::open(source_dir.path().join("source.sqlite3")).unwrap();
+        let project = source.create_named_project("Safe export").unwrap();
+        let bundle = source_dir.path().join("portable");
+        source.export_project_bundle(project.id, &bundle).unwrap();
+
+        let manifest_path = bundle.join("manifest.json");
+        let mut manifest: ProjectBundleManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let token = format!("gho_{}", "C".repeat(24));
+        manifest.backup.project.title = format!("Imported {token}");
+        manifest.backup.payload_sha256 = backup_digest(
+            manifest.backup.format_version,
+            manifest.backup.source_storage_schema,
+            &manifest.backup.project,
+            &manifest.backup.events,
+        )
+        .unwrap();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let destination_dir = tempfile::tempdir().unwrap();
+        let mut destination =
+            Store::open(destination_dir.path().join("destination.sqlite3")).unwrap();
+        let error = destination.import_project_bundle(&bundle).unwrap_err();
+        assert!(matches!(error, StorageError::InvalidBackup(_)));
+        assert!(!error.to_string().contains(&token));
+        assert!(matches!(
+            destination.load_project(project.id),
+            Err(StorageError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn portable_bundle_rejects_credential_like_text_asset_without_creating_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("source.sqlite3")).unwrap();
+        let project = store.create_named_project("Safe metadata").unwrap();
+        let token = format!("sk-{}", "B".repeat(28));
+        let source = temp.path().join("notes.txt");
+        fs::write(
+            &source,
+            format!(
+                "fixture={token}
+"
+            ),
+        )
+        .unwrap();
+        let descriptor = store.ingest_blob_file(&source).unwrap();
+        let changed = store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "add-sensitive-text",
+                &Change::AddAsset {
+                    asset: Asset {
+                        id: Uuid::now_v7(),
+                        name: "notes.txt".into(),
+                        media_type: "text/plain".into(),
+                        content_sha256: Some(descriptor.sha256),
+                        source_revision: Some("fixture".into()),
+                    },
+                },
+            )
+            .unwrap();
+        let bundle = temp.path().join("portable");
+
+        let error = store
+            .export_project_bundle(changed.project.id, &bundle)
+            .unwrap_err();
+        assert!(matches!(error, StorageError::InvalidBackup(_)));
+        assert!(!error.to_string().contains(&token));
+        assert!(!bundle.exists());
     }
 
     #[test]

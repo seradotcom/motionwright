@@ -103,6 +103,41 @@ for path in ROOT.rglob("*"):
         if any(token in text for token in dynamic_code_tokens):
             errors.append(f"dynamic code or raw HTML execution primitive found: {rel}")
 
+    if rel.startswith((".github/workflows/", "apps/", "crates/", "tooling/")):
+        sandbox_bypass_tokens = [
+            "--no-" + "sandbox",
+            "--disable-" + "web-security",
+            "--disable-" + "setuid-sandbox",
+            "--disable-" + "seccomp-filter-sandbox",
+        ]
+        if any(token in text for token in sandbox_bypass_tokens):
+            errors.append(f"sandbox or host-protection bypass found: {rel}")
+
+    if rel.startswith(("crates/", "apps/desktop/src-tauri/src/")):
+        process_tokens = [
+            "std::process::" + "Command",
+            "tokio::process::" + "Command",
+            "Command::" + "new(",
+        ]
+        process_allowlist = {
+            "crates/native/src/production.rs",
+            "crates/driver-manim-community/src/bin/runtime_runner.rs",
+        }
+        if any(token in text for token in process_tokens) and rel not in process_allowlist:
+            errors.append(f"unreviewed first-party process execution primitive found: {rel}")
+
+        direct_network_tokens = [
+            "std::net::" + "TcpStream",
+            "std::net::" + "UdpSocket",
+            "tokio::net::" + "TcpStream",
+            "tokio::net::" + "UdpSocket",
+            "reqwest::" + "Client",
+            "hyper::" + "Client",
+            "ureq::" + "Agent",
+        ]
+        if any(token in text for token in direct_network_tokens):
+            errors.append(f"unreviewed first-party direct network primitive found: {rel}")
+
 license_text = (ROOT / "LICENSE").read_text()
 if "GNU AFFERO GENERAL PUBLIC LICENSE" not in license_text.upper():
     errors.append("LICENSE is not AGPL")

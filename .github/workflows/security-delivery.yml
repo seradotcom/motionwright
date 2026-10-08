@@ -10,6 +10,9 @@ on:
       - "crates/service/**"
       - "tooling/source_policy.py"
       - "tooling/release_manifest.py"
+      - "tooling/security_advisory_policy.py"
+      - "tooling/tests/**"
+      - "docs/security/known-rustsec-advisories.json"
       - "SOURCE_LOCK.json"
       - "Cargo.lock"
       - "apps/studio/package-lock.json"
@@ -17,6 +20,7 @@ on:
       - "THIRD_PARTY_NOTICES.md"
       - "docs/security.md"
       - ".github/workflows/security-delivery.yml"
+      - ".github/workflows/heavy-verification.yml"
   pull_request:
     paths:
       - "apps/desktop/src-tauri/**"
@@ -25,6 +29,9 @@ on:
       - "crates/service/**"
       - "tooling/source_policy.py"
       - "tooling/release_manifest.py"
+      - "tooling/security_advisory_policy.py"
+      - "tooling/tests/**"
+      - "docs/security/known-rustsec-advisories.json"
       - "SOURCE_LOCK.json"
       - "Cargo.lock"
       - "apps/studio/package-lock.json"
@@ -32,6 +39,7 @@ on:
       - "THIRD_PARTY_NOTICES.md"
       - "docs/security.md"
       - ".github/workflows/security-delivery.yml"
+      - ".github/workflows/heavy-verification.yml"
   workflow_dispatch:
 
 permissions:
@@ -51,6 +59,8 @@ jobs:
           python-version: "3.13"
       - name: Public source, WebView and credential policy
         run: python3 tooling/source_policy.py
+      - name: Security policy regressions
+        run: python3 -m unittest discover -s tooling/tests -p 'test_*.py'
       - name: Exact-source delivery manifest
         run: |
           mkdir -p ci-evidence
@@ -63,6 +73,40 @@ jobs:
           name: motionwright-delivery-manifest
           path: ci-evidence/delivery-manifest.json
           if-no-files-found: error
+
+  dependency-advisories:
+    needs: source-boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Enforce exact reviewed advisory set
+        run: |
+          mkdir -p ci-evidence
+          set +e
+          cargo audit --json > ci-evidence/cargo-audit.json
+          audit_status=$?
+          set -e
+          python3 tooling/security_advisory_policy.py \
+            --audit-json ci-evidence/cargo-audit.json \
+            --output ci-evidence/security-advisory-policy.json
+          if [ "$audit_status" -ne 0 ]; then
+            echo "cargo audit reported a vulnerability; the reviewed warning policy is not a waiver."
+            exit "$audit_status"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: motionwright-security-advisory-evidence
+          path: ci-evidence
+          if-no-files-found: ignore
 
   controlled-imports:
     needs: source-boundary
