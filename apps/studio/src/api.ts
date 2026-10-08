@@ -634,6 +634,32 @@ export async function exportVerifiedNativeMaster(
   });
 }
 
+/** Read only a small, exact SHA-256 verified native master through a
+ * session token. Larger masters remain available through streamed disk export.
+ */
+export async function readVerifiedNativeAvReview(
+  project: Project,
+  exportToken: string,
+): Promise<Uint8Array> {
+  if (!isTauri()) throw new Error("Native AV review requires the desktop runtime.");
+  const data = await invoke<Uint8Array | ArrayBuffer | number[]>("review_native_av_master", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      export_token: exportToken,
+    },
+  });
+  const bytes = data instanceof Uint8Array ? data
+    : data instanceof ArrayBuffer ? new Uint8Array(data)
+      : Array.isArray(data) ? Uint8Array.from(data) : null;
+  if (!bytes || bytes.length < 12 || bytes.length > 16 * 1024 * 1024 ||
+    bytes[4] !== 102 || bytes[5] !== 116 || bytes[6] !== 121 || bytes[7] !== 112) {
+    throw new Error("Verified native AV review returned an invalid or unbounded MP4.");
+  }
+  return bytes;
+}
+
 /** Fetch one source-verified PNG. This cannot read an arbitrary disk path.
  * The token comes only from a completed desktop Semwright production result.
  */

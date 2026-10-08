@@ -1,5 +1,6 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import NativeAvReview from "./NativeAvReview";
 import {
   assembleNativeAvMaster,
   exportCaptionSidecar,
@@ -122,6 +123,7 @@ export default function DeliveryProfiles({
   const [sidecarPath, setSidecarPath] = useState("");
   const [otioPath, setOtioPath] = useState("");
   const [masterDeliveryPath, setMasterDeliveryPath] = useState("");
+  const [showNativeAvReview, setShowNativeAvReview] = useState(false);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
@@ -253,6 +255,8 @@ export default function DeliveryProfiles({
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
+  const reviewAvailable = Boolean(desktopMode && selected && !dirty
+    && currentAv?.revision === project.revision && currentAv.export_token);
   const exportReady = Boolean(desktopMode && selected && !dirty
     && currentAv?.revision === project.revision && currentAv?.export_token
     && masterDeliveryPath.trim().toLowerCase().endsWith(".mp4"));
@@ -925,8 +929,23 @@ export default function DeliveryProfiles({
                   </strong></div>
                 </div>
               )}
+              <div className="delivery-editor-actions">
+                <button className="button" type="button"
+                  disabled={!reviewAvailable || busy !== null}
+                  onClick={() => setShowNativeAvReview((visible) => !visible)}>
+                  <Play size={14} aria-hidden="true" />
+                  {showNativeAvReview && reviewAvailable ? "Close native review" : "Review native MP4"}
+                </button>
+              </div>
+              {showNativeAvReview && reviewAvailable && currentAv?.export_token && (
+                <NativeAvReview
+                  key={project.id + ":" + project.revision + ":" + currentAv.export_token}
+                  project={project}
+                  exportToken={currentAv.export_token}
+                />
+              )}
               <div className="delivery-truth-note">
-                <CircleDashed size={14} /> The native master remains a source-verified owner artifact, not an embedded player. No human mix approval or cue-level sync proof is implied.
+                <CircleDashed size={14} /> Native master playback is an explicit, SHA-256-verified local review action limited to 16 MiB. Larger MP4 files must be exported for external playback. Decoder compatibility, timeline synchronization and human mix approval remain separate.
               </div>
             </section>
 
