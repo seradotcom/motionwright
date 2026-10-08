@@ -1,7 +1,7 @@
 mod audio;
 mod jobs;
 mod models;
-pub use audio::AudioMeasurement;
+pub use audio::{AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, WAVEFORM_FRAMES_PER_PEAK, WaveformPage};
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
@@ -256,6 +256,109 @@ impl StudioService {
             },
         };
         store.apply(project_id, expected, request_id, &change)
+    }
+
+    pub fn waveform_page(
+        &self,
+        project_id: Uuid,
+        track_id: Uuid,
+        page_index: u64,
+        page_size: usize,
+    ) -> StorageResult<WaveformPage> {
+        if page_size == 0 || page_size > audio::MAX_WAVEFORM_PAGE_SIZE {
+            return Err(invalid_import("waveform page size is out of bounds"));
+        }
+
+        let (track, immutable_path) = {
+            let store = self.store.lock();
+            let project = store.load_project(project_id)?;
+            let track = project
+                .audio
+                .voice_tracks
+                .iter()
+                .find(|track| track.id == track_id)
+                .cloned()
+                .ok_or(StorageError::NotFound)?;
+            let asset = project
+                .assets
+                .iter()
+                .find(|asset| asset.id == track.asset_id)
+                .ok_or(StorageError::NotFound)?;
+            if asset.content_sha256.as_deref() != Some(track.source_sha256.as_str()) {
+                return Err(StorageError::InvalidDerivedCache(
+                    "voice track and immutable asset digests do not match".into(),
+                ));
+            }
+            let immutable_path = store.verified_blob_path(&track.source_sha256)?;
+            (track, immutable_path)
+        };
+
+        let fingerprint =
+            audio::waveform_fingerprint(&track.source_sha256, audio::WAVEFORM_FRAMES_PER_PEAK)?;
+        let scope = format!(
+            "project:{project_id}:voice:{track_id}:source:{}",
+            track.source_sha256
+        );
+        let kind = "waveform-proxy";
+
+        let hit = match self.lookup_derived_cache(&scope, kind, &fingerprint)? {
+            Some(hit) => hit,
+            None => {
+                let temporary = std::env::temp_dir()
+                    .join(format!("motionwright-waveform-{}.mwpeak", Uuid::now_v7()));
+                let generated = audio::generate_waveform_proxy(
+                    &immutable_path,
+                    &track.source_sha256,
+                    &temporary,
+                    audio::WAVEFORM_FRAMES_PER_PEAK,
+                );
+                let summary = match generated {
+                    Ok(summary) => summary,
+                    Err(error) => {
+                        let _ = fs::remove_file(&temporary);
+                        return Err(error);
+                    }
+                };
+
+                let duration_matches = i128::from(summary.total_frames)
+                    * i128::from(track.measured_duration.den)
+                    == i128::from(track.measured_duration.num) * i128::from(track.sample_rate_hz);
+                if summary.sample_rate_hz != track.sample_rate_hz
+                    || summary.channels != track.channels
+                    || !duration_matches
+                {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(StorageError::InvalidDerivedCache(
+                        "waveform decode does not match measured voice-track evidence".into(),
+                    ));
+                }
+
+                let admitted = self.put_derived_cache_file(
+                    &scope,
+                    kind,
+                    &fingerprint,
+                    &temporary,
+                    summary.peak_count,
+                );
+                let _ = fs::remove_file(&temporary);
+                admitted?;
+                self.lookup_derived_cache(&scope, kind, &fingerprint)?
+                    .ok_or_else(|| {
+                        StorageError::InvalidDerivedCache(
+                            "waveform proxy disappeared after cache admission".into(),
+                        )
+                    })?
+            }
+        };
+
+        audio::read_waveform_page(
+            hit.blob_path,
+            &track.source_sha256,
+            track.sample_rate_hz,
+            track.channels,
+            page_index,
+            page_size,
+        )
     }
 
     pub fn import_voice_file(
@@ -596,5 +699,43 @@ mod audio_import_tests {
         assert_eq!(active.channels, 2);
         assert_eq!(active.measured_duration, RationalTime::new(1, 2).unwrap());
         assert_ne!(active.source_sha256, first_track.source_sha256);
+    }
+
+    #[test]
+    fn waveform_pages_are_generated_from_the_immutable_import_and_then_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = StudioService::open(temp.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("Paged waveform").unwrap();
+        let source = temp.path().join("long-enough.wav");
+        write_pcm16_wav(&source, 8_000, 1, 6_000, i16::MAX / 2);
+
+        let imported = service
+            .import_voice_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "waveform-import",
+                &source,
+                VoiceImportMetadata {
+                    name: "long-enough.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Measured take".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let track = imported.audio.voice_tracks.first().unwrap();
+
+        let first = service.waveform_page(imported.id, track.id, 0, 2).unwrap();
+        assert_eq!(first.algorithm, "sample-peak-max-abs-v1");
+        assert_eq!(first.peaks.len(), 2);
+        assert_eq!(first.peak_count, 3);
+        assert!(first.has_next);
+        assert!(first.peaks.iter().all(|peak| (0.49..0.51).contains(peak)));
+
+        let second = service.waveform_page(imported.id, track.id, 1, 2).unwrap();
+        assert_eq!(second.peaks.len(), 1);
+        assert!(second.has_previous);
+        assert!(!second.has_next);
+        assert_eq!(second.source_sha256, track.source_sha256);
     }
 }

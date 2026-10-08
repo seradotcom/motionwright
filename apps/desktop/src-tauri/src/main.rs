@@ -11,7 +11,7 @@ use motionwright_native::{
 };
 use motionwright_service::{
     ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
-    VoiceImportMetadata,
+    VoiceImportMetadata, WaveformPage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -201,6 +201,14 @@ struct ImportVoiceRequest {
     name: Option<String>,
     media_type: Option<String>,
     label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaveformPageRequest {
+    project_id: Uuid,
+    track_id: Uuid,
+    page_index: u64,
+    page_size: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -589,6 +597,26 @@ fn import_voice_file(
 }
 
 #[tauri::command]
+async fn waveform_page(
+    state: State<'_, AppState>,
+    request: WaveformPageRequest,
+) -> Result<WaveformPage, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service
+            .waveform_page(
+                request.project_id,
+                request.track_id,
+                request.page_index,
+                request.page_size,
+            )
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Motionwright waveform analysis task failed".to_string())?
+}
+
+#[tauri::command]
 fn export_project_bundle(
     state: State<'_, AppState>,
     request: ExportBundleRequest,
@@ -927,6 +955,7 @@ fn main() {
             render_motion_canvas,
             import_asset_file,
             import_voice_file,
+            waveform_page,
             export_project_bundle,
             export_caption_sidecar,
             export_otio,

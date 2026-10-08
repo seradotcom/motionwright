@@ -2146,21 +2146,30 @@
       "implementation_assessment": "PARTIAL_OR_GAP",
       "verification_status": "NOT_RUN",
       "evidence": [
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "docs/audio.md",
         "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        ".github/workflows/performance-acceptance.yml"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "Waveform decode/cache generation now runs outside the Tauri UI thread and its cached page latency is measured, but selection/commit/render/long-SQL responsiveness still requires the complete production acceptance budget."
     },
     {
       "id": "CR-PERF-03",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        "crates/service/src/audio.rs",
+        "crates/service/src/lib.rs",
+        "crates/service/examples/waveform_bench.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/AudioWorkspace.tsx",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/audio.md",
+        "docs/testing.md"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "Lazy waveform proxies stream-decode immutable source bytes, use bounded paged peak reads and verified derived-cache identity. The dedicated CI lane measures a one-hour audio fixture and enforces proxy/page/RSS bounds; broader production-profile acceptance remains separate."
     },
     {
       "id": "CR-PERF-04",

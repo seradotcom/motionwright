@@ -18,6 +18,7 @@ import type {
   Project,
   ProjectEvent,
   ProductionJobProjection,
+  WaveformPage,
   WorkflowAction,
   WorkflowActionResult,
   WorkflowOverview,
@@ -296,6 +297,23 @@ export async function importVoiceFile(
       name: null,
       media_type: null,
       label: label ?? null,
+    },
+  });
+}
+
+export async function waveformPage(
+  project: Project,
+  trackId: string,
+  pageIndex: number,
+  pageSize = 256,
+): Promise<WaveformPage | null> {
+  if (!isTauri()) return null;
+  return invoke<WaveformPage>("waveform_page", {
+    request: {
+      project_id: project.id,
+      track_id: trackId,
+      page_index: pageIndex,
+      page_size: pageSize,
     },
   });
 }

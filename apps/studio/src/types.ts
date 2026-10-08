@@ -167,6 +167,22 @@ export interface VoiceTrack {
   measured_duration: RationalTime; source_sha256: string;
   loudness_lufs: number | null; true_peak_dbfs: number | null;
 }
+export interface WaveformPage {
+  schema: string;
+  algorithm: "sample-peak-max-abs-v1";
+  source_sha256: string;
+  sample_rate_hz: number;
+  channels: number;
+  frames_per_peak: number;
+  total_frames: number;
+  peak_count: number;
+  page_index: number;
+  page_size: number;
+  start_peak: number;
+  peaks: number[];
+  has_previous: boolean;
+  has_next: boolean;
+}
 export type AlignmentEvidence =
   | { kind: "manual" }
   | { kind: "measured"; engine: string; source_sha256: string; confidence_millis: number | null }
