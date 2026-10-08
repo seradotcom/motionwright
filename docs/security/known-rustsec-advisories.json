@@ -1,0 +1,57 @@
+{
+  "schema": "motionwright.security-known-advisories.v1",
+  "policy": {
+    "mode": "exact-known-warning-set",
+    "statement": "Known RustSec warnings are not treated as resolved. The CI gate accepts only this exact reviewed set while locked transitive versions remain unchanged; any vulnerability, new warning, removed warning, or dependency drift requires a new review.",
+    "reviewed_against_cargo_audit": "0.22.2"
+  },
+  "advisories": [
+    {
+      "id": "RUSTSEC-2024-0429",
+      "ghsa": "GHSA-wrw7-89jp-8q8g",
+      "class": "unsound",
+      "package": "glib",
+      "locked_version": "0.18.5",
+      "status": "OPEN_UPSTREAM_BLOCKED",
+      "first_patched_version": "0.20.0",
+      "severity": "medium",
+      "direct_dependency": false,
+      "required_lock_context": {
+        "tauri": "2.12.1",
+        "gtk": "0.18.2",
+        "glib": "0.18.5"
+      },
+      "forbidden_first_party_tokens": [
+        "VariantStrIter"
+      ],
+      "review_note": "The reviewed stable Linux desktop dependency graph resolves Tauri through GTK 0.18 and glib 0.18.5. Motionwright does not call VariantStrIter directly. This reduces direct exposure but does not resolve the upstream unsoundness.",
+      "recheck_when": [
+        "Cargo.lock changes any required_lock_context version",
+        "the stable Tauri Linux stack supports a non-vulnerable glib line",
+        "the advisory scope or severity changes",
+        "first-party code begins using the affected API"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2024-0370",
+      "class": "unmaintained",
+      "package": "proc-macro-error",
+      "locked_version": "1.0.4",
+      "status": "OPEN_UPSTREAM_TRANSITIVE",
+      "direct_dependency": false,
+      "required_lock_context": {
+        "tauri": "2.12.1",
+        "glib-macros": "0.18.5",
+        "gtk3-macros": "0.18.2",
+        "proc-macro-error": "1.0.4"
+      },
+      "forbidden_first_party_tokens": [],
+      "review_note": "The unmaintained proc-macro crate is transitive through the GTK 0.18 macro stack. It is a maintenance warning rather than a claimed vulnerability fix.",
+      "recheck_when": [
+        "Cargo.lock changes any required_lock_context version",
+        "the stable Tauri/GTK dependency graph removes proc-macro-error",
+        "the advisory classification changes"
+      ]
+    }
+  ]
+}

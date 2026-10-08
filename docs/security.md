@@ -41,6 +41,8 @@ Portable backups intentionally exclude execution request receipts. Import rotate
 
 Project bundles are not credential containers. Semwright connection material is owner-provisioned outside project state through the canonical connection boundary. Public source policy rejects common credential signatures, private-key material, private coordination-package markers and absolute developer-home paths.
 
+Portable export adds a runtime boundary rather than relying only on repository scanning. Project metadata and history are scanned before an export destination is created. Text-like content-addressed assets are scanned before copy, and portable import inspection applies the same checks before ingestion. Matching values are not echoed in errors. Text-like assets above the bounded scan budget fail closed; binary media remains digest-verified but is not interpreted as text.
+
 No CI workflow in this repository automatically publishes a release or uploads user media.
 
 ## Exact-source delivery manifest
@@ -54,6 +56,34 @@ No CI workflow in this repository automatically publishes a release or uploads u
 - the declared delivery boundary for publishing, project receipts and secrets.
 
 The Security and Delivery workflow publishes that manifest as CI evidence. It is evidence about the tested source tree, not a code-signing or notarization claim.
+
+## Dependency advisory policy
+
+Dependency scanning is fail-closed around an explicitly reviewed warning set rather than treating a
+zero exit code from `cargo audit` as proof that the dependency graph is clean.
+`docs/security/known-rustsec-advisories.json` records the exact package versions, advisory classes,
+dependency context and re-review triggers for warnings that remain open.
+
+The current Linux desktop graph has two open transitive RustSec warnings:
+
+- `RUSTSEC-2024-0429`: `glib 0.18.5`, classified by RustSec/cargo-audit as unsound. The affected
+  `VariantStrIter` API is not used directly by Motionwright first-party source. The warning remains
+  open because the reviewed stable Tauri/GTK dependency graph currently resolves the GTK 0.18/glib
+  0.18 line; absence of direct use is a mitigation, not a fix.
+- `RUSTSEC-2024-0370`: `proc-macro-error 1.0.4`, classified as unmaintained and reached
+  transitively through the GTK 0.18 macro stack.
+
+`tooling/security_advisory_policy.py` binds that review to the exact lockfile versions, rejects
+first-party use of any explicitly affected API token, requires zero reported vulnerabilities and
+requires the live `cargo audit --json` warning set to match the reviewed IDs and classes exactly.
+A new warning, a removed warning, a changed class or a dependency-version drift fails the gate and
+requires a fresh review. The Security and Delivery workflow stores the raw audit JSON and policy
+result per SHA. Heavy Verification runs the same policy; neither workflow relabels an open warning
+as resolved.
+
+Source policy additionally rejects new first-party raw process or direct-network primitives unless
+they are in the small reviewed execution boundary. Today raw process execution is limited to the
+canonical Semwright production connection and the isolated Manim Community runtime runner.
 
 ## Evidence not yet claimed
 
