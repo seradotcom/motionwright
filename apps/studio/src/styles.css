@@ -3908,6 +3908,13 @@ select:focus {
 .waveform-page-controls .mono { min-width: 88px; text-align: center; }
 .audio-editor-section { border-bottom: 1px solid var(--border); }
 .audio-editor-section > header > div { display: grid; gap: 3px; }
+.audio-playhead-chip {
+  flex: 0 0 auto;
+  min-width: 170px;
+  text-align: right;
+}
+.audio-playhead-chip strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.audio-playhead-chip small { color: var(--muted); font-size: 10px; }
 .audio-transcript-row {
   display: grid;
   grid-template-columns: 160px 120px minmax(220px, 1fr) 92px auto;
@@ -3915,6 +3922,11 @@ select:focus {
   gap: 7px;
   padding: 7px 10px;
   border-bottom: 1px solid var(--border-soft);
+}
+.audio-transcript-row.playback-current,
+.audio-cue-row.playback-current {
+  background: var(--accent-wash);
+  box-shadow: inset 1px 0 var(--accent);
 }
 .audio-transcript-row textarea,
 .audio-transcript-new textarea { min-height: 48px; resize: vertical; }
@@ -3961,7 +3973,7 @@ select:focus {
 }
 .audio-cue-row {
   display: grid;
-  grid-template-columns: 100px minmax(220px, 1fr) 120px auto auto;
+  grid-template-columns: 100px minmax(220px, 1fr) 120px auto auto auto;
   align-items: center;
   gap: 7px;
   padding: 7px 10px;
@@ -3982,6 +3994,7 @@ select:focus {
   padding: 12px;
 }
 @media (max-width: 1100px) {
+  .audio-workspace-head { align-items: start; flex-wrap: wrap; }
   .audio-import-strip { grid-template-columns: 1fr; }
   .audio-import-strip > svg { display: none; }
   .audio-main-grid { grid-template-columns: 1fr; }

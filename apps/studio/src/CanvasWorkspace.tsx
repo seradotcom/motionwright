@@ -118,16 +118,19 @@ export default function CanvasWorkspace({
   project,
   scene,
   commit,
+  playhead,
+  onSeek,
 }: {
   project: Project;
   scene: Scene | null;
   commit: Commit;
+  playhead: number;
+  onSeek: (absoluteSeconds: number) => void;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
   const [formTransform, setFormTransform] = useState<CanvasTransform | null>(scene?.nodes[0] ? nodeTransform(scene.nodes[0]) : null);
   const [textValue, setTextValue] = useState(scene?.nodes[0]?.text ?? "");
-  const [playhead, setPlayhead] = useState(0);
   const [motionProperty, setMotionProperty] = useState<MotionProperty>("opacity");
   const [motionValue, setMotionValue] = useState(scene?.nodes[0]?.opacity ?? 1);
   const [motionInterpolation, setMotionInterpolation] = useState<MotionInterpolation>("linear");
@@ -144,7 +147,6 @@ export default function CanvasWorkspace({
     setSelectedNodeId(next?.id ?? null);
     setFormTransform(next ? nodeTransform(next) : null);
     setTextValue(next?.text ?? "");
-    setPlayhead(0);
     setDraftTransforms({});
   }, [scene?.id]);
 
@@ -194,6 +196,11 @@ export default function CanvasWorkspace({
   );
   const sceneDurationSeconds = seconds(scene.duration);
   const maxPlayhead = Math.max(0, sceneDurationSeconds - 0.001);
+  const sceneStartSeconds = seconds(scene.start);
+  const scenePlayhead = Math.max(0, Math.min(playhead - sceneStartSeconds, maxPlayhead));
+  const seekSceneTime = (relativeSeconds: number) => {
+    onSeek(sceneStartSeconds + Math.max(0, Math.min(relativeSeconds, maxPlayhead)));
+  };
 
   const addNode = async (kind: "text" | "shape" | "group") => {
     const node = createNode(scene, kind);
@@ -210,7 +217,7 @@ export default function CanvasWorkspace({
   };
 
   const objectTransform = (node: CanvasNode) => draftTransforms[node.id] ?? nodeTransform(node);
-  const stageTransform = (node: CanvasNode) => draftTransforms[node.id] ?? previewTransform(node, playhead);
+  const stageTransform = (node: CanvasNode) => draftTransforms[node.id] ?? previewTransform(node, scenePlayhead);
 
   const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, node: CanvasNode) => {
     selectNode(node);
@@ -285,7 +292,7 @@ export default function CanvasWorkspace({
 
   const commitKeyframe = () => {
     if (!selectedNode) return;
-    const at = Math.max(0, Math.min(playhead, maxPlayhead));
+    const at = scenePlayhead;
     void commit({
       type: "set_canvas_keyframe",
       scene_id: scene.id,
@@ -319,15 +326,16 @@ export default function CanvasWorkspace({
         </div>
         <div className="canvas-toolbar-state">
           <label className="motion-playhead">
-            <span className="mono">{playhead.toFixed(2)}s / {sceneDurationSeconds.toFixed(2)}s</span>
+            <span className="mono">{scenePlayhead.toFixed(2)}s / {sceneDurationSeconds.toFixed(2)}s</span>
             <input
               aria-label="Motion playhead"
+              title="Scene-relative seconds · linked to project timeline"
               type="range"
               min="0"
               max={Math.max(maxPlayhead, 0)}
               step="0.001"
-              value={Math.min(playhead, maxPlayhead)}
-              onChange={(event) => setPlayhead(numberValue(event.target.value, 0))}
+              value={scenePlayhead}
+              onChange={(event) => seekSceneTime(numberValue(event.target.value, 0))}
             />
           </label>
           <span className="status-pill status-unknown">EDITORIAL PREVIEW</span>
@@ -489,7 +497,7 @@ export default function CanvasWorkspace({
                     <span className="field-label">Motion</span>
                     <strong>{selectedNode.keyframes.length} keyframe{selectedNode.keyframes.length === 1 ? "" : "s"}</strong>
                   </div>
-                  <span className="mono">{playhead.toFixed(3)}s</span>
+                  <span className="mono">{scenePlayhead.toFixed(3)}s</span>
                 </div>
                 <div className="canvas-field-grid motion-fields">
                   <label>
@@ -545,7 +553,7 @@ export default function CanvasWorkspace({
                         <button
                           type="button"
                           className="motion-keyframe-jump"
-                          onClick={() => setPlayhead(Math.min(seconds(keyframe.at), maxPlayhead))}
+                          onClick={() => seekSceneTime(seconds(keyframe.at))}
                           title="Move playhead to keyframe"
                         >
                           <span className="mono">{seconds(keyframe.at).toFixed(3)}s</span>
