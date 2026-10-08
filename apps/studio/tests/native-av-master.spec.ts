@@ -56,6 +56,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
     }],
   };
   const masterReceipt = {
+    export_token: "synthetic-export-token",
     project_resource: native.project_resource,
     generation: native.generation,
     revision: native.revision,
@@ -72,10 +73,10 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await page.addInitScript(({ initial, rendered, mastered }) => {
     const app = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
-      __SYNTHETIC_AV__: { requests: Array<Record<string, unknown>>; renders: number; effects: number };
+      __SYNTHETIC_AV__: { requests: Array<Record<string, unknown>>; exports: Array<Record<string, unknown>>; renders: number; effects: number };
     };
     let project = structuredClone(initial.project);
-    app.__SYNTHETIC_AV__ = { requests: [], renders: 0, effects: 0 };
+    app.__SYNTHETIC_AV__ = { requests: [], exports: [], renders: 0, effects: 0 };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
         if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
@@ -91,6 +92,18 @@ test("desktop AV master is linked only to session-native visual evidence and a m
           const request = args?.request as Record<string, unknown>;
           app.__SYNTHETIC_AV__.requests.push(request);
           return structuredClone(mastered);
+        }
+        if (command === "export_native_av_master") {
+          const request = args?.request as Record<string, unknown>;
+          app.__SYNTHETIC_AV__.exports.push(request);
+          return {
+            destination: request.destination,
+            size_bytes: 8192,
+            sha256: mastered.master.artifact.sha256,
+            revision: mastered.revision,
+            deliverable_id: mastered.deliverable_id,
+            source_current: true,
+          };
         }
         if (command === "apply_change") {
           const request = args?.request as { change: { type: string; title?: string } };
@@ -145,12 +158,41 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   expect(invocations.requests[0]).not.toHaveProperty("motion");
   expect(invocations.requests[0]).not.toHaveProperty("audio");
 
+  const delivery = page.getByRole("region", { name: "Verified native MP4 delivery" });
+  const exportAction = delivery.getByRole("button", { name: "Export verified MP4" });
+  await expect(exportAction).toBeDisabled();
+  await page.getByLabel("Verified MP4 export path").fill("/tmp/motionwright-delivered-master.mp4");
+  await expect(exportAction).toBeEnabled();
+  await exportAction.click();
+  const exportReceipt = page.getByLabel("Verified MP4 delivery receipt");
+  await expect(exportReceipt).toContainText("/tmp/motionwright-delivered-master.mp4");
+  await expect(exportReceipt).toContainText("VERIFIED · CURRENT");
+  await expect(exportReceipt).toContainText("8192");
+  const afterExport = await page.evaluate(() => (
+    window as unknown as { __SYNTHETIC_AV__: { exports: Array<Record<string, unknown>>; effects: number } }
+  ).__SYNTHETIC_AV__);
+  expect(afterExport.effects).toBe(3);
+  expect(afterExport.exports).toHaveLength(1);
+  expect(afterExport.exports[0]).toMatchObject({
+    project_id: boot.project.id,
+    generation: boot.project.generation,
+    revision: boot.project.revision,
+    export_token: "synthetic-export-token",
+    destination: "/tmp/motionwright-delivered-master.mp4",
+  });
+  expect(afterExport.exports[0]).not.toHaveProperty("source");
+  expect(afterExport.exports[0]).not.toHaveProperty("sha256");
+  expect(afterExport.exports[0]).not.toHaveProperty("master");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+
   await page.getByRole("button", { name: "Brief", exact: true }).click();
   await page.getByLabel("Project title").fill("Changed after native AV master");
   await page.getByRole("button", { name: "Save title" }).click();
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
   await expect(receipt).toContainText("STALE · HISTORICAL");
+  await expect(exportReceipt).toContainText("VERIFIED · HISTORICAL");
   await expect(assemble).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Export verified MP4" })).toBeDisabled();
 });
 
 test("UI refuses to offer native mastering for incompatible measured voice duration", async ({ page }) => {

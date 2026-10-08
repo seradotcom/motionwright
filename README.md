@@ -27,7 +27,7 @@ The desktop editor is organized around:
 - **Changes** — recent-first paged committed event history, branches, semantic diffs, conflict-aware merges and restore-as-new-change (see [journal pagination](docs/history-pagination.md)).
 - **Dependencies** — canonical Project Graph projections and honest CURRENT / STALE / UNKNOWN status.
 - **Review** — technical findings separated from creative critique and comments anchored to frame/object/beat/revision.
-- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, [read-only canonical Film preflight](docs/film-preflight.md), explicit native Motion Canvas segment production and [single-segment H.264/AAC mastering](docs/desktop-av-master.md) from measured voice, fail-closed WebVTT/SRT sidecars, and portable project exports.
+- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, [read-only canonical Film preflight](docs/film-preflight.md), explicit native Motion Canvas segment production and [single-segment H.264/AAC mastering](docs/desktop-av-master.md) from measured voice with [verified local MP4 delivery](docs/master-verified-export.md), fail-closed WebVTT/SRT sidecars, and portable project exports.
 
 ## Native SDK
 

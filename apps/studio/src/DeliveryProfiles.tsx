@@ -4,6 +4,7 @@ import {
   assembleNativeAvMaster,
   exportCaptionSidecar,
   exportOtio,
+  exportVerifiedNativeMaster,
   preflightMotionCanvas,
   renderMotionCanvas,
 } from "./api";
@@ -16,6 +17,7 @@ import type {
   MotionCanvasProjectionPreflight,
   MotionCanvasFilmOptions,
   MltAvMasterEvidence,
+  MasterExportReceipt,
   Project,
 } from "./types";
 
@@ -99,6 +101,8 @@ export default function DeliveryProfiles({
   onRenderEvidence,
   avEvidence,
   onAvEvidence,
+  exportEvidence,
+  onExportEvidence,
 }: {
   project: Project;
   commit: Commit;
@@ -107,6 +111,8 @@ export default function DeliveryProfiles({
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
   onAvEvidence: (evidence: MltAvMasterEvidence) => void;
+  exportEvidence: MasterExportReceipt | null;
+  onExportEvidence: (receipt: MasterExportReceipt) => void;
 }) {
   const [selectedId, setSelectedId] = useState(() =>
     project.deliverables.find((profile) => profile.id === renderEvidence?.deliverable_id)?.id
@@ -115,13 +121,14 @@ export default function DeliveryProfiles({
   const [draft, setDraft] = useState<DeliverableProfile | null>(() => selected ? structuredClone(selected) : null);
   const [sidecarPath, setSidecarPath] = useState("");
   const [otioPath, setOtioPath] = useState("");
+  const [masterDeliveryPath, setMasterDeliveryPath] = useState("");
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "master" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "master" | "export-master" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -245,6 +252,10 @@ export default function DeliveryProfiles({
     && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
+  const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
+  const exportReady = Boolean(desktopMode && selected && !dirty
+    && currentAv?.revision === project.revision && currentAv?.export_token
+    && masterDeliveryPath.trim().toLowerCase().endsWith(".mp4"));
 
   const preflightKey = JSON.stringify([
     project.id,
@@ -362,6 +373,20 @@ export default function DeliveryProfiles({
       setMessage(report.verdict === "projection_ready"
         ? "Semantic Film projection is supported at this revision. Native rendering is a separate operation."
         : "Semantic Film projection rejected this revision. No render or native job was dispatched.");
+    });
+  };
+
+  const exportMaster = () => {
+    if (!exportReady || !currentAv?.export_token) return;
+    void run("export-master", async () => {
+      const receipt = await exportVerifiedNativeMaster(
+        project,
+        currentAv.export_token!,
+        masterDeliveryPath.trim(),
+      );
+      onExportEvidence(receipt);
+      setMessage("Verified MP4 delivered to " + receipt.destination
+        + " · SHA-256 " + receipt.sha256.slice(0, 16) + "… · source r" + receipt.revision);
     });
   };
 
@@ -901,7 +926,57 @@ export default function DeliveryProfiles({
                 </div>
               )}
               <div className="delivery-truth-note">
-                <CircleDashed size={14} /> This is a Semwright-verified file in the owner output root, not a streamed player or a user-selected filesystem path. No human mix approval or cue-level sync proof is implied.
+                <CircleDashed size={14} /> The native master remains a source-verified owner artifact, not an embedded player. No human mix approval or cue-level sync proof is implied.
+              </div>
+            </section>
+
+            <section className="caption-export-panel" aria-label="Verified native MP4 delivery">
+              <header>
+                <div>
+                  <strong>Deliver verified MP4</strong>
+                  <span>Copy the completed native H.264/AAC master with SHA-256 verification. Existing files are never overwritten.</span>
+                </div>
+                <span className="status-pill status-unknown">LOCAL · UNPUBLISHED</span>
+              </header>
+              <div className="caption-controls">
+                <label className="caption-path">
+                  <span className="field-label">Destination · absolute .mp4 path</span>
+                  <input type="text"
+                    aria-label="Verified MP4 export path"
+                    value={masterDeliveryPath}
+                    disabled={!desktopMode}
+                    placeholder="/absolute/path/final-master.mp4"
+                    onChange={(event) => setMasterDeliveryPath(event.target.value)}
+                  />
+                </label>
+                <button className="button button-primary" type="button"
+                  disabled={!exportReady || busy !== null}
+                  onClick={exportMaster}>
+                  <FileOutput size={14} />
+                  {busy === "export-master" ? "Verifying…" : "Export verified MP4"}
+                </button>
+              </div>
+              {!currentAv?.export_token && (
+                <div className="delivery-truth-note">
+                  <CircleDashed size={14} /> Complete a real owner-authorized MLT AV master in this desktop session first. No arbitrary master paths are accepted.
+                </div>
+              )}
+              {currentAv && currentAv.revision !== project.revision && (
+                <div className="delivery-truth-note warning">
+                  <CircleDashed size={14} /> Previous MP4 master belongs to revision r{currentAv.revision}. Re-render current creative changes before exporting.
+                </div>
+              )}
+              {currentExport && (
+                <div className="portable-plan" aria-label="Verified MP4 delivery receipt">
+                  <div><span>Destination</span><strong className="mono">{currentExport.destination}</strong></div>
+                  <div><span>Bytes copied</span><strong>{currentExport.size_bytes}</strong></div>
+                  <div><span>SHA-256</span><strong className="mono">{currentExport.sha256.slice(0, 16)}…</strong></div>
+                  <div><span>Status</span><strong>{currentExport.source_current
+                    && currentExport.revision === project.revision ? "VERIFIED · CURRENT" : "VERIFIED · HISTORICAL"}</strong></div>
+                </div>
+              )}
+              <div className="delivery-truth-note">
+                <CircleDashed size={14} /> The MP4 copy is local and SHA-256 verified. No upload, external publication, human review or media signing is performed.
               </div>
             </section>
 

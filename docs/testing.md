@@ -38,6 +38,10 @@ The storage tests create a 260-change SQLite journal and verify descending keyse
 
 The native projection preflight uses the exact pinned Semwright Film adapter and current Motionwright project revision, with no native render dispatch or effect grant. Chromium tests exercise the typed read-only contract, supported/unsupported status and invalidation when creative inputs change. Native Film support is a semantic planning result, never certified renderer pixels or human acceptance; see [preflight semantics](film-preflight.md).
 
+## Verified local native MP4 delivery
+
+The desktop native MP4 delivery boundary accepts only a minted session grant for an already-completed, source-bound MLT master. Native Rust tests verify scoped source identity, refused symlinked export parents, create-new/no-overwrite, bounded SHA-256-verified streaming, and refusal to copy changed master bytes. Synthetic Chromium tests cover explicit user destination, one-time DeliverLocal grant, request parameters and revision invalidation. See [verified master export](master-verified-export.md); green tests do not certify signed distribution or human review.
+
 ## Canonical desktop AV mastering
 
 The desktop MLT AV workflow passes only an authenticated native frame-session token and an already-saved, measured 48 kHz stereo WAV voice take ID. Rust tests validate source CAS digests, refuse stale/mono/non-WAV/unbound inputs, reject WAV length/rate/symlink/tamper, and check rational audio/video duration to one sample. The browser tests use an explicitly synthetic Tauri bridge to prove the UI never supplies arbitrary source paths or master evidence. Actual Semwright Broker/MLT H.264/AAC MP4 output remains covered by the exact-SHA [native AV master E2E lane](desktop-av-master.md) and requires independent product acceptance.
