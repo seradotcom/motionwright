@@ -34,6 +34,10 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 
 The storage tests create a 260-change SQLite journal and verify descending keyset pages, complete non-overlapping coverage, cross-project isolation, and backward compatibility with ascending event reads. Studio unit tests reject malformed/out-of-order pages; Chromium tests exercise recent-first pagination, older-page navigation and transient read retry through a synthetic Tauri boundary. All tests are source-SHA scoped and do not establish independent creative acceptance. See [history pagination](history-pagination.md).
 
+## Source-verified rendered frame readback
+
+The native-preview Rust unit tests verify owner-root manifest SHA-256, registered single-frame PNG bytes, stale revision rejection, size/path validation and tamper rejection. The browser regression deliberately uses synthetic Tauri frame bytes, testing only UI mode, seek and error handling. The real Native Motion Canvas E2E lane independently rehashes every rendered PNG against the actual Semwright artifact manifest. See [native frame preview](native-frame-preview.md). These checks are not real-time AV playback or human visual acceptance.
+
 ## Production job-state acceptance
 
 Job projection tests cover cancellation request versus confirmed cancellation, terminal-state non-resurrection, reconciliation after an uncertain outcome, and CURRENT/STALE applicability against the open project revision. Browser acceptance also verifies that demo mode exposes an empty truthful ledger rather than fabricated runtime jobs. Canonical driver execution remains covered by the dedicated Native Production and renderer workflows.

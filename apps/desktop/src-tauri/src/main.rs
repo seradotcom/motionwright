@@ -1,4 +1,5 @@
 mod effect_grants;
+mod native_preview;
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
@@ -16,6 +17,7 @@ use motionwright_service::{
     ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
     VoiceImportMetadata, WaveformPage,
 };
+use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
@@ -29,6 +31,7 @@ const SEMWRIGHT_VERSION: &str = "1.0.0";
 struct AppState {
     service: StudioService,
     effect_grants: EffectGrantRegistry,
+    preview: NativePreviewRegistry,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,6 +96,14 @@ struct MotionCanvasRenderRequest {
     effect_grant: Uuid,
     deliverable_id: Uuid,
     options: FilmBuildOptions,
+}
+
+#[derive(Debug, Serialize)]
+struct NativePreviewRenderResponse {
+    #[serde(flatten)]
+    evidence: MotionCanvasRenderEvidence,
+    /// Ephemeral read-only handles. Not Semwright evidence or source paths.
+    preview: Vec<NativeFrameGrant>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -657,7 +668,7 @@ fn production_jobs(
 async fn render_motion_canvas(
     state: State<'_, AppState>,
     request: MotionCanvasRenderRequest,
-) -> Result<MotionCanvasRenderEvidence, String> {
+) -> Result<NativePreviewRenderResponse, String> {
     let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
         .ok_or_else(|| "Canonical Semwright production is not configured.".to_string())?;
     let project = state
@@ -680,9 +691,11 @@ async fn render_motion_canvas(
     };
     let connection = ProductionConnection::load(PathBuf::from(connection_path))
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
+    let output_root = connection.output_root.clone();
+    let owner_resource = connection.resource.clone();
     let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
         .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
-    coordinator
+    let evidence = coordinator
         .render_motion_canvas_segments(
             request.project_id,
             &expected,
@@ -696,7 +709,44 @@ async fn render_motion_canvas(
                 "Canonical Motion Canvas production was blocked: {}",
                 error.message
             )
-        })
+        })?;
+    let registry = state.preview.clone();
+    let for_grants = evidence.clone();
+    let preview = tauri::async_runtime::spawn_blocking(move || {
+        registry.register(&output_root, &owner_resource, &for_grants)
+    })
+    .await
+    .unwrap_or_default();
+    Ok(NativePreviewRenderResponse { evidence, preview })
+}
+
+/// Exact bytes of one verified PNG from the current project revision. No
+/// caller-provided paths, no general-purpose filesystem or network capability.
+#[tauri::command]
+async fn preview_native_frame(
+    state: State<'_, AppState>,
+    request: NativeFrameRequest,
+) -> Result<tauri::ipc::Response, String> {
+    let before = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if before.generation != request.generation || before.revision != request.revision {
+        return Err("Native preview belongs to a previous project revision.".into());
+    }
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let registry = state.preview.clone();
+    let bytes =
+        tauri::async_runtime::spawn_blocking(move || registry.read_frame(&before, &request))
+            .await
+            .map_err(|_| "Native preview read task failed.".to_string())??;
+    let after = state.service.project(project_id).map_err(sanitized)?;
+    if after.generation != generation || after.revision != revision {
+        return Err("Project changed while the native preview was read.".into());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -1254,6 +1304,7 @@ fn main() {
             app.manage(AppState {
                 service,
                 effect_grants: EffectGrantRegistry::default(),
+                preview: NativePreviewRegistry::default(),
             });
             Ok(())
         })
@@ -1268,6 +1319,7 @@ fn main() {
             workflow_action,
             production_jobs,
             render_motion_canvas,
+            preview_native_frame,
             import_asset_file,
             import_voice_file,
             waveform_page,

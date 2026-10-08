@@ -149,6 +149,8 @@ jobs:
         run: cargo check -p motionwright-desktop
       - name: Effect-grant boundary regressions
         run: cargo test -p motionwright-desktop effect_grants
+      - name: Native PNG preview security regressions
+        run: cargo test --locked -p motionwright-desktop native_preview
       - name: Clippy desktop boundary
         run: cargo clippy -p motionwright-desktop --all-targets -- -D warnings
 

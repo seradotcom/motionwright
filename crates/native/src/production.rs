@@ -250,6 +250,33 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
     Ok(candidate)
 }
 
+/// Read immutable production bytes only after a bounded owner-root and SHA-256
+/// check. This function is not exposed as an arbitrary-path desktop command:
+/// its callers must first obtain a scoped, server-issued media grant.
+pub fn read_verified_production_artifact(
+    root: &Path,
+    relative: &str,
+    expected_sha256: &str,
+    max_bytes: u64,
+) -> NativeResult<Vec<u8>> {
+    if !is_sha256(expected_sha256) {
+        return Err(invalid("Production artifact digest is malformed"));
+    }
+    let path = output_artifact_path(root, relative, max_bytes)?;
+    let bytes = fs::read(path)
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact cannot be read"))?;
+    if bytes.is_empty()
+        || bytes.len() as u64 > max_bytes
+        || hex::encode(Sha256::digest(&bytes)) != expected_sha256
+    {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Production artifact no longer matches its verified digest",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn verify_output_artifact(
     root: &Path,
     relative: &str,

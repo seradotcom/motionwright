@@ -364,6 +364,25 @@ def main() -> None:
                     f"artifact manifest digest mismatch: {reported_manifest} != {manifest_digest}"
                 )
 
+            # Independent readback of the exact SHA-256 and frame index contract
+            # consumed by the bounded desktop native PNG frame preview.
+            manifest_json = json.loads(manifest_file.read_text())
+            indexed_frames = manifest_json.get("frames", [])
+            render_plan = manifest_json.get("plan", {})
+            if len(indexed_frames) != 60 or render_plan.get("frame_count") != 60:
+                raise AssertionError("native preview manifest does not enumerate all frames")
+            if render_plan.get("first_frame") != 0 or render_plan.get("end_frame_exclusive") != 60:
+                raise AssertionError("native preview manifest has unsupported frame origin")
+            for frame_index, row in enumerate(indexed_frames):
+                expected = f"frames/{frame_index:06}.png"
+                frame = artifact_root / expected
+                if row.get("file") != expected or row.get("index") != frame_index:
+                    raise AssertionError(f"native frame manifest index mismatch at {frame_index}")
+                if frame.is_symlink() or not frame.is_file():
+                    raise AssertionError(f"native PNG missing or replaced by link at {frame_index}")
+                if row.get("bytes") != frame.stat().st_size or row.get("sha256") != digest(frame):
+                    raise AssertionError(f"native frame digest/size mismatch at {frame_index}")
+
             shutil.copyfile(manifest_file, EVIDENCE / "artifact-manifest.json")
             for source, name in [
                 (frames[0], "frame-first.png"),

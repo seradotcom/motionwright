@@ -557,6 +557,39 @@ export async function projectHistoryRecent(
     .slice(0, bounded));
 }
 
+/** Fetch one source-verified PNG. This cannot read an arbitrary disk path.
+ * The token comes only from a completed desktop Semwright production result.
+ */
+export async function readNativePreviewFrame(
+  project: Project,
+  token: string,
+  frameIndex: number,
+): Promise<Uint8Array> {
+  if (!isTauri()) throw new Error("Native frame readback requires the desktop runtime.");
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
+    throw new Error("Native frame index must be a nonnegative safe integer.");
+  }
+  const data = await invoke<Uint8Array | ArrayBuffer | number[]>("preview_native_frame", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      token,
+      frame_index: frameIndex,
+    },
+  });
+  const bytes = data instanceof Uint8Array ? data
+    : data instanceof ArrayBuffer ? new Uint8Array(data)
+      : Array.isArray(data) ? Uint8Array.from(data)
+        : null;
+  if (!bytes || bytes.length < 8 || bytes[0] !== 137 || bytes[1] !== 80 ||
+      bytes[2] !== 78 || bytes[3] !== 71 || bytes[4] !== 13 ||
+      bytes[5] !== 10 || bytes[6] !== 26 || bytes[7] !== 10) {
+    throw new Error("Native preview did not return valid PNG bytes.");
+  }
+  return bytes;
+}
+
 export async function projectHistory(
   project: Project,
   afterRevision = 0,

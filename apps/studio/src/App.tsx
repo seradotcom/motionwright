@@ -53,6 +53,8 @@ import CanvasWorkspace from "./CanvasWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
+import NativeFrameStage from "./NativeFrameStage";
+import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
 import { resolveSceneRenderReceipt } from "./renderReceipt";
 import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
@@ -213,6 +215,9 @@ function PreviewSurface({
   onInspectRender: () => void;
 }) {
   const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
+  const [nativeFrameMode, setNativeFrameMode] = useState(false);
+  const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
+  const showingNative = nativeFrameMode && nativeFrame !== null;
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
 
   return (
@@ -222,7 +227,9 @@ function PreviewSurface({
           <span className="preview-dot" />
           Program
           <span className="toolbar-divider" />
-          <span className="muted">Design representation</span>
+          <span className="muted">
+            {showingNative ? "Verified native PNG · sampled frames" : "Design representation"}
+          </span>
           <span
             className="preview-revision"
             aria-label={`Preview representation is based on project revision ${project.revision}`}
@@ -230,6 +237,16 @@ function PreviewSurface({
             PROJECT r{project.revision}
           </span>
         </div>
+        {receipt?.kind === "current" && (
+          <button type="button" className={"button compact native-frame-toggle " + (showingNative ? "selected" : "")}
+            disabled={!showingNative && nativeFrame === null}
+            title={nativeFrame === null
+              ? "No verified local frame grant was returned with this native render."
+              : "Read-only sampled PNG preview. Does not alter project or certify live AV playback."}
+            onClick={() => setNativeFrameMode((value) => !value)}>
+            {showingNative ? "Show design" : "Show native frames"}
+          </button>
+        )}
         <div className="timecode">{formatTime(playhead, rate, mode)}</div>
       </div>
       <div className="preview-stage">
@@ -266,6 +283,10 @@ function PreviewSurface({
               <strong>Select a scene</strong>
               <span>Its semantic preview and revision state will appear here.</span>
             </div>
+          )}
+          {showingNative && nativeFrame && (
+            <NativeFrameStage key={nativeFrame.token + ":" + (scene?.id ?? "")}
+              project={project} selection={nativeFrame} />
           )}
         </div>
       </div>

@@ -17,4 +17,9 @@ motionwright-native = { path = "../../../crates/native" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
 tauri = { version = "2.8", features = [] }
+
+[dev-dependencies]
+tempfile.workspace = true
