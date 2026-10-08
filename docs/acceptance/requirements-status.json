@@ -2045,8 +2045,11 @@
         "apps/desktop/src-tauri/tauri.conf.json",
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
-        ".github/workflows/heavy-verification.yml"
-      ]
+        ".github/workflows/heavy-verification.yml",
+        ".github/workflows/package-candidate.yml",
+        "tooling/package_receipt.py"
+      ],
+      "note": "Candidate CI builds Linux AppImage, current-user Windows NSIS and macOS DMG; uninstall behavior and human install acceptance remain separate."
     },
     {
       "id": "CR-DELIVER-02",
@@ -2057,8 +2060,10 @@
         "apps/desktop/src-tauri/tauri.conf.json",
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
-        ".github/workflows/heavy-verification.yml"
-      ]
+        ".github/workflows/heavy-verification.yml",
+        ".github/workflows/package-candidate.yml"
+      ],
+      "note": "Updater artifacts are disabled and candidate packaging does not install renderers or models; runtime compatibility acceptance remains separate."
     },
     {
       "id": "CR-DELIVER-03",
@@ -2069,8 +2074,12 @@
         "apps/desktop/src-tauri/tauri.conf.json",
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
-        ".github/workflows/heavy-verification.yml"
-      ]
+        ".github/workflows/heavy-verification.yml",
+        ".github/workflows/package-candidate.yml",
+        "tooling/package_receipt.py",
+        "tooling/release_manifest.py"
+      ],
+      "note": "Exact-source delivery and per-bundle SHA-256 receipts exist; signing/notarization and final package-content acceptance remain separate."
     },
     {
       "id": "CR-DELIVER-04",
@@ -2105,8 +2114,11 @@
         "apps/desktop/src-tauri/tauri.conf.json",
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
-        ".github/workflows/heavy-verification.yml"
-      ]
+        ".github/workflows/heavy-verification.yml",
+        ".github/workflows/package-candidate.yml",
+        "tooling/package_receipt.py"
+      ],
+      "note": "Candidate receipts explicitly leave distribution signature and notarization NOT_CLAIMED; no OS-protection bypass is part of the workflow."
     },
     {
       "id": "CR-DELIVER-07",
@@ -2117,8 +2129,11 @@
         "apps/desktop/src-tauri/tauri.conf.json",
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
-        ".github/workflows/heavy-verification.yml"
-      ]
+        ".github/workflows/heavy-verification.yml",
+        ".github/workflows/package-candidate.yml",
+        "tooling/package_receipt.py"
+      ],
+      "note": "Candidate workflow has read-only repository permissions and uploads CI artifacts only; it creates no tag, release, updater feed or publication."
     },
     {
       "id": "CR-DELIVER-08",
@@ -2129,8 +2144,10 @@
         "apps/desktop/src-tauri/tauri.conf.json",
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
-        ".github/workflows/heavy-verification.yml"
-      ]
+        ".github/workflows/heavy-verification.yml",
+        "README.md"
+      ],
+      "note": "Public README/delivery documentation describes candidate packaging without publishing the private coordination kit; full product-doc acceptance remains separate."
     },
     {
       "id": "CR-PERF-01",

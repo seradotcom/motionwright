@@ -10,6 +10,7 @@ on:
       - "crates/service/**"
       - "tooling/source_policy.py"
       - "tooling/release_manifest.py"
+      - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
       - "tooling/tests/**"
       - "docs/security/**"
@@ -20,6 +21,7 @@ on:
       - "THIRD_PARTY_NOTICES.md"
       - "docs/security.md"
       - ".github/workflows/security-delivery.yml"
+      - ".github/workflows/package-candidate.yml"
       - ".github/workflows/heavy-verification.yml"
   pull_request:
     paths:
@@ -29,6 +31,7 @@ on:
       - "crates/service/**"
       - "tooling/source_policy.py"
       - "tooling/release_manifest.py"
+      - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
       - "tooling/tests/**"
       - "docs/security/**"
@@ -39,6 +42,7 @@ on:
       - "THIRD_PARTY_NOTICES.md"
       - "docs/security.md"
       - ".github/workflows/security-delivery.yml"
+      - ".github/workflows/package-candidate.yml"
       - ".github/workflows/heavy-verification.yml"
   workflow_dispatch:
 

@@ -59,6 +59,16 @@ Variant lineage, localization text, cut selection and delivery profiles travel a
 
 CI can generate an exact-source delivery manifest with tooling/release_manifest.py. That manifest binds the tested Motionwright SHA to the Semwright Native SDK pin and hashes the Rust/npm lockfiles, source lock, AGPL license and third-party notices. It is uploaded as evidence by the Security and Delivery workflow; it is not a signing, notarization or publication claim.
 
+The dedicated Candidate Packages workflow builds release-shaped desktop bundles only on disposable GitHub-hosted runners:
+
+- Linux produces an AppImage for user-local use plus an optional Debian package.
+- Windows produces an NSIS installer with `currentUser` install mode and downgrade protection enabled.
+- macOS produces a DMG candidate without claiming signing or notarization.
+
+`tooling/package_receipt.py` rejects missing, empty, symlinked or unexpected bundle types and records the exact source SHA, pinned Semwright SHA, OS/architecture, file size and SHA-256 for every candidate artifact. Each receipt explicitly leaves publishing, distribution signing, notarization and human install acceptance unclaimed.
+
+Candidate artifacts are CI evidence, not releases. The workflow does not create a tag, GitHub Release, updater feed or automatic publication. Linux AppImage is the default no-root path; the Debian package is an explicit system-package alternative. Windows NSIS is fixed to current-user installation rather than relying on an implicit default. macOS users retain normal platform protections; no Gatekeeper bypass or ad-hoc "fix" is part of the product instructions.
+
 ## Media delivery
 
 Configuring a profile never creates a media-success claim. The current direct pinned MLT final-master path is deliberately narrower than the profile model and accepts H.264/AAC, 48 kHz, Rec.709, MP4 only; other combinations remain versioned intent and fail as unsupported until a native production path proves them.

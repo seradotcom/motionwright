@@ -28,6 +28,7 @@ Every product acceptance case begins as NOT_RUN. PASS requires non-empty evidenc
 - Canonical Graph/Effects consumer compatibility is green, but that is not artifact-level Graph admission or a product Effect Conformance PASS.
 - Workflow Distillation V1/V2/V3 is implemented behind the canonical Broker/Policy boundary, but live product-level recorder -> compile/proposal -> replay -> promotion acceptance evidence is still required.
 - Three unrelated S/M/L datasets and revision-ten persistence now have a dedicated CI evidence lane. Exact-scope derived preview-index cache reuse also records validated bytes, validation cost and avoided semantic regeneration units; renderer-frame savings and human review remain separate acceptance work.
+- Candidate packaging now builds Linux AppImage/Debian, current-user Windows NSIS and macOS DMG bundles in CI with exact-source SHA-256 receipts; signing, notarization, uninstall behavior and human install acceptance remain separate.
 - Platform/account/worker/remote-review acceptance remains separate from the local workstation boundary.
 
 ## Policy
