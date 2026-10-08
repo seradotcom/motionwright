@@ -1,5 +1,7 @@
 use motionwright_domain::Project;
-use motionwright_native::production::{MltAvMasterEvidence, verified_native_media_path};
+use motionwright_native::production::{
+    MltAvMasterEvidence, read_verified_production_artifact, verified_native_media_path,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -12,6 +14,9 @@ use std::{
 use uuid::Uuid;
 
 const MAX_MASTER_BYTES: u64 = 1024 * 1024 * 1024;
+/// Small-file review only. Long masters are delivered via streaming disk copy,
+/// never piped wholesale through WebView IPC.
+pub const MAX_BROWSER_REVIEW_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DELIVERY_HANDLES: usize = 32;
 const MAX_DESTINATION_BYTES: usize = 2048;
 
@@ -24,6 +29,15 @@ pub struct MasterExportRequest {
     pub effect_grant: Uuid,
     pub export_token: Uuid,
     pub destination: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MasterReviewRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub export_token: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -184,6 +198,26 @@ fn validated_destination(value: &str) -> Result<PathBuf, String> {
 }
 
 impl DeliverySource {
+    /// Review a *small* completed native master without exporting to a user
+    /// path. One immutable session token selects the backend-only source;
+    /// bytes are SHA-256 checked before binary IPC can expose them.
+    pub fn review_bytes(&self) -> Result<Vec<u8>, String> {
+        let bytes = read_verified_production_artifact(
+            &self.owner_root,
+            &self.relative_path,
+            &self.sha256,
+            MAX_BROWSER_REVIEW_BYTES,
+        )
+        .map_err(|_| {
+            "MP4 review needs a valid SHA-256-verified owner artifact of at most 16 MiB. For longer masters use Export verified MP4."
+                .to_string()
+        })?;
+        if bytes.get(4..8) != Some(&b"ftyp"[..]) {
+            return Err("Native master review rejected invalid MP4 file signature.".into());
+        }
+        Ok(bytes)
+    }
+
     /// Copy only the SHA-256-verified canonical owner artifact. Existing user
     /// files are NEVER overwritten, and source paths stay backend-private.
     pub fn copy_to(&self, destination: &str) -> Result<MasterExportReceipt, String> {
@@ -318,6 +352,7 @@ mod tests {
         let registry = NativeMasterDeliveryRegistry::default();
         let token = registry.register(owner.path(), &evidence).unwrap();
         let source = registry.resolve(&project, token).unwrap();
+        assert_eq!(source.review_bytes().unwrap(), content);
         let destination = target.path().join("my-native-master.mp4");
         let first = source.copy_to(destination.to_str().unwrap()).unwrap();
         assert_eq!(first.revision, project.revision);
@@ -358,6 +393,7 @@ mod tests {
 
         fs::write(owner.path().join("signed-master.mp4"), b"bad-source").unwrap();
         let source = registry.resolve(&project, token).unwrap();
+        assert!(source.review_bytes().is_err());
         assert!(
             source
                 .copy_to(
@@ -371,6 +407,32 @@ mod tests {
         );
         assert!(!target.path().join("should-not-export.mp4").exists());
         assert!(validated_destination("../relative.mp4").is_err());
+    }
+
+    #[test]
+    fn browser_review_refuses_oversized_or_invalid_mp4_without_reading_it() {
+        let owner = tempfile::tempdir().unwrap();
+        let project = project();
+        let invalid = b"this is not an MP4 but has a valid SHA-256 hash";
+        let source_file = owner.path().join("signed-master.mp4");
+        fs::write(&source_file, invalid).unwrap();
+        let registry = NativeMasterDeliveryRegistry::default();
+        let token = registry
+            .register(owner.path(), &artifact_for(&project, invalid))
+            .unwrap();
+        let media = registry.resolve(&project, token).unwrap();
+        assert!(media.review_bytes().is_err());
+
+        let much_larger = MAX_BROWSER_REVIEW_BYTES + 1;
+        File::options()
+            .write(true)
+            .open(&source_file)
+            .unwrap()
+            .set_len(much_larger)
+            .unwrap();
+        let error = media.review_bytes().unwrap_err();
+        assert!(error.contains("16 MiB"));
+        assert!(error.contains("Export verified MP4"));
     }
 
     #[cfg(unix)]

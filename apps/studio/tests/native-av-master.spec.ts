@@ -73,10 +73,10 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await page.addInitScript(({ initial, rendered, mastered }) => {
     const app = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
-      __SYNTHETIC_AV__: { requests: Array<Record<string, unknown>>; exports: Array<Record<string, unknown>>; renders: number; effects: number };
+      __SYNTHETIC_AV__: { requests: Array<Record<string, unknown>>; exports: Array<Record<string, unknown>>; reviews: Array<Record<string, unknown>>; renders: number; effects: number };
     };
     let project = structuredClone(initial.project);
-    app.__SYNTHETIC_AV__ = { requests: [], exports: [], renders: 0, effects: 0 };
+    app.__SYNTHETIC_AV__ = { requests: [], exports: [], reviews: [], renders: 0, effects: 0 };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
         if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
@@ -92,6 +92,11 @@ test("desktop AV master is linked only to session-native visual evidence and a m
           const request = args?.request as Record<string, unknown>;
           app.__SYNTHETIC_AV__.requests.push(request);
           return structuredClone(mastered);
+        }
+        if (command === "review_native_av_master") {
+          app.__SYNTHETIC_AV__.reviews.push(args?.request as Record<string, unknown>);
+          // Synthetic header only: CI tests transport, not actual decoding.
+          return Uint8Array.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0]);
         }
         if (command === "export_native_av_master") {
           const request = args?.request as Record<string, unknown>;
@@ -158,6 +163,29 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   expect(invocations.requests[0]).not.toHaveProperty("motion");
   expect(invocations.requests[0]).not.toHaveProperty("audio");
 
+  const reviewAction = masterPanel.getByRole("button", { name: "Review native MP4" });
+  await expect(reviewAction).toBeEnabled();
+  await reviewAction.click();
+  const review = masterPanel.getByRole("region", { name: "Native master playback review" });
+  await expect(review).toBeVisible();
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as { __SYNTHETIC_AV__: { reviews: Array<unknown> } }
+  ).__SYNTHETIC_AV__.reviews.length)).toBe(1);
+  const reviewArgs = await page.evaluate(() => (
+    window as unknown as { __SYNTHETIC_AV__: { reviews: Array<Record<string, unknown>> } }
+  ).__SYNTHETIC_AV__.reviews[0]);
+  expect(reviewArgs).toMatchObject({
+    project_id: boot.project.id,
+    generation: boot.project.generation,
+    revision: boot.project.revision,
+    export_token: "synthetic-export-token",
+  });
+  expect(reviewArgs).not.toHaveProperty("path");
+  expect(reviewArgs).not.toHaveProperty("sha256");
+  expect(reviewArgs).not.toHaveProperty("effect_grant");
+  await masterPanel.getByRole("button", { name: "Close native review" }).click();
+  await expect(review).toHaveCount(0);
+
   const delivery = page.getByRole("region", { name: "Verified native MP4 delivery" });
   const exportAction = delivery.getByRole("button", { name: "Export verified MP4" });
   await expect(exportAction).toBeDisabled();
@@ -193,6 +221,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await expect(exportReceipt).toContainText("VERIFIED · HISTORICAL");
   await expect(assemble).toBeDisabled();
   await expect(page.getByRole("button", { name: "Export verified MP4" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Review native MP4" })).toBeDisabled();
 });
 
 test("UI refuses to offer native mastering for incompatible measured voice duration", async ({ page }) => {
@@ -248,4 +277,5 @@ test("browser demo never claims native AV master authority", async ({ page }) =>
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
   await expect(page.getByRole("button", { name: "Assemble native AV master" })).toBeDisabled();
   await expect(page.getByLabel("Native AV master evidence")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Review native MP4" })).toBeDisabled();
 });

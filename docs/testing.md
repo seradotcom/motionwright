@@ -38,6 +38,10 @@ The storage tests create a 260-change SQLite journal and verify descending keyse
 
 The native projection preflight uses the exact pinned Semwright Film adapter and current Motionwright project revision, with no native render dispatch or effect grant. Chromium tests exercise the typed read-only contract, supported/unsupported status and invalidation when creative inputs change. Native Film support is a semantic planning result, never certified renderer pixels or human acceptance; see [preflight semantics](film-preflight.md).
 
+## Bounded in-app native AV review
+
+The desktop may read a previously authenticated Semwright H.264/AAC MP4 into WebView media memory **only** on explicit user request, using the session export token and a source/project revision match. Rust tests verify exact SHA-256 source bytes, invalid ftyp, stale project, source tampering and 16 MiB cap; synthetic Chromium tests confirm read-only token-only IPC and opt-in UI flow, but do not claim actual decoder compatibility. See [native AV review](native-av-review.md). Larger masters remain available through streaming verified MP4 export.
+
 ## Verified local native MP4 delivery
 
 The desktop native MP4 delivery boundary accepts only a minted session grant for an already-completed, source-bound MLT master. Native Rust tests verify scoped source identity, refused symlinked export parents, create-new/no-overwrite, bounded SHA-256-verified streaming, and refusal to copy changed master bytes. Synthetic Chromium tests cover explicit user destination, one-time DeliverLocal grant, request parameters and revision invalidation. See [verified master export](master-verified-export.md); green tests do not certify signed distribution or human review.

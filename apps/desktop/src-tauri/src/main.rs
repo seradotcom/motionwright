@@ -2,7 +2,9 @@ mod av_delivery;
 mod av_master;
 mod effect_grants;
 
-use av_delivery::{MasterExportReceipt, MasterExportRequest, NativeMasterDeliveryRegistry};
+use av_delivery::{
+    MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
+};
 mod native_preview;
 
 use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
@@ -1016,6 +1018,33 @@ async fn export_native_av_master(
     Ok(receipt)
 }
 
+/// Read a completed, owner-verified native AV master, bounded to 16 MiB.
+#[tauri::command]
+async fn review_native_av_master(
+    state: State<'_, AppState>,
+    request: MasterReviewRequest,
+) -> Result<tauri::ipc::Response, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Native AV preview belongs to a previous project revision.".into());
+    }
+    let source = state.av_delivery.resolve(&project, request.export_token)?;
+    let data = tauri::async_runtime::spawn_blocking(move || source.review_bytes())
+        .await
+        .map_err(|_| "Native AV preview read task failed.".to_string())??;
+    let latest = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if latest.generation != request.generation || latest.revision != request.revision {
+        return Err("Project changed during native AV preview readback.".into());
+    }
+    Ok(tauri::ipc::Response::new(data))
+}
+
 #[tauri::command]
 async fn preview_native_frame(
     state: State<'_, AppState>,
@@ -1617,6 +1646,7 @@ fn main() {
             render_motion_canvas,
             assemble_av_master,
             export_native_av_master,
+            review_native_av_master,
             preview_native_frame,
             import_asset_file,
             import_voice_file,
