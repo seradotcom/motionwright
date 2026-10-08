@@ -44,10 +44,16 @@ reopens from disk, checks editability and journal continuity, and records per-op
 plus database size and process resource usage. The workflow fails if any measured commit exceeds
 its declared CI latency budget.
 
-The report is deliberately incomplete where the product is incomplete. It records derived-media
-cache evidence as open until a real cache can report both avoided work and validation cost. Human
-feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
-comparative claims against other editors.
+The report measures the application-owned derived cache separately from renderer throughput.
+Each S/M/L dataset admits a fingerprint-bound preview index, reopens it through the verified
+content-addressed store, records bytes checked plus validation cost and counts the exact scene
+preview-index regeneration units avoided. It also mutates a delivery render input and requires a
+cache miss for the changed fingerprint. This evidence does not claim avoided renderer frames,
+GPU time or wall-clock render savings; renderer-level cold/warm evidence remains separate.
+
+Human feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
+comparative claims against other editors. See `docs/derived-cache.md` for cache identity,
+invalidation and recovery rules.
 
 
 ## Variants and localization evidence lane

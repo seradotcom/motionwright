@@ -1,5 +1,6 @@
 use motionwright_domain::{
     Change, LockKind, RationalTime, RendererKind, RevisionStamp, SceneStatus,
+    variant_dependency_fingerprint,
 };
 use motionwright_service::StudioService;
 use serde::Serialize;
@@ -21,6 +22,18 @@ struct OperationMetric {
 }
 
 #[derive(Serialize)]
+struct CacheMetric {
+    scope: String,
+    kind: &'static str,
+    fingerprint_sha256: String,
+    stored_bytes: u64,
+    validated_bytes: u64,
+    store_micros: u128,
+    validation_micros: u128,
+    avoided_work_units: u64,
+}
+
+#[derive(Serialize)]
 struct DatasetMetric {
     brief: String,
     size: String,
@@ -35,12 +48,17 @@ struct DatasetMetric {
     event_count: usize,
     database_bytes: u64,
     operations: Vec<OperationMetric>,
+    cache: CacheMetric,
 }
 
 #[derive(Serialize)]
 struct CacheEvidence {
     implemented: bool,
+    lookup_attempts: usize,
+    hits: usize,
     avoided_work_count: u64,
+    work_unit: &'static str,
+    validated_bytes: u64,
     validation_micros: u128,
     note: &'static str,
 }
@@ -258,6 +276,87 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
     );
     assert_eq!(reopened.scenes.len(), scene_count);
 
+    let profile_id = reopened
+        .deliverables
+        .first()
+        .expect("benchmark project has a default deliverable")
+        .id;
+    let dependency = variant_dependency_fingerprint(&reopened, profile_id)
+        .expect("benchmark dependency fingerprint");
+    let scope = format!("project:{}:generation:{}", reopened.id, reopened.generation);
+    let cache_kind = "preview-index";
+    let derived_payload = serde_json::to_vec(&serde_json::json!({
+        "schema": "motionwright.preview-index.v1",
+        "project_id": reopened.id,
+        "generation": reopened.generation,
+        "revision": reopened.revision,
+        "profile_id": profile_id,
+        "master_inputs_sha256": &dependency.master_inputs_sha256,
+        "scenes": reopened.scenes.iter().map(|scene| serde_json::json!({
+            "id": scene.id,
+            "name": &scene.name,
+            "objective": &scene.objective,
+            "start": &scene.start,
+            "duration": &scene.duration,
+            "renderer": &scene.renderer,
+            "status": &scene.status,
+        })).collect::<Vec<_>>(),
+    }))
+    .expect("serialize derived preview index");
+    let cache_source = temp.path().join("derived-preview-index.json");
+    fs::write(&cache_source, &derived_payload).expect("write derived preview index");
+
+    let cache_store_started = Instant::now();
+    let stored = reopened_service
+        .put_derived_cache_file(
+            &scope,
+            cache_kind,
+            &dependency.master_inputs_sha256,
+            &cache_source,
+            scene_count as u64,
+        )
+        .expect("store derived preview cache");
+    let store_micros = cache_store_started.elapsed().as_micros();
+
+    let cache_lookup_started = Instant::now();
+    let hit = reopened_service
+        .lookup_derived_cache(&scope, cache_kind, &dependency.master_inputs_sha256)
+        .expect("validate derived preview cache")
+        .expect("fresh derived preview cache hit");
+    let validation_micros = cache_lookup_started.elapsed().as_micros();
+    assert_eq!(hit.record, stored);
+    assert_eq!(
+        fs::read(&hit.blob_path).expect("read verified cache blob"),
+        derived_payload
+    );
+
+    let mut changed = reopened.clone();
+    changed.deliverables[0].width = changed.deliverables[0].width.saturating_sub(2);
+    let changed_dependency = variant_dependency_fingerprint(&changed, profile_id)
+        .expect("changed dependency fingerprint");
+    assert_ne!(
+        changed_dependency.master_inputs_sha256,
+        dependency.master_inputs_sha256
+    );
+    assert!(
+        reopened_service
+            .lookup_derived_cache(&scope, cache_kind, &changed_dependency.master_inputs_sha256,)
+            .expect("changed fingerprint lookup")
+            .is_none(),
+        "changed render inputs must not reuse a stale cache entry"
+    );
+
+    let cache = CacheMetric {
+        scope,
+        kind: cache_kind,
+        fingerprint_sha256: dependency.master_inputs_sha256,
+        stored_bytes: stored.size_bytes,
+        validated_bytes: hit.validated_bytes,
+        store_micros,
+        validation_micros,
+        avoided_work_units: scene_count as u64,
+    };
+
     DatasetMetric {
         brief: brief.slug.into(),
         size: size.into(),
@@ -272,6 +371,7 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
         event_count,
         database_bytes: database_bytes(&db_path),
         operations,
+        cache,
     }
 }
 
@@ -317,6 +417,24 @@ fn main() {
         );
     }
 
+    let cache_lookup_attempts = results.len();
+    let cache_hits = results
+        .iter()
+        .filter(|result| result.cache.validated_bytes == result.cache.stored_bytes)
+        .count();
+    let cache_avoided_work = results
+        .iter()
+        .map(|result| result.cache.avoided_work_units)
+        .sum();
+    let cache_validated_bytes = results
+        .iter()
+        .map(|result| result.cache.validated_bytes)
+        .sum();
+    let cache_validation_micros = results
+        .iter()
+        .map(|result| result.cache.validation_micros)
+        .sum();
+
     let report = BenchmarkReport {
         schema: "motionwright.performance.v1",
         source_sha: env::var("GITHUB_SHA").unwrap_or_else(|_| "local-unattributed".into()),
@@ -326,10 +444,14 @@ fn main() {
         datasets: results.len(),
         results,
         cache_evidence: CacheEvidence {
-            implemented: false,
-            avoided_work_count: 0,
-            validation_micros: 0,
-            note: "Derived-media cache acceptance remains open; Motionwright does not call a boolean cache flag measured evidence.",
+            implemented: true,
+            lookup_attempts: cache_lookup_attempts,
+            hits: cache_hits,
+            avoided_work_count: cache_avoided_work,
+            work_unit: "scene preview-index regeneration units",
+            validated_bytes: cache_validated_bytes,
+            validation_micros: cache_validation_micros,
+            note: "Cache evidence counts exact-scope fingerprint-validated preview-index regeneration avoided. It does not claim renderer frames or wall-clock render savings.",
         },
         human_feedback: "NOT_RUN: this executable does not fabricate human participants or ratings.",
         comparative_claims: "NONE: the benchmark reports Motionwright measurements only and makes no competitor-superiority claim.",

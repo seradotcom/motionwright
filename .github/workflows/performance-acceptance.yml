@@ -65,8 +65,19 @@ jobs:
           assert all(len(r["operations"])==10 for r in rows)
           assert report["human_feedback"].startswith("NOT_RUN")
           assert report["comparative_claims"].startswith("NONE")
-          assert report["cache_evidence"]["implemented"] is False
-          print("performance-evidence=ok datasets=9 revision-ten=10 human=NOT_RUN cache=OPEN")
+          cache=report["cache_evidence"]
+          assert cache["implemented"] is True
+          assert cache["lookup_attempts"]==9 and cache["hits"]==9
+          assert cache["avoided_work_count"]==sum(r["scene_count"] for r in rows)
+          assert cache["work_unit"]=="scene preview-index regeneration units"
+          assert cache["validated_bytes"]>0
+          assert all(r["cache"]["validated_bytes"]==r["cache"]["stored_bytes"] for r in rows)
+          assert all(len(r["cache"]["fingerprint_sha256"])==64 for r in rows)
+          print(
+              "performance-evidence=ok datasets=9 revision-ten=10 "
+              f"cache_hits={cache['hits']} avoided_units={cache['avoided_work_count']} "
+              "human=NOT_RUN"
+          )
           PY
       - uses: actions/upload-artifact@v4
         with:

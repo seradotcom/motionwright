@@ -12,7 +12,9 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
+mod derived_cache;
 mod production;
+pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use production::{ProductionReceipt, ProductionReceiptInput};
 
 #[derive(Debug, Error)]
@@ -45,6 +47,8 @@ pub enum StorageError {
     BlobMissing { digest: String },
     #[error("blob exceeds read budget: {size} bytes > {limit} bytes")]
     BlobTooLarge { size: u64, limit: u64 },
+    #[error("invalid derived cache entry: {0}")]
+    InvalidDerivedCache(String),
     #[error("export destination already exists")]
     DestinationExists,
     #[error("unsafe source path: {0}")]

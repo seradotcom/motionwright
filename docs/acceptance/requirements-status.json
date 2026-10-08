@@ -1284,7 +1284,7 @@
         "docs/renderers.md",
         ".github/workflows/native-manim-e2e.yml"
       ],
-      "note": "Bounded Application Driver implemented; real-runtime CI remains the evidence gate until its exact-SHA run passes."
+      "note": "Bounded Semwright Application Driver is implemented and the dedicated exact-SHA native Manim execution/readback/job lane is green; product-level independent acceptance remains separate."
     },
     {
       "id": "CR-MANIM-02",
@@ -2131,13 +2131,14 @@
     {
       "id": "CR-PERF-01",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        "crates/service/examples/acceptance_bench.rs",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/testing.md"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "Fixed S/M/L datasets across three unrelated briefs run in the dedicated performance lane with exact source SHA, Ubuntu runner identity, resource usage and measured operation timings; product acceptance remains separate."
     },
     {
       "id": "CR-PERF-02",
@@ -2164,35 +2165,40 @@
     {
       "id": "CR-PERF-04",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        "crates/storage/src/derived_cache.rs",
+        "crates/service/examples/acceptance_bench.rs",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/derived-cache.md",
+        "docs/testing.md"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "Measured cache evidence records validated bytes, lookup cost and exact semantic regeneration units avoided; a changed delivery dependency fingerprint is required to miss. Renderer-frame and wall-clock savings are not claimed."
     },
     {
       "id": "CR-PERF-05",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        "crates/service/examples/acceptance_bench.rs",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/testing.md"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "The performance lane runs harbor safety, museum campaign and bike-route service briefs rather than requiring Semwright-specific scenes or strings."
     },
     {
       "id": "CR-PERF-06",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
-        "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        "crates/service/examples/acceptance_bench.rs",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/testing.md"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "Every S/M/L dataset executes exactly ten predefined persisted changes, reopens SQLite and verifies revision continuity and editability."
     },
     {
       "id": "CR-PERF-07",
@@ -2208,13 +2214,15 @@
     {
       "id": "CR-PERF-08",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
+        "crates/service/examples/acceptance_bench.rs",
+        ".github/workflows/performance-acceptance.yml",
         "docs/testing.md",
-        ".github/workflows/heavy-verification.yml"
+        "docs/derived-cache.md"
       ],
-      "note": "Required production/performance datasets have not been accepted yet."
+      "note": "The benchmark emits Motionwright measurements only, asserts that comparative claims are NONE and keeps human feedback NOT_RUN rather than manufacturing quality or superiority claims."
     },
     {
       "id": "CR-PLATFORM-01",
