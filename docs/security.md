@@ -37,6 +37,14 @@ A portable project bundle is a directory containing `manifest.json` and the exac
 
 Portable backups intentionally exclude execution request receipts. Import rotates the project generation so stale callers cannot resume writes against an authority recreated from an older package.
 
+## Effect-specific desktop authority
+
+Privileged desktop operations do not share one ambient application permission. Motionwright issues short-lived, in-memory, one-time capabilities for distinct local effects: project edit, local import, local render, local delivery and canonical workflow mutation. Project-scoped grants are tied to the exact project generation and revision plus an operation-specific subject, and a token is removed on first use even when validation fails.
+
+Remote egress, external upload, runtime installation and publication are explicit effect kinds that cannot be granted by the current runtime. An edit or render capability therefore cannot be reused as network or publishing authority. Portable-project import is the only supported grant without an existing project scope because the destination project does not exist yet; it remains bound to the local import effect and exact source path.
+
+The Studio requests the narrow capability immediately before its matching native operation. This is application intent separation, **not** proof of human approval, actor identity, organization authorization or consent. Extension permission descriptors likewise remain requests rather than executable authority. See `docs/security/R30_EFFECT_GRANTS.md` for the exact boundary and regression evidence.
+
 ## Credentials and private material
 
 Project bundles are not credential containers. Semwright connection material is owner-provisioned outside project state through the canonical connection boundary. Public source policy rejects common credential signatures, private-key material, private coordination-package markers and absolute developer-home paths.

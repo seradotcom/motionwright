@@ -384,6 +384,27 @@ export interface MltAvMasterEvidence {
   sync: Record<string, unknown> | null;
 }
 
+export type EffectKind =
+  | "project_edit"
+  | "import_local"
+  | "render_local"
+  | "deliver_local"
+  | "workflow_mutation"
+  | "remote_egress"
+  | "upload_external"
+  | "install_runtime"
+  | "publish_external";
+
+export interface EffectGrantReceipt {
+  token: string;
+  effect: EffectKind;
+  project_id: string | null;
+  generation: string | null;
+  revision: number | null;
+  expires_in_seconds: number;
+  one_time: boolean;
+}
+
 export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";
 export type WorkflowAction =
   | "record_start"

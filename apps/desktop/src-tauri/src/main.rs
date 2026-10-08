@@ -1,3 +1,6 @@
+mod effect_grants;
+
+use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
     otio_interchange,
@@ -24,6 +27,7 @@ const SEMWRIGHT_REVISION: &str = "8fa191250ae68274182570c65f067f7a60f85625";
 #[derive(Clone)]
 struct AppState {
     service: StudioService,
+    effect_grants: EffectGrantRegistry,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,7 +49,17 @@ struct ApplyRequest {
     generation: Uuid,
     revision: u64,
     request_id: String,
+    effect_grant: Uuid,
     change: Change,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueEffectGrantRequest {
+    effect: EffectKind,
+    project_id: Option<Uuid>,
+    generation: Option<Uuid>,
+    revision: Option<u64>,
+    subject: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +81,7 @@ struct MotionCanvasRenderRequest {
     generation: Uuid,
     revision: u64,
     request_id: String,
+    effect_grant: Uuid,
     deliverable_id: Uuid,
     options: FilmBuildOptions,
 }
@@ -119,7 +134,10 @@ impl WorkflowAction {
 #[derive(Debug, Deserialize)]
 struct WorkflowActionRequest {
     project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
     action: WorkflowAction,
+    effect_grant: Option<Uuid>,
     args: Value,
 }
 
@@ -151,16 +169,28 @@ struct BundlePathRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct ImportBundleRequest {
+    path: String,
+    effect_grant: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
 struct ExportBundleRequest {
     project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
     path: String,
+    effect_grant: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExportCaptionRequest {
     project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
     profile_id: Uuid,
     path: String,
+    effect_grant: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,7 +202,10 @@ struct CaptionExportResponse {
 #[derive(Debug, Deserialize)]
 struct ExportOtioRequest {
     project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
     path: String,
+    effect_grant: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,6 +220,7 @@ struct ImportAssetRequest {
     project_id: Uuid,
     generation: Uuid,
     revision: u64,
+    effect_grant: Uuid,
     path: String,
     name: Option<String>,
     media_type: Option<String>,
@@ -197,6 +231,7 @@ struct ImportVoiceRequest {
     project_id: Uuid,
     generation: Uuid,
     revision: u64,
+    effect_grant: Uuid,
     path: String,
     name: Option<String>,
     media_type: Option<String>,
@@ -247,6 +282,36 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
             mode: "tauri",
         },
     })
+}
+
+fn checked_effect_scope(
+    state: &AppState,
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+) -> Result<EffectScope, String> {
+    let project = state.service.project(project_id).map_err(sanitized)?;
+    if project.generation != generation || project.revision != revision {
+        return Err("Effect grant scope is stale; refresh the project before retrying.".into());
+    }
+    Ok(EffectScope::project(project_id, generation, revision))
+}
+
+#[tauri::command]
+fn issue_effect_grant(
+    state: State<'_, AppState>,
+    request: IssueEffectGrantRequest,
+) -> Result<EffectGrantReceipt, String> {
+    let scope = match (request.project_id, request.generation, request.revision) {
+        (Some(project_id), Some(generation), Some(revision)) => {
+            checked_effect_scope(&state, project_id, generation, revision)?
+        }
+        (None, None, None) => EffectScope::unscoped_import(),
+        _ => return Err("Effect grant project scope must be complete or absent.".into()),
+    };
+    state
+        .effect_grants
+        .issue(request.effect, scope, request.subject.trim())
 }
 
 #[tauri::command]
@@ -399,6 +464,23 @@ async fn workflow_action(
         .service
         .project(request.project_id)
         .map_err(sanitized)?;
+    let command = request.action.command();
+    if request.action.mutation() {
+        if project.generation != request.generation || project.revision != request.revision {
+            return Err("Workflow mutation grant scope is stale; refresh before retrying.".into());
+        }
+        let token = request
+            .effect_grant
+            .ok_or_else(|| "Workflow mutation requires a one-time effect grant.".to_string())?;
+        state.effect_grants.consume(
+            token,
+            EffectKind::WorkflowMutation,
+            EffectScope::project(request.project_id, request.generation, request.revision),
+            command,
+        )?;
+    } else if request.effect_grant.is_some() {
+        return Err("Read-only workflow actions do not consume mutation grants.".into());
+    }
     let connection = ProductionConnection::load(PathBuf::from(connection_path))
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     if connection.resource != project.resource_key() {
@@ -408,7 +490,6 @@ async fn workflow_action(
     }
     let client = ProductionClient::new(connection)
         .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
-    let command = request.action.command();
     let response = client
         .execute(command, request.args, request.action.mutation())
         .await
@@ -447,6 +528,15 @@ async fn render_motion_canvas(
         .service
         .project(request.project_id)
         .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Render grant scope is stale; refresh before retrying.".into());
+    }
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::RenderLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        request.request_id.trim(),
+    )?;
     let expected = RevisionStamp {
         resource: project.resource_key(),
         generation: request.generation,
@@ -479,6 +569,18 @@ fn import_asset_file(
     request: ImportAssetRequest,
 ) -> Result<Project, String> {
     let source = absolute_asset_path(&request.path)?;
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::ImportLocal,
+        scope,
+        request.path.trim(),
+    )?;
     if !source.is_file() {
         return Err("Asset source must be an existing local file.".into());
     }
@@ -531,6 +633,18 @@ fn import_voice_file(
     request: ImportVoiceRequest,
 ) -> Result<Project, String> {
     let source = absolute_asset_path(&request.path)?;
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::ImportLocal,
+        scope,
+        request.path.trim(),
+    )?;
     if !source.is_file() {
         return Err("Voice source must be an existing local file.".into());
     }
@@ -621,6 +735,18 @@ fn export_project_bundle(
     state: State<'_, AppState>,
     request: ExportBundleRequest,
 ) -> Result<BundleExportResponse, String> {
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        scope,
+        request.path.trim(),
+    )?;
     let destination = absolute_bundle_path(&request.path)?;
     let manifest = state
         .service
@@ -643,6 +769,18 @@ fn export_caption_sidecar(
     state: State<'_, AppState>,
     request: ExportCaptionRequest,
 ) -> Result<CaptionExportResponse, String> {
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        scope,
+        request.path.trim(),
+    )?;
     let project = state
         .service
         .project(request.project_id)
@@ -682,6 +820,18 @@ fn export_otio(
     state: State<'_, AppState>,
     request: ExportOtioRequest,
 ) -> Result<OtioExportResponse, String> {
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        scope,
+        request.path.trim(),
+    )?;
     let project = state
         .service
         .project(request.project_id)
@@ -742,8 +892,14 @@ fn inspect_project_bundle(
 #[tauri::command]
 fn import_project_bundle(
     state: State<'_, AppState>,
-    request: BundlePathRequest,
+    request: ImportBundleRequest,
 ) -> Result<Project, String> {
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::ImportLocal,
+        EffectScope::unscoped_import(),
+        request.path.trim(),
+    )?;
     let source = absolute_bundle_path(&request.path)?;
     state
         .service
@@ -756,6 +912,18 @@ async fn apply_change(
     state: State<'_, AppState>,
     request: ApplyRequest,
 ) -> Result<Project, String> {
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::ProjectEdit,
+        scope,
+        request.request_id.trim(),
+    )?;
     let trusted_audio_evidence = match &request.change {
         Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
         Change::AddTranscriptSegment { segment } | Change::UpsertTranscriptSegment { segment } => {
@@ -947,11 +1115,15 @@ fn main() {
             build_application(service.clone())
                 .map_err(|error| format!("Native SDK contract invalid: {error}"))?;
 
-            app.manage(AppState { service });
+            app.manage(AppState {
+                service,
+                effect_grants: EffectGrantRegistry::default(),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            issue_effect_grant,
             project_history,
             model_request_preflight,
             workflow_overview,
