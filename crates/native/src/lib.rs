@@ -4,7 +4,7 @@ use motionwright_service::StudioService;
 use motionwright_storage::StorageError;
 use semwright_native_sdk::cooperation::{
     Application, CallContext, CancellationSemantics, CommitSemantics, Completion, ObservationPage,
-    ObservationProvider, OperationContract, OperationHandler, Query, ResourceVersion,
+    ObservationProvider, OperationContract, OperationHandler, PageCursor, Query, ResourceVersion,
     RetrySemantics, RevisionToken, TargetRequirement, UndoSemantics,
 };
 use semwright_native_sdk::{
@@ -125,6 +125,95 @@ impl ObservationProvider for MotionwrightObserver {
         let project = self.service.project(project_id).map_err(storage_error)?;
         let version = resource_version(&project)?;
 
+        // The Native SDK owns the page/version contract; Motionwright supplies
+        // only version-bound application journal cursors, never authorization.
+        if query.scope == "history" || query.scope == "history-recent" {
+            let recent = query.scope == "history-recent";
+            if let Some(cursor) = &query.cursor
+                && cursor.version != version
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Project changed while paging its history",
+                ));
+            }
+            let prefix = if recent {
+                "through-revision:"
+            } else {
+                "after-revision:"
+            };
+            let start = match &query.cursor {
+                Some(cursor) => cursor
+                    .token
+                    .strip_prefix(prefix)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .ok_or_else(|| Error::invalid("Malformed history cursor"))?,
+                None if recent => project.revision,
+                None => 0,
+            };
+            if start > project.revision {
+                return Err(Error::invalid("History cursor exceeds project revision"));
+            }
+            let limit = usize::from(query.limit);
+            let events = if recent {
+                self.service.history_recent(project_id, start, limit)
+            } else {
+                self.service.history(project_id, start, limit)
+            }
+            .map_err(storage_error)?;
+
+            let continuation = if let Some(last) = events.last() {
+                let next_start = if recent {
+                    last.revision.checked_sub(1)
+                } else {
+                    Some(last.revision)
+                };
+                if let Some(next_start) = next_start {
+                    let probe = if recent {
+                        self.service.history_recent(project_id, next_start, 1)
+                    } else {
+                        self.service.history(project_id, next_start, 1)
+                    }
+                    .map_err(storage_error)?;
+                    (!probe.is_empty()).then_some(next_start)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Do not bind rows to a resource version if a concurrent writer
+            // committed between the journal read and its continuation probe.
+            let observed_again = self.service.project(project_id).map_err(storage_error)?;
+            if observed_again.generation != project.generation
+                || observed_again.revision != project.revision
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Project changed during history observation",
+                ));
+            }
+
+            let next = continuation.map(|position| PageCursor {
+                version: version.clone(),
+                scope: query.scope.clone(),
+                token: format!("{prefix}{position}"),
+            });
+            let page = ObservationPage {
+                version,
+                scope: query.scope.clone(),
+                items: events
+                    .into_iter()
+                    .map(|event| serde_json::to_value(event).unwrap_or(Value::Null))
+                    .collect(),
+                complete: next.is_none(),
+                next,
+            };
+            page.validate_for(query)?;
+            return Ok(page);
+        }
+
         let items = match query.scope.as_str() {
             "summary" => vec![json!({
                 "id": project.id.to_string(),
@@ -192,13 +281,6 @@ impl ObservationProvider for MotionwrightObserver {
                 .map_err(storage_error)?
                 .into_iter()
                 .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
-                .collect(),
-            "history" => self
-                .service
-                .history(project_id, 0, usize::from(query.limit))
-                .map_err(storage_error)?
-                .into_iter()
-                .map(|event| serde_json::to_value(event).unwrap_or(Value::Null))
                 .collect(),
             "locks" => project
                 .locks
@@ -2014,6 +2096,7 @@ mod tests {
             "alternatives",
             "production-jobs",
             "history",
+            "history-recent",
         ] {
             let query = Query {
                 resource: project.resource_key(),
@@ -2031,5 +2114,111 @@ mod tests {
             assert_eq!(page.scope, scope);
             assert_eq!(page.version.revision.as_str(), "0");
         }
+    }
+
+    #[tokio::test]
+    async fn native_history_cursor_pages_remain_revision_bound_and_complete() {
+        let (service, mut project) = fixture();
+        for revision in 1..=9 {
+            let outcome = service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("native-history-request-{revision}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {revision}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        let observer = MotionwrightObserver::new(service.clone());
+        let context = CallContext::application_local("native-history-reader").unwrap();
+
+        for (scope, expected) in [
+            ("history", (1..=9).collect::<Vec<_>>()),
+            ("history-recent", (1..=9).rev().collect::<Vec<_>>()),
+        ] {
+            let mut cursor = None;
+            let mut revisions = Vec::new();
+            let mut pages = 0;
+            loop {
+                pages += 1;
+                assert!(pages <= 4, "history continuation must finish");
+                let query = Query {
+                    resource: project.resource_key(),
+                    scope: scope.into(),
+                    limit: 3,
+                    cursor,
+                };
+                let page = observer.observe(&query, &context).await.unwrap();
+                assert_eq!(page.items.len(), 3);
+                for value in &page.items {
+                    revisions.push(value["revision"].as_u64().unwrap());
+                }
+                if page.complete {
+                    assert!(page.next.is_none());
+                    break;
+                }
+                cursor = Some(page.next.expect("incomplete page requires a cursor"));
+            }
+            assert_eq!(pages, 3);
+            assert_eq!(revisions, expected);
+        }
+
+        let first = observer
+            .observe(
+                &Query {
+                    resource: project.resource_key(),
+                    scope: "history-recent".into(),
+                    limit: 3,
+                    cursor: None,
+                },
+                &context,
+            )
+            .await
+            .unwrap();
+        let valid_cursor = first.next.expect("recent history must continue");
+        let mut forged = valid_cursor.clone();
+        forged.token = "after-revision:5".into();
+        assert!(
+            observer
+                .observe(
+                    &Query {
+                        resource: project.resource_key(),
+                        scope: "history-recent".into(),
+                        limit: 3,
+                        cursor: Some(forged),
+                    },
+                    &context,
+                )
+                .await
+                .is_err()
+        );
+
+        let _committed = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-history-new-revision",
+                &Change::RenameProject {
+                    title: "Changed after cursor".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            observer
+                .observe(
+                    &Query {
+                        resource: project.resource_key(),
+                        scope: "history-recent".into(),
+                        limit: 3,
+                        cursor: Some(valid_cursor),
+                    },
+                    &context,
+                )
+                .await
+                .is_err()
+        );
     }
 }
