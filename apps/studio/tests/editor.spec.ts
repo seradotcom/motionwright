@@ -340,6 +340,34 @@ test("delivery profiles are versioned and filesystem claims remain truthful", as
 });
 
 
+test("delivery variants keep lineage, replan alternate aspect ratios and require explicit crop approval", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+
+  await page.getByRole("button", { name: "Derive selected", exact: true }).click();
+  await expect(page.getByText(/Derived from Master 16:9/)).toBeVisible();
+  await expect(page.getByLabel("Framing")).toHaveValue("replan");
+  await expect(page.getByLabel("Frame rate", { exact: true })).toHaveValue("30/1");
+
+  await page.getByLabel("Profile name").fill("Portrait campaign");
+  await page.getByLabel("Width").fill("1080");
+  await page.getByLabel("Height").fill("1920");
+  await page.getByLabel("Cut label").fill("social-vertical");
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: /Portrait campaign/ })).toBeVisible();
+  await expect(page.getByText(/original remains independently inspectable/)).toBeVisible();
+
+  await page.getByLabel("Framing").selectOption("crop");
+  await expect(page.getByText("Approve crop")).toBeVisible();
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("crop framing requires explicit approval");
+
+  await page.locator("label.delivery-inline-check").filter({ hasText: "Approve crop" }).locator("input").check();
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect(page.getByText(/explicitly approved crop/)).toBeVisible();
+});
+
 test("audio workspace keeps measurement claims honest and versions mix intent", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Audio", exact: true }).click();

@@ -59,11 +59,21 @@ export interface ProjectLock { id: string; resource: string; kind: LockKind; not
 export type CaptionFormat = "web_vtt" | "srt";
 export type VideoCodec = "h264" | "hevc" | "prores_422_hq" | "vp9" | "av1";
 export type AudioCodec = "aac" | "pcm_s16_le" | "opus";
+export type FramingStrategy = "replan" | "crop";
+export type OutputColorSpace = "rec709" | "display_p3" | "rec2020";
+export type OutputContainer = "mp4" | "mov" | "webm" | "mkv";
 export interface DeliverableProfile {
   id: string; name: string; width: number; height: number;
   language: string; captions: boolean; caption_format: CaptionFormat;
   video_codec: VideoCodec; audio_codec: AudioCodec; audio_sample_rate_hz: number;
   brand_profile: string | null; cut_label: string | null;
+  parent_profile_id: string | null; source_revision: number | null;
+  framing_strategy: FramingStrategy; crop_approved: boolean; timing_locked: boolean;
+  voice_track_id: string | null; text_overrides: Record<string, string>;
+  included_scene_ids: string[]; protected_scene_ids: string[];
+  burn_in_captions: boolean; frame_rate: RationalTime;
+  color_space: OutputColorSpace; container: OutputContainer;
+  adaptation_notes: string[];
 }
 export interface CaptionExportResult { path: string; cue_count: number; }
 export interface OtioExportResult { path: string; scene_count: number; loss_report: string[]; }

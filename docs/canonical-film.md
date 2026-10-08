@@ -1,15 +1,19 @@
 # Canonical Motion Canvas Film projection
 
-Motionwright does not reinterpret every scene as Motion Canvas. Production first partitions the global project timeline by renderer. Only contiguous scenes explicitly owned by the Motion Canvas renderer are projected into Semwright's pinned semwright-motion-authoring::Film contract. Blender, Manim Community and other renderer scenes retain their original renderer identity and timeline placement for their own native lanes.
+Motionwright does not reinterpret every scene as Motion Canvas. Production first partitions the selected deliverable cut by renderer. Only contiguous scenes explicitly owned by the Motion Canvas renderer are projected into Semwright's pinned semwright-motion-authoring::Film contract. Blender, Manim Community and other renderer scenes retain their renderer identity for their own native lanes.
 
 ## Projection rules
 
-The first production projection is intentionally strict:
+The projection is intentionally strict:
 
 - a Film is at most 600 seconds and 32 sequences; longer Motion Canvas runs are partitioned at scene boundaries;
-- the selected deliverable must remain 16:9 for this projection; vertical and square output require a separately reframed creative branch rather than automatic stretching;
-- frame rate, primary font, mono font, narrative role and archetype are explicit inputs rather than inferred claims;
-- Motionwright's top-left 1920x1080 canvas coordinates are converted deterministically to the canonical centered coordinate system and may scale uniformly within 16:9;
+- the selected deliverable controls width, height and exact rational frame rate;
+- landscape, portrait and square outputs are supported through deterministic semantic replan; crop is a distinct profile strategy that requires explicit approval;
+- a custom narrative cut preserves source scene order and is reflowed onto a zero-based deliverable timeline;
+- localized text is selected from profile-owned object overrides and enters Film with the profile locale;
+- native text carries font-loaded and no-truncation constraints; Motionwright does not silently clip a longer translation;
+- primary font, mono font, narrative role and archetype remain explicit inputs rather than inferred claims;
+- Motionwright's 1920x1080 project-pixel canvas is projected into the selected output profile with deterministic positions, object scale and safe-area checks;
 - text, rectangle/shape, circle and structural group nodes are supported;
 - rotation, partial opacity, non-normal blend modes, non-project coordinate spaces, unresolved semantic relations and unsupported node kinds fail closed instead of being dropped;
 - non-default camera pan/rotation/zoom fails closed until the canonical mapping can preserve it exactly;
