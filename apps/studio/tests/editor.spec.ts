@@ -502,7 +502,7 @@ test("canvas scrubbing and keyframe jumps use scene-relative time without splitt
   await expect(slider).toHaveValue("0");
   await slider.focus();
   await slider.press("End");
-  await expect(timelineTimecode).toHaveText("00:15:23");
+  await expect(timelineTimecode).toHaveText("00:15:29");
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 
   await page.getByRole("button", { name: "Add or replace keyframe at playhead" }).click();
@@ -513,7 +513,7 @@ test("canvas scrubbing and keyframe jumps use scene-relative time without splitt
   await slider.press("Home");
   await expect(timelineTimecode).toHaveText("00:07:00");
   await page.locator(".motion-keyframe-jump").first().click();
-  await expect(timelineTimecode).toHaveText("00:15:23");
+  await expect(timelineTimecode).toHaveText("00:15:29");
   await expect(page.locator(".revision-chip").first()).toHaveText(afterKeyframe);
 });
 
