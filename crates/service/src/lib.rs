@@ -425,7 +425,7 @@ impl StudioService {
         }
         let path = store.verified_blob_path(&track.source_sha256)?;
         let size_bytes = fs::metadata(&path)?.len();
-        if size_bytes < 44 || size_bytes > MAX_SOURCE_BYTES {
+        if !(44..=MAX_SOURCE_BYTES).contains(&size_bytes) {
             return Err(invalid_import(
                 "Measured WAV exceeds the bounded AV master input size",
             ));
