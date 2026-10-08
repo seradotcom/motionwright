@@ -3926,7 +3926,7 @@ select:focus {
 .audio-transcript-row.playback-current,
 .audio-cue-row.playback-current {
   background: var(--accent-wash);
-  box-shadow: inset 2px 0 var(--accent);
+  box-shadow: inset 1px 0 var(--accent);
 }
 .audio-transcript-row textarea,
 .audio-transcript-new textarea { min-height: 48px; resize: vertical; }

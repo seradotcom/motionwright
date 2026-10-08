@@ -470,7 +470,7 @@ test("audio cue seeking and canvas share the same global editorial clock", async
   await page.getByRole("button", { name: "Audio", exact: true }).click();
   await page.getByRole("button", { name: "Seek to cue Broker handoff" }).click();
   await expect(timelineTimecode).toHaveText("00:18:00");
-  await expect(page.locator(".audio-cue-row").filter({ hasText: "Broker handoff" })).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("button", { name: "Seek to cue Broker handoff" }).locator("..")).toHaveAttribute("aria-current", "true");
   await expect(page.locator(".tree-row").filter({ hasText: "Semwright acts natively" })).toHaveClass(/selected/);
 
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
