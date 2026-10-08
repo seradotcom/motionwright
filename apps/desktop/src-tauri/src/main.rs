@@ -8,7 +8,7 @@ use motionwright_domain::{
 };
 use motionwright_native::{
     build_application,
-    film::FilmBuildOptions,
+    film::{FilmBuildOptions, build_motion_canvas_segments},
     production::{
         MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
     },
@@ -96,6 +96,35 @@ struct MotionCanvasRenderRequest {
     effect_grant: Uuid,
     deliverable_id: Uuid,
     options: FilmBuildOptions,
+}
+
+#[derive(Debug, Deserialize)]
+struct FilmPreflightRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Uuid,
+    options: FilmBuildOptions,
+}
+
+#[derive(Debug, Serialize)]
+struct FilmPreflightSegment {
+    segment_id: String,
+    scene_ids: Vec<Uuid>,
+    frame_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct FilmPreflightResponse {
+    project_resource: String,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Uuid,
+    verdict: &'static str,
+    reason: Option<String>,
+    segment_count: usize,
+    total_frames: u64,
+    segments: Vec<FilmPreflightSegment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -662,6 +691,81 @@ fn production_jobs(
         .service
         .production_jobs(request.project_id, request.limit)
         .map_err(sanitized)
+}
+
+/// Semantic authoring preflight: exactly the same project-owned Film projection
+/// that canonical production uses, with NO Semwright host dispatch and no
+/// mutation/effect grant. SUPPORTED never means the renderer has passed.
+#[tauri::command]
+async fn motion_canvas_preflight(
+    state: State<'_, AppState>,
+    request: FilmPreflightRequest,
+) -> Result<FilmPreflightResponse, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Semantic Film preflight is stale; refresh project before retrying.".into());
+    }
+    let resource = project.resource_key();
+    let project_id = request.project_id;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let projected =
+            build_motion_canvas_segments(&project, request.deliverable_id, &request.options);
+        let unsupported = |reason: String| FilmPreflightResponse {
+            project_resource: resource.clone(),
+            generation: request.generation,
+            revision: request.revision,
+            deliverable_id: request.deliverable_id,
+            verdict: "unsupported",
+            reason: Some(reason.chars().take(480).collect()),
+            segment_count: 0,
+            total_frames: 0,
+            segments: Vec::new(),
+        };
+        match projected {
+            Ok(segments) if !segments.is_empty() => {
+                let total_frames = segments
+                    .iter()
+                    .try_fold(0_u64, |sum, item| sum.checked_add(item.frame_count));
+                match total_frames {
+                    Some(total_frames) if total_frames > 0 => FilmPreflightResponse {
+                        project_resource: resource.clone(),
+                        generation: request.generation,
+                        revision: request.revision,
+                        deliverable_id: request.deliverable_id,
+                        verdict: "projection_ready",
+                        reason: None,
+                        segment_count: segments.len(),
+                        total_frames,
+                        segments: segments
+                            .into_iter()
+                            .map(|segment| FilmPreflightSegment {
+                                segment_id: segment.id,
+                                scene_ids: segment.scene_ids,
+                                frame_count: segment.frame_count,
+                            })
+                            .collect(),
+                    },
+                    _ => unsupported("Semantic Film has no bounded nonempty frame plan.".into()),
+                }
+            }
+            Ok(_) => unsupported("This saved profile selects no Motion Canvas scenes.".into()),
+            Err(error) => unsupported(error.message),
+        }
+    })
+    .await
+    .map_err(|_| "Canonical Film semantic preflight task failed.".to_string())?;
+    // The result is a read-only projection, but cannot be labeled current
+    // if any concurrent project edit occurred during the preflight.
+    let latest = state.service.project(project_id).map_err(sanitized)?;
+    if latest.generation != result.generation || latest.revision != result.revision {
+        return Err(
+            "Project changed during semantic Film preflight; retry at current revision.".into(),
+        );
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1318,6 +1422,7 @@ fn main() {
             workflow_overview,
             workflow_action,
             production_jobs,
+            motion_canvas_preflight,
             render_motion_canvas,
             preview_native_frame,
             import_asset_file,

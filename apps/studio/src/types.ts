@@ -348,6 +348,22 @@ export interface NativePreviewGrant {
   scene_ids: string[];
   frame_count: number;
 }
+/** Local semantic Film projection only; not a renderer job or quality PASS. */
+export interface MotionCanvasProjectionPreflight {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  verdict: "projection_ready" | "unsupported";
+  reason: string | null;
+  segment_count: number;
+  total_frames: number;
+  segments: Array<{
+    segment_id: string;
+    scene_ids: string[];
+    frame_count: number;
+  }>;
+}
 export interface MotionCanvasRenderEvidence {
   project_resource: string;
   generation: string;
