@@ -227,26 +227,10 @@ function PreviewSurface({
   editorialPlaying: boolean;
 }) {
   const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
-  // A mode selection is explicit consent for exactly this creative/render
-  // session. A new project revision, profile or native token immediately
-  // returns to design without auto-reading previously unapproved media.
-  const previewScope = JSON.stringify([
-    project.id, project.generation, project.revision, profile?.id,
-    renderEvidence?.preview?.[0]?.token, avEvidence?.export_token,
-  ]);
-  const [sourceChoice, setSourceChoice] = useState<{
-    mode: "design" | "frames" | "av";
-    scope: string;
-  }>({ mode: "design", scope: previewScope });
-  // Reset during the first render of a *changed* source scope. Doing so in
-  // an effect would briefly remount a prior Blob when switching away/back to
-  // an earlier profile, before the effect gets a chance to clear consent.
-  if (sourceChoice.scope !== previewScope) {
-    setSourceChoice({ mode: "design", scope: previewScope });
-  }
-  const previewSource = sourceChoice.scope === previewScope ? sourceChoice.mode : "design";
-  const selectPreviewSource = (mode: "design" | "frames" | "av") =>
-    setSourceChoice({ mode, scope: previewScope });
+  // App keys this view by exact project revision, display profile, render
+  // grant and AV grant. A source change remounts the monitor in DESIGN mode,
+  // preventing an old media opt-in from reappearing when a user switches back.
+  const [previewSource, selectPreviewSource] = useState<"design" | "frames" | "av">("design");
   const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
   const nativeAv = programMasterAtPlayhead(project, scene, profile, renderEvidence, avEvidence, playhead);
   const showingNative = previewSource === "frames" && nativeFrame !== null;
@@ -2032,7 +2016,12 @@ export default function App() {
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":
-        return <PreviewSurface scene={selectedScene} project={project} playhead={playhead}
+        return <PreviewSurface
+          key={JSON.stringify([
+            project.id, project.generation, project.revision, selectedProfile?.id,
+            nativeRenderReceipt?.preview?.[0]?.token, nativeAvReceipt?.export_token,
+          ])}
+          scene={selectedScene} project={project} playhead={playhead}
           rate={timebaseRate} mode={displayMode} profile={selectedProfile}
           renderEvidence={nativeRenderReceipt} avEvidence={nativeAvReceipt}
           onInspectRender={() => setWorkspace("Deliver")}
