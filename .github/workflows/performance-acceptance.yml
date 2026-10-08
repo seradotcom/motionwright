@@ -6,6 +6,8 @@ on:
       - "crates/domain/**"
       - "crates/storage/**"
       - "crates/service/**"
+      - "apps/studio/**"
+      - "apps/desktop/src-tauri/src/**"
       - "tooling/**"
       - "docs/testing.md"
       - "docs/audio.md"
@@ -16,6 +18,8 @@ on:
       - "crates/domain/**"
       - "crates/storage/**"
       - "crates/service/**"
+      - "apps/studio/**"
+      - "apps/desktop/src-tauri/src/**"
       - "tooling/**"
       - "docs/testing.md"
       - "docs/audio.md"
@@ -146,3 +150,109 @@ jobs:
           name: waveform-performance-evidence
           path: verification/waveform
           if-no-files-found: error
+
+  responsiveness-service:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Source and acceptance policy
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/acceptance_policy.py
+      - name: Build S-profile responsiveness benchmark
+        run: cargo build -p motionwright-service --example responsiveness_bench --release
+      - name: Measure small commits and S-profile reopen
+        env:
+          MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS: "250"
+          MOTIONWRIGHT_S_REOPEN_BUDGET_MS: "2000"
+        run: |
+          mkdir -p verification/responsiveness
+          /usr/bin/time -v -o verification/responsiveness/resource-usage.txt \
+            target/release/examples/responsiveness_bench \
+            > verification/responsiveness/service.json
+      - name: Validate service responsiveness evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report=json.loads(Path("verification/responsiveness/service.json").read_text())
+          assert report["schema"]=="motionwright.responsiveness.v1"
+          dataset=report["dataset"]
+          assert dataset["scenes"]==12
+          assert dataset["beats"]==80
+          assert dataset["canvas_nodes"]==300
+          assert dataset["voice_seconds"]==300
+          assert dataset["width"]==1920 and dataset["height"]==1080
+          assert dataset["frame_rate"]=="30/1"
+          commit=report["small_commit"]
+          assert commit["samples"]==40
+          assert commit["budget_ms"]==250
+          assert commit["p95_micros"] < 250_000
+          assert report["reopen_budget_ms"]==2000
+          assert report["reopen_micros"] < 2_000_000
+          assert report["human_feedback"].startswith("NOT_RUN")
+          assert report["comparative_claims"].startswith("NONE")
+          print(
+              "responsiveness-service=ok "
+              f"commit_p95_us={commit['p95_micros']} "
+              f"reopen_us={report['reopen_micros']} "
+              f"db_bytes={report['database_bytes']}"
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: responsiveness-service-evidence
+          path: verification/responsiveness
+          if-no-files-found: error
+
+  ui-selection:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Measure selection to inspector paint
+        env:
+          MOTIONWRIGHT_PERF_ACCEPTANCE: "1"
+          MOTIONWRIGHT_UI_PERF_REPORT: "../../verification/responsiveness/ui-selection.json"
+        run: npx playwright test tests/performance.spec.ts
+      - name: Validate UI responsiveness evidence
+        run: |
+          cd ../..
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report=json.loads(Path("verification/responsiveness/ui-selection.json").read_text())
+          assert report["schema"]=="motionwright.ui-selection.v1"
+          assert report["dataset"]["scenes"]==12
+          assert report["dataset"]["samples"]==60
+          assert report["budget_ms"]==100
+          assert report["p95_ms"] < 100
+          print(
+              "responsiveness-ui=ok "
+              f"selection_p95_ms={report['p95_ms']:.3f} "
+              f"selection_max_ms={report['max_ms']:.3f}"
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: responsiveness-ui-evidence
+          path: |
+            verification/responsiveness/ui-selection.json
+            apps/studio/test-results
+          if-no-files-found: ignore
