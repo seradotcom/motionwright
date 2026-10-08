@@ -63,10 +63,21 @@ import type {
   PortableBundlePlan,
   Project,
   ProjectState,
+  RationalTime,
   RendererKind,
   Scene,
 } from "./types";
 import { rationalSeconds, seconds } from "./types";
+import {
+  DEFAULT_EDITOR_RATE,
+  formatEditorTimecode as formatTime,
+  rulerTime,
+  stepEditorialFrame,
+  supportsDropFrame,
+  timebaseLabel,
+  validEditorRate,
+  type TimecodeMode,
+} from "./timecode";
 
 type Workspace =
   | "Brief"
@@ -135,13 +146,6 @@ const rendererAvailable = (project: Project, renderer: RendererKind) => {
   return true;
 };
 
-function formatTime(value: number) {
-  const mins = Math.floor(value / 60);
-  const secs = Math.floor(value % 60);
-  const frames = Math.floor((value % 1) * 24);
-  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}:${String(frames).padStart(2, "0")}`;
-}
-
 function projectTimelineDuration(project: Project) {
   return Math.max(
     1,
@@ -191,10 +195,16 @@ function PreviewSurface({
   scene,
   project,
   playhead,
+  rate,
+  mode,
+  profile,
 }: {
   scene: Scene | null;
   project: Project;
   playhead: number;
+  rate: RationalTime;
+  mode: TimecodeMode;
+  profile: Project["deliverables"][number] | null;
 }) {
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
 
@@ -213,7 +223,7 @@ function PreviewSurface({
             PROJECT r{project.revision}
           </span>
         </div>
-        <div className="timecode">{formatTime(playhead)}</div>
+        <div className="timecode">{formatTime(playhead, rate, mode)}</div>
       </div>
       <div className="preview-stage">
         <div className="safe-frame">
@@ -253,8 +263,8 @@ function PreviewSurface({
         </div>
       </div>
       <footer className="preview-footer">
-        <span>1920 × 1080</span>
-        <span>24 fps</span>
+        <span>{profile ? profile.width + " × " + profile.height : "No output profile selected"}</span>
+        <span>{timebaseLabel(rate, mode)} · editorial display</span>
         <span className="preview-evidence">
           <CircleDashed size={13} /> No render evidence attached
         </span>
@@ -267,10 +277,14 @@ function StoryboardView({
   project,
   selectedSceneId,
   onSelect,
+  rate,
+  mode,
 }: {
   project: Project;
   selectedSceneId: string | null;
   onSelect: (id: string) => void;
+  rate: RationalTime;
+  mode: TimecodeMode;
 }) {
   return (
     <div className="workspace-scroll storyboard-view">
@@ -300,7 +314,7 @@ function StoryboardView({
               </div>
               <p>{scene.objective || "No objective yet."}</p>
               <div className="story-meta">
-                <span>{formatTime(seconds(scene.duration))}</span>
+                <span>{formatTime(seconds(scene.duration), rate, mode)}</span>
                 <span>{rendererLabels[scene.renderer]}</span>
               </div>
             </div>
@@ -940,11 +954,15 @@ function SceneBeatRow({
   beat,
   locked,
   commit,
+  rate,
+  mode,
 }: {
   scene: Scene;
   beat: Beat;
   locked: boolean;
   commit: (change: Change) => Promise<void>;
+  rate: RationalTime;
+  mode: TimecodeMode;
 }) {
   const [label, setLabel] = useState(beat.label);
   const [objective, setObjective] = useState(beat.objective);
@@ -1031,7 +1049,7 @@ function SceneBeatRow({
         </label>
       </div>
       <div className="scene-beat-row-foot">
-        <span className="mono">{formatTime(start)} → {formatTime(start + duration)}</span>
+        <span className="mono">{formatTime(start, rate, mode)} → {formatTime(start + duration, rate, mode)}</span>
         <button
           type="button"
           className="button compact"
@@ -1060,11 +1078,15 @@ function SceneBeatEditor({
   contentLocked,
   timingLocked,
   commit,
+  rate,
+  mode,
 }: {
   scene: Scene;
   contentLocked: boolean;
   timingLocked: boolean;
   commit: (change: Change) => Promise<void>;
+  rate: RationalTime;
+  mode: TimecodeMode;
 }) {
   const sceneDuration = seconds(scene.duration);
   const locked = contentLocked || timingLocked;
@@ -1094,7 +1116,7 @@ function SceneBeatEditor({
       <div className="scene-beat-editor-head">
         <div>
           <strong>Scene beats</strong>
-          <span>{beats.length} authored · {formatTime(sceneDuration)}</span>
+          <span>{beats.length} authored · {formatTime(sceneDuration, rate, mode)}</span>
         </div>
         <span className={"beat-coverage " + (nativeReady ? "ready" : "needs-work")}>
           {beats.length === 0 ? "scene span" : nativeReady ? "native-ready" : "timing gap"}
@@ -1113,6 +1135,8 @@ function SceneBeatEditor({
               beat={beat}
               locked={locked}
               commit={commit}
+              rate={rate}
+              mode={mode}
             />
           ))}
         </div>
@@ -1151,10 +1175,14 @@ function Inspector({
   project,
   scene,
   commit,
+  rate,
+  mode,
 }: {
   project: Project;
   scene: Scene | null;
   commit: (change: Change) => Promise<void>;
+  rate: RationalTime;
+  mode: TimecodeMode;
 }) {
   const [objective, setObjective] = useState(scene?.objective ?? "");
   const [durationSeconds, setDurationSeconds] = useState(scene ? seconds(scene.duration) : 0);
@@ -1272,6 +1300,8 @@ function Inspector({
           contentLocked={contentLocked}
           timingLocked={timingLocked}
           commit={commit}
+          rate={rate}
+          mode={mode}
         />
       </section>
 
@@ -1320,6 +1350,11 @@ function Timeline({
   playing,
   togglePlayback,
   stepFrame,
+  rate,
+  mode,
+  selectedProfileId,
+  onSelectProfile,
+  onSelectMode,
 }: {
   project: Project;
   selectedSceneId: string | null;
@@ -1330,6 +1365,11 @@ function Timeline({
   playing: boolean;
   togglePlayback: () => void;
   stepFrame: (direction: -1 | 1) => void;
+  rate: RationalTime;
+  mode: TimecodeMode;
+  selectedProfileId: string | null;
+  onSelectProfile: (id: string) => void;
+  onSelectMode: (mode: TimecodeMode) => void;
 }) {
   const [selection, setSelection] = useState<{
     kind: "transcript" | "beat" | "cue" | "marker";
@@ -1397,6 +1437,34 @@ function Timeline({
             </>
           )}
         </div>
+        <div className="timeline-timebase" aria-label="Editor timebase controls">
+          <label htmlFor="editor-timebase">Display profile</label>
+          <select
+            id="editor-timebase"
+            aria-label="Editor preview timebase"
+            value={selectedProfileId ?? ""}
+            disabled={project.deliverables.length === 0}
+            onChange={(event) => onSelectProfile(event.target.value)}
+            title="A display-only frame clock. Does not modify the export profile or project."
+          >
+            {project.deliverables.length === 0 ? <option value="">24 fps fallback</option> : null}
+            {project.deliverables.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name} · {validEditorRate(profile.frame_rate)
+                  ? timebaseLabel(profile.frame_rate, "ndf")
+                  : "invalid rate · 24 fps fallback"}
+              </option>
+            ))}
+          </select>
+          {supportsDropFrame(rate) && (
+            <select aria-label="Timecode numbering" value={mode}
+              title="Display numbering only; does not change exported media."
+              onChange={(event) => onSelectMode(event.target.value as TimecodeMode)}>
+              <option value="ndf">NDF</option>
+              <option value="df">DF</option>
+            </select>
+          )}
+        </div>
         <div className="timeline-transport">
           <IconButton label="Step back one frame" onClick={() => stepFrame(-1)}>
             <SkipBack size={13} />
@@ -1418,7 +1486,7 @@ function Timeline({
           >
             <Plus size={12} /> Marker
           </button>
-          <span className="timecode">{formatTime(playhead)}</span>
+          <span className="timecode" title={timebaseLabel(rate, mode) + " · display only"}>{formatTime(playhead, rate, mode)}</span>
         </div>
       </div>
       <div className="timeline-body">
@@ -1447,7 +1515,7 @@ function Timeline({
           <div className="ruler">
             {ticks.map((tick) => (
               <span key={tick} style={{ left: (tick / duration) * 100 + "%" }}>
-                {formatTime(tick).slice(0, 5)}
+                {rulerTime(tick)}
               </span>
             ))}
           </div>
@@ -1613,6 +1681,8 @@ export default function App() {
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
+  const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -1627,6 +1697,8 @@ export default function App() {
       setBoot(value);
       setSelectedSceneId(value.project.scenes[0]?.id ?? null);
       setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
+      setTimebaseProfileId(value.project.deliverables[0]?.id ?? null);
+      setTimecodeMode("ndf");
     } catch (reason) {
       setBootError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1657,6 +1729,12 @@ export default function App() {
   }, []);
 
   const project = boot?.project ?? null;
+  const selectedProfile = project?.deliverables.find((profile) => profile.id === timebaseProfileId)
+    ?? project?.deliverables[0] ?? null;
+  const timebaseRate = selectedProfile && validEditorRate(selectedProfile.frame_rate)
+    ? selectedProfile.frame_rate : DEFAULT_EDITOR_RATE;
+  // Rate alone does not select DF; operators must choose that display policy.
+  const displayMode = supportsDropFrame(timebaseRate) ? timecodeMode : "ndf";
   const selectedScene = useMemo(
     () => project?.scenes.find((scene) => scene.id === selectedSceneId) ?? null,
     [project, selectedSceneId],
@@ -1686,17 +1764,14 @@ export default function App() {
   const stepFrame = useCallback((direction: -1 | 1) => {
     if (!project) return;
     setPlaying(false);
-    const next = Math.max(
-      0,
-      Math.min(projectTimelineDuration(project), playhead + direction * (1 / 24)),
-    );
+    const next = stepEditorialFrame(playhead, timebaseRate, direction, projectTimelineDuration(project));
     setPlayhead(next);
     const scene = project.scenes.find((candidate) => {
       const start = seconds(candidate.start);
       return next >= start && next < start + seconds(candidate.duration);
     });
     if (scene) setSelectedSceneId(scene.id);
-  }, [playhead, project]);
+  }, [playhead, project, timebaseRate.num, timebaseRate.den]);
 
   useEffect(() => {
     if (!playing || !project) return;
@@ -1823,11 +1898,12 @@ export default function App() {
           />
         );
       case "Storyboard":
-        return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} />;
+        return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":
-        return <PreviewSurface scene={selectedScene} project={project} playhead={playhead} />;
+        return <PreviewSurface scene={selectedScene} project={project} playhead={playhead}
+          rate={timebaseRate} mode={displayMode} profile={selectedProfile} />;
       case "Jobs":
         return (
           <ProductionJobsWorkspace
@@ -1858,6 +1934,8 @@ export default function App() {
               setSelectedSceneId(imported.scenes[0]?.id ?? null);
               setPlayhead(0);
               setPlaying(false);
+              setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
+              setTimecodeMode("ndf");
             }}
           />
         );
@@ -1935,7 +2013,7 @@ export default function App() {
         <div className="center-stack">
           <div className="workspace-stage">{renderWorkspace()}</div>
         </div>
-        <Inspector project={project} scene={selectedScene} commit={commit} />
+        <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />
       </div>
 
       <Timeline
@@ -1948,6 +2026,18 @@ export default function App() {
         playing={playing}
         togglePlayback={() => setPlaying((current) => !current)}
         stepFrame={stepFrame}
+        rate={timebaseRate}
+        mode={displayMode}
+        selectedProfileId={selectedProfile?.id ?? null}
+        onSelectProfile={(id) => {
+          setPlaying(false);
+          setTimebaseProfileId(id);
+          setTimecodeMode("ndf");
+        }}
+        onSelectMode={(mode) => {
+          setPlaying(false);
+          setTimecodeMode(mode);
+        }}
       />
     </main>
   );

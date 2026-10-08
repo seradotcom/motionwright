@@ -1986,8 +1986,37 @@ select:focus {
   text-overflow: ellipsis;
 }
 
+.timeline-timebase {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.timeline-timebase label {
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 10px;
+}
+.timeline-timebase select {
+  max-width: 195px;
+  min-width: 90px;
+  min-height: 25px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.timeline-timebase select[aria-label="Timecode numbering"] {
+  min-width: 53px;
+  max-width: 53px;
+}
 .timeline-transport {
   margin-left: auto;
+}
+@media (max-width: 1120px) {
+  .timeline-selection-context { display: none; }
+  .timeline-timebase label { display: none; }
+}
+@media (max-width: 670px) {
+  .timeline-timebase select { max-width: 110px; }
 }
 
 .timeline-body {
