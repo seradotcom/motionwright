@@ -367,6 +367,7 @@ export default function DeliveryProfiles({
               <label>
                 <span className="field-label">Framing</span>
                 <select
+                  aria-label="Framing"
                   value={draft.framing_strategy}
                   onChange={(event) => {
                     const framing = event.target.value as DeliverableProfile["framing_strategy"];
@@ -380,6 +381,7 @@ export default function DeliveryProfiles({
               <label>
                 <span className="field-label">Frame rate</span>
                 <select
+                  aria-label="Frame rate"
                   value={draft.frame_rate.num + "/" + draft.frame_rate.den}
                   onChange={(event) => {
                     const [num, den] = event.target.value.split("/");
