@@ -3865,6 +3865,46 @@ select:focus {
 .native-av-review-state svg { color: var(--warning); }
 .native-av-review-state span { max-width: 57ch; }
 .native-av-review-footnote span { color: var(--dim); }
+.native-av-review.in-program {
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 0;
+  gap: 0;
+  border: none;
+  border-radius: 0;
+  background: #08090d;
+}
+.native-av-review.in-program .native-av-review-header,
+.native-av-review.in-program .native-av-review-footnote {
+  padding: 7px 10px;
+  color: #e8eef3;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.17);
+  background: #0a0c11;
+}
+.native-av-review.in-program .native-av-review-footnote {
+  border-bottom: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.17);
+}
+.native-av-review.in-program .native-av-review-header span,
+.native-av-review.in-program .native-av-review-footnote span {
+  color: #a5b3c0;
+}
+.native-av-review.in-program video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+.native-av-review.in-program .native-av-review-state {
+  min-height: 0;
+  overflow-y: auto;
+}
 @media (max-width: 1040px) {
   .delivery-profile-layout { grid-template-columns: 1fr; }
   .delivery-profile-index {

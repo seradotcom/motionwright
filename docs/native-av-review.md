@@ -14,7 +14,7 @@ For a small eligible MP4, Studio wraps those exact verified bytes in a local `vi
 
 This initial review is deliberately **not an unbounded AV streaming protocol**: it buffers at most 16 MiB of a verified media file (plus the temporary in-WebView copy). Large videos must use **Export verified MP4** for external playback; the export path continues to stream up to the separate validated maximum without buffering a giant movie into the UI.
 
-The native review UI is independent of Motionwright's semantic timeline playhead; it does **not** yet promise frame-exact synchronized scrubbing, waveform correlation, subtitle burn-in, codec support across all WebViews, or proof of audio/visual creative quality. If the current WebView decoder cannot play the verified MP4, the UI reports the unsupported playback state and directs the user to the exact verified export, rather than rebranding a semantic representation as a real video.
+The standalone **Deliver** review is independent of Motionwright's timeline; the [source-scoped Program monitor](program-av-monitor.md) can additionally follow the editorial playhead and map decoded master playback time back onto included scenes. It does **not** promise sample/frame-exact scrubbing across WebViews, waveform correlation, subtitle burn-in, codec support across all WebViews, or proof of audio/visual creative quality. If the current WebView decoder cannot play the verified MP4, the UI reports the unsupported playback state and directs the user to the exact verified export, rather than rebranding a semantic representation as a real video.
 
 No Graph admission, Effect Conformance PASS, external publication, signing or independent human acceptance is inferred from rendering a playable Blob.
 
