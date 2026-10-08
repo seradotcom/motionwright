@@ -2143,16 +2143,18 @@
     {
       "id": "CR-PERF-02",
       "area": "PERF",
-      "implementation_assessment": "PARTIAL_OR_GAP",
-      "verification_status": "NOT_RUN",
+      "implementation_assessment": "EVIDENCE_PRESENT",
+      "verification_status": "CI_PARTIAL",
       "evidence": [
         "apps/desktop/src-tauri/src/main.rs",
         "apps/studio/src/AudioWorkspace.tsx",
+        "apps/studio/tests/performance.spec.ts",
+        "crates/service/examples/responsiveness_bench.rs",
         "docs/audio.md",
         "docs/testing.md",
         ".github/workflows/performance-acceptance.yml"
       ],
-      "note": "Waveform decode/cache generation now runs outside the Tauri UI thread and its cached page latency is measured, but selection/commit/render/long-SQL responsiveness still requires the complete production acceptance budget."
+      "note": "Waveform decode and project mutation use non-UI blocking paths. Dedicated CI records S-profile SQLite small-commit p95 (<250 ms), S-profile reopen (<2 s), and in-browser scene-selection-to-Inspector p95 (<100 ms) with exact-SHA JSON evidence. This is runner-specific engineering evidence, not universal product acceptance."
     },
     {
       "id": "CR-PERF-03",

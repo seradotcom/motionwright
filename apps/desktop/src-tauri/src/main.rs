@@ -752,7 +752,10 @@ fn import_project_bundle(
 }
 
 #[tauri::command]
-fn apply_change(state: State<'_, AppState>, request: ApplyRequest) -> Result<Project, String> {
+async fn apply_change(
+    state: State<'_, AppState>,
+    request: ApplyRequest,
+) -> Result<Project, String> {
     let trusted_audio_evidence = match &request.change {
         Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
         Change::AddTranscriptSegment { segment } | Change::UpsertTranscriptSegment { segment } => {
@@ -770,25 +773,27 @@ fn apply_change(state: State<'_, AppState>, request: ApplyRequest) -> Result<Pro
                 .into(),
         );
     }
-    let current = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let expected = RevisionStamp {
-        resource: current.resource_key(),
-        generation: request.generation,
-        revision: request.revision,
-    };
-    state
-        .service
-        .apply(
-            request.project_id,
-            &expected,
-            &request.request_id,
-            &request.change,
-        )
-        .map(|outcome| outcome.project)
-        .map_err(sanitized)
+
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let current = service.project(request.project_id).map_err(sanitized)?;
+        let expected = RevisionStamp {
+            resource: current.resource_key(),
+            generation: request.generation,
+            revision: request.revision,
+        };
+        service
+            .apply(
+                request.project_id,
+                &expected,
+                &request.request_id,
+                &request.change,
+            )
+            .map(|outcome| outcome.project)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Motionwright project mutation task failed".to_string())?
 }
 
 fn absolute_asset_path(value: &str) -> Result<PathBuf, String> {

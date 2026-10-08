@@ -59,6 +59,19 @@ less, and maximum resident memory to remain below 192 MiB. The second page must 
 cache and complete inside the declared two-second CI bound. These figures prove the current
 fixture and algorithm; they are not a universal desktop performance claim.
 
+The `responsiveness-service` job builds a reference S editing profile through the real service
+boundary: 12 scenes, 80 authored beats, 300 canvas nodes, a measured five-minute PCM voice source
+and the default 1920x1080/30 deliverable. After warm-up it records 40 small SQLite-backed project
+commits and enforces p95 <250 ms, then reopens the same database under the declared S metadata
+budget of two seconds. The Tauri `apply_change` command dispatches its project load and mutation
+through `spawn_blocking`, keeping those SQLite operations off the async invoke executor.
+
+The independent `ui-selection` job seeds 12 scenes in Chromium and measures 60 in-browser
+project-rail selections from the click dispatch through the Inspector update and next animation
+frame. It enforces p95 <100 ms. The measurement is performed inside the browser so Playwright
+transport latency is not counted as application latency. Exact JSON measurements and failure
+artifacts are retained per SHA; these runner-specific budgets are not universal device claims.
+
 Human feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
 comparative claims against other editors. See `docs/derived-cache.md` for cache identity,
 invalidation and recovery rules and `docs/audio.md` for waveform semantics.
