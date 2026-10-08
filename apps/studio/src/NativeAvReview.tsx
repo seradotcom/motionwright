@@ -1,5 +1,5 @@
 import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { readVerifiedNativeAvReview } from "./api";
 import type { Project } from "./types";
 
@@ -22,24 +22,35 @@ export default function NativeAvReview({
   const [playback, setPlayback] = useState<PlaybackState>({ kind: "loading" });
   const [retry, setRetry] = useState(0);
   const [metadata, setMetadata] = useState<string | null>(null);
+  // React Strict Mode replays effect setup/cleanup during mount. Reuse the
+  // same in-flight read without caching settled media beyond the active view.
+  const pendingRef = useRef<{ key: string; promise: Promise<Uint8Array> } | null>(null);
+  const sourceKey = [project.id, project.generation, project.revision, exportToken].join(":");
 
   useEffect(() => {
     let active = true;
     let objectUrl: string | null = null;
     setPlayback({ kind: "loading" });
     setMetadata(null);
-    void readVerifiedNativeAvReview(project, exportToken)
+    const existing = pendingRef.current;
+    const promise = existing?.key === sourceKey ? existing.promise
+      : readVerifiedNativeAvReview(project, exportToken);
+    if (!existing || existing.key !== sourceKey) {
+      pendingRef.current = { key: sourceKey, promise };
+      const release = () => {
+        if (pendingRef.current?.promise === promise) pendingRef.current = null;
+      };
+      // Both fulfillment and rejection release the deduplicated request.
+      void promise.then(release, release);
+    }
+    void promise
       .then((bytes) => {
+        if (!active) return;
         // Copy the read-only Tauri IPC view before it is owned by a Blob.
         const media = new Uint8Array(bytes.byteLength);
         media.set(bytes);
         objectUrl = URL.createObjectURL(new Blob([media.buffer], { type: "video/mp4" }));
-        if (active) {
-          setPlayback({ kind: "ready", url: objectUrl });
-        } else {
-          URL.revokeObjectURL(objectUrl);
-          objectUrl = null;
-        }
+        setPlayback({ kind: "ready", url: objectUrl });
       })
       .catch((reason) => {
         if (active) {
