@@ -24,6 +24,10 @@ pub const MAX_WAVEFORM_PAGE_SIZE: usize = 2_048;
 const WAVEFORM_MAGIC: &[u8; 8] = b"MWPEAK01";
 const WAVEFORM_HEADER_BYTES: u64 = 72;
 
+type AudioReader = Box<dyn symphonia::core::formats::FormatReader>;
+type AudioDecoder = Box<dyn symphonia::core::codecs::audio::AudioDecoder>;
+type OpenAudio = (AudioReader, AudioDecoder, u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioMeasurement {
     pub sample_rate_hz: u32,
@@ -68,20 +72,14 @@ fn invalid_proxy(message: impl Into<String>) -> StorageError {
     StorageError::InvalidDerivedCache(message.into())
 }
 
-fn open_audio(
-    path: &Path,
-) -> Result<(
-    Box<dyn symphonia::core::formats::FormatReader>,
-    Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
-    u32,
-)> {
+fn open_audio(path: &Path) -> Result<OpenAudio> {
     let source = File::open(path)?;
     let stream = MediaSourceStream::new(Box::new(source), Default::default());
     let mut hint = Hint::new();
     if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
         hint.with_extension(extension);
     }
-    let mut format = get_probe()
+    let format = get_probe()
         .probe(
             &hint,
             stream,

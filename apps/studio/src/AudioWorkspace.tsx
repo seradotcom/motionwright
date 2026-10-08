@@ -386,19 +386,19 @@ export default function AudioWorkspace({
             </header>
             {!active && (
               <div className="waveform-proxy-state">
-                <AudioLines size={18} />
+                <AudioLines size={18} aria-hidden="true" />
                 <span>No active measured take. No waveform is synthesized.</span>
               </div>
             )}
             {active && !desktopMode && (
               <div className="waveform-proxy-state">
-                <CircleDashed size={18} />
+                <CircleDashed size={18} aria-hidden="true" />
                 <span>Desktop runtime required for measured waveform proxy.</span>
               </div>
             )}
             {active && desktopMode && waveformBusy && !waveform && (
               <div className="waveform-proxy-state" role="status" aria-live="polite">
-                <CircleDashed size={18} />
+                <CircleDashed size={18} aria-hidden="true" />
                 <span>Decoding immutable source into a paged proxy…</span>
               </div>
             )}
