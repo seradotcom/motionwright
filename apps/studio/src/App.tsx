@@ -285,7 +285,8 @@ function PreviewSurface({
             </div>
           )}
           {showingNative && nativeFrame && (
-            <NativeFrameStage project={project} selection={nativeFrame} />
+            <NativeFrameStage key={nativeFrame.token + ":" + (scene?.id ?? "")}
+              project={project} selection={nativeFrame} />
           )}
         </div>
       </div>
