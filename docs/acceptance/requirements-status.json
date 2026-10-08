@@ -2061,9 +2061,16 @@
         "crates/storage/src/lib.rs",
         "docs/delivery.md",
         ".github/workflows/heavy-verification.yml",
-        ".github/workflows/package-candidate.yml"
+        ".github/workflows/package-candidate.yml",
+        "SOURCE_LOCK.json",
+        "tooling/source_policy.py",
+        "crates/native/src/production.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/IntegrationsWorkspace.tsx",
+        "apps/studio/src/api.ts",
+        "docs/native-sdk.md"
       ],
-      "note": "Updater artifacts are disabled and candidate packaging does not install renderers or models; runtime compatibility acceptance remains separate."
+      "note": "Updater artifacts remain disabled and packaging installs no renderer/model runtimes. The desktop now performs a bounded read-only compatibility probe against the owner-provisioned, digest-pinned Semwright CLI and distinguishes source pin from observed CLI version; independent human install/runtime acceptance remains separate."
     },
     {
       "id": "CR-DELIVER-03",

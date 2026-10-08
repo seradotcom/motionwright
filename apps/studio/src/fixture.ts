@@ -302,6 +302,7 @@ export const fixtureBootstrap: Bootstrap = {
   native_sdk: {
     application: "motionwright",
     pinned_revision: "8fa191250ae68274182570c65f067f7a60f85625",
+    version: "1.0.0",
     mode: "browser-demo"
   }
 };

@@ -7,6 +7,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text())
 REV = LOCK["dependencies"]["semwright"]["revision"]
+VERSION = LOCK["dependencies"]["semwright"]["version"]
 
 errors = []
 
@@ -17,6 +18,8 @@ if f'rev = "{REV}"' not in cargo:
 desktop = (ROOT / "apps/desktop/src-tauri/src/main.rs").read_text()
 if REV not in desktop:
     errors.append("desktop Native SDK receipt does not match SOURCE_LOCK")
+if f'const SEMWRIGHT_VERSION: &str = "{VERSION}";' not in desktop:
+    errors.append("desktop supported Semwright version does not match SOURCE_LOCK")
 
 tauri_config = json.loads((ROOT / "apps/desktop/src-tauri/tauri.conf.json").read_text())
 csp = tauri_config.get("app", {}).get("security", {}).get("csp", "")
@@ -147,4 +150,4 @@ if errors:
         print(f"ERROR: {error}", file=sys.stderr)
     raise SystemExit(1)
 
-print(f"source-policy=ok semwright={REV}")
+print(f"source-policy=ok semwright={REV} version={VERSION}")

@@ -47,6 +47,21 @@ The dedicated Native SDK workflow also exercises a **real Host shared-state lane
 Driver Host supplies the provider with an owner-granted `motionwright-data` workspace mount. The provider never accepts a database path from an operation payload. Explicit `MOTIONWRIGHT_DB` or positional database paths remain development/operator entry points only when the provider is launched directly outside Host.
 
 Operation discovery never authorizes an invocation. Broker/Policy/Driver Host remain responsible for capability, consent, session and runtime authority.
+
+## Production runtime compatibility
+
+Motionwright does not bundle, download or auto-install a Semwright runtime. Desktop production uses the owner-provisioned `MOTIONWRIGHT_SEMWRIGHT_CONNECTION` file and the same `ProductionConnection` validation used by canonical rendering and workflow calls.
+
+The Integrations workspace now exposes a bounded compatibility probe. It first revalidates the connection file and the configured Semwright executable SHA-256, then launches that exact executable with `--version` only. The probe has bounded stdout/stderr, a short timeout, no project mutation and no effect grant because it is read-only. The observed CLI version must match the version recorded in `SOURCE_LOCK.json`.
+
+The UI keeps three facts separate:
+
+- the Semwright source revision pinned by Motionwright;
+- the SHA-256 of the owner-provisioned executable recorded by the connection;
+- the CLI version observed from that digest-pinned executable.
+
+An observed `--version` string is **not** treated as an attestation of the executable's source commit. A valid source pin plus a matching CLI version therefore reports runtime compatibility, not supply-chain provenance beyond the evidence actually checked. Browser demo mode never fabricates a live runtime result.
+
 ## Canonical Graph and Effects adapters
 
 Motionwright now enables the Native SDK `graph` and `effects` features on the exact Semwright pin. The native crate can serialize the exact application-owned project revision into an **untrusted** `RevisionCandidate` plus durable native locator for the canonical Project Graph, and can prepare the canonical protected Effects specification from bounded JSON input.
