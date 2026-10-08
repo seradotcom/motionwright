@@ -1074,6 +1074,41 @@ impl Store {
         Ok(outcome)
     }
 
+    /// Newest-first, inclusive revision cursor. This does not replace the
+    /// ascending after_revision API consumed by existing Native SDK clients.
+    /// Pagination is keyset-based, without OFFSET or loading the full journal.
+    pub fn event_records_through(
+        &self,
+        id: Uuid,
+        revision: u64,
+        limit: usize,
+    ) -> Result<Vec<ProjectEvent>> {
+        let limit = limit.clamp(1, 256);
+        let through = revision.min(i64::MAX as u64) as i64;
+        let mut stmt = self.conn.prepare(
+            "SELECT revision,payload_json,created_at FROM events
+             WHERE project_id=?1 AND revision<=?2
+             ORDER BY revision DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![id.to_string(), through, limit as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (revision, json, created_at) = row?;
+            events.push(ProjectEvent {
+                revision,
+                change: serde_json::from_str(&json)?,
+                created_at,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn event_records_since(
         &self,
         id: Uuid,
@@ -1871,5 +1906,82 @@ mod tests {
         let events = store.events_since(project.id, 0, 10).unwrap();
         assert_eq!(events[0].0, 1);
         assert_eq!(events[1].0, 2);
+    }
+
+    #[test]
+    fn recent_history_paginates_newest_first_without_overlaps_or_earliest_loss() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store.create_named_project("History baseline").unwrap();
+        let unrelated = store.create_named_project("Another project").unwrap();
+
+        // Deliberately exceed the Studio's former 100-row oldest-first ceiling.
+        for revision in 1..=260 {
+            let outcome = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("history-request-{revision}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {revision}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        assert_eq!(project.revision, 260);
+        let recent = store
+            .event_records_through(project.id, project.revision, 101)
+            .unwrap();
+        assert_eq!(recent.len(), 101);
+        assert_eq!(recent.first().unwrap().revision, 260);
+        assert_eq!(recent.last().unwrap().revision, 160);
+
+        let middle = store.event_records_through(project.id, 159, 101).unwrap();
+        assert_eq!(middle.len(), 101);
+        assert_eq!(middle.first().unwrap().revision, 159);
+        assert_eq!(middle.last().unwrap().revision, 59);
+
+        let oldest = store.event_records_through(project.id, 58, 101).unwrap();
+        assert_eq!(oldest.len(), 58);
+        assert_eq!(oldest.first().unwrap().revision, 58);
+        assert_eq!(oldest.last().unwrap().revision, 1);
+
+        let all = recent
+            .into_iter()
+            .chain(middle)
+            .chain(oldest)
+            .map(|entry| entry.revision)
+            .collect::<Vec<_>>();
+        assert_eq!(all, (1..=260).rev().collect::<Vec<_>>());
+        assert!(
+            store
+                .event_records_through(project.id, 0, 100)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .event_records_through(unrelated.id, u64::MAX, 100)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .event_records_through(project.id, u64::MAX, 500)
+                .unwrap()
+                .len(),
+            256
+        );
+
+        // Existing forward/oldest API remains unchanged for callers.
+        let forward = store.event_records_since(project.id, 0, 2).unwrap();
+        assert_eq!(
+            forward
+                .iter()
+                .map(|entry| entry.revision)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 }

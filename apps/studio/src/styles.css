@@ -3133,6 +3133,21 @@ select:focus {
   color: var(--dim);
   font-size: 10px;
 }
+.journal-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 9px 11px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.journal-range {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 
 .inline-error {
   position: static;

@@ -480,6 +480,17 @@ impl StudioService {
         ))
     }
 
+    pub fn history_recent(
+        &self,
+        id: Uuid,
+        through_revision: u64,
+        limit: usize,
+    ) -> StorageResult<Vec<ProjectEvent>> {
+        self.store
+            .lock()
+            .event_records_through(id, through_revision, limit)
+    }
+
     pub fn history(
         &self,
         id: Uuid,
