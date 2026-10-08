@@ -34,6 +34,10 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 
 The storage tests create a 260-change SQLite journal and verify descending keyset pages, complete non-overlapping coverage, cross-project isolation, and backward compatibility with ascending event reads. Studio unit tests reject malformed/out-of-order pages; Chromium tests exercise recent-first pagination, older-page navigation and transient read retry through a synthetic Tauri boundary. All tests are source-SHA scoped and do not establish independent creative acceptance. See [history pagination](history-pagination.md).
 
+## Atomic Canvas Auto-key motion
+
+Rust domain tests verify one authored revision for an X/Y position pair, no base-transform mutation, strict property locks, rational half-open scene timing, and rejection of invalid coordinates without half-keyframe commits. Native SDK public-operation tests validate the closed contract for agent use. Browser fixture and Chromium pointer regressions compare Auto-key on/off, exact scene-local timing, history event count, and locked-gesture no-op. Native renderer Film still rejects motion it cannot preserve exactly; see [typed motion authoring](motion-authoring.md).
+
 ## Native Film semantic preflight
 
 The native projection preflight uses the exact pinned Semwright Film adapter and current Motionwright project revision, with no native render dispatch or effect grant. Chromium tests exercise the typed read-only contract, supported/unsupported status and invalidation when creative inputs change. Native Film support is a semantic planning result, never certified renderer pixels or human acceptance; see [preflight semantics](film-preflight.md).

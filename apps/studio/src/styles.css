@@ -2647,11 +2647,38 @@ select:focus {
 .canvas-toolbar-state {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   color: var(--dim);
   font-size: 9px;
 }
 
+.canvas-auto-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.canvas-auto-key input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.canvas-auto-key:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--surface-3);
+}
+.canvas-auto-key:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .motion-playhead {
   min-width: 190px;
   display: flex;
