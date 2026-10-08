@@ -7,6 +7,7 @@ The Changes workspace reads committed project events newest-first, so edits to a
 - Storage exposes an additional read-only `event_records_through(project_id, through_revision, limit)` keyset query: `revision <= through_revision`, descending revision order, hard-bounded to 1–256 returned rows. This query does not modify rows, create execution receipts, rewind creative state or mint Semwright runtime authority.
 - The existing ascending `event_records_since`, `StudioService::history`, and Tauri `project_history` remain intact for older callers. The new service and desktop command use `history_recent` and `project_history_recent`.
 - The desktop request is scoped to the supplied project ID. SQLite's canonical journal key is the project ID plus revision; pages never overlap when the next cursor is `oldest_loaded_revision - 1`.
+- Native SDK consumers can use `history` (legacy oldest-first) or `history-recent` (newest-first). Both scopes now provide resource/revision-bound continuation cursors, never claim `complete` while additional rows remain, and reject malformed/stale cursors. The observer rechecks the exact application revision before returning history evidence. See [SDK scope contracts](native-sdk.md).
 
 ## Studio
 

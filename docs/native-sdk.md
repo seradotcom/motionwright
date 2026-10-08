@@ -15,9 +15,11 @@ The integration follows the Native SDK public contracts:
 
 ## Observation scopes
 
-The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `visual-language`, `canvas`, `alternatives`, `history` and `locks` scopes.
+The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `visual-language`, `canvas`, `alternatives`, `history`, `history-recent` and `locks` scopes.
 
 Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels. History returns only application-owned committed journal rows. It is not a reconstruction of private model reasoning.
+
+The SDK exposes two **revision-bound, read-only** history scopes. Existing `history` preserves its original oldest-first order and now returns a `PageCursor` when more chronological entries remain. `history-recent` starts with the newest recorded commit and advances backwards by revision, matching the Changes workspace's recent-first journal. Both scopes use strictly bounded keyset reads (no OFFSET), a cursor tied to resource/generation/revision and scope, and truthful `complete`/`next` fields. A cursor from another revision, a malformed token or an attempted order swap is rejected. The native observer checks the project version again after reading so it cannot attribute a concurrent write to an earlier observation. See [recent-first pagination](history-pagination.md).
 
 ## Typed operations
 
