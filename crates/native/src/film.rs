@@ -763,10 +763,7 @@ fn build_segment(
         font_family: &options.font_family,
     };
 
-    let span_capacity = scenes
-        .iter()
-        .map(|scene| scene_span_cost(scene))
-        .sum::<usize>();
+    let span_capacity = scenes.iter().map(scene_span_cost).sum::<usize>();
     let mut spans = Vec::with_capacity(span_capacity);
     let mut constraints = Vec::with_capacity(span_capacity.saturating_sub(scenes.len()));
     let mut sequences = Vec::with_capacity(scenes.len());
