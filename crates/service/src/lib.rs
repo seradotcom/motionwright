@@ -29,8 +29,8 @@ use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, Vo
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     BlobDescriptor, BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan,
-    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProjectBackup, ProjectBundleManifest,
-    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{
@@ -553,6 +553,88 @@ impl StudioService {
             project.generation,
             project.revision,
             limit,
+        ))
+    }
+
+    /// Snapshot the locally persisted production receipt stream independently
+    /// from the creative project's generation/revision.
+    pub fn production_receipt_watermark(
+        &self,
+        project_id: Uuid,
+    ) -> StorageResult<ProductionReceiptWatermark> {
+        let store = self.store.lock();
+        let _project = store.load_project(project_id)?;
+        store.production_receipt_watermark(project_id)
+    }
+
+    /// Read a bounded receipt keyset page and reject concurrent changes to
+    /// its stream identity even if the creative project revision is unchanged.
+    pub fn production_receipts_snapshot_page(
+        &self,
+        project_id: Uuid,
+        expected: &ProductionReceiptWatermark,
+        before: Option<Uuid>,
+        limit: usize,
+    ) -> StorageResult<Vec<ProductionReceipt>> {
+        let store = self.store.lock();
+        let _project = store.load_project(project_id)?;
+        if store.production_receipt_watermark(project_id)? != *expected {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        let receipts = match expected.latest_id {
+            Some(head) => store.production_receipts_before(project_id, head, before, limit)?,
+            None => Vec::new(),
+        };
+        if store.production_receipt_watermark(project_id)? != *expected {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        Ok(receipts)
+    }
+
+    /// Reconstruct the full canonical local job projection over a fixed
+    /// receipt snapshot, not the old latest-256-receipts UI window. A bounded
+    /// ceiling refuses oversized scans instead of claiming fake completeness.
+    pub fn production_jobs_snapshot(
+        &self,
+        project_id: Uuid,
+        expected: &ProductionReceiptWatermark,
+    ) -> StorageResult<Vec<ProductionJobProjection>> {
+        const MAX_JOB_ENUMERATION_RECEIPTS: u64 = 20_000;
+        let store = self.store.lock();
+        let project = store.load_project(project_id)?;
+        if store.production_receipt_watermark(project_id)? != *expected {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        if expected.count > MAX_JOB_ENUMERATION_RECEIPTS {
+            return Err(invalid_import(
+                "Production job enumeration exceeds the bounded 20,000-receipt safety budget; no complete claim was made",
+            ));
+        }
+        let mut receipts = Vec::with_capacity(expected.count as usize);
+        let mut before = None;
+        if let Some(head) = expected.latest_id {
+            loop {
+                let batch = store.production_receipts_before(project_id, head, before, 256)?;
+                if batch.is_empty() {
+                    break;
+                }
+                before = batch.last().map(|item| item.id);
+                let full_page = batch.len() == 256;
+                receipts.extend(batch);
+                if !full_page {
+                    break;
+                }
+            }
+        }
+        if receipts.len() as u64 != expected.count
+            || store.production_receipt_watermark(project_id)? != *expected
+        {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        Ok(jobs::derive_production_jobs_all(
+            &receipts,
+            project.generation,
+            project.revision,
         ))
     }
 

@@ -15,7 +15,7 @@ use uuid::Uuid;
 mod derived_cache;
 mod production;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
-pub use production::{ProductionReceipt, ProductionReceiptInput};
+pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -33,6 +33,8 @@ pub enum StorageError {
     Conflict { expected: u64, actual: u64 },
     #[error("request id was reused with a different payload")]
     RequestReuse,
+    #[error("production receipt stream changed during enumeration")]
+    ReceiptStreamChanged,
     #[error("resource generation differs from expected base")]
     GenerationConflict,
     #[error("storage schema {found} is newer than supported schema {supported}")]
