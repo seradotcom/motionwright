@@ -515,3 +515,58 @@ pub fn creative_data_normalize(
     data.validate().map_err(|error| error.to_string())?;
     Ok(data)
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalSoundAuditionRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    plan: motionwright_creative_library::SoundPlan,
+    expected_source_sha256: String,
+}
+/// A bounded offline audition of first-party original audio. This is not a master,
+/// does not read the microphone/filesystem, and does not mutate project audio.
+#[tauri::command]
+pub async fn creative_sound_audition(
+    state: State<'_, AppState>,
+    request: OriginalSoundAuditionRequest,
+) -> Result<tauri::ipc::Response, String> {
+    use motionwright_creative_library::{canonical_digest, write_original_wav};
+    current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    request.plan.validate().map_err(|error| error.to_string())?;
+    if request.plan.sample_frames > 48_000 * 15 || request.plan.applies_to_existing_bus {
+        return Err("Audition is restricted to 15 seconds of original synthesized PCM. Silence release needs an existing authorized bus.".into());
+    }
+    if canonical_digest(
+        &motionwright_creative_library::CreativeRealization::AudioScore(request.plan.clone()),
+    )
+    .map_err(|error| error.to_string())?
+        != request.expected_source_sha256
+    {
+        return Err("Audition source changed after it was proposed.".into());
+    }
+    let plan = request.plan;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let mut pcm = Vec::new();
+        let receipt = write_original_wav(&plan, &mut pcm).map_err(|error| error.to_string())?;
+        if pcm.len() > 3 * 1024 * 1024 || receipt.file_bytes != pcm.len() as u64 {
+            return Err("Original PCM audition exceeds its byte budget.".into());
+        }
+        Ok(pcm)
+    })
+    .await
+    .map_err(|_| "Original WAV synthesis task failed.".to_string())??;
+    current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    Ok(tauri::ipc::Response::new(bytes))
+}

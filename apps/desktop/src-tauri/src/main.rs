@@ -1772,6 +1772,7 @@ fn main() {
             creative_native::creative_component_proposal,
             creative_native::creative_component_catalog,
             creative_native::creative_data_normalize,
+            creative_native::creative_sound_audition,
             assemble_av_master,
             export_native_av_master,
             review_native_av_master,

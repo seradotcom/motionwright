@@ -47,6 +47,35 @@ jobs:
           cargo test --locked -p motionwright-creative-library --all-targets
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
 
+  creative-original-audio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: creative-original-pcm-1.98.1
+          cache-on-failure: true
+      - name: Verify original sound through an independent PCM decoder
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          cargo build --locked -p motionwright-creative-library --example original_sound_fixture
+          python3 tooling/hyperframes/original_sound_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: original-audio-${{ github.sha }}
+          path: verification/creative-original-audio/
+          if-no-files-found: warn
+          retention-days: 7
+
   native-studio-desktop:
     runs-on: ubuntu-24.04
     timeout-minutes: 25

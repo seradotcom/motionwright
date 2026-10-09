@@ -1773,3 +1773,18 @@ export async function creativeDataNormalize(data:DataSeries):Promise<DataSeries>
   if(!isTauri())throw new Error("Numeric evidence normalization requires the native domain service.");
   return invoke<DataSeries>("creative_data_normalize",{data});
 }
+
+export async function creativeSoundAudition(project:Project,plan:unknown,sourceSha256:string):Promise<Uint8Array>{
+  if(!isTauri())throw new Error("Original PCM audition requires the local native domain service.");
+  if(!/^[0-9a-f]{64}$/.test(sourceSha256))throw new Error("Original sound source fingerprint is malformed.");
+  const response=await invoke<Uint8Array|ArrayBuffer|number[]>("creative_sound_audition",{
+    request:{...nativeScope(project),plan,expected_source_sha256:sourceSha256}
+  });
+  const bytes=response instanceof Uint8Array?response:response instanceof ArrayBuffer?new Uint8Array(response)
+    :Array.isArray(response)?Uint8Array.from(response):null;
+  if(!bytes||bytes.byteLength<44||bytes[0]!==82||bytes[1]!==73||bytes[2]!==70||bytes[3]!==70||
+    bytes[8]!==87||bytes[9]!==65||bytes[10]!==86||bytes[11]!==69){
+    throw new Error("Native sound engine did not deliver a complete RIFF/WAVE PCM header.");
+  }
+  return bytes;
+}

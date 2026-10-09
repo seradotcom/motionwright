@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useState} from 'react';
 import {Check,FilePlus2,Shapes,SlidersHorizontal} from 'lucide-react';
-import {creativeComponentCatalog,creativeComponentProposal,nativeCreativeAvailable,creativeDataNormalize} from '../api';
+import {creativeComponentCatalog,creativeComponentProposal,nativeCreativeAvailable,creativeDataNormalize,creativeSoundAudition} from '../api';
 import type {Change,Project,Scene,DeliverableProfile,Asset} from '../types';
 import type {CreativeCatalog,Locale,CopyPack,BrandProfile,TasteProfile,DataSeries,ComponentRequest,CreativeComponentProposal} from './recipeTypes';
 import type {NativeAsset} from './nativeTypes';
@@ -34,6 +34,8 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
   const [owner,setOwner]=useState(''),[license,setLicense]=useState(''),[authorized,setAuthorized]=useState(false);
   const [dataJson,setDataJson]=useState(''),[preview,setPreview]=useState<CreativeComponentProposal|null>(null);
   const [instanceId,setInstanceId]=useState<string>(()=>crypto.randomUUID());
+  const [auditionUrl,setAuditionUrl]=useState<string|null>(null);
+  const [auditioning,setAuditioning]=useState(false);
   useEffect(()=>{
     let active=true;
     if(!available)return;
@@ -50,6 +52,7 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
   const current=project.production_design?.workspace?.native_scenes.find(doc=>doc.scene_id===scene?.id&&doc.profile_id===displayProfile?.id);
   useEffect(()=>{setInstanceId(current?.id??crypto.randomUUID());setPreview(null);},[current?.id,scene?.id,displayProfile?.id,project.generation]);
   useEffect(()=>{setPreview(null);},[project.revision]);
+  useEffect(()=>()=>{if(auditionUrl)URL.revokeObjectURL(auditionUrl);},[auditionUrl]);
   const updateBrandColor=(role:string,color:string)=>{
     if(!brand)return;
     setBrand({...brand,colors:brand.colors.map(entry=>entry.role===role?{...entry,value:color}:entry)});setPreview(null);
@@ -85,6 +88,17 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
       setPreview(result);
     }catch(err){setError(reasons(err));}
     finally{setWorking(false);}
+  };
+  const audition=async()=>{
+    if(!preview||preview.renderer_plan.backend!=='audio_score')return;
+    setAuditioning(true);setError(null);
+    try{
+      const source=preview.renderer_plan.source as {applies_to_existing_bus:boolean};
+      if(source.applies_to_existing_bus)throw new Error('Silence release requires a real authorized audio bus, not a fabricated preview.');
+      const wav=await creativeSoundAudition(project,source,preview.source_sha256);
+      if(wav.byteLength>3*1024*1024)throw new Error('Original sound audition exceeded the bounded transfer.');
+      setAuditionUrl(URL.createObjectURL(new Blob([Uint8Array.from(wav).buffer],{type:'audio/wav'})));
+    }catch(reason){setError(reasons(reason));}finally{setAuditioning(false);}
   };
   const save=async()=>{
     if(!preview?.normalized_edit)return;
@@ -147,6 +161,13 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
           <p>Human creative review remains required.</p></div></div>}
         {preview?.normalized_edit?<button className="primary-button" disabled={!canEdit} onClick={save}><Check size={14}/> Commit native recipe as one revision</button>:
           preview&&<p className="production-help">{preview.renderer_plan.backend==='blender_stage'?'Blender stage plan is authored, but its Blender realization is not yet integrated with the existing Driver Host.':'Sound plan is authored, but its final mixing/export path is not yet validated.'}</p>}
+        {preview?.renderer_plan.backend==='audio_score'&&<section className="native-job-controls" aria-label="Original synthetic sound audition">
+          <strong>Original sound sketch · unmastered</strong>
+          <button className="secondary-button" disabled={!available||busy||working||auditioning||!preview}
+            onClick={audition}>Audition locally synthesized WAV</button>
+          {auditionUrl&&<audio controls src={auditionUrl} preload="none" aria-label="Original sound audition"/>}
+          <p className="production-help">48 kHz stereo PCM, deterministic and self-contained. No claim of voice sync, loudness mastering or licensed library music.</p>
+        </section>}
         {preview&&<details><summary>Read the retained typed plan</summary><pre className="native-source-code" style={{overflow:'auto',maxHeight:340,fontSize:10}}>{JSON.stringify(preview.renderer_plan,null,2)}</pre></details>}
       </section>
     </div>}

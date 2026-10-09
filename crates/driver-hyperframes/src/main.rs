@@ -75,6 +75,12 @@ struct NativeIdentity {
     scene_id: Uuid,
 }
 
+fn bounded_job_cwd() -> RuntimeToolCwd {
+    RuntimeToolCwd {
+        mount: WORK.into(),
+        relative: String::new(),
+    }
+}
 struct HyperframesDriver {
     work: PathBuf,
     output: PathBuf,
@@ -234,10 +240,9 @@ impl HyperframesDriver {
                 ],
                 vec![],
                 Duration::from_secs(300),
-                Some(RuntimeToolCwd {
-                    mount: WORK.into(),
-                    relative: id.clone(),
-                }),
+                // The pinned Semwright v1 Driver Host permits mount-root cwd only;
+                // the fixed runner receives the attempt id separately as typed argv.
+                Some(bounded_job_cwd()),
             )
             .await;
         match result {
@@ -507,6 +512,22 @@ mod tests {
                     .contains("command_line")
             );
         }
+    }
+    #[test]
+    fn host_working_directory_is_a_declared_root_not_a_subdirectory() {
+        let cwd = bounded_job_cwd();
+        assert_eq!(cwd.mount, WORK);
+        assert!(cwd.relative.is_empty());
+        cwd.validate()
+            .expect("Pinned Semwright SDK must admit root-only cwd");
+        let invalid = RuntimeToolCwd {
+            mount: WORK.into(),
+            relative: "hf-other-job".into(),
+        };
+        assert!(
+            invalid.validate().is_err(),
+            "Host must not relax its root-only path policy"
+        );
     }
     #[test]
     fn duplicate_attempt_and_unknown_state_are_persisted_data() {
