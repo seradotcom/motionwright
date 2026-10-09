@@ -6,4 +6,6 @@ While the Jobs workspace is mounted in the visible desktop application, it perfo
 
 The displayed **Local receipts read** timestamp means only that this workstation read the local database. It is not a Driver Host observation timestamp and does **not** assert that the native job actually advanced, finished or was cancelled. The canonical driver must emit further authoritative observations through the sanctioned production boundary before Motionwright can reflect a new state. Browser demo mode leaves the refresh action disabled and does not fabricate jobs.
 
+A separate [Full history](production-jobs-history.md) view explicitly reconstructs the complete bounded job ledger on user request, using a fixed receipt watermark; it does not change this lightweight recent poller, and it must be restarted if new receipts arrive between pages.
+
 Regression: the Studio tests cover the schedule policy, empty browser evidence and the manual refresh UI. CI verifies the TypeScript and browser behavior. This is not a substitute for independent end-to-end video quality and job-state acceptance.

@@ -1,7 +1,7 @@
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
-    BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy, Project,
-    RationalTime, RendererKind, Scene,
+    BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy,
+    MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene,
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
@@ -151,6 +151,8 @@ fn flush_run(runs: &mut Vec<Vec<Scene>>, current: &mut Vec<Scene>) {
 }
 
 fn scene_span_cost(scene: &Scene) -> usize {
+    // One additional bounded temporal span per admitted motion node. Count
+    // conservatively even for unsupported curves, which fail separately.
     1 + scene.beats.len().max(1)
         + scene
             .nodes
@@ -262,6 +264,108 @@ fn canonical_position(
     }
 }
 
+/// Apply the exact scene-specific static camera translation once to the
+/// native layout. Both the baseline node and a motion start pose must pass
+/// the same transformed output frame/safe-area validation.
+fn scene_layout_projection(scene: &Scene, mut projection: LayoutProjection) -> LayoutProjection {
+    projection.offset_x +=
+        (CANVAS_WIDTH / 2.0 - scene.camera.center_x) * projection.position_scale_x;
+    projection.offset_y +=
+        (CANVAS_HEIGHT / 2.0 - scene.camera.center_y) * projection.position_scale_y;
+    projection
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeLinearPositionMotion {
+    duration: RationalTime,
+    start_x: f64,
+    start_y: f64,
+}
+
+/// A deliberately narrow *exact* mapping to Semwright Primitive::Settle:
+/// paired X/Y at scene-local 0, then paired X/Y back to the unchanged base
+/// position at an exact output-frame boundary, all linear, single unparented
+/// object, no other keyframe channels/scene beats.
+fn native_linear_position_motion(
+    node: &CanvasNode,
+    scene: &Scene,
+    frame_rate: Rate,
+) -> NativeResult<Option<NativeLinearPositionMotion>> {
+    if node.keyframes.is_empty() {
+        return Ok(None);
+    }
+    if node
+        .keyframes
+        .iter()
+        .any(|key| key.property == MotionProperty::Opacity)
+    {
+        entry_motion(node)?;
+        return Ok(None);
+    }
+    let fail = || {
+        unsupported(format!(
+            "Canvas node {} has motion keyframes outside the exact native linear X/Y settle subset",
+            node.id
+        ))
+    };
+    if !scene.beats.is_empty()
+        || node.parent_id.is_some()
+        || node.kind == "group"
+        || scene
+            .nodes
+            .iter()
+            .any(|candidate| candidate.parent_id == Some(node.id))
+        || node.keyframes.len() != 4
+    {
+        return Err(fail());
+    }
+    let mut xs = node
+        .keyframes
+        .iter()
+        .filter(|keyframe| keyframe.property == MotionProperty::X)
+        .collect::<Vec<_>>();
+    let mut ys = node
+        .keyframes
+        .iter()
+        .filter(|keyframe| keyframe.property == MotionProperty::Y)
+        .collect::<Vec<_>>();
+    if xs.len() != 2 || ys.len() != 2 {
+        return Err(fail());
+    }
+    xs.sort_by_key(|keyframe| keyframe.at);
+    ys.sort_by_key(|keyframe| keyframe.at);
+    if xs[0].at != RationalTime::ZERO
+        || ys[0].at != RationalTime::ZERO
+        || xs[1].at != ys[1].at
+        || xs[1].at <= RationalTime::ZERO
+        || xs[1].at >= scene.duration
+        || xs[1].value != node.x
+        || ys[1].value != node.y
+        || node
+            .keyframes
+            .iter()
+            .any(|keyframe| keyframe.interpolation != MotionInterpolation::Linear)
+    {
+        return Err(fail());
+    }
+    // Unlike CSS-preview time in floating point, this exact rational check
+    // rejects timestamps that would need silent frame quantization.
+    let numerator = i128::from(xs[1].at.num)
+        .checked_mul(i128::from(frame_rate.num))
+        .ok_or_else(&fail)?;
+    let denominator = i128::from(xs[1].at.den)
+        .checked_mul(i128::from(frame_rate.den))
+        .ok_or_else(&fail)?;
+    if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
+        return Err(fail());
+    }
+    Ok(Some(NativeLinearPositionMotion {
+        duration: xs[1].at,
+        start_x: xs[0].value,
+        start_y: ys[0].value,
+    }))
+}
+
 fn subject_id(node_id: Uuid, beat_scope: Option<Uuid>) -> String {
     match beat_scope {
         Some(beat_id) => format!("node-{}-beat-{}", node_id.simple(), beat_id.simple()),
@@ -300,7 +404,8 @@ fn validate_static_safe_area(
 }
 
 fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResult<()> {
-    entry_motion(node)?;
+    // Keyframes are checked by native_position_motion() at Shot construction,
+    // with exact timing/interpolation/position constraints before realization.
     if node.coordinate_space != CoordinateSpace::ProjectPixels {
         return Err(unsupported(format!(
             "Canvas node {} uses a coordinate space not yet representable by canonical Film",
@@ -560,7 +665,10 @@ fn subject(
                     height: node.height * projection.object_scale,
                 },
             },
-            initially_visible: node.keyframes.is_empty(),
+            initially_visible: !node
+                .keyframes
+                .iter()
+                .any(|key| key.property == MotionProperty::Opacity),
             clip_intentional: false,
         },
         constraints,
@@ -593,13 +701,13 @@ fn output_profile(
         .map(|scene| scene.camera.safe_margin)
         .fold(0.0_f64, f64::max);
     for scene in scenes {
-        if scene.camera.center_x != CANVAS_WIDTH / 2.0
-            || scene.camera.center_y != CANVAS_HEIGHT / 2.0
-            || scene.camera.zoom != 1.0
-            || scene.camera.rotation_deg != 0.0
-        {
+        // A static camera translation can be represented exactly by a
+        // per-scene position offset on every native subject. Zoom/rotation
+        // require transformed bounds and glyph geometry, which the pinned
+        // Film contract cannot guarantee and therefore remain unsupported.
+        if scene.camera.zoom != 1.0 || scene.camera.rotation_deg != 0.0 {
             return Err(unsupported(format!(
-                "Scene {} uses camera state that canonical Film cannot preserve yet",
+                "Scene {} uses camera zoom or rotation that canonical Film cannot preserve yet",
                 scene.id
             )));
         }
@@ -688,10 +796,14 @@ fn projected_shot(
     let (layers, layer_names) = layers(scene)?;
     let mut subjects = Vec::with_capacity(scene.nodes.len());
     let mut visual_constraints = Vec::new();
+    // Pan is a pure translation of all authored subjects before output
+    // replan/crop. Applying it to the existing fixed-layout projection keeps
+    // text size, stroke, z-order, and canonical safe-area validation intact.
+    let projection = scene_layout_projection(scene, context.projection);
     let subject_context = SubjectProjectionContext {
         text_style: context.text_style,
         profile: context.profile,
-        projection: context.projection,
+        projection,
         output: context.output,
         font_family: context.font_family,
     };
@@ -722,6 +834,23 @@ fn attach_entrance_motion(
     spans: &mut Vec<TemporalSpan>,
 ) -> NativeResult<()> {
     for node in &scene.nodes {
+        if !node
+            .keyframes
+            .iter()
+            .any(|key| key.property == MotionProperty::Opacity)
+        {
+            continue;
+        }
+        if node.kind == "group"
+            || scene
+                .nodes
+                .iter()
+                .any(|child| child.parent_id == Some(node.id))
+        {
+            return Err(unsupported(
+                "Authored entrance motion on source hierarchies requires a dedicated mapping",
+            ));
+        }
         let Some(entry) = entry_motion(node)? else {
             continue;
         };
@@ -828,6 +957,11 @@ fn build_segment(
     };
 
     let span_capacity = scenes.iter().map(scene_span_cost).sum::<usize>();
+    if span_capacity > MAX_TEMPORAL_SPANS {
+        return Err(unsupported(
+            "Canonical Film segment exceeds 128 bounded temporal spans including keyframe motion",
+        ));
+    }
     let mut spans = Vec::with_capacity(span_capacity);
     let mut constraints = Vec::with_capacity(span_capacity.saturating_sub(scenes.len()));
     let mut sequences = Vec::with_capacity(scenes.len());
@@ -840,6 +974,12 @@ fn build_segment(
             )));
         }
         authored_beats_tile_scene(scene)?;
+        if !scene.beats.is_empty() && scene.nodes.iter().any(|node| !node.keyframes.is_empty()) {
+            return Err(unsupported(format!(
+                "Scene {} authored beat spans cannot preserve Canvas motion keyframes yet",
+                scene.id
+            )));
+        }
         let intent = intents.get(&scene.id).ok_or_else(|| {
             invalid(format!(
                 "Scene {} requires explicit narrative role and archetype for canonical Film",
@@ -879,10 +1019,50 @@ fn build_segment(
                 ShotIdentity {
                     archetype: intent.archetype,
                     shot_id: uid("shot", scene.id),
-                    span_id: shot_span,
+                    span_id: shot_span.clone(),
                     beat_scope: None,
                 },
             )?;
+            let source_projection = scene_layout_projection(scene, projection);
+            for node in &scene.nodes {
+                let Some(motion) = native_linear_position_motion(node, scene, options.frame_rate)?
+                else {
+                    continue;
+                };
+                let mut initial = node.clone();
+                initial.x = motion.start_x;
+                initial.y = motion.start_y;
+                // For Replan, both endpoints are safe; the intervening
+                // linear convex path is therefore safe as well.
+                validate_static_safe_area(&initial, source_projection, &output)?;
+                let motion_span = format!("keyspan-{}-{}", scene.id.simple(), node.id.simple());
+                spans.push(TemporalSpan {
+                    id: motion_span.clone(),
+                    minimum: motion.duration,
+                    preferred: motion.duration,
+                    maximum: motion.duration,
+                    anchor: StartAnchor::Absolute { time: local_start },
+                    preference_priority: 0,
+                });
+                constraints.push(TemporalConstraint::Contains {
+                    id: format!("key-contains-{}", node.id.simple()),
+                    parent: shot_span.clone(),
+                    child: motion_span.clone(),
+                });
+                shot.motion.push(Invocation {
+                    id: format!("key-motion-{}", node.id.simple()),
+                    span_id: motion_span,
+                    easing: MotionEasing::Linear,
+                    primitive: Primitive::Settle {
+                        target: subject_id(node.id, None),
+                        offset: Point {
+                            x: (motion.start_x - node.x) * source_projection.position_scale_x,
+                            y: (motion.start_y - node.y) * source_projection.position_scale_y,
+                        },
+                        rotation: 0.0,
+                    },
+                });
+            }
             attach_entrance_motion(&mut shot, scene, local_start, projection, &mut spans)?;
             authoring_beats.push(AuthoringBeat {
                 id: uid("beat", scene.id),
@@ -1158,6 +1338,97 @@ mod tests {
         assert!(realize(&segments[0].film).is_ok());
     }
 
+    fn fixture_options(project: &Project) -> FilmBuildOptions {
+        FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        }
+    }
+
+    fn fixed_position(segment: &MotionCanvasSegment, scene_index: usize) -> Point {
+        let subject = &segment.film.sequences[scene_index].beats[0].shots[0].subjects[0];
+        match &subject.layout {
+            SpatialIntent::Fixed { position, .. } => *position,
+            other => panic!("Expected fixed Film subject after static camera pan: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projects_exact_native_film_static_pan_per_scene_without_changing_source() {
+        let baseline = fixture_project();
+        let profile_id = baseline.deliverables[0].id;
+        let before =
+            build_motion_canvas_segments(&baseline, profile_id, &fixture_options(&baseline))
+                .unwrap();
+        let baseline_a = fixed_position(&before[0], 0);
+        let baseline_b = fixed_position(&before[0], 1);
+        let mut panned = baseline.clone();
+        panned.scenes[0].camera.center_x -= 64.0;
+        panned.scenes[0].camera.center_y -= 40.0;
+        panned.scenes[1].camera.center_x += 30.0;
+        panned.scenes[1].camera.center_y += 20.0;
+        // Film pan translates subjects, not the versioned semantic Canvas
+        // object base transforms, text glyph size, frame rate or cut duration.
+        let base_a = (panned.scenes[0].nodes[0].x, panned.scenes[0].nodes[0].y);
+        let base_b = (panned.scenes[1].nodes[0].x, panned.scenes[1].nodes[0].y);
+        let native =
+            build_motion_canvas_segments(&panned, profile_id, &fixture_options(&panned)).unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].frame_count, 90);
+        assert_eq!(native[0].scene_ids, before[0].scene_ids);
+        let a = fixed_position(&native[0], 0);
+        let b = fixed_position(&native[0], 1);
+        assert!((a.x - baseline_a.x - 64.0).abs() < 1e-8);
+        assert!((a.y - baseline_a.y - 40.0).abs() < 1e-8);
+        assert!((b.x - baseline_b.x + 30.0).abs() < 1e-8);
+        assert!((b.y - baseline_b.y + 20.0).abs() < 1e-8);
+        assert_eq!(
+            (panned.scenes[0].nodes[0].x, panned.scenes[0].nodes[0].y),
+            base_a
+        );
+        assert_eq!(
+            (panned.scenes[1].nodes[0].x, panned.scenes[1].nodes[0].y),
+            base_b
+        );
+        assert_eq!(
+            native[0].film.editorial.type_scale,
+            before[0].film.editorial.type_scale
+        );
+        assert!(realize(&native[0].film).is_ok());
+    }
+
+    #[test]
+    fn native_film_pan_preserves_safe_area_and_rejects_zoom_or_rotation() {
+        let mut project = fixture_project();
+        let profile_id = project.deliverables[0].id;
+        project.scenes[0].camera.center_x = 1100.0;
+        let err = build_motion_canvas_segments(&project, profile_id, &fixture_options(&project))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("safe area"));
+        project.scenes[0].camera.center_x = CANVAS_WIDTH / 2.0;
+        project.scenes[0].camera.zoom = 1.25;
+        let err = build_motion_canvas_segments(&project, profile_id, &fixture_options(&project))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("camera zoom or rotation"));
+        project.scenes[0].camera.zoom = 1.0;
+        project.scenes[0].camera.rotation_deg = 7.0;
+        let err = build_motion_canvas_segments(&project, profile_id, &fixture_options(&project))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+    }
+
     #[test]
     fn out_of_safe_area_canvas_nodes_fail_before_driver_dispatch() {
         let mut project = fixture_project();
@@ -1335,6 +1606,167 @@ mod tests {
         assert_eq!(segments[0].scene_ids, vec![project.scenes[0].id]);
         assert_eq!(segments[0].global_start, Rational::ZERO);
         assert_eq!(segments[0].duration, Rational::new(2, 1).unwrap());
+    }
+
+    fn set_exact_linear_position_keys(node: &mut CanvasNode) {
+        // One source-authorized linear ease from (120,110) at frame 0 to the
+        // *unchanged base* position (160,140) at frame 30.
+        for (at, x, y) in [
+            (RationalTime::ZERO, 120.0, 110.0),
+            (RationalTime::new(1, 1).unwrap(), node.x, node.y),
+        ] {
+            node.keyframes.push(CanvasKeyframe {
+                at,
+                property: MotionProperty::X,
+                value: x,
+                interpolation: MotionInterpolation::Linear,
+            });
+            node.keyframes.push(CanvasKeyframe {
+                at,
+                property: MotionProperty::Y,
+                value: y,
+                interpolation: MotionInterpolation::Linear,
+            });
+        }
+    }
+
+    #[test]
+    fn exact_linear_xy_keys_generate_source_bound_native_settle_motion() {
+        let mut project = fixture_project();
+        let source_id = project.scenes[0].nodes[0].id;
+        let source_pose = (project.scenes[0].nodes[0].x, project.scenes[0].nodes[0].y);
+        set_exact_linear_position_keys(&mut project.scenes[0].nodes[0]);
+        let options = fixture_options(&project);
+        let segments =
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].frame_count, 90);
+        let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.motion.len(), 1);
+        match &shot.motion[0].primitive {
+            Primitive::Settle {
+                target,
+                offset,
+                rotation,
+            } => {
+                assert_eq!(target, &subject_id(source_id, None));
+                assert!((offset.x + 40.0).abs() < 1e-8);
+                assert!((offset.y + 30.0).abs() < 1e-8);
+                assert_eq!(*rotation, 0.0);
+            }
+            other => panic!("Expected exact native Settle, got {other:?}"),
+        }
+        assert_eq!(shot.motion[0].easing, MotionEasing::Linear);
+        let compiled = realize(&segments[0].film).unwrap();
+        assert_eq!(compiled.instructions.len(), 2);
+        let position = compiled
+            .instructions
+            .iter()
+            .find(|instruction| {
+                matches!(
+                    &instruction.operation,
+                    semwright_motion_authoring::NativeOp::Tween {
+                        channel: semwright_motion_authoring::Channel::Position,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert_eq!(position.start, RationalTime::ZERO);
+        assert_eq!(position.duration, RationalTime::new(1, 1).unwrap());
+        match &position.operation {
+            semwright_motion_authoring::NativeOp::Tween { from, to, .. } => {
+                assert!(matches!(
+                    from,
+                    Some(semwright_motion_authoring::Operand::OriginalOffset(_))
+                ));
+                assert_eq!(to, &semwright_motion_authoring::Operand::Original);
+            }
+            _ => unreachable!("position tween already matched"),
+        }
+        assert_eq!(
+            (project.scenes[0].nodes[0].x, project.scenes[0].nodes[0].y,),
+            source_pose
+        );
+    }
+
+    #[test]
+    fn unsupported_position_curves_stay_out_of_canonical_film() {
+        let baseline = fixture_project();
+        let valid = fixture_options(&baseline);
+        let profile = baseline.deliverables[0].id;
+
+        let mut omitted_axis = baseline.clone();
+        omitted_axis.scenes[0].nodes[0]
+            .keyframes
+            .push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::X,
+                value: 120.0,
+                interpolation: MotionInterpolation::Linear,
+            });
+        assert_eq!(
+            build_motion_canvas_segments(&omitted_axis, profile, &valid)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+
+        let mut easing = baseline.clone();
+        set_exact_linear_position_keys(&mut easing.scenes[0].nodes[0]);
+        easing.scenes[0].nodes[0].keyframes[2].interpolation = MotionInterpolation::EaseInOut;
+        assert_eq!(
+            build_motion_canvas_segments(&easing, profile, &valid)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+
+        let mut wrong_target = baseline.clone();
+        set_exact_linear_position_keys(&mut wrong_target.scenes[0].nodes[0]);
+        wrong_target.scenes[0].nodes[0].keyframes[2].value += 1.0;
+        assert_eq!(
+            build_motion_canvas_segments(&wrong_target, profile, &valid)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+
+        let mut off_frame = baseline.clone();
+        set_exact_linear_position_keys(&mut off_frame.scenes[0].nodes[0]);
+        for key in off_frame.scenes[0].nodes[0].keyframes.iter_mut().skip(2) {
+            key.at = RationalTime::new(1, 7).unwrap();
+        }
+        assert_eq!(
+            build_motion_canvas_segments(&off_frame, profile, &valid)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+
+        let mut unsafe_start = baseline.clone();
+        set_exact_linear_position_keys(&mut unsafe_start.scenes[0].nodes[0]);
+        unsafe_start.scenes[0].nodes[0].keyframes[0].value = 0.0;
+        let error = build_motion_canvas_segments(&unsafe_start, profile, &valid).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("safe area"));
+
+        let mut mixed_property = baseline;
+        set_exact_linear_position_keys(&mut mixed_property.scenes[0].nodes[0]);
+        mixed_property.scenes[0].nodes[0]
+            .keyframes
+            .push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::Opacity,
+                value: 0.5,
+                interpolation: MotionInterpolation::Linear,
+            });
+        assert_eq!(
+            build_motion_canvas_segments(&mixed_property, profile, &valid)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
     }
 
     #[test]

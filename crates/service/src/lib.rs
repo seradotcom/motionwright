@@ -29,8 +29,8 @@ use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, Vo
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     BlobDescriptor, BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan,
-    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProjectBackup, ProjectBundleManifest,
-    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{
@@ -556,6 +556,88 @@ impl StudioService {
         ))
     }
 
+    /// Snapshot the locally persisted production receipt stream independently
+    /// from the creative project's generation/revision.
+    pub fn production_receipt_watermark(
+        &self,
+        project_id: Uuid,
+    ) -> StorageResult<ProductionReceiptWatermark> {
+        let store = self.store.lock();
+        let _project = store.load_project(project_id)?;
+        store.production_receipt_watermark(project_id)
+    }
+
+    /// Read a bounded receipt keyset page and reject concurrent changes to
+    /// its stream identity even if the creative project revision is unchanged.
+    pub fn production_receipts_snapshot_page(
+        &self,
+        project_id: Uuid,
+        expected: &ProductionReceiptWatermark,
+        before: Option<Uuid>,
+        limit: usize,
+    ) -> StorageResult<Vec<ProductionReceipt>> {
+        let store = self.store.lock();
+        let _project = store.load_project(project_id)?;
+        if store.production_receipt_watermark(project_id)? != *expected {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        let receipts = match expected.latest_id {
+            Some(head) => store.production_receipts_before(project_id, head, before, limit)?,
+            None => Vec::new(),
+        };
+        if store.production_receipt_watermark(project_id)? != *expected {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        Ok(receipts)
+    }
+
+    /// Reconstruct the full canonical local job projection over a fixed
+    /// receipt snapshot, not the old latest-256-receipts UI window. A bounded
+    /// ceiling refuses oversized scans instead of claiming fake completeness.
+    pub fn production_jobs_snapshot(
+        &self,
+        project_id: Uuid,
+        expected: &ProductionReceiptWatermark,
+    ) -> StorageResult<Vec<ProductionJobProjection>> {
+        const MAX_JOB_ENUMERATION_RECEIPTS: u64 = 20_000;
+        let store = self.store.lock();
+        let project = store.load_project(project_id)?;
+        if store.production_receipt_watermark(project_id)? != *expected {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        if expected.count > MAX_JOB_ENUMERATION_RECEIPTS {
+            return Err(invalid_import(
+                "Production job enumeration exceeds the bounded 20,000-receipt safety budget; no complete claim was made",
+            ));
+        }
+        let mut receipts = Vec::with_capacity(expected.count as usize);
+        let mut before = None;
+        if let Some(head) = expected.latest_id {
+            loop {
+                let batch = store.production_receipts_before(project_id, head, before, 256)?;
+                if batch.is_empty() {
+                    break;
+                }
+                before = batch.last().map(|item| item.id);
+                let full_page = batch.len() == 256;
+                receipts.extend(batch);
+                if !full_page {
+                    break;
+                }
+            }
+        }
+        if receipts.len() as u64 != expected.count
+            || store.production_receipt_watermark(project_id)? != *expected
+        {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        Ok(jobs::derive_production_jobs_all(
+            &receipts,
+            project.generation,
+            project.revision,
+        ))
+    }
+
     pub fn history_recent(
         &self,
         id: Uuid,
@@ -586,6 +668,139 @@ impl StudioService {
         change: &Change,
     ) -> StorageResult<ApplyOutcome> {
         self.store.lock().apply(id, expected, request_id, change)
+    }
+}
+
+#[cfg(test)]
+mod native_linear_motion_service_tests {
+    use super::*;
+    use motionwright_domain::{
+        BlendMode, CanvasNode, CoordinateSpace, MotionInterpolation, MotionProperty, NodeStyle,
+    };
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn one_native_linear_motion_change_is_one_durable_cas_revision() {
+        let folder = tempfile::tempdir().unwrap();
+        let service = StudioService::open(folder.path().join("motionwright.sqlite3")).unwrap();
+        let project = service.create_project("Durable native motion").unwrap();
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-motion-create-scene",
+                &Change::AddScene {
+                    name: "Keyed native scene".into(),
+                    objective: "real four-point Motion Canvas authoring".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project;
+        let node = CanvasNode {
+            id: Uuid::now_v7(),
+            name: "Animated tile".into(),
+            kind: "rectangle".into(),
+            parent_id: None,
+            x: 780.0,
+            y: 320.0,
+            width: 180.0,
+            height: 100.0,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: None,
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 1,
+            style: NodeStyle {
+                fill: Some("#F5F5F2".into()),
+                stroke: None,
+                stroke_width: 0.0,
+                font_family: None,
+                font_size: None,
+                font_weight: None,
+                line_height: None,
+                blend_mode: BlendMode::Normal,
+            },
+            relations: Vec::new(),
+            property_locks: BTreeSet::new(),
+            keyframes: Vec::new(),
+        };
+        let node_id = node.id;
+        let scene_id = project.scenes[0].id;
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-motion-create-tile",
+                &Change::AddCanvasNode { scene_id, node },
+            )
+            .unwrap()
+            .project;
+        let profile_id = project.deliverables[0].id;
+        let base_revision = project.revision;
+        let move_change = Change::SetCanvasLinearPositionMotion {
+            scene_id,
+            node_id,
+            deliverable_id: profile_id,
+            start_x: 600.0,
+            start_y: 320.0,
+            end_frame: 30,
+        };
+        let result = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-motion-one-transaction",
+                &move_change,
+            )
+            .unwrap()
+            .project;
+        assert_eq!(result.revision, base_revision + 1);
+        assert_eq!(result.scenes[0].nodes[0].keyframes.len(), 4);
+        assert_eq!(result.scenes[0].nodes[0].x, 780.0);
+        assert_eq!(result.scenes[0].nodes[0].keyframes[0].value, 600.0);
+        assert_eq!(
+            result.scenes[0].nodes[0].keyframes[3].property,
+            MotionProperty::Y
+        );
+        assert_eq!(
+            result.scenes[0].nodes[0].keyframes[3].interpolation,
+            MotionInterpolation::Linear,
+        );
+        assert_eq!(
+            service
+                .history(project.id, base_revision, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    "native-motion-stale-base",
+                    &move_change
+                )
+                .is_err()
+        );
+        assert!(
+            service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&result),
+                    "native-motion-must-not-overwrite",
+                    &move_change
+                )
+                .is_err()
+        );
+        let reopened = StudioService::open(folder.path().join("motionwright.sqlite3")).unwrap();
+        let readback = reopened.project(project.id).unwrap();
+        assert_eq!(readback.revision, result.revision);
+        assert_eq!(
+            readback.scenes[0].nodes[0].keyframes,
+            result.scenes[0].nodes[0].keyframes
+        );
     }
 }
 

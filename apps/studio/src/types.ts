@@ -316,6 +316,22 @@ export interface ProductionJobProjection {
   last_observation: ProductionObservationState;
 }
 
+/** Cursor issued by the local Tauri service for a frozen app-owned receipt
+ * snapshot. A changed receipt stream makes this cursor stale, even when the
+ * creative revision is unchanged.
+ */
+export interface ProductionJobsHistoryCursor {
+  latest_id: string;
+  receipt_count: number;
+  offset: number;
+}
+export interface ProductionJobsHistoryPage {
+  items: ProductionJobProjection[];
+  total_jobs: number;
+  next: ProductionJobsHistoryCursor | null;
+  complete: boolean;
+}
+
 export type MotionCanvasNarrativeRole =
   | "hook" | "problem" | "mechanism" | "evidence"
   | "comparison" | "reveal" | "payoff" | "cta";
@@ -508,6 +524,7 @@ export type Change =
   | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }
   | { type: "set_canvas_keyframe"; scene_id: string; node_id: string; keyframe: CanvasKeyframe }
   | { type: "set_canvas_position_keyframe"; scene_id: string; node_id: string; at: RationalTime; x: number; y: number; interpolation: MotionInterpolation }
+  | { type: "set_canvas_linear_position_motion"; scene_id: string; node_id: string; deliverable_id: string; start_x: number; start_y: number; end_frame: number }
   | { type: "remove_canvas_keyframe"; scene_id: string; node_id: string; at: RationalTime; property: MotionProperty }
   | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
   | { type: "update_canvas_style"; scene_id: string; node_id: string; style: NodeStyle }

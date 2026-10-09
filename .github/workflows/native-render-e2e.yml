@@ -133,6 +133,8 @@ jobs:
           assert result["native_render_e2e"] == "PASS"
           assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
           assert result["frame_count"] == 60
+          assert result["linear_position_motion_sampled"] is True
+          assert result["native_motion_frame_sha256"]["start"] != result["native_motion_frame_sha256"]["end_of_linear_tween"]
           assert len(result["artifact_manifest_sha256"]) == 64
           PY
 

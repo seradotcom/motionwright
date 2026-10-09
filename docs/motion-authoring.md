@@ -45,16 +45,19 @@ The public cooperation surface includes:
 - `driver.motionwright.canvas.keyframe.set`
 - `driver.motionwright.canvas.keyframe.remove`
 - `driver.motionwright.canvas.position-keyframe.set` — one paired X/Y key at a scene-relative rational timestamp
+- `driver.motionwright.canvas.motion.linear-position.set` — four source-bound linear X/Y keys in a single frame-aligned motion transaction
 
-All three commands use closed schemas and the same opaque Native SDK target binding as other mutating operations. The application never parses a Native SDK ref as a Motionwright resource identifier.
+All four commands use closed schemas and the same opaque Native SDK target binding as other mutating operations. The application never parses a Native SDK ref as a Motionwright resource identifier.
+
+The Canvas inspector also provides **Create native linear move**: choose the initial X/Y and an ending frame against the saved output profile. The action creates all four compatible source keys in one CAS-protected project revision without replacing existing curves or changing the base pose. It is disabled for authored beat spans, grouped/parented objects, locked positions or missing profiles. A later Film preflight still rejects unsupported framing. See [native linear motion authoring](native-linear-position-motion.md).
 
 ## Renderer boundary
 
 Authored motion is intentionally fail-closed at renderer boundaries that do not yet have an exact mapping.
 
-The canonical Film projection rejects nodes with typed keyframes instead of silently flattening them to a static pose. Blender and the other bounded multi-renderer contributions do the same until their renderer-time mapping can preserve the authored curve exactly.
+The native Semwright Film projection now admits the **exact paired linear 0→base X/Y settle subset**, with source/frame/safe-area checks and a real Motion Canvas E2E frame-difference gate. See [native linear position motion](native-linear-position-motion.md). All other Canvas keyframes remain explicitly rejected; Blender and other renderer adapters preserve their own independently verified boundaries.
 
-This means the editor can persist and review motion now without overstating production support. Future renderer mappings may admit explicit representable subsets, but unsupported curves must continue to return an explicit unsupported result rather than losing motion semantics.
+Studio can author more motion than the current renderer supports, but preflight rejects any nonrepresentable curves. The admitted Film subset requires X/Y pairs at time 0 and at an exact frame-aligned positive time T, with the second pair equal to the base node X/Y; all four are linear. Multiple stops, Hold and smoothstep easing still fail closed rather than losing motion semantics.
 
 ## Verification status
 

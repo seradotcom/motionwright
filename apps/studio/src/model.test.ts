@@ -89,6 +89,60 @@ describe("creative project fixture", () => {
     })).rejects.toThrow("locked");
   });
 
+  it("authors exactly four native-linear X/Y source keys in one revision from a saved FPS", async () => {
+    const source = structuredClone(fixtureProject);
+    const scene = source.scenes[0];
+    scene.beats = [];
+    const node = scene.nodes[0];
+    const original = { x: node.x, y: node.y, revision: source.revision };
+    const profile = source.deliverables[0];
+    const authored = await applyChange(source, {
+      type: "set_canvas_linear_position_motion",
+      scene_id: scene.id,
+      node_id: node.id,
+      deliverable_id: profile.id,
+      start_x: node.x - 80,
+      start_y: node.y + 25,
+      end_frame: 30,
+    });
+    expect(authored.revision).toBe(original.revision + 1);
+    const result = authored.scenes[0].nodes[0];
+    expect(result.x).toBe(original.x);
+    expect(result.y).toBe(original.y);
+    expect(result.keyframes).toEqual([
+      { at: { num: "0", den: "1" }, property: "x", value: original.x - 80, interpolation: "linear" },
+      { at: { num: "0", den: "1" }, property: "y", value: original.y + 25, interpolation: "linear" },
+      { at: { num: "1", den: "1" }, property: "x", value: original.x, interpolation: "linear" },
+      { at: { num: "1", den: "1" }, property: "y", value: original.y, interpolation: "linear" },
+    ]);
+    await expect(applyChange(authored, {
+      type: "set_canvas_linear_position_motion",
+      scene_id: scene.id, node_id: node.id, deliverable_id: profile.id,
+      start_x: node.x - 40, start_y: node.y, end_frame: 30,
+    })).rejects.toThrow("never overwrites existing keyframes");
+
+    await expect(applyChange(source, {
+      type: "set_canvas_linear_position_motion",
+      scene_id: scene.id, node_id: node.id, deliverable_id: profile.id,
+      start_x: node.x, start_y: node.y, end_frame: 30,
+    })).rejects.toThrow("invalid native linear position");
+    await expect(applyChange(source, {
+      type: "set_canvas_linear_position_motion",
+      scene_id: scene.id, node_id: node.id, deliverable_id: profile.id,
+      start_x: node.x - 10, start_y: node.y, end_frame: 500,
+    })).rejects.toThrow("endpoint must stay inside");
+
+    const locked = await applyChange(source, {
+      type: "set_node_property_lock", scene_id: scene.id, node_id: node.id,
+      property: "position", locked: true,
+    });
+    await expect(applyChange(locked, {
+      type: "set_canvas_linear_position_motion",
+      scene_id: scene.id, node_id: node.id, deliverable_id: profile.id,
+      start_x: node.x - 10, start_y: node.y, end_frame: 30,
+    })).rejects.toThrow("locked");
+  });
+
   it("never represents project truth only as color", () => {
     expect(["current", "stale", "unknown"]).toContain(fixtureProject.state);
     expect(fixtureProject.locks[0].kind).toBe("timing");

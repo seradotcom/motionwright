@@ -16,7 +16,7 @@ The projection is intentionally strict:
 - Motionwright's 1920x1080 project-pixel canvas is projected into the selected output profile with deterministic positions, object scale and safe-area checks;
 - text, rectangle/shape, circle and structural group nodes are supported;
 - rotation, partial opacity, non-normal blend modes, non-project coordinate spaces, unresolved semantic relations and unsupported node kinds fail closed instead of being dropped;
-- non-default camera pan/rotation/zoom fails closed until the canonical mapping can preserve it exactly;
+- static camera **pan** with zoom exactly 1 and rotation exactly 0 is admitted by the exact [Film scene translation mapping](native-film-static-pan.md); the narrowly representable [paired linear 0→base X/Y keyframes](native-linear-position-motion.md) produce time-bound native Settle instructions with start/end safe-area checks; other camera properties and motion curves fail closed;
 - asset digests remain SHA-256-bound canonical asset references;
 - every generated Film is passed through Semwright's deterministic realize compiler before it can enter production, including exact-frame-boundary verification.
 

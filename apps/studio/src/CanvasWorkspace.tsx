@@ -91,12 +91,14 @@ export default function CanvasWorkspace({
   commit,
   playhead,
   onSeek,
+  profile,
 }: {
   project: Project;
   scene: Scene | null;
   commit: Commit;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
+  profile: Project["deliverables"][number] | null;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
@@ -108,6 +110,9 @@ export default function CanvasWorkspace({
   // Explicit opt-in: dragging writes one pair of motion keys instead of
   // silently altering the base layout when editing a later animation time.
   const [autoKeyPosition, setAutoKeyPosition] = useState(false);
+  const [nativeStartX, setNativeStartX] = useState(scene?.nodes[0] ? scene.nodes[0].x - 100 : 0);
+  const [nativeStartY, setNativeStartY] = useState(scene?.nodes[0]?.y ?? 0);
+  const [nativeEndFrame, setNativeEndFrame] = useState(30);
   const drag = useRef<{
     pointerId: number;
     nodeId: string;
@@ -159,6 +164,12 @@ export default function CanvasWorkspace({
     if (selectedNode) setMotionValue(nodeTransform(selectedNode)[motionProperty]);
   }, [selectedNode, motionProperty]);
 
+  useEffect(() => {
+    setNativeStartX(selectedNode ? selectedNode.x - 100 : 0);
+    setNativeStartY(selectedNode?.y ?? 0);
+    setNativeEndFrame(30);
+  }, [selectedNode?.id, project.generation]);
+
   if (!scene) {
     return (
       <div className="empty-workspace">
@@ -176,6 +187,20 @@ export default function CanvasWorkspace({
     (lock) => lock.resource === "scene:" + scene.id && lock.kind === "content",
   );
   const sceneDurationSeconds = seconds(scene.duration);
+  const nativeFrameRate = profile
+    ? Number(profile.frame_rate.num) / Number(profile.frame_rate.den) : Number.NaN;
+  const nativeMoveTime = nativeEndFrame / nativeFrameRate;
+  const nativeMoveAllowed = Boolean(profile && selectedNode
+    && scene.renderer === "motion-canvas" && scene.beats.length === 0
+    && !scenePositionLocked && !selectedNode.property_locks.includes("position")
+    && selectedNode.parent_id === null && selectedNode.kind !== "group"
+    && !scene.nodes.some((node) => node.parent_id === selectedNode.id)
+    && selectedNode.keyframes.length === 0
+    && Number.isFinite(nativeStartX) && Number.isFinite(nativeStartY)
+    && (nativeStartX !== selectedNode.x || nativeStartY !== selectedNode.y)
+    && Number.isInteger(nativeEndFrame) && nativeEndFrame >= 1
+    && nativeEndFrame <= 36_000 && Number.isFinite(nativeMoveTime)
+    && nativeMoveTime > 0 && nativeMoveTime < sceneDurationSeconds);
   const maxPlayhead = Math.max(0, sceneDurationSeconds - 0.001);
   const sceneStartSeconds = seconds(scene.start);
   const scenePlayhead = Math.max(0, Math.min(playhead - sceneStartSeconds, maxPlayhead));
@@ -600,6 +625,71 @@ export default function CanvasWorkspace({
                 </div>
                 <p className="inspector-note">
                   Editorial preview. Native Film preserves admitted synchronized entrances; other motion is rejected rather than approximated.
+                </p>
+              </section>
+
+              <section className="native-motion-authoring" aria-label="Native linear position motion">
+                <div className="motion-editor-heading">
+                  <div>
+                    <span className="field-label">Native Film · Position</span>
+                    <strong>Linear X/Y move</strong>
+                  </div>
+                  <span className="mono">{profile?.name ?? "No profile"}</span>
+                </div>
+                <p className="inspector-note">
+                  One frame-aligned movement from a starting position to this object's
+                  unchanged base X/Y. Exactly four linear keys in one revision.
+                </p>
+                <div className="canvas-field-grid motion-fields">
+                  <label>
+                    <span>Start X</span>
+                    <input type="number" step="1" aria-label="Native move start X"
+                      value={nativeStartX}
+                      onChange={(event) =>
+                        setNativeStartX(numberValue(event.target.value, nativeStartX))} />
+                  </label>
+                  <label>
+                    <span>Start Y</span>
+                    <input type="number" step="1" aria-label="Native move start Y"
+                      value={nativeStartY}
+                      onChange={(event) =>
+                        setNativeStartY(numberValue(event.target.value, nativeStartY))} />
+                  </label>
+                  <label>
+                    <span>End frame</span>
+                    <input type="number" min="1" max="36000" step="1"
+                      aria-label="Native move end frame"
+                      value={nativeEndFrame}
+                      onChange={(event) =>
+                        setNativeEndFrame(numberValue(event.target.value, nativeEndFrame))} />
+                  </label>
+                </div>
+                <div className="inspector-note">
+                  {profile ? "Output " + profile.name + " · " + profile.frame_rate.num + "/"
+                    + profile.frame_rate.den + " fps · endpoint " +
+                    (Number.isFinite(nativeMoveTime) ? nativeMoveTime.toFixed(3) + "s" : "unsupported")
+                    : "Select a saved delivery profile with a valid frame rate."}
+                </div>
+                <button className="button full" type="button"
+                  aria-label="Create native linear move"
+                  disabled={!nativeMoveAllowed}
+                  onClick={() => {
+                    if (!selectedNode || !profile || !nativeMoveAllowed) return;
+                    void commit({
+                      type: "set_canvas_linear_position_motion",
+                      scene_id: scene.id,
+                      node_id: selectedNode.id,
+                      deliverable_id: profile.id,
+                      start_x: nativeStartX,
+                      start_y: nativeStartY,
+                      end_frame: nativeEndFrame,
+                    });
+                  }}>
+                  Create native linear move
+                </button>
+                <p className="inspector-note">
+                  Existing motion keys, scene beats, nested objects and locked positions
+                  are not overwritten. Film preflight still verifies native framing.
                 </p>
               </section>
 

@@ -32,7 +32,7 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 
 ## Native SDK project-scope enumeration
 
-Source-bound Rust tests enumerate 271 project-owned records with several bounded Native SDK page limits, verifying complete, ordered, nonoverlapping coverage and reject invalid offsets, wrong-scope cursors and stale creative revisions. Integration writes eleven real scenes and checks both Timeline and Canvas native observation pagination end-to-end through StudioService. Production Jobs observations deliberately remain partial/unknown when a complete receipt-history cursor is unavailable. See [Native SDK scope pagination](native-scope-pagination.md).
+Source-bound Rust tests enumerate 271 project-owned records with several bounded Native SDK page limits, verifying complete, ordered, nonoverlapping coverage and reject invalid offsets, wrong-scope cursors and stale creative revisions. Integration writes eleven real scenes and checks both Timeline and Canvas native observation pagination end-to-end through StudioService. Production Jobs use a separate [append-only receipt watermark and keyset history](production-receipt-pagination.md), rather than a project-revision-only offset cursor; the latest-window Studio UI stays lightweight, while a separately requested [Full history](production-jobs-history.md) view walks bounded job pages with explicit stale-receipt recovery. The browser regression uses synthetic Tauri transport to check 42 jobs over three pages and does not infer Driver Host state. See [Native SDK scope pagination](native-scope-pagination.md).
 
 ## Recent-first event journal acceptance
 
@@ -45,6 +45,18 @@ Canvas applies the stored scene camera center, zoom and inverse rotation to its 
 ## Atomic Canvas Auto-key motion
 
 Rust domain tests verify one authored revision for an X/Y position pair, no base-transform mutation, strict property locks, rational half-open scene timing, and rejection of invalid coordinates without half-keyframe commits. Native SDK public-operation tests validate the closed contract for agent use. Browser fixture and Chromium pointer regressions compare Auto-key on/off, exact scene-local timing, history event count, and locked-gesture no-op. Native renderer Film still rejects motion it cannot preserve exactly; see [typed motion authoring](motion-authoring.md).
+
+## Atomic frame-based native position authoring
+
+The Canvas inspector can create exactly four source-bound linear position keys with one revisioned Change, as opposed to manually inserting two pairs in separate commits. Rust domain and service tests cover frame-rate rational conversion, source base preservation, locking and no-overwrite semantics. Native SDK closed-schema tests verify the capability for agents, and browser tests verify explicit gating and serialized source identity. Native render/pixel support remains an independent gate.
+
+## Native Film exact linear X/Y position motion
+
+The pinned Film adapter admits only paired, exact-frame-aligned linear X/Y motion from an authored pose at scene-local 0 to the unchanged node base at T. Rust tests verify the actual native Settle and compiled Position tween, unsupported easing/channels/missing axes, frame alignment and starting-frame safe areas. The real pinned Broker/Driver Host E2E now seeds a visible keyed tile and independently checks 60 native frame hashes, including distinct frame 0 and frame 30 PNGs. This is native runtime evidence, **not independently approved creative quality**. See [motion projection](native-linear-position-motion.md).
+
+## Native Film static camera pan
+
+The pinned Film adapter now projects per-scene static camera center shifts through native subject translation when zoom=1 and rotation=0, keeping source Canvas geometry, text size, frame count and safe areas explicit. Rust tests exercise two panned scenes, native Film realization, unsupported zoom/rotation and unsafe pan bounds. This is not independent rendered pixel parity. See [static camera pan](native-film-static-pan.md).
 
 ## Native Film semantic preflight
 

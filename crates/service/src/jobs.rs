@@ -208,6 +208,18 @@ pub(crate) fn derive_production_jobs(
     current_revision: u64,
     limit: usize,
 ) -> Vec<ProductionJobProjection> {
+    let mut jobs = derive_production_jobs_all(receipts, current_generation, current_revision);
+    jobs.truncate(limit.clamp(1, 64));
+    jobs
+}
+
+/// Full locally persisted projection for snapshot-consistent Native SDK
+/// enumeration, separate from the unchanged bounded latest-window UI API.
+pub(crate) fn derive_production_jobs_all(
+    receipts: &[ProductionReceipt],
+    current_generation: Uuid,
+    current_revision: u64,
+) -> Vec<ProductionJobProjection> {
     let mut ordered = receipts.to_vec();
     ordered.sort_by(|left, right| {
         left.created_at
@@ -333,7 +345,6 @@ pub(crate) fn derive_production_jobs(
             .cmp(&left.last_observed_at)
             .then_with(|| right.job_ref.cmp(&left.job_ref))
     });
-    jobs.truncate(limit.clamp(1, 64));
     jobs
 }
 

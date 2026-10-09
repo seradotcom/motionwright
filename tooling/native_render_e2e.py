@@ -383,6 +383,16 @@ def main() -> None:
                 if row.get("bytes") != frame.stat().st_size or row.get("sha256") != digest(frame):
                     raise AssertionError(f"native frame digest/size mismatch at {frame_index}")
 
+            # The seeded X/Y tile starts at x=640 and finishes at its
+            # unchanged base x=790 on native frame 30. A completely static
+            # or silently flattened render would yield identical PNG bytes.
+            first_digest = digest(frames[0])
+            middle_digest = digest(frames[30])
+            if first_digest == middle_digest:
+                raise AssertionError(
+                    "native frame 0 and frame 30 are identical: the authored linear position motion may have been lost"
+                )
+
             shutil.copyfile(manifest_file, EVIDENCE / "artifact-manifest.json")
             for source, name in [
                 (frames[0], "frame-first.png"),
@@ -404,6 +414,11 @@ def main() -> None:
                     "artifact_directory": directory,
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
+                    "linear_position_motion_sampled": True,
+                    "native_motion_frame_sha256": {
+                        "start": first_digest,
+                        "end_of_linear_tween": middle_digest,
+                    },
                     "review_frames": {
                         "first_sha256": digest(EVIDENCE / "frame-first.png"),
                         "middle_sha256": digest(EVIDENCE / "frame-middle.png"),

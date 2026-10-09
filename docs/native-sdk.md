@@ -15,7 +15,7 @@ The integration follows the Native SDK public contracts:
 
 ## Observation scopes
 
-The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `deliverables`, `visual-language`, `canvas`, `alternatives`, `history`, `history-recent`, `locks`, `branches`, `reviews`, `merges` and `production-jobs` scopes.
+The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `deliverables`, `visual-language`, `canvas`, `alternatives`, `history`, `history-recent`, `locks`, `branches`, `reviews`, `merges`, `production-jobs` and `production-receipts` scopes.
 
 Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels. History returns only application-owned committed journal rows. It is not a reconstruction of private model reasoning. **All versioned project-array scopes now expose truthful continuation cursors** rather than truncating a long list and claiming it is complete; see [Native SDK scope pagination](native-scope-pagination.md).
 
@@ -34,7 +34,7 @@ The provider intentionally exposes composable commands instead of an unrestricte
 - creative system: set visual language, add a bounded proposal set and select one proposal;
 - authority hints owned by the app: set and remove explicit project/resource locks.
 
-Together with `driver.motionwright.observe`, this is currently 45 Native SDK capabilities, including `canvas.position-keyframe.set` for atomic paired X/Y motion keys.
+Together with `driver.motionwright.observe`, this is currently 46 Native SDK capabilities, including `canvas.position-keyframe.set` for atomic paired X/Y motion keys and `canvas.motion.linear-position.set` for one frame-bound four-key native motion authoring transaction.
 
 Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries. Scene-duration ripple changes presentation timing and later scene starts; it does not silently retime measured audio.
 
@@ -70,6 +70,6 @@ These helpers intentionally stop before authority. A Motionwright process cannot
 
 The dedicated `Canonical Graph and Effects` workflow re-runs the upstream adapter/conformance tests at the exact `SOURCE_LOCK.json` SHA and then exercises Motionwright's consumer wrappers.
 
-The provider also exposes `production-jobs`, a read-only projection derived from Motionwright production receipts. The job scope is application history only: Semwright remains the scheduler/runtime authority, and CURRENT/STALE applicability is evaluated against the open Motionwright revision. Because its receipts can change without a project revision and the current input window is capped, this scope now explicitly returns **partial/unknown enumeration** (`complete: false`, `next: null`) instead of falsely claiming complete historical coverage; this scope cannot accept a project-array cursor. See [Native SDK scope pagination](native-scope-pagination.md).
+The provider also exposes `production-jobs`, a read-only projection derived from Motionwright production receipts. The job scope is application history only: Semwright remains the scheduler/runtime authority, and CURRENT/STALE applicability is evaluated against the open Motionwright revision. Since production receipts can change without a creative revision, both production scopes use a separate **receipt-stream watermark**. `production-receipts` returns newest-first keyset pages of **metadata only**, omitting raw provider payloads. `production-jobs` reconstructs a consistent local job snapshot across all receipts up to a documented 20,000-receipt safety budget and offers bounded continuation pages. An independent appended receipt invalidates either cursor; oversized histories error explicitly rather than claiming completeness. See [production receipt/job pagination](production-receipt-pagination.md) and [project-array scopes](native-scope-pagination.md).
 
 The desktop Workflow workspace uses the same owner-provisioned `ProductionConnection` boundary for canonical Semwright workflow distillation. Reads plus the explicitly supported record/compile/plan/accept/verify/replay/promote commands are hard-allowlisted and must carry built-in `semwright-core` provenance. Replay is treated as a mutation for uncertain-outcome handling even though Semwright supports planning/dry-run semantics. Destructive or unrelated workflow commands are not exposed by Motionwright; see `workflows.md`.

@@ -1,5 +1,6 @@
 use motionwright_domain::{
-    BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RevisionStamp,
+    BlendMode, CanvasKeyframe, CanvasNode, Change, CoordinateSpace, MotionInterpolation,
+    MotionProperty, NodeStyle, RationalTime, RevisionStamp,
 };
 use motionwright_native::{
     film::{FilmBuildOptions, SceneFilmIntent},
@@ -90,6 +91,63 @@ fn text_node(parent_id: Uuid) -> CanvasNode {
     }
 }
 
+/// Visible unparented rectangle: the native Film contract now maps this
+/// exact paired 0→base position transition via a Semwright Settle primitive.
+fn real_linear_motion_tile() -> CanvasNode {
+    let mut node = CanvasNode {
+        id: Uuid::now_v7(),
+        name: "Native linear motion tile".into(),
+        kind: "rectangle".into(),
+        parent_id: None,
+        x: 790.0,
+        y: 750.0,
+        width: 160.0,
+        height: 90.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: None,
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 2,
+        style: NodeStyle {
+            fill: Some("#F5F5F2".into()),
+            stroke: None,
+            stroke_width: 0.0,
+            font_family: None,
+            font_size: None,
+            font_weight: None,
+            line_height: None,
+            blend_mode: BlendMode::Normal,
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    for (at, x, y) in [
+        (RationalTime::ZERO, 640.0, 750.0),
+        (
+            RationalTime::new(1, 1).expect("exact frame"),
+            node.x,
+            node.y,
+        ),
+    ] {
+        node.keyframes.extend([
+            CanvasKeyframe {
+                at,
+                property: MotionProperty::X,
+                value: x,
+                interpolation: MotionInterpolation::Linear,
+            },
+            CanvasKeyframe {
+                at,
+                property: MotionProperty::Y,
+                value: y,
+                interpolation: MotionInterpolation::Linear,
+            },
+        ]);
+    }
+    node
+}
+
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     if !service.projects(2)?.is_empty() {
@@ -123,7 +181,7 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             },
         )?
         .project;
-    let project = service
+    let with_title = service
         .apply(
             with_group.id,
             &RevisionStamp::from(&with_group),
@@ -131,6 +189,17 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             &Change::AddCanvasNode {
                 scene_id,
                 node: text_node(group_id),
+            },
+        )?
+        .project;
+    let project = service
+        .apply(
+            with_title.id,
+            &RevisionStamp::from(&with_title),
+            "native-render-seed-linear-position",
+            &Change::AddCanvasNode {
+                scene_id,
+                node: real_linear_motion_tile(),
             },
         )?
         .project;

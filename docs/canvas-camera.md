@@ -23,7 +23,7 @@ Canvas now exposes camera **Center X**, **Center Y** and **Rotation** inputs alo
 
 ## Boundaries
 
-This is a *semantic editorial view* and is always labeled as such. It does not imply that the currently selected renderer supports the camera transform, that a cached or rendered frame exists, that fonts/fill/stroke match a native output, or that a multi-renderer export can preserve everything visually. Canonical Film and Blender/Manim adapters continue to reject any unsupported camera parameter rather than flattening an authored composition. Camera editing does not create a media production job, read private disk files or alter the source Semwright Native SDK pin.
+This is a *semantic editorial view* and is always labeled as such. It does not imply that the currently selected renderer supports the camera transform, that a cached or rendered frame exists, that fonts/fill/stroke match a native output, or that a multi-renderer export can preserve everything visually. Canonical Film admits the narrowly proven [static camera pan](native-film-static-pan.md) subset (zoom 1, rotation 0) by translating source subject positions in the native Film plan, while zoom/rotation and nonrepresentable camera properties still fail closed. Blender/Manim preserve their own independently verified support boundaries; no cross-renderer parity is inferred. Camera editing does not create a media production job, read private disk files or alter the source Semwright Native SDK pin.
 
 ## Verification
 

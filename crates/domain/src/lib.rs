@@ -1513,6 +1513,126 @@ impl Project {
                         .then(left.property.cmp(&right.property))
                 });
             }
+            Change::SetCanvasLinearPositionMotion {
+                scene_id,
+                node_id,
+                deliverable_id,
+                start_x,
+                start_y,
+                end_frame,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                MotionProperty::X.validate_value(*start_x)?;
+                MotionProperty::Y.validate_value(*start_y)?;
+                if *end_frame == 0 || *end_frame > 36_000 {
+                    return Err(DomainError::Invalid(
+                        "native linear position motion frame count must be 1..36000".into(),
+                    ));
+                }
+                let profile = self
+                    .deliverables
+                    .iter()
+                    .find(|profile| profile.id == *deliverable_id)
+                    .ok_or_else(|| {
+                        DomainError::NotFound(format!("deliverable:{deliverable_id}"))
+                    })?;
+                if profile.frame_rate.num <= 0 || profile.frame_rate.den <= 0 {
+                    return Err(DomainError::Invalid(
+                        "native linear position motion requires a valid saved FPS".into(),
+                    ));
+                }
+                let numerator = i64::from(*end_frame)
+                    .checked_mul(profile.frame_rate.den)
+                    .ok_or_else(|| {
+                        DomainError::Invalid(
+                            "native motion frame/rate multiplication overflow".into(),
+                        )
+                    })?;
+                let end_at =
+                    RationalTime::new(numerator, profile.frame_rate.num).map_err(|_| {
+                        DomainError::Invalid(
+                            "native motion endpoint is not a representable rational time".into(),
+                        )
+                    })?;
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if scene.renderer != RendererKind::MotionCanvas
+                    || !scene.beats.is_empty()
+                    || end_at >= scene.duration
+                {
+                    return Err(DomainError::Invalid(
+                        "native linear position move requires a Motion Canvas scene without authored beats and an endpoint inside its duration".into(),
+                    ));
+                }
+                let index = scene
+                    .nodes
+                    .iter()
+                    .position(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if scene.nodes[index].parent_id.is_some()
+                    || scene.nodes[index].kind == "group"
+                    || scene
+                        .nodes
+                        .iter()
+                        .any(|node| node.parent_id == Some(*node_id))
+                {
+                    return Err(DomainError::Invalid(
+                        "native linear position move requires an independent unparented non-group object".into(),
+                    ));
+                }
+                let node = &mut scene.nodes[index];
+                if node.property_locks.contains(&NodeProperty::Position) {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} position motion property"
+                    )));
+                }
+                if !node.keyframes.is_empty() {
+                    return Err(DomainError::Invalid(
+                        "native linear position move never overwrites existing keyframes".into(),
+                    ));
+                }
+                if *start_x == node.x && *start_y == node.y {
+                    return Err(DomainError::Invalid(
+                        "native linear position move requires a visible starting offset".into(),
+                    ));
+                }
+                let keys = [
+                    CanvasKeyframe {
+                        at: RationalTime::ZERO,
+                        property: MotionProperty::X,
+                        value: *start_x,
+                        interpolation: MotionInterpolation::Linear,
+                    },
+                    CanvasKeyframe {
+                        at: RationalTime::ZERO,
+                        property: MotionProperty::Y,
+                        value: *start_y,
+                        interpolation: MotionInterpolation::Linear,
+                    },
+                    CanvasKeyframe {
+                        at: end_at,
+                        property: MotionProperty::X,
+                        value: node.x,
+                        interpolation: MotionInterpolation::Linear,
+                    },
+                    CanvasKeyframe {
+                        at: end_at,
+                        property: MotionProperty::Y,
+                        value: node.y,
+                        interpolation: MotionInterpolation::Linear,
+                    },
+                ];
+                for key in &keys {
+                    key.validate()?;
+                }
+                // A single transaction commits all four source-bound keys;
+                // no partial X/Y keyframes and no hidden base-pose overwrite.
+                node.keyframes.extend(keys);
+            }
             Change::RemoveCanvasKeyframe {
                 scene_id,
                 node_id,
@@ -2193,6 +2313,16 @@ pub enum Change {
         y: f64,
         interpolation: MotionInterpolation,
     },
+    /// Exactly four native-compatible paired X/Y linear keys, authored in
+    /// one revision and frame-quantized against one saved delivery profile.
+    SetCanvasLinearPositionMotion {
+        scene_id: Uuid,
+        node_id: Uuid,
+        deliverable_id: Uuid,
+        start_x: f64,
+        start_y: f64,
+        end_frame: u32,
+    },
     RemoveCanvasKeyframe {
         scene_id: Uuid,
         node_id: Uuid,
@@ -2526,6 +2656,113 @@ mod tests {
                 .iter()
                 .all(|node| node.id != parent_id)
         );
+    }
+
+    #[test]
+    fn native_linear_position_motion_is_four_exact_keys_in_one_revision() {
+        let mut project = Project::new("One native linear move").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Keyed scene".into(),
+                objective: "Author exact native movement".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Native move");
+        let node_id = node.id;
+        let (base_x, base_y) = (node.x, node.y);
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        let deliverable_id = project.deliverables[0].id;
+        let previous = project.revision;
+        let change = Change::SetCanvasLinearPositionMotion {
+            scene_id,
+            node_id,
+            deliverable_id,
+            start_x: base_x - 50.0,
+            start_y: base_y + 20.0,
+            end_frame: 30,
+        };
+        let serialized = serde_json::to_value(&change).unwrap();
+        assert_eq!(serialized["type"], "set_canvas_linear_position_motion");
+        project.apply_change(&change).unwrap();
+        // Domain mutation is transaction-neutral; StudioService commits the
+        // single Change and increments revision after storage CAS.
+        assert_eq!(project.revision, previous);
+        let node = &project.scenes[0].nodes[0];
+        assert_eq!((node.x, node.y), (base_x, base_y));
+        assert_eq!(node.keyframes.len(), 4);
+        assert_eq!(node.keyframes[0].at, RationalTime::ZERO);
+        assert_eq!(node.keyframes[0].property, MotionProperty::X);
+        assert_eq!(node.keyframes[0].value, base_x - 50.0);
+        assert_eq!(node.keyframes[1].value, base_y + 20.0);
+        assert_eq!(node.keyframes[2].at, RationalTime::new(1, 1).unwrap());
+        assert_eq!(node.keyframes[2].value, base_x);
+        assert_eq!(node.keyframes[3].value, base_y);
+        assert!(
+            node.keyframes
+                .iter()
+                .all(|key| { key.interpolation == MotionInterpolation::Linear })
+        );
+        assert!(project.apply_change(&change).is_err());
+        assert_eq!(project.scenes[0].nodes[0].keyframes.len(), 4);
+    }
+
+    #[test]
+    fn native_linear_position_motion_rejects_frame_invalid_lock_and_noop() {
+        let mut project = Project::new("Reject unsafe native motion").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Short scene".into(),
+                objective: "Check atomic refusal".into(),
+                duration_seconds: 2,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Target");
+        let node_id = node.id;
+        let base = node.x;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        let profile = project.deliverables[0].id;
+        let base_y = project.scenes[0].nodes[0].y;
+        let change = |end_frame, start_x| Change::SetCanvasLinearPositionMotion {
+            scene_id,
+            node_id,
+            deliverable_id: profile,
+            start_x,
+            start_y: base_y,
+            end_frame,
+        };
+        assert!(project.apply_change(&change(0, base - 10.0)).is_err());
+        assert!(project.apply_change(&change(60, base - 10.0)).is_err());
+        assert!(project.apply_change(&change(30, f64::NAN)).is_err());
+        assert!(project.apply_change(&change(30, base)).is_err());
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
+        project
+            .apply_change(&Change::SetNodePropertyLock {
+                scene_id,
+                node_id,
+                property: NodeProperty::Position,
+                locked: true,
+            })
+            .unwrap();
+        assert!(
+            project
+                .apply_change(&Change::SetCanvasLinearPositionMotion {
+                    scene_id,
+                    node_id,
+                    deliverable_id: profile,
+                    start_x: base - 20.0,
+                    start_y: 100.0,
+                    end_frame: 30,
+                })
+                .is_err()
+        );
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
     }
 
     #[test]
