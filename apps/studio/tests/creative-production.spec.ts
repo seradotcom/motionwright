@@ -14,6 +14,16 @@ test("creative workstation adds an editable component and commits a scoped propo
   await expect(page.getByRole("button",{name:"Update component",exact:true})).toBeVisible();
   await expect(page.getByRole("img",{name:/ProductHeroReveal 16:9/})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath("production-hero-landscape.png"),fullPage:true});
+  const expand=page.getByRole("button",{name:"Enlarge study",exact:true});
+  await expand.click();
+  await expect(page.getByRole("dialog",{name:"Composition study · 1920 × 1080"})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Close expanded study"})).toBeFocused();
+  const enlarged=page.getByRole("img",{name:"Expanded editorial composition study"});
+  expect((await enlarged.boundingBox())!.width).toBeGreaterThan(800);
+  await page.screenshot({path:testInfo.outputPath("production-hero-expanded.png"),fullPage:true});
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(expand).toBeFocused();
   await page.getByRole("button",{name:"9:16",exact:true}).click();
   await expect(page.getByRole("img",{name:/ProductHeroReveal 9:16/})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath("production-hero-portrait.png"),fullPage:true});

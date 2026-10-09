@@ -1,3 +1,4 @@
+import ExpandedStudy from "./ExpandedStudy";
 import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Check, FileBox, Layers, Plus, RefreshCw, Save } from "lucide-react";
@@ -30,6 +31,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
   const [nodes,setNodes] = useState<CanvasNode[]>([]);
   const [error,setError] = useState<string|null>(null);
   const [previewLoading,setPreviewLoading] = useState(true);
+  const [expanded,setExpanded] = useState(false);
   const reload = () => { setDraft(structuredClone(instance?.config ?? defaultHeroConfig())); setBase(project.revision); setError(null); };
   useEffect(() => {
     setDraft(structuredClone(instance?.config ?? defaultHeroConfig())); setBase(project.revision);
@@ -77,7 +79,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
     </section>
     <section className="production-viewer" aria-label="Component study viewer">
       <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{sameValue(draft,instance?.config)?"Stored parameters":"Uncommitted parameters"} · editorial preview</span></div>
-        <div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div></div>
+        <div className="production-button-row"><div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div><button className="secondary-button" disabled={previewLoading || !!error || !scene} onClick={()=>setExpanded(true)}>Enlarge study</button></div></div>
       <div className={"production-preview-mat " + (aspect.height>aspect.width?"portrait":"")}>
         {previewLoading ? <p role="status">Preparing the editable study…</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} label={`ProductHeroReveal ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
       </div>
@@ -88,6 +90,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
       <div className="production-evidence-note"><strong>{aspect.width} × {aspect.height} · project revision {project.revision}</strong>
         <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. The editorial viewer uses a system fallback when the required font is not installed. Glyph metrics, clipping and creative approval are separate checks.</p></div>
     </section>
+    {expanded && scene && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
   </div>;
 }
 
