@@ -1,6 +1,6 @@
 # Multi-segment Motion Canvas → MLT source preflight
 
-Motionwright can produce verified native Motion Canvas segments and independently master one segment through the pinned Semwright MLT Driver. **A multi-segment final MP4 is not yet implemented.** The next required step is to assemble an exact frame-indexed cut from several native segments without guessing source media, flattening unsupported renderers, or silently changing delivery dimensions.
+Motionwright can produce verified native Motion Canvas segments and independently master one segment through the pinned Semwright MLT Driver. **A multi-segment final MP4 is not yet implemented. The next bounded internal stage, [deterministic MLT FFV1 preparation](mlt-multi-segment-preparation.md), now derives exact clip ranges and uses the pinned Semwright frames encoder to prepare individual verified sources without creating a composited output.** The next required step is to assemble an exact frame-indexed cut from several native segments without guessing source media, flattening unsupported renderers, or silently changing delivery dimensions.
 
 The `motionwright_native::assembly::preflight_multi_segment_mlt` library operation provides the bounded, read-only **source-conformance gate** for that future workflow. It does **not** dispatch MLT `project.create`/`clip.insert`/`render.start`, reencode frames, or generate a finished master. No new desktop button or Native SDK mutating capability is claimed yet.
 
