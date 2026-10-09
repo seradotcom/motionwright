@@ -28,6 +28,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod mlt_mezzanine;
+pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
+
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
 const MAX_ARGS_BYTES: usize = 220_000;
