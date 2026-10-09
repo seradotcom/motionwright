@@ -105,6 +105,60 @@ fn storage_error(error: StorageError) -> Error {
     }
 }
 
+/// Page application-owned arrays without hiding any elements. This cursor is
+/// strictly bound to the Native SDK's project generation/revision and scope.
+/// Unlike the journal's SQL keyset cursor, these arrays are already loaded as
+/// part of the immutable in-memory Project snapshot, so integer offsets are
+/// safe *only* while that exact project revision remains current.
+fn paginate_project_observation(
+    query: &Query,
+    version: &ResourceVersion,
+    total: usize,
+    mut item_at: impl FnMut(usize) -> Value,
+) -> NativeResult<ObservationPage> {
+    let start = match &query.cursor {
+        Some(cursor) => {
+            if cursor.version != *version {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Project changed while paging an application-owned scope",
+                ));
+            }
+            let suffix = cursor
+                .token
+                .strip_prefix("offset:")
+                .ok_or_else(|| Error::invalid("Malformed application scope cursor"))?;
+            let parsed = suffix
+                .parse::<usize>()
+                .map_err(|_| Error::invalid("Malformed application scope cursor offset"))?;
+            // No zero/leading-zero/terminal/overflow cursors: a continuation
+            // must have been issued after a nonempty earlier page.
+            if parsed == 0 || suffix != parsed.to_string() || parsed >= total {
+                return Err(Error::invalid(
+                    "Application scope cursor does not make progress",
+                ));
+            }
+            parsed
+        }
+        None => 0,
+    };
+    let end = start.saturating_add(usize::from(query.limit)).min(total);
+    let next = (end < total).then(|| PageCursor {
+        version: version.clone(),
+        scope: query.scope.clone(),
+        token: format!("offset:{end}"),
+    });
+    let page = ObservationPage {
+        version: version.clone(),
+        scope: query.scope.clone(),
+        items: (start..end).map(&mut item_at).collect(),
+        complete: next.is_none(),
+        next,
+    };
+    page.validate_for(query)?;
+    Ok(page)
+}
+
 #[derive(Clone)]
 pub struct MotionwrightObserver {
     service: StudioService,
@@ -214,22 +268,26 @@ impl ObservationProvider for MotionwrightObserver {
             return Ok(page);
         }
 
-        let items = match query.scope.as_str() {
-            "summary" => vec![json!({
-                "id": project.id.to_string(),
-                "title": project.title,
-                "state": project.state,
-                "revision": project.revision.to_string(),
-                "active_branch": project.active_branch.to_string(),
-                "scene_count": project.scenes.len(),
-                "asset_count": project.assets.len(),
-                "lock_count": project.locks.len(),
-                "deliverable_count": project.deliverables.len()
-            })],
-            "timeline" => project
-                .scenes
-                .iter()
-                .map(|scene| {
+        // Project-owned scopes enumerate *all* elements over revision-bound
+        // pages. The prior take(limit)+complete:true pattern silently hid
+        // every scene/object/review past the first page from native agents.
+        let page = match query.scope.as_str() {
+            "summary" => paginate_project_observation(query, &version, 1, |_| {
+                json!({
+                    "id": project.id.to_string(),
+                    "title": project.title,
+                    "state": project.state,
+                    "revision": project.revision.to_string(),
+                    "active_branch": project.active_branch.to_string(),
+                    "scene_count": project.scenes.len(),
+                    "asset_count": project.assets.len(),
+                    "lock_count": project.locks.len(),
+                    "deliverable_count": project.deliverables.len()
+                })
+            })?,
+            "timeline" => {
+                paginate_project_observation(query, &version, project.scenes.len(), |index| {
+                    let scene = &project.scenes[index];
                     json!({
                         "id": scene.id.to_string(),
                         "name": scene.name,
@@ -241,71 +299,91 @@ impl ObservationProvider for MotionwrightObserver {
                         "beats": scene.beats.len(),
                         "nodes": scene.nodes.len()
                     })
-                })
-                .take(usize::from(query.limit))
-                .collect(),
-            "brief" => vec![serde_json::to_value(&project.brief).unwrap_or(Value::Null)],
-            "narrative" => vec![serde_json::to_value(&project.narrative).unwrap_or(Value::Null)],
-            "audio" => vec![serde_json::to_value(&project.audio).unwrap_or(Value::Null)],
-            "deliverables" => project
-                .deliverables
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|profile| serde_json::to_value(profile).unwrap_or(Value::Null))
-                .collect(),
-            "visual-language" => {
-                vec![serde_json::to_value(&project.visual_language).unwrap_or(Value::Null)]
+                })?
             }
-            "canvas" => project
-                .scenes
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|scene| {
+            "brief" => paginate_project_observation(query, &version, 1, |_| {
+                serde_json::to_value(&project.brief).unwrap_or(Value::Null)
+            })?,
+            "narrative" => paginate_project_observation(query, &version, 1, |_| {
+                serde_json::to_value(&project.narrative).unwrap_or(Value::Null)
+            })?,
+            "audio" => paginate_project_observation(query, &version, 1, |_| {
+                serde_json::to_value(&project.audio).unwrap_or(Value::Null)
+            })?,
+            "deliverables" => paginate_project_observation(
+                query,
+                &version,
+                project.deliverables.len(),
+                |index| serde_json::to_value(&project.deliverables[index]).unwrap_or(Value::Null),
+            )?,
+            "visual-language" => paginate_project_observation(query, &version, 1, |_| {
+                serde_json::to_value(&project.visual_language).unwrap_or(Value::Null)
+            })?,
+            "canvas" => {
+                paginate_project_observation(query, &version, project.scenes.len(), |index| {
+                    let scene = &project.scenes[index];
                     json!({
                         "scene_id": scene.id.to_string(),
                         "scene_name": scene.name,
                         "camera": scene.camera,
                         "nodes": scene.nodes
                     })
-                })
-                .collect(),
-            "alternatives" => project
-                .proposal_sets
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|set| serde_json::to_value(set).unwrap_or(Value::Null))
-                .collect(),
-            "production-jobs" => self
-                .service
-                .production_jobs(project_id, usize::from(query.limit))
-                .map_err(storage_error)?
-                .into_iter()
-                .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
-                .collect(),
-            "locks" => project
-                .locks
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|lock| serde_json::to_value(lock).unwrap_or(Value::Null))
-                .collect(),
-            "branches" => project
-                .branches
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|branch| serde_json::to_value(branch).unwrap_or(Value::Null))
-                .collect(),
-            "reviews" => project
-                .reviews
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|review| serde_json::to_value(review).unwrap_or(Value::Null))
-                .collect(),
-            "merges" => project
-                .merges
-                .iter()
-                .take(usize::from(query.limit))
-                .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
-                .collect(),
+                })?
+            }
+            "alternatives" => paginate_project_observation(
+                query,
+                &version,
+                project.proposal_sets.len(),
+                |index| serde_json::to_value(&project.proposal_sets[index]).unwrap_or(Value::Null),
+            )?,
+            "locks" => {
+                paginate_project_observation(query, &version, project.locks.len(), |index| {
+                    serde_json::to_value(&project.locks[index]).unwrap_or(Value::Null)
+                })?
+            }
+            "branches" => {
+                paginate_project_observation(query, &version, project.branches.len(), |index| {
+                    serde_json::to_value(&project.branches[index]).unwrap_or(Value::Null)
+                })?
+            }
+            "reviews" => {
+                paginate_project_observation(query, &version, project.reviews.len(), |index| {
+                    serde_json::to_value(&project.reviews[index]).unwrap_or(Value::Null)
+                })?
+            }
+            "merges" => {
+                paginate_project_observation(query, &version, project.merges.len(), |index| {
+                    serde_json::to_value(&project.merges[index]).unwrap_or(Value::Null)
+                })?
+            }
+            "production-jobs" => {
+                if query.cursor.is_some() {
+                    return Err(Error::invalid(
+                        "Production jobs cannot use a project-revision offset cursor",
+                    ));
+                }
+                let items = self
+                    .service
+                    .production_jobs(project_id, usize::from(query.limit))
+                    .map_err(storage_error)?
+                    .into_iter()
+                    .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
+                    .collect();
+                // Production receipts mutate independently of project
+                // revision and the existing service only reads 256 receipts.
+                // The projection is a useful bounded window, NOT provably
+                // complete. Do not return a false native pagination promise:
+                // a durable receipt-keyset iterator is a separate contract.
+                let page = ObservationPage {
+                    version: version.clone(),
+                    scope: query.scope.clone(),
+                    items,
+                    next: None,
+                    complete: false,
+                };
+                page.validate_for(query)?;
+                page
+            }
             _ => {
                 return Err(Error::new(
                     ErrorCode::NotFound,
@@ -313,15 +391,15 @@ impl ObservationProvider for MotionwrightObserver {
                 ));
             }
         };
-
-        let page = ObservationPage {
-            version,
-            scope: query.scope.clone(),
-            items,
-            next: None,
-            complete: true,
-        };
-        page.validate_for(query)?;
+        // An agent must never observe a slice as "current" if another editor
+        // committed while this page was being constructed.
+        let latest = self.service.project(project_id).map_err(storage_error)?;
+        if latest.generation != project.generation || latest.revision != project.revision {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Project changed during application scope observation",
+            ));
+        }
         Ok(page)
     }
 }
@@ -2212,6 +2290,247 @@ mod tests {
             assert_eq!(page.scope, scope);
             assert_eq!(page.version.revision.as_str(), "0");
         }
+    }
+
+    #[test]
+    fn native_project_array_cursors_cover_all_items_without_silent_truncation() {
+        let (_, project) = fixture();
+        let version = resource_version(&project).unwrap();
+        // A project array can exceed the SDK's max page limit; each page
+        // must make progress and complete only after all values are returned.
+        let total = 271_usize;
+        for limit in [1_u16, 3, 64, 256] {
+            let mut cursor = None;
+            let mut observed = Vec::new();
+            let mut pages = 0;
+            loop {
+                pages += 1;
+                assert!(pages <= 275, "project array continuation must terminate");
+                let query = Query {
+                    resource: project.resource_key(),
+                    scope: "timeline".into(),
+                    limit,
+                    cursor,
+                };
+                let page = paginate_project_observation(
+                    &query,
+                    &version,
+                    total,
+                    |index| json!({"position": index}),
+                )
+                .unwrap();
+                page.validate_for(&query).unwrap();
+                observed.extend(
+                    page.items
+                        .iter()
+                        .map(|value| value["position"].as_u64().unwrap()),
+                );
+                if page.complete {
+                    assert!(page.next.is_none());
+                    break;
+                }
+                let next = page.next.expect("incomplete array must provide cursor");
+                assert_eq!(next.scope, query.scope);
+                assert_eq!(next.version, version);
+                cursor = Some(next);
+            }
+            assert_eq!(observed, (0..total as u64).collect::<Vec<_>>());
+        }
+
+        for total in [0, 1] {
+            let query = Query {
+                resource: project.resource_key(),
+                scope: "brief".into(),
+                limit: 1,
+                cursor: None,
+            };
+            let page = paginate_project_observation(&query, &version, total, |_| json!(1)).unwrap();
+            assert!(page.complete);
+            assert!(page.next.is_none());
+            assert_eq!(page.items.len(), total);
+        }
+    }
+
+    #[test]
+    fn native_project_array_cursors_reject_malformed_cross_scope_and_stale_versions() {
+        let (_, project) = fixture();
+        let version = resource_version(&project).unwrap();
+        let query = Query {
+            resource: project.resource_key(),
+            scope: "timeline".into(),
+            limit: 2,
+            cursor: None,
+        };
+        let first =
+            paginate_project_observation(&query, &version, 8, |index| json!(index)).unwrap();
+        let good = first.next.unwrap();
+        for token in [
+            "",
+            "offset:0",
+            "offset:00",
+            "offset:02",
+            "offset:8",
+            "offset:999",
+            "offset:-2",
+            "after-revision:2",
+            "offset:not-a-number",
+        ] {
+            let mut forged = good.clone();
+            forged.token = token.into();
+            let next = Query {
+                cursor: Some(forged),
+                ..query.clone()
+            };
+            assert!(
+                paginate_project_observation(&next, &version, 8, |index| json!(index)).is_err()
+            );
+        }
+        let altered_scope = Query {
+            scope: "canvas".into(),
+            cursor: Some(good.clone()),
+            ..query.clone()
+        };
+        assert!(
+            paginate_project_observation(&altered_scope, &version, 8, |index| json!(index))
+                .is_err()
+        );
+        let mut newer = project.clone();
+        newer.revision += 1;
+        let next = Query {
+            cursor: Some(good),
+            ..query
+        };
+        let later_version = resource_version(&newer).unwrap();
+        assert!(
+            paginate_project_observation(&next, &later_version, 8, |index| json!(index)).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn native_scene_and_canvas_observation_enumerate_every_authored_scene() {
+        let (service, mut project) = fixture();
+        for index in 0..11 {
+            project = service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("native-project-page-scene-{index}"),
+                    &Change::AddScene {
+                        name: format!("Real scene {index}"),
+                        objective: format!("Objective {index}"),
+                        duration_seconds: 2,
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        let observer = MotionwrightObserver::new(service.clone());
+        let context = CallContext::application_local("native-project-paging").unwrap();
+        for (scope, key) in [("timeline", "id"), ("canvas", "scene_id")] {
+            let mut cursor = None;
+            let mut ids = Vec::new();
+            let mut page_count = 0;
+            loop {
+                page_count += 1;
+                assert!(page_count <= 5, "scope pagination must terminate");
+                let query = Query {
+                    resource: project.resource_key(),
+                    scope: scope.into(),
+                    limit: 3,
+                    cursor,
+                };
+                let page = observer.observe(&query, &context).await.unwrap();
+                ids.extend(
+                    page.items
+                        .iter()
+                        .map(|entry| entry[key].as_str().unwrap().to_owned()),
+                );
+                if page.complete {
+                    assert!(page.next.is_none());
+                    break;
+                }
+                cursor = Some(page.next.unwrap());
+            }
+            assert_eq!(page_count, 4);
+            assert_eq!(
+                ids,
+                project
+                    .scenes
+                    .iter()
+                    .map(|scene| scene.id.to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        let initial = observer
+            .observe(
+                &Query {
+                    resource: project.resource_key(),
+                    scope: "timeline".into(),
+                    limit: 3,
+                    cursor: None,
+                },
+                &context,
+            )
+            .await
+            .unwrap();
+        let previous = initial.next.unwrap();
+        let latest = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-project-page-stale",
+                &Change::RenameProject {
+                    title: "Changed after first page".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(latest.revision > project.revision);
+        let error = observer
+            .observe(
+                &Query {
+                    resource: project.resource_key(),
+                    scope: "timeline".into(),
+                    limit: 3,
+                    cursor: Some(previous),
+                },
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+    }
+
+    #[tokio::test]
+    async fn native_production_jobs_are_explicitly_partial_not_fake_complete() {
+        let (service, project) = fixture();
+        let observer = MotionwrightObserver::new(service);
+        let context = CallContext::application_local("native-jobs-window").unwrap();
+        let query = Query {
+            resource: project.resource_key(),
+            scope: "production-jobs".into(),
+            limit: 1,
+            cursor: None,
+        };
+        let page = observer.observe(&query, &context).await.unwrap();
+        assert!(page.items.is_empty());
+        assert!(!page.complete);
+        assert!(page.next.is_none());
+        let attempted = observer
+            .observe(
+                &Query {
+                    cursor: Some(PageCursor {
+                        version: page.version,
+                        scope: "production-jobs".into(),
+                        token: "offset:1".into(),
+                    }),
+                    ..query
+                },
+                &context,
+            )
+            .await;
+        assert!(attempted.is_err());
     }
 
     #[tokio::test]
