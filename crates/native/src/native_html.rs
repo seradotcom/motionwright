@@ -76,7 +76,7 @@ pub fn prepare_hyperframes_plan(
         .find(|scene| scene.id == native.scene_id)
         .ok_or_else(|| invalid("Native scene binding is absent"))?;
     if scene.renderer != d::RendererKind::Hyperframes
-        || !d::renderer_extension_enabled(&project.extensions, &d::RendererKind::Hyperframes)
+        || !d::renderer_extension_enabled(&d::RendererKind::Hyperframes, &project.extensions)
     {
         return Err(unsupported(
             "HyperFrames must be explicitly selected and enabled for this project before production",
