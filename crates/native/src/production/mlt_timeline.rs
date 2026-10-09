@@ -18,6 +18,14 @@ struct MltSession {
     revision: String,
 }
 
+struct MltEntityQuery<'a> {
+    request_id: &'a str,
+    command: &'a str,
+    session: &'a MltSession,
+    sequence: Option<&'a str>,
+    name: &'a str,
+}
+
 fn opaque(value: &Value, key: &str) -> NativeResult<String> {
     value
         .get(key)
@@ -150,27 +158,30 @@ impl ProductionCoordinator {
         &self,
         id: Uuid,
         expected: &RevisionStamp,
-        request: &str,
-        command: &str,
-        session: &MltSession,
-        sequence: Option<&str>,
-        name: &str,
+        query: MltEntityQuery<'_>,
     ) -> NativeResult<String> {
         let mut args = serde_json::Map::new();
-        args.insert("project".into(), session.project_ref.clone().into());
-        if let Some(sequence) = sequence {
+        args.insert("project".into(), query.session.project_ref.clone().into());
+        if let Some(sequence) = query.sequence {
             args.insert("sequence".into(), sequence.into());
         }
         let result = self
-            .execute(id, expected, request, command, Value::Object(args), false)
+            .execute(
+                id,
+                expected,
+                query.request_id,
+                query.command,
+                Value::Object(args),
+                false,
+            )
             .await?;
         let data = response_data(&result)?;
-        if data.get("revision").and_then(Value::as_str) != Some(session.revision.as_str()) {
+        if data.get("revision").and_then(Value::as_str) != Some(query.session.revision.as_str()) {
             return Err(backend(
                 "MLT entity query returned an outdated native revision",
             ));
         }
-        only_reference(data, name)
+        only_reference(data, query.name)
     }
 
     /// Semwright Driver Host actually assembles the exact input FFV1 sources
@@ -308,22 +319,26 @@ impl ProductionCoordinator {
                 .mlt_entity_ref(
                     project_id,
                     expected,
-                    &format!("{request_id}:mlt:sequence-ref:{index:02}"),
-                    "driver.mlt-video.sequence.list",
-                    &session,
-                    None,
-                    &recipe.sequence_name,
+                    MltEntityQuery {
+                        request_id: &format!("{request_id}:mlt:sequence-ref:{index:02}"),
+                        command: "driver.mlt-video.sequence.list",
+                        session: &session,
+                        sequence: None,
+                        name: &recipe.sequence_name,
+                    },
                 )
                 .await?;
             let track = self
                 .mlt_entity_ref(
                     project_id,
                     expected,
-                    &format!("{request_id}:mlt:track-ref:{index:02}"),
-                    "driver.mlt-video.track.list",
-                    &session,
-                    Some(&sequence),
-                    &recipe.video_track_name,
+                    MltEntityQuery {
+                        request_id: &format!("{request_id}:mlt:track-ref:{index:02}"),
+                        command: "driver.mlt-video.track.list",
+                        session: &session,
+                        sequence: Some(&sequence),
+                        name: &recipe.video_track_name,
+                    },
                 )
                 .await?;
             let (inserted, clip_data) = self
@@ -355,11 +370,13 @@ impl ProductionCoordinator {
             .mlt_entity_ref(
                 project_id,
                 expected,
-                &format!("{request_id}:mlt:final-sequence-ref"),
-                "driver.mlt-video.sequence.list",
-                &session,
-                None,
-                &recipe.sequence_name,
+                MltEntityQuery {
+                    request_id: &format!("{request_id}:mlt:final-sequence-ref"),
+                    command: "driver.mlt-video.sequence.list",
+                    session: &session,
+                    sequence: None,
+                    name: &recipe.sequence_name,
+                },
             )
             .await?;
         let duration = self
