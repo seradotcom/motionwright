@@ -66,7 +66,7 @@ fn parse(raw: &[String]) -> Result<Args> {
         ));
     }
     let mut values = BTreeMap::new();
-    for pair in raw[1..].chunks_exact(2) {
+    for pair in raw[1..].as_chunks::<2>().0 {
         if ![
             "--runtime-root",
             "--node-sealed",

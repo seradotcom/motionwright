@@ -61,8 +61,24 @@ fn keys(values: &[Keyframe], frames: u32) -> Result<()> {
     check(values.len() <= 256, "Too many keyframes on one target")?;
     let mut unique = BTreeSet::new();
     for key in values {
+        let (num, den) = key.subframe.map_or((0, 1), |s| (s.num, s.den));
         check(
-            key.frame < frames && unique.insert((key.property, key.frame)),
+            den > 0 && den <= 1_000_000_000 && num < den,
+            "Subframe must be a proper nonnegative rational fraction",
+        )?;
+        let mut a = num;
+        let mut b = den;
+        while b != 0 {
+            let remainder = a % b;
+            a = b;
+            b = remainder;
+        }
+        check(
+            a == 1 && (num != 0 || key.subframe.is_none()),
+            "Subframe fractions must be canonical and zero must be omitted",
+        )?;
+        check(
+            key.frame < frames && unique.insert((key.property, key.frame, num, den)),
             "Keyframe is duplicate or outside the exact frame interval",
         )?;
         property_value(key.property, key.value)?;

@@ -73,12 +73,14 @@ fn only_native_numeric_properties_are_admitted() {
     doc.nodes[0].keyframes = vec![
         Keyframe {
             frame: 0,
+            subframe: None,
             property: Property::Rotation,
             value: -12.0,
             curve: Curve::Hold,
         },
         Keyframe {
             frame: 30,
+            subframe: None,
             property: Property::Rotation,
             value: 0.0,
             curve: Curve::CubicBezier {
@@ -98,6 +100,7 @@ fn duplicate_channels_and_out_of_scope_frames_are_not_coerced() {
     let mut doc = document();
     let key = Keyframe {
         frame: 0,
+        subframe: None,
         property: Property::Opacity,
         value: 0.0,
         curve: Curve::Hold,
@@ -113,6 +116,7 @@ fn masks_and_effects_have_explicit_unambiguous_support() {
     let mut doc = document();
     doc.nodes[0].keyframes.push(Keyframe {
         frame: 30,
+        subframe: None,
         property: Property::ClipRight,
         value: 30.0,
         curve: Curve::Linear,

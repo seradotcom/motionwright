@@ -5,6 +5,7 @@
   if (doc.version !== 1 || !Array.isArray(doc.nodes) || doc.nodes.length > 256) throw new Error('Native profile/version budget mismatch');
   const world = document.getElementById('mw-world');
   const seconds = frame => frame * doc.canvas.rate.den / doc.canvas.rate.num;
+  const instant = key => key.frame + (key.subframe ? key.subframe.num / key.subframe.den : 0);
   const assets = new Map(doc.assets.map(asset => [asset.id, asset]));
   const nodes = new Map();
   const timeline = gsap.timeline({paused: true});
@@ -94,10 +95,10 @@
     const channels=[...new Set(keys.map(k=>k.property))];
     for(const channel of channels) {
       let previous=base[channel],start=0;
-      for(const key of keys.filter(k=>k.property===channel).sort((a,b)=>a.frame-b.frame)) {
-        if(key.frame===0 || key.curve.kind==='hold')timeline.set(el,property(channel,key.value,camera),seconds(key.frame));
-        else timeline.fromTo(el,property(channel,previous,camera),{...property(channel,key.value,camera),duration:seconds(key.frame-start),ease:ease(key.curve),immediateRender:false,lazy:false},seconds(start));
-        previous=key.value;start=key.frame;
+      for(const key of keys.filter(k=>k.property===channel).sort((a,b)=>instant(a)-instant(b))) {
+        if(instant(key)===0 || key.curve.kind==='hold')timeline.set(el,property(channel,key.value,camera),seconds(instant(key)));
+        else timeline.fromTo(el,property(channel,previous,camera),{...property(channel,key.value,camera),duration:seconds(instant(key)-start),ease:ease(key.curve),immediateRender:false,lazy:false},seconds(start));
+        previous=key.value;start=instant(key);
       }
     }
   }

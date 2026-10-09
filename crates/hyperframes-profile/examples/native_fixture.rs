@@ -17,6 +17,7 @@ fn node(id: u128, name: &str, pose: Pose, content: Content) -> Node {
 fn key(frame: u32, property: Property, value: f64, curve: Curve) -> Keyframe {
     Keyframe {
         frame,
+        subframe: None,
         property,
         value,
         curve,

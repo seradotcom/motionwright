@@ -254,10 +254,27 @@ pub enum Property {
 #[serde(deny_unknown_fields)]
 pub struct Keyframe {
     pub frame: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subframe: Option<Subframe>,
     pub property: Property,
     pub value: f64,
     pub curve: Curve,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Subframe {
+    pub num: u32,
+    pub den: u32,
+}
+impl Keyframe {
+    pub fn frame_time(&self) -> f64 {
+        f64::from(self.frame)
+            + self
+                .subframe
+                .map_or(0.0, |s| f64::from(s.num) / f64::from(s.den))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Curve {
