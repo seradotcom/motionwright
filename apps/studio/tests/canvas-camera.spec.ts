@@ -36,7 +36,8 @@ test("Canvas camera projection uses source camera center, zoom and rotation with
   expect(nodeRect.y + nodeRect.height / 2).toBeCloseTo(stageRect.y + stageRect.height / 2, -1);
 
   await page.getByLabel("Camera safe area").fill("0.2");
-  await expect(canvas.locator(".canvas-safe-area")).toHaveCSS("inset", "20%");
+  await expect.poll(() => canvas.locator(".canvas-safe-area").evaluate((element) =>
+    (element as HTMLElement).style.inset)).toBe("20%");
   await expect(page.getByLabel("Canvas X")).toHaveValue(original.x);
   await expect(page.getByLabel("Canvas Y")).toHaveValue(original.y);
 });
@@ -54,8 +55,9 @@ test("dragging a zoomed and rotated camera view updates world-space pose, not sc
   await expect(page.getByLabel("Camera Rotation")).toHaveValue("90");
   const target = page.getByRole("button", { name: "Canvas object Reasoning headline" });
   const rect = await target.boundingBox();
-  const stage = await page.locator(".canvas-stage").boundingBox();
-  if (!rect || !stage) throw new Error("Canvas stage or selected node is not visible");
+  const stageWidth = await page.locator(".canvas-stage").evaluate((element) =>
+    (element as HTMLElement).clientWidth);
+  if (!rect || stageWidth <= 0) throw new Error("Canvas stage or selected node is not visible");
   const beforeX = Number(await page.getByLabel("Canvas X").inputValue());
   const beforeY = Number(await page.getByLabel("Canvas Y").inputValue());
   const beforeRev = await page.locator(".revision-chip").first().innerText();
@@ -70,7 +72,7 @@ test("dragging a zoomed and rotated camera view updates world-space pose, not sc
 
   const afterX = Number(await page.getByLabel("Canvas X").inputValue());
   const afterY = Number(await page.getByLabel("Canvas Y").inputValue());
-  const expectedWorldY = 32 * 1920 / stage.width / 2;
+  const expectedWorldY = 32 * 1920 / stageWidth / 2;
   expect(afterX - beforeX).toBeCloseTo(0, 3);
   expect(afterY - beforeY).toBeCloseTo(expectedWorldY, 1);
   await expect(page.locator(".motion-keyframe-row")).toHaveCount(0);
