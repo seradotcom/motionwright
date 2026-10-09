@@ -473,10 +473,11 @@ impl Project {
             .find(|scene| scene.id == patch.scene_id)
             .expect("preview validated scene");
         for updated in preview.after {
+            let node_id = updated.id;
             *scene
                 .nodes
                 .iter_mut()
-                .find(|node| node.id == updated.id)
+                .find(|node| node.id == node_id)
                 .expect("preview validated node") = updated;
         }
         scene.status = SceneStatus::Draft;
