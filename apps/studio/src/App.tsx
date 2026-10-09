@@ -2014,7 +2014,8 @@ export default function App() {
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Canvas":
-        return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
+        return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
+          playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([

@@ -1033,6 +1033,59 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
       });
       break;
     }
+    case "set_canvas_linear_position_motion": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      const profile = next.deliverables.find((entry) => entry.id === change.deliverable_id);
+      if (!scene || !profile) throw new Error("native linear motion source scene or saved delivery profile is missing");
+      const node = scene.nodes.find((entry) => entry.id === change.node_id);
+      if (!node) throw new Error("resource not found: node:" + change.node_id);
+      if (scene.renderer !== "motion-canvas" || scene.beats.length > 0 ||
+        node.parent_id !== null || node.kind === "group" ||
+        scene.nodes.some((item) => item.parent_id === node.id)) {
+        throw new Error("native linear motion requires an independent Motion Canvas object without authored beats");
+      }
+      if (node.property_locks.includes("position")) {
+        throw new Error("resource is locked: node motion property");
+      }
+      if (node.keyframes.length > 0) {
+        throw new Error("native linear motion never overwrites existing keyframes");
+      }
+      if (!Number.isFinite(change.start_x) || !Number.isFinite(change.start_y) ||
+        (change.start_x === node.x && change.start_y === node.y) ||
+        !Number.isInteger(change.end_frame) || change.end_frame < 1 || change.end_frame > 36_000) {
+        throw new Error("invalid native linear position source or positive end frame");
+      }
+      const frameNum = BigInt(profile.frame_rate.num);
+      const frameDen = BigInt(profile.frame_rate.den);
+      const durationNum = BigInt(scene.duration.num);
+      const durationDen = BigInt(scene.duration.den);
+      if (frameNum <= 0n || frameDen <= 0n || durationNum <= 0n || durationDen <= 0n) {
+        throw new Error("native linear position requires exact positive frame rate and scene duration");
+      }
+      let timeNum = BigInt(change.end_frame) * frameDen;
+      let timeDen = frameNum;
+      if (timeNum * durationDen >= durationNum * timeDen) {
+        throw new Error("native linear position endpoint must stay inside scene duration");
+      }
+      let a = timeNum;
+      let b = timeDen;
+      while (b !== 0n) {
+        [a, b] = [b, a % b];
+      }
+      timeNum /= a;
+      timeDen /= a;
+      const start = { num: "0", den: "1" };
+      const end = { num: timeNum.toString(), den: timeDen.toString() };
+      const keys: CanvasKeyframe[] = [
+        { at: start, property: "x", value: change.start_x, interpolation: "linear" },
+        { at: start, property: "y", value: change.start_y, interpolation: "linear" },
+        { at: end, property: "x", value: node.x, interpolation: "linear" },
+        { at: end, property: "y", value: node.y, interpolation: "linear" },
+      ];
+      node.keyframes.push(...keys);
+      break;
+    }
     case "remove_canvas_keyframe": {
       assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
       const node = next.scenes.find((entry) => entry.id === change.scene_id)?.nodes.find((entry) => entry.id === change.node_id);
