@@ -786,7 +786,7 @@ fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<
         .ok_or_else(|| backend(context))
 }
 
-fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
+pub(crate) fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
     if value
         .pointer("/report/execution_status")
         .and_then(Value::as_str)
