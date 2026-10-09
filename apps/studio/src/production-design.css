@@ -118,3 +118,11 @@
 .native-inspection-finding > button { justify-self: start; }
 @media (max-width: 1000px) { .native-inspection-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 800px) { .production-native-inspection { padding: 23px; } }
+
+.production-undo-history { display: grid; gap: 14px; border-top: 1px solid var(--border); padding-top: 24px; }
+.production-undo-history article { display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid var(--border-soft); padding: 15px; }
+.production-undo-history article > div { min-width: 0; display: grid; gap: 7px; }
+.production-undo-history article strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.production-undo-history article span { font-size: 10px; color: var(--muted); }
+.production-undo-history button { flex-shrink: 0; }
+@media (max-width: 800px) { .production-undo-history article { align-items: start; flex-direction: column; } }

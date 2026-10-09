@@ -1,3 +1,4 @@
+import { previewCreativePatchUndo } from "./creativeUndo";
 import { useEffect, useMemo, useState } from "react";
 import { Check, Eye, Plus, Trash2 } from "lucide-react";
 import { previewCreativePatch } from "./api";
@@ -19,11 +20,12 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
   const [edits,setEdits]=useState<ScopedCanvasEdit[]>([]);
   const [base,setBase]=useState(project.revision);
   const [preview,setPreview]=useState<Preview|null>(null);
+  const [undoTarget,setUndoTarget]=useState<string|null>(null);
   const [pending,setPending]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const node=scene?.nodes.find(n=>n.id===nodeId);
   useEffect(()=>{
-    setEdits([]);setPreview(null);setError(null);setBase(project.revision);
+    setEdits([]);setPreview(null);setUndoTarget(null);setError(null);setBase(project.revision);
     setNodeId(scene?.nodes[0]?.id ?? "");
     // A selection change starts a new explicitly scoped draft; an unrelated revision does not erase it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -46,15 +48,21 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
     if (!node || stale) return;
     const edit:ScopedCanvasEdit=kind==="text"?{kind:"text",node_id:node.id,text}:{kind:"transform",node_id:node.id,transform};
     setEdits([...edits.filter(e=>e.node_id!==edit.node_id || e.kind!==edit.kind),edit]);
-    setPreview(null);setError(null);
+    setPreview(null);setUndoTarget(null);setError(null);
   };
   const inspect=async()=>{
-    setPending(true);setError(null);setPreview(null);
+    setPending(true);setError(null);setPreview(null);setUndoTarget(null);
     try { setPreview(await previewCreativePatch(project,patch)); }
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally {setPending(false);}
   };
-  const reset=()=>{setBase(project.revision);setEdits([]);setPreview(null);setRationale("");setError(null);};
+  const reset=()=>{setUndoTarget(null);setBase(project.revision);setEdits([]);setPreview(null);setRationale("");setError(null);};
+  const records=(project.production_design?.patches ?? []).filter(record=>record.scene_id===scene?.id);
+  const inspectUndo=(id:string)=>{
+    setError(null);setPreview(null);setEdits([]);setBase(project.revision);setUndoTarget(null);
+    try{const result=previewCreativePatchUndo(project,id);setPreview(result);setUndoTarget(id);}
+    catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
+  };
   const editSummary=(edit:ScopedCanvasEdit)=>{
     const label=scene?.nodes.find(n=>n.id===edit.node_id)?.name ?? edit.node_id;
     return `${label} / ${edit.kind}`;
@@ -82,7 +90,15 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
     {scene && <><div className="production-compare-grid"><figure><figcaption>BEFORE · current project</figcaption><CompositionStudy nodes={scene.nodes} time={time} background={background} label="Before scoped changes"/></figure><figure><figcaption>AFTER · uncommitted proposal</figcaption><CompositionStudy nodes={resultNodes} time={time} background={background} label="After scoped changes"/></figure></div>
       <div className="production-transport"><span className="mono">{time.toFixed(3)} s</span><input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)} step={1/30} value={time} onChange={e=>onSeek(seconds(scene.start)+Number(e.target.value))}/></div>
       <p className="production-help">Both sides share the application playhead. This bounded study draws flat text, shapes and circles; parenting, imported media and advanced paint effects must be reviewed in native frames.</p></>}
-    <div className="production-button-row"><button className="primary-button" disabled={!preview || stale || busy || pending} onClick={()=>commit({type:"apply_creative_patch",patch})}><Check size={14}/> Apply as one revision</button><button className="secondary-button" disabled={busy || pending} onClick={reset}>Discard proposal</button></div>
+    <div className="production-button-row"><button className="primary-button" disabled={!preview || stale || busy || pending} onClick={()=>commit(undoTarget?{type:"undo_creative_patch",patch_id:undoTarget}:{type:"apply_creative_patch",patch})}><Check size={14}/> {undoTarget?"Apply undo as new revision":"Apply as one revision"}</button><button className="secondary-button" disabled={busy || pending} onClick={reset}>Discard proposal</button></div>
+    <section className="production-undo-history" aria-label="Reversible scoped changes"><h3>Reversible scoped changes</h3>
+      <p className="production-help">The latest 64 scoped edits are available here, within a four-megabyte window. Undo creates a new revision and rejects conflicts or locked properties. The full application change journal is not rewound or deleted.</p>
+      {records.length===0?<p className="production-help">No applied scoped changes in this scene yet.</p>:[...records].reverse().map(record=>{
+        const reverted=records.some(other=>other.reverts===record.id);
+        return <article key={record.id}><div><strong>{record.rationale}</strong><span>Base r{record.source_revision} · {record.before.length} object{record.before.length===1?"":"s"}{reverted?" · inverse recorded":""}</span></div>
+          <button className="secondary-button" disabled={busy || pending || reverted} onClick={()=>inspectUndo(record.id)}>{record.reverts?"Preview redo":"Preview undo"}</button></article>;
+      })}
+    </section>
     {preview && <details className="production-diff-details"><summary>Exact changed object values</summary><pre>{JSON.stringify(preview.after.map((after,index)=>({object:after.name,before:preview.before[index] as CanvasNode,after})),null,2)}</pre></details>}
   </div>;
 }

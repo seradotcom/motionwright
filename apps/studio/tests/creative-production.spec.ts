@@ -57,3 +57,34 @@ test("native inspection never substitutes editorial thumbnails for missing nativ
   await page.getByRole("button",{name:"Open Deliver and render preview",exact:true}).click();
   await expect(page.getByRole("heading",{name:"No current native frame grant",exact:true})).not.toBeVisible();
 });
+
+test("applied scoped changes can be inspected and undone without rewinding the project",async({page},testInfo)=>{
+  await page.goto("/");
+  await page.getByRole("button",{name:"Add scene",exact:true}).click();
+  await page.getByLabel("New scene name").fill("Undo study");
+  await page.getByRole("button",{name:"Add",exact:true}).click();
+  await page.getByRole("button",{name:"Production",exact:true}).click();
+  await page.getByLabel("Production working scene").selectOption({label:"Undo study"});
+  await page.getByRole("button",{name:"Add to scene",exact:true}).click();
+  await expect(page.getByRole("button",{name:"Update component",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Scoped changes",exact:true}).click();
+  await page.getByLabel("Patch target object").selectOption({label:"ProductHeroReveal / body"});
+  const original=await page.getByLabel("Patch replacement text").inputValue();
+  await page.getByLabel("Patch replacement text").fill("A reversible editorial line.");
+  await page.getByRole("button",{name:"Add to proposal",exact:true}).click();
+  await page.getByLabel("Patch rationale").fill("Try the shorter copy, preserving the previous line.");
+  await page.getByRole("button",{name:"Preview scoped changes",exact:true}).click();
+  await page.getByRole("button",{name:"Apply as one revision",exact:true}).click();
+  const history=page.getByRole("region",{name:"Reversible scoped changes"});
+  await expect(history.getByRole("button",{name:"Preview undo",exact:true})).toBeEnabled();
+  const header=page.locator(".production-workspace-header p");
+  const revision=Number((await header.innerText()).match(/revision (\d+)/)![1]);
+  await history.getByRole("button",{name:"Preview undo",exact:true}).click();
+  await expect(header).toContainText(`revision ${revision}`);
+  await expect(page.getByRole("img",{name:"After scoped changes",exact:true})).toContainText(original.split("\n")[0]);
+  await page.screenshot({path:testInfo.outputPath("production-undo-preview.png"),fullPage:true});
+  await page.getByRole("button",{name:"Apply undo as new revision",exact:true}).click();
+  await expect(header).toContainText(`revision ${revision+1}`);
+  await expect(history.getByRole("button",{name:"Preview redo",exact:true})).toBeEnabled();
+  await expect(page.getByRole("img",{name:"Before scoped changes",exact:true})).toContainText(original.split("\n")[0]);
+});

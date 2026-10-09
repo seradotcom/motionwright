@@ -503,6 +503,7 @@ export interface Project {
 }
 
 export type Change =
+  | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
   | { type: "set_production_plan"; plan: ProductionPlan | null }

@@ -1,3 +1,4 @@
+import type { CreativePatchRecord } from "./creativeUndo";
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
@@ -26,7 +27,7 @@ export interface NativeCapsule {
   id: string; scene_id: string; source_asset_id: string; source_sha256: string; label: string;
   fidelity: FidelityReport; editable_parameters: string[]; native_editor_hint: string;
 }
-export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; }
+export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
@@ -35,7 +36,7 @@ export type ScopedCanvasEdit =
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
 export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "apply_creative_patch" }>;
 
-export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [] });
+export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [] });
 export const defaultHeroConfig = (): HeroConfig => ({
   eyebrow: "MOTIONWRIGHT / CREATIVE PRODUCTION", headline: "Make the work.\nKeep the craft.",
   body: "A composition you can direct, revise and keep editing.", wordmark: "Mw",

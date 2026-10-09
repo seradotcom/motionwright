@@ -1,3 +1,4 @@
+import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign } from "./creativeProduction";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
@@ -778,8 +779,17 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
       break;
+    case "undo_creative_patch": {
+      const preview=previewCreativePatchUndo(next,change.patch_id);
+      appendCreativePatchRecord(next,preview,"Revert creative patch "+change.patch_id,change.patch_id);
+      const scene=next.scenes.find(s=>s.id===preview.scene_id)!;
+      for(const updated of preview.after) scene.nodes[scene.nodes.findIndex(n=>n.id===updated.id)]=updated;
+      scene.status="draft";
+      break;
+    }
     case "apply_creative_patch": {
       const preview = await previewCreativePatch(next, change.patch);
+      appendCreativePatchRecord(next,preview,change.patch.rationale,null);
       const scene = next.scenes.find(s => s.id === change.patch.scene_id)!;
       for (const updated of preview.after) scene.nodes[scene.nodes.findIndex(n => n.id === updated.id)] = updated;
       scene.status = "draft";
