@@ -23,8 +23,8 @@ use motionwright_native::{
     },
 };
 use motionwright_service::{
-    ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProductionReceiptWatermark,
-    ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
+    ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
+    VoiceImportMetadata, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use serde::{Deserialize, Serialize};
