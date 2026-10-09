@@ -1,3 +1,4 @@
+import type { CreativeWorkspaceEdit, NativeSceneDocument, NativeSceneDifference, HyperframesRenderEvidence } from "./production/nativeTypes";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
@@ -47,6 +48,7 @@ const sceneResource = (sceneId: string) => "scene:" + sceneId;
 const extensionKindForRenderer = (renderer: Project["scenes"][number]["renderer"]) => {
   if (renderer === "remotion") return "remotion-renderer";
   if (renderer === "manim-gl") return "manim-gl-renderer";
+  if (renderer === "hyperframes") return "hyperframes-renderer";
   return null;
 };
 
@@ -768,14 +770,16 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
 }
 
 async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
-  if (![1,2].includes(project.schema_version)) throw new Error("Unsupported project schema.");
+  if (![1,2,3].includes(project.schema_version)) throw new Error("Unsupported project schema.");
   if (project.schema_version===1 && (!sameValue({...emptyProductionDesign(),...project.production_design},emptyProductionDesign()) || project.branch_workspaces.some(workspace=>!sameValue({...emptyProductionDesign(),...workspace.base_state.production_design},emptyProductionDesign()) || !sameValue({...emptyProductionDesign(),...workspace.current_state.production_design},emptyProductionDesign())))) throw new Error("Creative production state requires project schema 2.");
+  if (project.schema_version < 3 && ((project.production_design?.workspace?.native_scenes.length ?? 0)>0 || project.branch_workspaces.some(w=>(w.base_state.production_design?.workspace?.native_scenes.length ?? 0)>0 || (w.current_state.production_design?.workspace?.native_scenes.length ?? 0)>0))) throw new Error("Native creative state requires project schema 3.");
   const next = structuredClone(project);
-  next.schema_version = 2;
+  next.schema_version = 3;
   next.branch_workspaces ??= [];
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "edit_creative_workspace": throw new Error("Native creative document edits require the desktop domain service; browser mode does not emulate renderer admission.");
     case "upsert_product_hero":
     case "detach_product_hero":
     case "set_production_plan":
@@ -1460,7 +1464,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       )) throw new Error("another extension of this kind is already enabled");
       const renderer = extension.kind === "remotion-renderer"
         ? "remotion"
-        : extension.kind === "manim-gl-renderer" ? "manim-gl" : null;
+        : extension.kind === "manim-gl-renderer" ? "manim-gl" : extension.kind === "hyperframes-renderer" ? "hyperframes" : null;
       if (!extension.enabled && renderer && next.scenes.some((scene) => scene.renderer === renderer)) {
         throw new Error("extension cannot be disabled while its renderer is in use");
       }
@@ -1475,7 +1479,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       if (!extension) throw new Error("resource not found: extension:" + change.extension_id);
       const renderer = extension.kind === "remotion-renderer"
         ? "remotion"
-        : extension.kind === "manim-gl-renderer" ? "manim-gl" : null;
+        : extension.kind === "manim-gl-renderer" ? "manim-gl" : extension.kind === "hyperframes-renderer" ? "hyperframes" : null;
       if (renderer && next.scenes.some((scene) => scene.renderer === renderer)) {
         throw new Error("extension cannot be removed while its renderer is in use");
       }
@@ -1710,4 +1714,40 @@ export async function previewCreativePatch(project: Project, patch: CreativePatc
     before:source.nodes.filter(n => ids.has(n.id)), after:after.nodes.filter(n => ids.has(n.id)),
     dirty_start:source.start, dirty_end:{num:String(num),den:String(den)},
     kind:"semantic_diff_full_scene_invalidation_not_pixel_verification" as const };
+}
+
+export function nativeCreativeAvailable(): boolean { return isTauri(); }
+function nativeScope(project: Project) { return {project_id:project.id,generation:project.generation,revision:project.revision}; }
+export async function nativeDocumentState(project:Project,documentId:string):Promise<{document:NativeSceneDocument;source_sha256:string;revision:number;authority:string}> {
+  if(!isTauri()) throw new Error("Native source observation requires the local desktop service.");
+  return invoke("native_document_state",{request:{...nativeScope(project),document_id:documentId}});
+}
+export async function proposeNativeCanvas(project:Project,sceneId:string,profileId:string):Promise<{document:NativeSceneDocument;difference:NativeSceneDifference;source_preserved:boolean;layout_policy:string;committed:boolean}> {
+  if(!isTauri()) throw new Error("Native source projection is not simulated in browser mode.");
+  return invoke("native_canvas_proposal",{request:{...nativeScope(project),scene_id:sceneId,profile_id:profileId}});
+}
+export async function previewNativeEdit(project:Project,edit:CreativeWorkspaceEdit):Promise<{difference:NativeSceneDifference;normalized_edit:CreativeWorkspaceEdit}> {
+  if(!isTauri()) throw new Error("Native source validation requires the desktop domain service.");
+  return invoke("native_workspace_preflight",{request:{...nativeScope(project),edit}});
+}
+export async function renderNativeHtml(project:Project,documentId:string,attemptId:string):Promise<HyperframesRenderEvidence> {
+  if(!isTauri()) throw new Error("Native HyperFrames rendering requires an explicitly installed, owner-configured runtime.");
+  const requestId=crypto.randomUUID();const grant=await issueEffectGrant("render_local",project,requestId);
+  return invoke("render_hyperframes",{request:{...nativeScope(project),document_id:documentId,attempt_id:attemptId,request_id:requestId,effect_grant:grant.token}});
+}
+export async function observeNativeHtmlJob(project:Project,attemptId:string,action:"status"|"cancel"|"result"):Promise<{result:{data:{state:string;diagnostic:string|null;job_ref:string;identity:{project_id:string;generation:string;revision:number;scene_id:string}}}}> {
+  if(!isTauri()) throw new Error("Native job reconciliation requires the desktop service.");
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(attemptId)) throw new Error("A complete logical attempt UUID is required.");
+  const requestId=crypto.randomUUID(),grant=action==="cancel"?await issueEffectGrant("render_local",project,requestId):null;
+  return invoke("hyperframes_job_observe",{request:{...nativeScope(project),attempt_id:attemptId,request_id:requestId,action,effect_grant:grant?.token ?? null}});
+}
+export async function recoverNativeHtmlPreview(project:Project,documentId:string,attemptId:string):Promise<HyperframesRenderEvidence> {
+  if(!isTauri()) throw new Error("Native recovery requires the desktop service.");
+  return invoke("recover_hyperframes_preview",{request:{...nativeScope(project),document_id:documentId,attempt_id:attemptId,request_id:crypto.randomUUID()}});
+}
+
+export async function probeNativeHtmlRuntime(project:Project):Promise<{runtime_receipt_present:boolean;runtime_receipt_sha256:string|null;runtime_version_contract:string;configured_hyperframes:string|null;profile:string;host_tools:boolean;network:boolean;arbitrary_source_execution:boolean;admission:string}> {
+  if(!isTauri()) throw new Error("An actual installed runtime cannot be diagnosed from browser demo mode.");
+  const envelope=await invoke<{result:{data:{runtime_receipt_present:boolean;runtime_receipt_sha256:string|null;runtime_version_contract:string;configured_hyperframes:string|null;profile:string;host_tools:boolean;network:boolean;arbitrary_source_execution:boolean;admission:string}}}>("hyperframes_runtime_probe",{request:{...nativeScope(project),request_id:crypto.randomUUID()}});
+  return envelope.result.data;
 }

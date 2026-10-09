@@ -1767,6 +1767,8 @@ fn main() {
             creative_native::native_workspace_preflight,
             creative_native::render_hyperframes,
             creative_native::hyperframes_job_observe,
+            creative_native::recover_hyperframes_preview,
+            creative_native::hyperframes_runtime_probe,
             assemble_av_master,
             export_native_av_master,
             review_native_av_master,

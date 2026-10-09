@@ -24,6 +24,52 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  native-studio-desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Studio native editor contracts and build
+        run: |
+          set -euo pipefail
+          npm --prefix apps/studio ci --no-audit --no-fund
+          npm --prefix apps/studio test
+          npm --prefix apps/studio run build
+          cd apps/studio
+          npx playwright install --with-deps chromium
+          npx playwright test tests/native-creative.spec.ts tests/creative-production.spec.ts
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-studio-desktop-1.98.1
+          cache-on-failure: true
+      - name: Desktop native command and read-grant boundary
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+          cargo test --locked -p motionwright-desktop --all-targets
+          cargo clippy --locked -p motionwright-desktop --all-targets -- -D warnings
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-creative-studio-${{ github.sha }}
+          path: |
+            apps/studio/test-results/
+            apps/studio/dist/
+          if-no-files-found: warn
+          retention-days: 7
+
   creative-integration-contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

@@ -1,8 +1,6 @@
 //! Creative native IPC uses existing revision, effect and preview registries.
 use super::{AppState, EffectKind, EffectScope, NativeFrameGrant, sanitized};
-use motionwright_domain::{
-    CreativeWorkspaceEdit, NativeSceneDifference, NativeSceneDocument, NativeSceneSource, Project,
-};
+use motionwright_domain::{CreativeWorkspaceEdit, NativeSceneDocument, NativeSceneSource, Project};
 use motionwright_native::{
     native_html::project_canvas_to_hyperframes,
     production::{
@@ -159,7 +157,7 @@ pub async fn native_canvas_proposal(
 pub async fn native_workspace_preflight(
     state: State<'_, AppState>,
     request: EditPreviewRequest,
-) -> Result<NativeSceneDifference, String> {
+) -> Result<Value, String> {
     let project = current(
         &state,
         request.project_id,
@@ -175,7 +173,7 @@ pub async fn native_workspace_preflight(
         request.generation,
         request.revision,
     )?;
-    Ok(result)
+    Ok(json!({"difference":result,"normalized_edit":request.edit}))
 }
 #[tauri::command]
 pub async fn render_hyperframes(
@@ -246,6 +244,94 @@ pub async fn hyperframes_job_observe(
     };
     coordinator
         .query_hyperframes_job(project.id, request.attempt_id, &request.request_id, action)
+        .await
+        .map_err(|e| e.message)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub document_id: Uuid,
+    pub attempt_id: Uuid,
+    pub request_id: String,
+}
+/// Read back an already completed logical attempt. This cannot submit a new render.
+#[tauri::command]
+pub async fn recover_hyperframes_preview(
+    state: State<'_, AppState>,
+    request: RecoveryRequest,
+) -> Result<RenderResponse, String> {
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let (coordinator, root) = coordinator(&state, &project)?;
+    let result = coordinator
+        .query_hyperframes_job(
+            project.id,
+            request.attempt_id,
+            &request.request_id,
+            HyperframesJobAction::Result,
+        )
+        .await
+        .map_err(|e| e.message)?;
+    let evidence = coordinator
+        .validate_hyperframes_result(project.id, request.document_id, &result)
+        .map_err(|e| e.message)?;
+    let latest = current(&state, project.id, project.generation, project.revision)?;
+    let registry = state.preview.clone();
+    let copy = evidence.clone();
+    let observed = latest.clone();
+    let grant = tauri::async_runtime::spawn_blocking(move || {
+        registry.register_hyperframes(&root, &observed, &copy)
+    })
+    .await
+    .map_err(|_| "Native recovery readback failed.")?
+    .ok_or("Native preview evidence could not be re-registered.")?;
+    let recorded = state.preview.hyperframes_source(&latest, grant.token)?;
+    if recorded.source_sha256 != evidence.source_sha256 {
+        return Err("Recovered native source identity changed during registration.".into());
+    }
+    Ok(RenderResponse {
+        evidence: recorded,
+        preview: vec![grant],
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeProbeRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub request_id: String,
+}
+#[tauri::command]
+pub async fn hyperframes_runtime_probe(
+    state: State<'_, AppState>,
+    request: RuntimeProbeRequest,
+) -> Result<Value, String> {
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let (coordinator, _) = coordinator(&state, &project)?;
+    coordinator
+        .execute(
+            project.id,
+            &project.stamp(),
+            &request.request_id,
+            "driver.hyperframes.doctor",
+            json!({}),
+            false,
+        )
         .await
         .map_err(|e| e.message)
 }

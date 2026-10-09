@@ -1,3 +1,4 @@
+import type { CreativeWorkspaceEdit } from "./production/nativeTypes";
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
@@ -7,7 +8,8 @@ export type RendererKind =
   | "blender"
   | "manim-community"
   | "remotion"
-  | "manim-gl";
+  | "manim-gl"
+  | "hyperframes";
 export type LockKind = "content" | "timing" | "position" | "style" | "renderer";
 export type CoordinateSpace = "project_pixels" | "normalized" | "scene_local";
 export type NodeProperty = "position" | "size" | "rotation" | "opacity" | "text" | "style" | "parent" | "order";
@@ -115,7 +117,8 @@ export type ExtensionKind =
   | "remotion-renderer"
   | "manim-gl-renderer"
   | "generative-assets"
-  | "catalog-package";
+  | "catalog-package"
+  | "hyperframes-renderer";
 export interface ExtensionProfile {
   id: string;
   name: string;
@@ -503,6 +506,7 @@ export interface Project {
 }
 
 export type Change =
+  | { type: "edit_creative_workspace"; edit: CreativeWorkspaceEdit }
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }

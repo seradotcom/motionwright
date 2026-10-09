@@ -1,0 +1,53 @@
+.native-creative-editor { display:grid; gap:20px; padding:26px 26px 36px; min-width:0; }
+.native-editor-heading { display:flex; justify-content:space-between; gap:20px; align-items:start; }
+.native-editor-heading h2 { margin:8px 0; font-weight:550; letter-spacing:-.035em; font-size:24px; }
+.native-editor-heading p,.native-runtime-panel p { margin:0; font-size:11px; color:var(--muted); line-height:1.7; }
+.native-runtime-panel { border:1px solid var(--border); padding:13px 16px; background:var(--surface-2); display:grid; gap:14px; }
+.native-runtime-panel summary { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:12px; }
+.native-runtime-panel[open] summary { margin-bottom:16px; }
+.native-runtime-panel > p,.native-runtime-panel > .production-button-row,.native-runtime-panel > label { margin-bottom:13px; }
+.native-runtime-panel .mono { overflow-wrap:anywhere; font-size:10px; }
+.native-editor-error { padding:12px 15px; border:1px solid var(--danger); display:flex; gap:12px; justify-content:space-between; align-items:start; }
+.native-source-empty { min-height:260px; border:1px dashed var(--border); display:grid; align-content:center; justify-items:start; gap:14px; padding:32px; }
+.native-source-empty h3 { font-size:17px; font-weight:500; }
+.native-source-empty p { max-width:700px; color:var(--muted); line-height:1.7; font-size:12px; margin:0; }
+.native-editor-toolbar { display:flex; align-items:end; gap:20px; border-top:1px solid var(--border-soft); padding-top:18px; }
+.native-editor-toolbar .production-field { flex:1; }
+.native-editor-toolbar .mono { font-size:10px; color:var(--muted); padding-bottom:10px; }
+.native-editor-layout { display:grid; grid-template-columns:minmax(135px,.58fr) minmax(270px,1.35fr) minmax(320px,1.75fr); gap:18px; align-items:start; min-width:0; }
+.native-object-list { display:grid; gap:3px; min-width:0; position:sticky; top:155px; max-height:calc(100vh - 360px); overflow:auto; }
+.native-object-list h3 { padding:10px 8px; font-size:11px; color:var(--muted); }
+.native-object-list > button { display:grid; gap:7px; text-align:left; padding:13px 9px; border:1px solid transparent; background:transparent; color:var(--text); cursor:pointer; }
+.native-object-list > button[aria-pressed="true"] { background:var(--surface-2); border-color:var(--border); }
+.native-object-list > button span { overflow-wrap:anywhere; font-size:11px; }
+.native-object-list > button small { color:var(--dim); font-size:9px; }
+.native-editing-surface { min-width:0; display:grid; gap:20px; padding:0 15px; border-inline:1px solid var(--border-soft); }
+.native-node-inspector { min-width:0; display:grid; gap:17px; }
+.native-node-inspector > header { display:grid; gap:6px; padding:10px 0; border-bottom:1px solid var(--border-soft); }
+.native-node-inspector > header strong { font-size:12px; font-weight:550; }
+.native-node-inspector > header span { color:var(--dim); font-size:10px; }
+.native-transform-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.native-text-controls { display:grid; gap:14px; padding-top:12px; border-top:1px solid var(--border-soft); }
+.native-text-run { display:grid; gap:12px; }
+.native-keyframes { display:grid; gap:14px; padding-top:17px; border-top:1px solid var(--border); }
+.native-keyframe-list { max-height:290px; overflow:auto; display:grid; }
+.native-keyframe-list > div { display:flex; align-items:center; border-bottom:1px solid var(--border-soft); gap:6px; }
+.native-keyframe-select { border:0; background:transparent; color:var(--text); flex:1; display:grid; grid-template-columns:1fr 1fr; gap:5px; padding:10px 4px; text-align:left; cursor:pointer; }
+.native-keyframe-select strong { font-size:10px; font-weight:500; }.native-keyframe-select span { font-size:10px; font-variant-numeric:tabular-nums; text-align:right; }.native-keyframe-select small { font-size:9px; color:var(--dim); }
+.native-protection,.native-camera-editor { border:1px solid var(--border-soft); padding:13px; }
+.native-protection summary,.native-camera-editor summary { cursor:pointer; font-size:11px; }
+.native-protection[open],.native-camera-editor[open] { display:grid; gap:12px; }.native-protection .production-check { margin-top:12px; }
+.native-render-view { display:grid; gap:16px; position:sticky; top:155px; min-width:0; }
+.native-render-view > header { display:flex; gap:9px; align-items:center; font-size:12px; }
+.native-render-view > header strong { font-weight:500; }
+.native-no-frame { background:var(--bg); min-height:230px; border:1px solid var(--border); display:grid; place-content:center; justify-items:center; padding:24px; color:var(--dim); text-align:center; gap:12px; }
+.native-no-frame p { font-size:12px; margin:0; color:var(--muted); }.native-no-frame span { font-size:11px; line-height:1.6; max-width:330px; }
+.native-render-view .native-frame-stage { height:auto; min-height:230px; }
+.native-job-controls { display:grid; gap:12px; border-top:1px solid var(--border); padding-top:16px; }.native-job-controls strong { font-size:11px; font-weight:500; }
+.native-source-code { min-height:540px; font-family:var(--mono); font-size:11px!important; line-height:1.65!important; }
+.native-difference { display:flex; gap:13px; background:var(--surface-2); padding:17px; border-left:2px solid var(--info); font-size:12px; }
+.native-difference p { font-size:11px; color:var(--muted); line-height:1.7; margin:7px 0 0; }
+.native-editor-actions { position:sticky; bottom:0; display:flex; gap:12px; background:var(--surface-1); padding:15px 0 4px; border-top:1px solid var(--border); flex-wrap:wrap; z-index:3; }
+.native-creative-editor input[type=checkbox] { width:15px!important; height:15px!important; min-width:15px!important; }
+@media(max-width:1250px){.native-editor-layout {grid-template-columns:minmax(120px,.45fr) minmax(260px,1fr);}.native-render-view{grid-column:1/-1;position:static;}.native-object-list{position:static;}.native-render-view .native-frame-stage{min-height:360px;}}
+@media(max-width:800px){.native-creative-editor{padding:20px;}.native-editor-heading,.native-editor-toolbar{flex-wrap:wrap;}.native-editor-layout{grid-template-columns:minmax(0,1fr);}.native-editing-surface{border-inline:0;padding:0;}.native-object-list{max-height:180px;grid-template-columns:repeat(2,minmax(0,1fr));}.native-object-list h3{grid-column:1/-1;}.native-render-view{grid-column:auto;}.native-transform-fields{grid-template-columns:repeat(2,minmax(0,1fr));}}

@@ -145,9 +145,11 @@ const rendererLabels: Record<RendererKind, string> = {
   "manim-community": "Manim Community",
   remotion: "Remotion",
   "manim-gl": "ManimGL",
+  hyperframes: "HyperFrames",
 };
 
 const rendererAvailable = (project: Project, renderer: RendererKind) => {
+  if (renderer === "hyperframes") return project.extensions.some((extension) => extension.kind === "hyperframes-renderer" && extension.enabled && extension.rights_status === "cleared");
   if (renderer === "remotion") {
     return project.extensions.some((extension) => extension.kind === "remotion-renderer" && extension.enabled && extension.rights_status === "cleared");
   }
