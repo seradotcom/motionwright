@@ -34,6 +34,8 @@ struct StartArgs {
 #[serde(deny_unknown_fields)]
 struct JobArgs {
     job_ref: String,
+    project_id: Uuid,
+    generation: Uuid,
 }
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +56,7 @@ impl Phase {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Journal {
+    identity: NativeIdentity,
     schema: u32,
     job_ref: String,
     plan_sha256: String,
@@ -63,6 +66,15 @@ struct Journal {
     result: Option<Value>,
     diagnostic: Option<String>,
 }
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct NativeIdentity {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    scene_id: Uuid,
+}
+
 struct HyperframesDriver {
     work: PathBuf,
     output: PathBuf,
@@ -96,7 +108,7 @@ impl HyperframesDriver {
         atomic_json(&self.work.join(&job.job_ref).join("job.json"), job)
     }
     fn view(job: &Journal) -> Value {
-        json!({"job_ref":job.job_ref,"state":job.phase,"plan_sha256":job.plan_sha256,"source_sha256":job.source_sha256,"result":job.result,"diagnostic":job.diagnostic})
+        json!({"identity":job.identity,"job_ref":job.job_ref,"state":job.phase,"plan_sha256":job.plan_sha256,"source_sha256":job.source_sha256,"result":job.result,"diagnostic":job.diagnostic})
     }
     fn doctor(&self) -> Value {
         let receipt = read(&self.runtime, "runtime.json", 1024 * 1024)
@@ -169,6 +181,12 @@ impl HyperframesDriver {
         write_new(&self.work.join(&id).join("plan.json"), &bytes)?;
         write_new(&self.work.join(&id).join("index.html"), source.as_bytes())?;
         let mut job = Journal {
+            identity: NativeIdentity {
+                project_id: args.plan.project_id,
+                generation: args.plan.generation,
+                revision: args.plan.revision,
+                scene_id: args.plan.scene_id,
+            },
             schema: 1,
             job_ref: id.clone(),
             plan_sha256,
@@ -247,6 +265,10 @@ impl HyperframesDriver {
         if result["schema"] != "motionwright.hyperframes-runtime-result/1"
             || result["plan_sha256"] != job.plan_sha256
             || result["source_sha256"] != job.source_sha256
+            || result["project_id"] != job.identity.project_id.to_string()
+            || result["generation"] != job.identity.generation.to_string()
+            || result["revision"] != job.identity.revision
+            || result["scene_id"] != job.identity.scene_id.to_string()
         {
             return Err(invalid("Native result is not bound to its admitted source"));
         }
@@ -394,6 +416,15 @@ impl Driver for HyperframesDriver {
             return self.start(args, &context).await;
         }
         let args: JobArgs = serde_json::from_value(args)?;
+        let recorded = self.load(&args.job_ref)?;
+        if recorded.identity.project_id != args.project_id
+            || recorded.identity.generation != args.generation
+        {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Native job does not belong to this project generation",
+            ));
+        }
         match command {
             "driver.hyperframes.render.status" => self.refresh(&args.job_ref, &context).await,
             "driver.hyperframes.render.cancel" => self.cancel(&args.job_ref, &context).await,
@@ -427,8 +458,8 @@ fn plan_schema() -> Value {
 }
 fn catalog() -> Vec<Capability> {
     let start = json!({"type":"object","properties":{"attempt_id":{"type":"string","format":"uuid"},"plan":plan_schema(),"expected_source_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}},"required":["attempt_id","plan","expected_source_sha256"],"additionalProperties":false});
-    let job = json!({"type":"object","properties":{"job_ref":{"type":"string","pattern":"^hf-[0-9a-f]{32}$"}},"required":["job_ref"],"additionalProperties":false});
-    let output = json!({"type":"object","properties":{"job_ref":{"type":"string"},"state":{"enum":["starting","rendering","cancelling","succeeded","failed","cancelled","unknown"]},"plan_sha256":{"type":"string"},"source_sha256":{"type":"string"},"result":{"type":["object","null"]},"diagnostic":{"type":["string","null"]}},"required":["job_ref","state","plan_sha256","source_sha256","result","diagnostic"],"additionalProperties":false});
+    let job = json!({"type":"object","properties":{"job_ref":{"type":"string","pattern":"^hf-[0-9a-f]{32}$"},"project_id":{"type":"string","format":"uuid"},"generation":{"type":"string","format":"uuid"}},"required":["job_ref","project_id","generation"],"additionalProperties":false});
+    let output = json!({"type":"object","properties":{"identity":{"type":"object"},"job_ref":{"type":"string"},"state":{"enum":["starting","rendering","cancelling","succeeded","failed","cancelled","unknown"]},"plan_sha256":{"type":"string"},"source_sha256":{"type":"string"},"result":{"type":["object","null"]},"diagnostic":{"type":["string","null"]}},"required":["identity","job_ref","state","plan_sha256","source_sha256","result","diagnostic"],"additionalProperties":false});
     [
         ("doctor","Inspect the configured native HTML capture contract, not creative quality",json!({"type":"object","properties":{},"additionalProperties":false}),json!({"type":"object"}),Risk::ReadOnly,Idempotency::ReadOnly),
         ("render.start","Capture a typed renderer-native HTML composition with preserved source, alpha, frame evidence and logical-attempt deduplication",start,output.clone(),Risk::MutatingReversible,Idempotency::Idempotent),
@@ -486,6 +517,12 @@ mod tests {
             capabilities: catalog(),
         };
         let job = Journal {
+            identity: NativeIdentity {
+                project_id: Uuid::nil(),
+                generation: Uuid::nil(),
+                revision: 0,
+                scene_id: Uuid::nil(),
+            },
             schema: 1,
             job_ref: id.into(),
             plan_sha256: "ab".repeat(32),

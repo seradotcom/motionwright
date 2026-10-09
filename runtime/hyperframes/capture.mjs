@@ -38,7 +38,7 @@ const assetById=new Map(),assetMimes={png:'image/png',jpeg:'image/jpeg',mp4:'vid
 let assetBytes=0;
 for(const asset of doc.assets) {
   if(!asset.rights.use_authorized || !/^[a-f0-9]{64}$/.test(asset.sha256))throw new Error('Asset has no explicit rights or digest');
-  const bytes=readBounded(assetRoot,asset.sha256,64*1024*1024);assetBytes+=bytes.length;
+  const bytes=readBounded(assetRoot,'sha256/'+asset.sha256.slice(0,2)+'/'+asset.sha256,64*1024*1024);assetBytes+=bytes.length;
   if(assetBytes>256*1024*1024 || hash(bytes)!==asset.sha256)throw new Error('Native asset changed or total resource budget exceeded');
   const item={bytes,type:assetMimes[asset.kind]};files.set('/assets/'+asset.sha256+'.'+extensions[asset.kind],item);assetById.set(asset.id,{...asset,bytes});
 }

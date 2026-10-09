@@ -151,8 +151,18 @@ fn validate_runtime(runtime: &Path) -> Result<RuntimeReceipt> {
         if !hex_digest(&file.sha256) {
             return Err(invalid("Runtime dependency digest is malformed"));
         }
-        let (path, size) = regular(runtime, &file.path, 300 * 1024 * 1024)?;
-        if size != file.bytes || file_sha(&path, 300 * 1024 * 1024)? != file.sha256 {
+        let limit = if name == "browser" {
+            512 * 1024 * 1024
+        } else {
+            16 * 1024 * 1024
+        };
+        let (path, size) = regular(runtime, &file.path, limit).map_err(|error| {
+            invalid(format!(
+                "Runtime dependency {name} is invalid (declared {} bytes): {error}",
+                file.bytes
+            ))
+        })?;
+        if size != file.bytes || file_sha(&path, limit)? != file.sha256 {
             return Err(invalid("Pinned runtime dependency changed on disk"));
         }
     }
@@ -302,7 +312,7 @@ fn render(args: Args) -> Result<()> {
     // Keep the HTML, original typed plan and source digests with the native result.
     write_new(&output.join("source.html"), html.as_bytes())?;
     write_new(&output.join("source.json"), &plan_bytes)?;
-    let result = json!({"schema":"motionwright.hyperframes-runtime-result/1","source_sha256":args.source_sha,"plan_sha256":args.plan_sha,
+    let result = json!({"schema":"motionwright.hyperframes-runtime-result/1","project_id":plan.project_id,"generation":plan.generation,"revision":plan.revision,"scene_id":plan.scene_id,"source_sha256":args.source_sha,"plan_sha256":args.plan_sha,
         "frame_count":c.frames,"rate":c.rate,"width":c.width,"height":c.height,"alpha":c.background.is_none(),"color":"srgb",
         "frames":artifact(&output,"frames.json","application/json",4*1024*1024)?,
         "mezzanine":artifact(&output,"mezzanine.mkv","video/x-matroska",MAX_OUTPUT)?,

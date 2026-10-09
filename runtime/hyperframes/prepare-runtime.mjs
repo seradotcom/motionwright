@@ -32,4 +32,4 @@ const receipt={schema:1,hyperframes:'0.8.143',gsap:'3.15.0',playwright:'1.55.1',
   package_rights:'Owner-installed dependencies retain their own licenses. Installation is not source-code or asset redistribution permission.',
   sandbox:'Browser sandbox retained. Driver Host separately confines this process and its dependency roots. No external URL inputs.'};
 fs.writeFileSync(path.join(root,'runtime.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
-console.log(JSON.stringify({runtime:'hyperframes-core',version:receipt.hyperframes,lock_sha256:receipt.npm_lock_sha256,receipt_sha256:hash(fs.readFileSync(path.join(root,'runtime.json')))}));
+console.log(JSON.stringify({runtime:'hyperframes-core',version:receipt.hyperframes,lock_sha256:receipt.npm_lock_sha256,receipt_sha256:hash(fs.readFileSync(path.join(root,'runtime.json'))),files}));
