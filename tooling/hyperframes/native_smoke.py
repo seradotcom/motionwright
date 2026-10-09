@@ -32,6 +32,10 @@ def main()->None:
             observed=run(args)
             (evidence/(mode+'.log')).write_bytes(observed.stdout+b'\n'+observed.stderr)
             if observed.returncode:raise AssertionError(mode+' failed: '+observed.stderr.decode(errors='replace')[-9000:])
+            folder_out=evidence/mode;folder_out.mkdir()
+            for name in ['result.json','frames.json','source.html','source.json','observations.ndjson','mezzanine.mkv']:
+                shutil.copyfile(output/job/name,folder_out/name)
+            for frame in [0,15,30,60,89]:shutil.copyfile(output/job/f'frames/frame-{frame:06}.png',folder_out/f'frame-{frame:06}.png')
             result=json.loads((output/job/'result.json').read_text());manifest=json.loads((output/job/'frames.json').read_text())
             assert manifest['frame_count']==90 and manifest['source_sha256']==entry['source_sha256']
             assert manifest['observation']['coverage']=='all_frames' and manifest['external_requests']==0
@@ -39,7 +43,7 @@ def main()->None:
             assert len(observations)==90 and all(abs(row['time']-row['observed_time'])<1e-7 for row in observations)
             node_id=str(uuid.UUID(int=20))
             card=lambda index:next(node for node in observations[index]['nodes'] if node['id']==node_id)
-            assert abs(card(0)['opacity'])<1e-7 and abs(card(15)['opacity']-.5)<1e-6 and abs(card(89)['opacity']-1)<1e-7
+            assert abs(card(0)['opacity'])<1e-7 and abs(card(15)['opacity']-.5)<1e-6 and abs(card(89)['opacity']-1)<1e-7, ('native opacity drift', [card(f) for f in [0,15,30,89]])
             assert card(0)['clip']!=card(15)['clip'] and card(15)['clip']!=card(89)['clip']
             assert card(0)['transform']!=card(15)['transform'] and card(15)['transform']!=card(89)['transform']
             assert '6px' in card(0)['filter'] and 'blur(0px)' in card(89)['filter']
@@ -56,10 +60,6 @@ def main()->None:
             if mode=='alpha':
                 with Image.open(output/job/'frames/frame-000089.png') as image:
                     alpha=image.convert('RGBA').getchannel('A');assert alpha.getextrema()==(0,255)
-            folder_out=evidence/mode;folder_out.mkdir()
-            for name in ['result.json','frames.json','source.html','source.json','observations.ndjson','mezzanine.mkv']:
-                shutil.copyfile(output/job/name,folder_out/name)
-            for frame in [0,15,30,60,89]:shutil.copyfile(output/job/f'frames/frame-{frame:06}.png',folder_out/f'frame-{frame:06}.png')
             results[mode]={'frame_hashes':hashes,'source_sha256':entry['source_sha256'],'rate':manifest['rate'],'browser':manifest['browser'],'alpha':manifest['alpha']}
         assert results['opaque']['frame_hashes']==results['opaque-repeat']['frame_hashes'], 'Same native source/runtime must be reproducible on the same pinned worker'
         # A malformed source digest must not launch a second rendering or overwrite its output.
