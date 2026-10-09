@@ -505,6 +505,8 @@ impl ObservationProvider for MotionwrightObserver {
                 json!({
                     "id": project.id.to_string(),
                     "title": project.title,
+                    "project_schema": project.schema_version,
+                    "write_schema": motionwright_domain::PROJECT_SCHEMA_VERSION,
                     "state": project.state,
                     "revision": project.revision.to_string(),
                     "active_branch": project.active_branch.to_string(),

@@ -23,7 +23,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const PROJECT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_PROJECT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DomainError {
@@ -614,8 +615,19 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != PROJECT_SCHEMA_VERSION {
+        if ![LEGACY_PROJECT_SCHEMA_VERSION, PROJECT_SCHEMA_VERSION].contains(&self.schema_version) {
             return Err(DomainError::Invalid("unsupported project schema".into()));
+        }
+        if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
+            let empty = ProductionDesign::default();
+            if self.production_design != empty
+                || self.branch_workspaces.iter().any(|workspace| {
+                    workspace.base_state.production_design != empty
+                        || workspace.current_state.production_design != empty
+                })
+            {
+                return Err(DomainError::Invalid("creative production state requires project schema 2; legacy writers must not silently discard it".into()));
+            }
         }
         if self.title.trim().is_empty() || self.title.len() > 200 {
             return Err(DomainError::Invalid(
@@ -983,6 +995,19 @@ impl Project {
     }
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
+        // Read schema 1 without changing its authority or revision. The first
+        // successful write upgrades its format inside the same transaction.
+        if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
+            self.validate()?;
+            let mut candidate = self.clone();
+            candidate.schema_version = PROJECT_SCHEMA_VERSION;
+            candidate.apply_change(change)?;
+            *self = candidate;
+            return Ok(());
+        }
+        if self.schema_version != PROJECT_SCHEMA_VERSION {
+            return Err(DomainError::Invalid("unsupported project schema".into()));
+        }
         match change {
             Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
             Change::UpsertProductHero {

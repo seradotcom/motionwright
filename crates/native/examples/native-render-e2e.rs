@@ -648,6 +648,50 @@ fn seed_hero(
         "width": width, "height": height, "nodes": expected_layout
     }))?)?;
     layout_output.sync_all()?;
+    let bundle_path = project_json.with_file_name("hero.motionwright");
+    service.export_project_bundle(project.id, &bundle_path)?;
+    let validation_root = tempfile::tempdir()?;
+    let destination = StudioService::open(validation_root.path().join("import.sqlite3"))?;
+    let inspected = destination.inspect_project_bundle(&bundle_path)?;
+    let imported = destination.import_project_bundle(&bundle_path)?;
+    if !inspected.project.rotates_generation
+        || imported.generation == project.generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err(
+            "portable hero round-trip changed authored state or reused source authority".into(),
+        );
+    }
+    if destination
+        .apply(
+            imported.id,
+            &project.stamp(),
+            "old-source-authority",
+            &Change::RenameProject {
+                title: "Must not apply".into(),
+            },
+        )
+        .is_ok()
+    {
+        return Err("portable hero accepted a stale source generation".into());
+    }
+    let mut bundle_check = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json.with_file_name("bundle-import-check.json"))?;
+    bundle_check.write_all(&serde_json::to_vec_pretty(&json!({
+        "schema": "motionwright.creative-bundle-roundtrip/1", "project_id": project.id,
+        "source_generation": project.generation, "import_generation": imported.generation,
+        "revision": project.revision, "project_schema": imported.schema_version,
+        "semantic_state_preserved": true, "generation_rotated": true,
+        "old_generation_write_rejected": true, "bundle": "hero.motionwright",
+        "event_count": inspected.project.event_count, "blob_count": inspected.blob_count,
+        "creative_approval": "required", "renderer_grants_imported": false
+    }))?)?;
+    bundle_check.sync_all()?;
     println!(
         "{}",
         serde_json::to_string(&json!({

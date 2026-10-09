@@ -13,7 +13,7 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
       const rotation = `rotate(${t.rotation_deg} ${t.x+t.width/2} ${t.y+t.height/2})`;
       return <g key={node.id} opacity={t.opacity} transform={rotation}>
         {node.kind === "text" ? <text x={t.x} y={t.y+size*.88} fill={safePaint(node.style.fill, "#F2F4F3")}
-          fontFamily={node.style.font_family ?? "Instrument Sans Variable"} fontSize={size} fontWeight={node.style.font_weight ?? 400}>
+          fontFamily={node.style.font_family === "IBM Plex Mono" ? '"IBM Plex Mono", ui-monospace, monospace' : '"Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif'} fontSize={size} fontWeight={node.style.font_weight ?? 400}>
           {(node.text ?? "").split("\n").map((line,i) => <tspan key={i} x={t.x} dy={i===0?0:size*(node.style.line_height ?? 1.12)}>{line}</tspan>)}
         </text> : node.kind === "circle" ? <ellipse cx={t.x+t.width/2} cy={t.y+t.height/2} rx={t.width/2} ry={t.height/2} fill={safePaint(node.style.fill, "none")}/>
           : ["shape","rectangle"].includes(node.kind) ? <rect x={t.x} y={t.y} width={t.width} height={t.height} fill={safePaint(node.style.fill, "none")} stroke={safePaint(node.style.stroke, "none")} strokeWidth={node.style.stroke_width}/>

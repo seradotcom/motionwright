@@ -2137,7 +2137,8 @@ export default function App() {
         </div>
       )}
 
-      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "")}>
+      {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
+      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "") + (workspace === "Production" ? " production-layout" : "")}>
         <ProjectRail
           project={project}
           selectedSceneId={selectedSceneId}
@@ -2151,7 +2152,7 @@ export default function App() {
         <div className="center-stack">
           <div className="workspace-stage">{renderWorkspace()}</div>
         </div>
-        <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />
+        {workspace !== "Production" && <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />}
       </div>
 
       <Timeline

@@ -86,7 +86,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+.65)}>Entrance</button>
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+Math.min(2,seconds(scene!.duration)-1/30))}>Settled</button></div>
       <div className="production-evidence-note"><strong>{aspect.width} × {aspect.height} · project revision {project.revision}</strong>
-        <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. Glyph metrics, clipping and creative approval are separate checks.</p></div>
+        <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. The editorial viewer uses a system fallback when the required font is not installed. Glyph metrics, clipping and creative approval are separate checks.</p></div>
     </section>
   </div>;
 }

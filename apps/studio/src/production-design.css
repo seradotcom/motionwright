@@ -126,3 +126,41 @@
 .production-undo-history article span { font-size: 10px; color: var(--muted); }
 .production-undo-history button { flex-shrink: 0; }
 @media (max-width: 800px) { .production-undo-history article { align-items: start; flex-direction: column; } }
+
+/* Production owns its inspector; keep the actual study visible while controls scroll. */
+.editor-grid.production-layout { grid-template-columns: 232px minmax(0, 1fr); }
+.editor-grid.production-layout.rail-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
+.production-workspace { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.production-workspace-header { flex-shrink: 0; padding: 18px 24px 16px; }
+.production-workspace-header h1 { font-size: clamp(18px, 1.6vw, 23px); margin-block: 7px; }
+.production-tabs { flex-shrink: 0; }
+.production-split { flex: 1; min-height: 0; overflow: hidden; }
+.production-inspector { min-height: 0; overflow-y: auto; }
+.production-viewer { min-height: 0; overflow: hidden; gap: 12px; }
+.production-viewer-toolbar, .production-transport { flex-shrink: 0; }
+.production-preview-mat, .production-preview-mat.portrait { min-height: 110px; flex: 1; overflow: hidden; padding: 16px; }
+.production-preview-mat .production-study, .production-preview-mat.portrait .production-study { width: 100%; height: 100%; max-width: 100%; max-height: 100%; }
+.production-evidence-note { flex-shrink: 0; padding-top: 10px; max-height: 76px; overflow: auto; }
+.production-evidence-note p { margin-block: 5px; }
+.production-plan, .production-sources, .production-patch, .production-native-inspection { min-height: 0; flex: 1; overflow-y: auto; align-content: start; max-width: none; }
+.production-workspace .primary-button, .production-workspace .secondary-button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 34px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 5px; cursor: pointer; font-size: 11px; line-height: 1.4; font-weight: 550; }
+.production-workspace .primary-button { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.production-workspace .secondary-button { background: var(--surface-3); color: var(--text); }
+.production-workspace .primary-button:not(:disabled):hover { background: var(--accent-strong); }
+.production-workspace .secondary-button:not(:disabled):hover { border-color: var(--muted); }
+.production-workspace input[type="checkbox"] { width: 15px; height: 15px; flex-shrink: 0; padding: 0; margin: 0; }
+.production-workspace .production-check { justify-content: flex-start; }
+.production-workspace .production-transport .secondary-button { min-height: 28px; padding: 5px 9px; font-size: 10px; }
+.project-format-notice { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 15px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.project-format-notice button { flex-shrink: 0; }
+@media (max-width: 1180px) { .editor-grid.production-layout { grid-template-columns: 210px minmax(0, 1fr); } }
+@media (max-width: 800px) {
+  .editor-grid.production-layout, .editor-grid.production-layout.rail-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
+  .production-workspace { overflow-y: auto; }
+  .production-workspace-header { flex-direction: row; flex-wrap: wrap; gap: 15px; }
+  .production-split { overflow: visible; flex: none; }
+  .production-inspector { overflow: visible; }
+  .production-viewer { min-height: 440px; }
+  .production-plan, .production-sources, .production-patch, .production-native-inspection { overflow: visible; flex: none; }
+  .project-format-notice { align-items: start; }
+}

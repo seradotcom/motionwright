@@ -100,3 +100,7 @@ The concrete WebView, controlled-import, portable-bundle and exact-source delive
 ## Acceptance status
 
 Implementation status and product acceptance are intentionally separate. The public ledger in `docs/acceptance/` contains all 208 requirement IDs and 60 acceptance IDs without publishing the private specification text. CI rejects missing IDs and refuses product `PASS` without evidence plus independent review.
+
+## Creative production expansion
+
+The v0.5 creative-production branch adds an implemented, bounded workstation slice; it is not a completed v0.5 release. See [creative production](docs/creative-production/README.md) for editable components, native inspection, scoped undo, portable design samples, document-format migration and explicit remaining work. [The expansion ledger](docs/creative-production/requirements-status.json) preserves all 64 expansion IDs separately from the original acceptance history.

@@ -2,8 +2,19 @@ name: ProductHero native design evidence
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/domain/**'
+      - 'crates/native/src/component_text.rs'
+      - 'crates/native/src/expressive.rs'
+      - 'crates/native/src/film.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/creative_frame_evidence.py'
+      - 'tooling/tests/test_creative_frame_evidence.py'
+      - '.github/workflows/product-hero-e2e.yml'
   push:
-    branches: ['feat/v05-creative-production']
+    branches: ['main', 'feat/v05-creative-production']
     paths:
       - 'crates/domain/src/hero.rs'
       - 'crates/native/src/expressive.rs'
@@ -18,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: product-hero-native-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  group: product-hero-native-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 defaults:
@@ -71,6 +82,10 @@ jobs:
         with:
           key: motionwright-native-av-master-1.98.1
           cache-on-failure: true
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cache-workspace-crates: true
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -132,6 +147,9 @@ jobs:
             motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
             -- --nocapture
 
+      - name: Exercise spatial regression guardrails against synthetic failures
+        run: python3 -m unittest discover -s tooling/tests -p 'test_creative_frame_evidence.py' -v
+
       - name: Render and inspect three native Hero variants
         run: |
           set -euo pipefail
@@ -160,6 +178,13 @@ jobs:
               assert inspection["technical_sampling"] == "PASS"
               assert inspection["layout_regression"] == "PASS"
               assert inspection["creative_approval"] == "required"
+              portability = json.loads((folder / "bundle-import-check.json").read_text())
+              assert portability["project_schema"] == 2
+              assert portability["semantic_state_preserved"] is True
+              assert portability["generation_rotated"] is True
+              assert portability["old_generation_write_rejected"] is True
+              assert portability["renderer_grants_imported"] is False
+              assert (folder / "hero.motionwright" / "manifest.json").is_file()
               for entry in [inspection["source_project"], inspection["contact_sheet"], *inspection["samples"]]:
                   assert hashlib.sha256((folder / entry["path"]).read_bytes()).hexdigest() == entry["sha256"]
               assert hashlib.sha256((folder / "motionwright-master.mp4").read_bytes()).hexdigest() == result["master_sha256"]

@@ -1,5 +1,5 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
-import { applyProductionDesignChange, emptyProductionDesign } from "./creativeProduction";
+import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
@@ -768,7 +768,10 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
 }
 
 async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
+  if (![1,2].includes(project.schema_version)) throw new Error("Unsupported project schema.");
+  if (project.schema_version===1 && (!sameValue({...emptyProductionDesign(),...project.production_design},emptyProductionDesign()) || project.branch_workspaces.some(workspace=>!sameValue({...emptyProductionDesign(),...workspace.base_state.production_design},emptyProductionDesign()) || !sameValue({...emptyProductionDesign(),...workspace.current_state.production_design},emptyProductionDesign())))) throw new Error("Creative production state requires project schema 2.");
   const next = structuredClone(project);
+  next.schema_version = 2;
   next.branch_workspaces ??= [];
   next.reviews ??= [];
   next.merges ??= [];
