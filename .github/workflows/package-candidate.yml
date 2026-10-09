@@ -9,6 +9,9 @@ on:
       - "crates/**"
       - "tooling/package_receipt.py"
       - "tooling/tests/test_package_receipt.py"
+      - "tooling/candidate_smoke.py"
+      - "tooling/linux_gui_probe.py"
+      - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
       - "SOURCE_LOCK.json"
@@ -21,6 +24,9 @@ on:
       - "crates/**"
       - "tooling/package_receipt.py"
       - "tooling/tests/test_package_receipt.py"
+      - "tooling/candidate_smoke.py"
+      - "tooling/linux_gui_probe.py"
+      - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
       - "SOURCE_LOCK.json"
@@ -40,8 +46,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
-      - name: Candidate receipt policy tests
-        run: python3 -m unittest tooling/tests/test_package_receipt.py
+      - name: Candidate receipt and installed-package smoke policy tests
+        run: python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_smoke.py
 
   linux:
     needs: receipt-policy
@@ -65,7 +71,7 @@ jobs:
       - name: Install Linux desktop bundling prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Linux candidate bundles
@@ -87,6 +93,55 @@ jobs:
             --artifact "$appimage" \
             --artifact "$deb" \
             --output ci-evidence/linux-candidate.json
+      - name: Inspect extracted Linux packages and launch a rootless AppImage window
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          work="$RUNNER_TEMP/motionwright-smoke"
+          mkdir -p "$work/deb" "$work/appimage"
+          dpkg-deb --extract "$deb" "$work/deb"
+          mapfile -t deb_bins < <(find "$work/deb/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
+          mapfile -t deb_desktop < <(find "$work/deb/usr/share/applications" -maxdepth 1 -type f -name '*.desktop')
+          test "${#deb_bins[@]}" -eq 1
+          test "${#deb_desktop[@]}" -eq 1
+          python3 tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/linux-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind deb --method deb_extract \
+            --artifact "$deb" --installed-binary "${deb_bins[0]}" \
+            --linux-desktop-entry "${deb_desktop[0]}" \
+            --output ci-evidence/linux-deb-smoke.json
+          chmod u+x "$appimage"
+          (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          extracted="$work/appimage/squashfs-root"
+          test -x "$extracted/AppRun"
+          mapfile -t image_bins < <(find "$extracted/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
+          mapfile -t image_desktop < <(find "$extracted" -maxdepth 1 -type f -name '*.desktop')
+          test "${#image_bins[@]}" -eq 1
+          test "${#image_desktop[@]}" -eq 1
+          xvfb-run -a -s "-screen 0 1440x940x24" \
+            dbus-run-session -- python3 tooling/linux_gui_probe.py \
+              --app-run "$extracted/AppRun" \
+              --scratch "$work/isolated-gui" \
+              --output ci-evidence/linux-appimage-window.json
+          python3 tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/linux-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind appimage --method appimage_extract \
+            --artifact "$appimage" --installed-binary "${image_bins[0]}" \
+            --linux-desktop-entry "${image_desktop[0]}" \
+            --linux-gui-probe ci-evidence/linux-appimage-window.json \
+            --output ci-evidence/linux-appimage-smoke.json
+      - name: Retain isolated GUI launch diagnostics if smoke fails
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-linux-smoke-diagnostics
+          path: ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run.log
+          if-no-files-found: warn
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-linux-candidate
@@ -94,6 +149,9 @@ jobs:
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/deb/*.deb
             ci-evidence/linux-candidate.json
+            ci-evidence/linux-deb-smoke.json
+            ci-evidence/linux-appimage-smoke.json
+            ci-evidence/linux-appimage-window.json
           if-no-files-found: error
 
   windows:
@@ -131,12 +189,37 @@ jobs:
             throw "Expected exactly one NSIS setup artifact, observed $($artifacts.Count)"
           }
           python tooling/package_receipt.py --git-sha "$env:GITHUB_SHA" --platform windows --arch x86_64 --artifact "$($artifacts[0].FullName)" --output ci-evidence/windows-candidate.json
+      - name: Silent current-user NSIS install and inspect installed Windows executable
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe -File)
+          if ($installers.Count -ne 1) { throw 'Expected one NSIS installer to smoke test' }
+          $dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'
+          if (Test-Path $dest) { throw 'Installed destination is unexpectedly preexisting' }
+          $installer = $installers[0].FullName
+          $process = Start-Process -FilePath $installer -ArgumentList "/S /D=$dest" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "NSIS current-user installer exited $($process.ExitCode)" }
+          if (-not (Test-Path $dest)) { throw 'NSIS silently completed but no installed directory exists' }
+          $binaries = @(Get-ChildItem $dest -Recurse -File -Filter '*motionwright*.exe' |
+            Where-Object { $_.Name -notmatch '(unins|setup|uninstall)' })
+          if ($binaries.Count -ne 1) {
+            throw "Expected one installed Motionwright executable, got $($binaries.Count)"
+          }
+          python tooling/candidate_smoke.py `
+            --candidate-receipt ci-evidence/windows-candidate.json `
+            --expected-source-sha "$env:GITHUB_SHA" `
+            --kind nsis --method nsis_silent_current_user `
+            --artifact "$installer" --installed-binary "$($binaries[0].FullName)" `
+            --output ci-evidence/windows-nsis-smoke.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-windows-candidate
           path: |
             target/release/bundle/nsis/*-setup.exe
             ci-evidence/windows-candidate.json
+            ci-evidence/windows-nsis-smoke.json
           if-no-files-found: error
 
   macos:
@@ -176,10 +259,39 @@ jobs:
             --arch "$arch" \
             --artifact "$dmg" \
             --output ci-evidence/macos-candidate.json
+      - name: Read-only DMG mount, copy application and inspect macOS Mach-O
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          dmg="$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          work="$RUNNER_TEMP/motionwright-macos-smoke"
+          mkdir -p "$work/mount" "$work/installed"
+          hdiutil attach -readonly -nobrowse -mountpoint "$work/mount" "$dmg" >/dev/null
+          trap 'hdiutil detach "$work/mount" -quiet || true' EXIT
+          app_count="$(find "$work/mount" -maxdepth 1 -type d -name '*.app' | wc -l)"
+          test "$app_count" -eq 1
+          app="$(find "$work/mount" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          ditto "$app" "$work/installed/Motionwright.app"
+          plist="$work/installed/Motionwright.app/Contents/Info.plist"
+          test -f "$plist"
+          exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          binary="$work/installed/Motionwright.app/Contents/MacOS/$exe"
+          test -f "$binary"
+          python3 tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/macos-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind dmg --method dmg_readonly_mount_copy \
+            --artifact "$dmg" --installed-binary "$binary" \
+            --mac-info-plist "$plist" \
+            --output ci-evidence/macos-dmg-smoke.json
+          # No unsigned application is force-launched and no Gatekeeper,
+          # signing, notarization or user-level protection is disabled.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-macos-candidate
           path: |
             target/release/bundle/dmg/*.dmg
             ci-evidence/macos-candidate.json
+            ci-evidence/macos-dmg-smoke.json
           if-no-files-found: error

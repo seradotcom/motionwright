@@ -83,7 +83,7 @@ docs/
 
 The workstation is intentionally kept light. Source-format checks and small unit checks may run locally. Cargo builds/tests/clippy/docs, browser suites, Tauri bundling, native driver integration, rendering, coverage, fuzzing and large media fixtures run in GitHub Actions.
 
-Candidate packaging is also CI-only. Linux AppImage/Debian, current-user Windows NSIS and macOS DMG artifacts are hashed into exact-source receipts; they are not automatically published, signed, notarized or promoted to a release.
+Candidate packaging is also CI-only. Linux AppImage/Debian, current-user Windows NSIS and macOS DMG artifacts are hashed into exact-source receipts. The [isolated installed-package smoke gates](docs/installed-candidate-smoke.md) additionally inspect extracted/deployed binaries, require a rootless Linux AppImage window and exercise a silent Windows current-user installation on disposable runners. No result implies signing, notarization, human install approval or automatic release publication.
 
 ## Licensing
 

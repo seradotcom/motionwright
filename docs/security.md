@@ -95,4 +95,4 @@ canonical Semwright production connection and the isolated Manim Community runti
 
 ## Evidence not yet claimed
 
-This repository does not turn missing evidence into a PASS. In particular, platform tenant isolation, release signing/notarization, all renderer sandbox properties and production penetration testing require their own execution evidence. Optional or upstream-dependent capabilities remain gated until their real runtime is exercised.
+This repository does not turn missing evidence into a PASS. The [installed candidate package smoke](installed-candidate-smoke.md) runs only on disposable CI runners; it validates extracted binaries and one rootless Linux AppImage window without weakening Gatekeeper/WebKit security, and still records human installation acceptance as NOT_RUN. In particular, platform tenant isolation, release signing/notarization, all renderer sandbox properties and production penetration testing require their own execution evidence. Optional or upstream-dependent capabilities remain gated until their real runtime is exercised.
