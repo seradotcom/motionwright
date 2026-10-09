@@ -443,17 +443,29 @@ def main() -> None:
                 },
             )
 
-            result = run_json(
-                [
-                    str(MW_BIN),
-                    "render",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "motionwright-render-evidence.json"),
-                ],
-                env=env,
-                timeout=420,
-            )
+            try:
+                result = run_json(
+                    [
+                        str(MW_BIN),
+                        "render",
+                        str(database),
+                        str(connection_path),
+                        str(EVIDENCE / "motionwright-render-evidence.json"),
+                    ],
+                    env=env,
+                    timeout=420,
+                )
+            except Exception:
+                if IS_HERO:
+                    # Failed native evidence is retained as explicitly unverified
+                    # diagnostic imagery, never promoted to a delivery receipt.
+                    candidates = list(paths["output"].glob("*/frames/*.png"))
+                    if len(candidates) <= 36000:
+                        for index, frame in enumerate(sorted(candidates)):
+                            if index in (0, 20, 44, 60, 179) and frame.is_file() and not frame.is_symlink() and frame.stat().st_size <= 16*1024*1024:
+                                if frame.resolve().is_relative_to(paths["output"].resolve()):
+                                    shutil.copyfile(frame, EVIDENCE / f"UNVERIFIED-native-frame-{index:06d}.png")
+                raise
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 

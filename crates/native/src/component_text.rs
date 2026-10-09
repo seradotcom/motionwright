@@ -48,7 +48,13 @@ pub(crate) fn fixed_component_text(
             Error::new(ErrorCode::InvalidArgument, "Component font size is missing")
         })? * scale;
     let line_height = font_size * node.style.line_height.unwrap_or(1.12);
-    if !line_height.is_finite() || line_height <= 0.0 || line_height * lines.len() as f64 > height {
+    // The provider's native Txt DOM needs its glyph ascender/descender box,
+    // not the editorial baseline advance, as its clipping measurement bound.
+    let glyph_box = font_size * 1.4;
+    if !line_height.is_finite()
+        || line_height <= 0.0
+        || line_height * (lines.len() - 1) as f64 + glyph_box > height
+    {
         return Err(Error::new(
             ErrorCode::Unsupported,
             "Authored lines exceed the text box; clipping and automatic font shrinking are not applied",
@@ -83,11 +89,11 @@ pub(crate) fn fixed_component_text(
             layout: SpatialIntent::Fixed {
                 position: Point {
                     x: 0.0,
-                    y: -height / 2.0 + line_height * (index as f64 + 0.5),
+                    y: -height / 2.0 + line_height * index as f64 + glyph_box / 2.0,
                 },
                 size: Size {
                     width,
-                    height: line_height,
+                    height: glyph_box,
                 },
             },
             initially_visible: true,
