@@ -2017,7 +2017,7 @@ export default function App() {
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Production":
-        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderEvidence} />;
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":

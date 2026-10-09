@@ -158,7 +158,7 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
   </div>;
 }
 
-export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
+export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
   const [tab,setTab]=useState<"component"|"plan"|"sources"|"patch"|"inspection">("component");
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);

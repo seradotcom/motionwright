@@ -43,9 +43,9 @@ function NativeComparison({first,second,mode}:{first:Sample;second:Sample;mode:"
   },[first.url,second.url,mode]);
   return <div className="native-inspection-comparison">{error?<p role="alert">{error}</p>:<canvas ref={ref} aria-label={mode==="onion"?"Onion overlay of two native-frame thumbnails":"Absolute channel difference of two native-frame thumbnails"}/>}</div>;
 }
-export default function NativeInspectionWorkbench({project,scene,displayProfile,evidence,commit,busy,onSeek,onOpenCanvas}: {
+export default function NativeInspectionWorkbench({project,scene,displayProfile,evidence,commit,busy,onSeek,onOpenRender}: {
   project:Project;scene:Scene|null;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null;
-  commit:(change:Change)=>Promise<void>;busy:boolean;onSeek:(time:number)=>void;onOpenCanvas:()=>void;
+  commit:(change:Change)=>Promise<void>;busy:boolean;onSeek:(time:number)=>void;onOpenRender:()=>void;
 }) {
   const plan=useMemo(()=>planNativeInspection(project,scene,displayProfile,evidence),[project,scene,displayProfile,evidence]);
   const [samples,setSamples]=useState<Sample[]>([]);const [loading,setLoading]=useState(false);const [error,setError]=useState<string|null>(null);
@@ -90,7 +90,7 @@ export default function NativeInspectionWorkbench({project,scene,displayProfile,
   return <div className="production-native-inspection">
     <div className="production-section-title"><Eye size={18}/><div><h2>Native frame inspection</h2><p>Motion Canvas v1 · bounded contact sheets, onion frames and evidence-linked review.</p></div></div>
     <div className="production-notice"><strong>Native source frames only</strong><span>No DOM study or placeholder is substituted when the renderer receipt is missing or stale. Thumbnail comparisons are inspection aids, not proof of pixel equivalence or creative quality.</span></div>
-    {!plan?<div className="production-empty"><h3>No current native frame grant</h3><p>Select a scene and matching output profile, then produce a native preview in Canvas. Changed revisions, expired grants, different profiles and oversized decode requests are refused.</p><button className="secondary-button" onClick={onOpenCanvas}>Open Canvas and native preview</button></div>:<>
+    {!plan?<div className="production-empty"><h3>No current native frame grant</h3><p>Select a scene and matching output profile, then produce a native preview in Deliver. Changed revisions, expired grants, different profiles and oversized decode requests are refused.</p><button className="secondary-button" onClick={onOpenRender}>Open Deliver and render preview</button></div>:<>
       <div className="production-button-row"><button className="primary-button" disabled={busy || loading} onClick={inspect}><RefreshCw size={14}/>{loading?"Reading verified native frames…":"Inspect current native frames"}</button><span className="production-help">Up to eight sequential reads · {plan.width} × {plan.height} · source r{plan.revision}</span></div>
       {error && <p className="production-error" role="alert">{error}</p>}
       <div className="native-inspection-grid">{samples.map((sample,index)=><button key={sample.frameIndex} className={firstIndex===index?"selected":""} onClick={()=>{setFirstIndex(index);onSeek(seconds(sample.timelineTime));}} aria-label={`Inspect native frame ${sample.frameIndex}`}>

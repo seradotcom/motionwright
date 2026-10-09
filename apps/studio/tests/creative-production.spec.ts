@@ -54,6 +54,6 @@ test("native inspection never substitutes editorial thumbnails for missing nativ
   await expect(page.getByRole("heading",{name:"No current native frame grant",exact:true})).toBeVisible();
   await expect(page.locator(".native-inspection-grid img")).toHaveCount(0);
   await expect(page.getByRole("button",{name:"Inspect current native frames",exact:true})).toHaveCount(0);
-  await page.getByRole("button",{name:"Open Canvas and native preview",exact:true}).click();
-  await expect(page.locator(".canvas-workspace")).toBeVisible();
+  await page.getByRole("button",{name:"Open Deliver and render preview",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"No current native frame grant",exact:true})).not.toBeVisible();
 });
