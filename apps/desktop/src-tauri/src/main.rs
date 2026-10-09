@@ -23,8 +23,8 @@ use motionwright_native::{
     },
 };
 use motionwright_service::{
-    ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
-    VoiceImportMetadata, WaveformPage,
+    ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProductionReceiptWatermark,
+    ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use serde::{Deserialize, Serialize};
@@ -95,6 +95,32 @@ struct RecentHistoryRequest {
 struct ProductionJobsRequest {
     project_id: Uuid,
     limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionJobsHistoryCursor {
+    latest_id: Uuid,
+    receipt_count: u64,
+    offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionJobsHistoryRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    limit: usize,
+    cursor: Option<ProductionJobsHistoryCursor>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProductionJobsHistoryPage {
+    items: Vec<ProductionJobProjection>,
+    total_jobs: usize,
+    next: Option<ProductionJobsHistoryCursor>,
+    complete: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -729,6 +755,96 @@ fn production_jobs(
 /// Semantic authoring preflight: exactly the same project-owned Film projection
 /// that canonical production uses, with NO Semwright host dispatch and no
 /// mutation/effect grant. SUPPORTED never means the renderer has passed.
+/// Explicit, read-only historical job browser. Unlike the lightweight
+/// auto-refreshing latest-window view, this bounded on-demand operation
+/// reconstructs a receipt-watermark-bound snapshot and fails stale when
+/// status receipts arrive independently of the creative revision.
+#[tauri::command]
+async fn production_jobs_history(
+    state: State<'_, AppState>,
+    request: ProductionJobsHistoryRequest,
+) -> Result<ProductionJobsHistoryPage, String> {
+    if request.limit == 0 || request.limit > 64 {
+        return Err("Production history page size must be 1–64 jobs.".into());
+    }
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Production job history belongs to a stale creative revision.".into());
+    }
+    let service = state.service.clone();
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        let watermark = service
+            .production_receipt_watermark(project_id)
+            .map_err(sanitized)?;
+        let offset = match &request.cursor {
+            Some(cursor) => {
+                if watermark.latest_id != Some(cursor.latest_id)
+                    || watermark.count != cursor.receipt_count
+                    || cursor.offset == 0
+                {
+                    return Err(
+                        "Production receipts changed during historical paging; restart the history snapshot."
+                            .to_owned(),
+                    );
+                }
+                cursor.offset
+            }
+            None => 0,
+        };
+        let jobs = service.production_jobs_snapshot(project_id, &watermark)
+            .map_err(sanitized)?;
+        if offset > 0 && offset >= jobs.len() {
+            return Err("Historical job cursor does not make progress.".into());
+        }
+        let end = offset.saturating_add(request.limit).min(jobs.len());
+        let next = if end < jobs.len() {
+            Some(ProductionJobsHistoryCursor {
+                latest_id: watermark.latest_id
+                    .ok_or_else(|| "Incomplete history without a receipt watermark.".to_owned())?,
+                receipt_count: watermark.count,
+                offset: end,
+            })
+        } else {
+            None
+        };
+        let page = ProductionJobsHistoryPage {
+            items: jobs[offset..end].to_vec(),
+            total_jobs: jobs.len(),
+            complete: next.is_none(),
+            next,
+        };
+        let after = service.production_receipt_watermark(project_id)
+            .map_err(sanitized)?;
+        if after != watermark {
+            return Err(
+                "Production receipts changed while computing the job history; restart."
+                    .to_owned(),
+            );
+        }
+        Ok::<_, String>((page, watermark))
+    })
+    .await
+    .map_err(|_| "Production history task failed.".to_string())??;
+    let current = state.service.project(project_id).map_err(sanitized)?;
+    let latest_watermark = state
+        .service
+        .production_receipt_watermark(project_id)
+        .map_err(sanitized)?;
+    if current.generation != generation
+        || current.revision != revision
+        || latest_watermark != page.1
+    {
+        return Err("Project or production receipts changed during historical paging.".into());
+    }
+    Ok(page.0)
+}
+
 #[tauri::command]
 async fn motion_canvas_preflight(
     state: State<'_, AppState>,
@@ -1642,6 +1758,7 @@ fn main() {
             workflow_overview,
             workflow_action,
             production_jobs,
+            production_jobs_history,
             motion_canvas_preflight,
             render_motion_canvas,
             assemble_av_master,

@@ -24,6 +24,8 @@ import type {
   Project,
   ProjectEvent,
   ProductionJobProjection,
+  ProductionJobsHistoryCursor,
+  ProductionJobsHistoryPage,
   ProductionRuntimeCompatibility,
   WaveformPage,
   WorkflowAction,
@@ -509,6 +511,32 @@ export async function productionJobs(
     request: {
       project_id: project.id,
       limit,
+    },
+  });
+}
+
+/** Enumerate all locally persisted jobs for one source- and
+ * receipt-watermark-bound snapshot without querying Semwright's live driver.
+ * A browser-only demo never fabricates receipt history.
+ */
+export async function productionJobsHistory(
+  project: Project,
+  limit = 16,
+  cursor: ProductionJobsHistoryCursor | null = null,
+): Promise<ProductionJobsHistoryPage> {
+  if (!isTauri()) {
+    throw new Error("Historical production receipts require the desktop runtime.");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) {
+    throw new Error("Historical production jobs page size is outside the 1–64 limit.");
+  }
+  return invoke<ProductionJobsHistoryPage>("production_jobs_history", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      limit,
+      cursor,
     },
   });
 }
