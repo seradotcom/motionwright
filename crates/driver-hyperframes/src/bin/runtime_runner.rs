@@ -359,26 +359,6 @@ fn main() {
         std::process::exit(2);
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn runner_rejects_unbounded_and_arbitrary_commands() {
-        for raw in [
-            vec![],
-            vec!["render".into()],
-            vec!["execute".into(), "untrusted-program".into()],
-        ] {
-            assert!(parse(&raw).is_err());
-        }
-    }
-    #[test]
-    fn source_contains_no_model_selected_program() {
-        assert!(CAPTURE.contains("window.__player.renderSeek"));
-        assert!(AUTHOR.contains("textContent=run.text"));
-        assert!(!AUTHOR.contains("innerHTML"));
-    }
-}
 
 fn verify_runtime_inventory(runtime: &Path, receipt: &RuntimeReceipt) -> Result<()> {
     use std::collections::BTreeSet;
@@ -502,4 +482,25 @@ fn verify_runtime_inventory(runtime: &Path, receipt: &RuntimeReceipt) -> Result<
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn runner_rejects_unbounded_and_arbitrary_commands() {
+        for raw in [
+            vec![],
+            vec!["render".into()],
+            vec!["execute".into(), "untrusted-program".into()],
+        ] {
+            assert!(parse(&raw).is_err());
+        }
+    }
+    #[test]
+    fn source_contains_no_model_selected_program() {
+        assert!(CAPTURE.contains("window.__player.renderSeek"));
+        assert!(AUTHOR.contains("textContent=run.text"));
+        assert!(!AUTHOR.contains("innerHTML"));
+    }
 }

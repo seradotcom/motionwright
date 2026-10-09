@@ -338,6 +338,134 @@ impl NativePreviewRegistry {
     }
 }
 
+impl NativePreviewRegistry {
+    /// Extend the existing read-grant registry; never grant a WebView HTML execution.
+    pub fn register_hyperframes(
+        &self,
+        output_root: &Path,
+        project: &Project,
+        evidence: &HyperframesRenderEvidence,
+    ) -> Option<NativeFrameGrant> {
+        if evidence.project_id != project.id
+            || evidence.generation != project.generation
+            || evidence.revision != project.revision
+            || evidence.frame_count == 0
+            || evidence.frame_count > 3600
+            || evidence.job_ref.len() != 35
+            || !evidence.job_ref.starts_with("hf-")
+            || !evidence.job_ref.as_bytes()[3..]
+                .iter()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+        {
+            return None;
+        }
+        let source = project
+            .production_design
+            .workspace
+            .native_scenes
+            .iter()
+            .find(|doc| {
+                doc.id == evidence.document_id
+                    && doc.scene_id == evidence.scene_id
+                    && doc.profile_id == evidence.profile_id
+            })?;
+        if source.source.source_digest().ok()? != evidence.source_sha256 {
+            return None;
+        }
+        let bytes = read_verified_production_artifact(
+            output_root,
+            &evidence.frames.relative_path,
+            &evidence.frames.sha256,
+            4 * 1024 * 1024,
+        )
+        .ok()?;
+        let manifest: Value = serde_json::from_slice(&bytes).ok()?;
+        if manifest["source_sha256"] != evidence.source_sha256
+            || manifest["plan_sha256"] != evidence.plan_sha256
+            || manifest["project_id"] != project.id.to_string()
+            || manifest["generation"] != project.generation.to_string()
+            || manifest["revision"] != project.revision
+            || manifest["frame_count"] != evidence.frame_count
+        {
+            return None;
+        }
+        let source_frames = manifest["frames"].as_array()?;
+        if source_frames.len() != evidence.frame_count as usize {
+            return None;
+        }
+        let mut frames = Vec::with_capacity(source_frames.len());
+        for (index, frame) in source_frames.iter().enumerate() {
+            let file = format!("frames/frame-{index:06}.png");
+            let digest = frame["sha256"].as_str()?;
+            let size = frame["bytes"].as_u64()?;
+            if frame["relative_path"] != file
+                || frame["frame"] != index
+                || !is_digest(digest)
+                || size == 0
+                || size > MAX_FRAME_BYTES
+            {
+                return None;
+            }
+            frames.push(FrameMeta {
+                file,
+                sha256: digest.into(),
+                bytes: size,
+            });
+        }
+        let token = Uuid::new_v4();
+        let entry = GrantEntry {
+            token,
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id: evidence.profile_id,
+            directory: evidence.job_ref.clone(),
+            output_root: output_root.to_path_buf(),
+            frames: Arc::new(frames),
+            source_evidence: None,
+            native_html: Some(evidence.clone()),
+        };
+        let mut entries = self.inner.grants.lock().ok()?;
+        if entries.len() >= MAX_GRANTS {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+        Some(NativeFrameGrant {
+            token,
+            segment_id: evidence.document_id.to_string(),
+            scene_ids: vec![evidence.scene_id],
+            frame_count: u64::from(evidence.frame_count),
+        })
+    }
+
+    /// Resolve retained native source only from a server-owned, current session token.
+    pub fn hyperframes_source(
+        &self,
+        project: &Project,
+        token: Uuid,
+    ) -> Result<HyperframesRenderEvidence, String> {
+        let entries = self
+            .inner
+            .grants
+            .lock()
+            .map_err(|_| "Native preview registry is unavailable.")?;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.token == token)
+            .ok_or("Native source grant is unavailable.")?;
+        if entry.project_id != project.id
+            || entry.generation != project.generation
+            || entry.revision != project.revision
+        {
+            return Err("Native source grant belongs to another project revision.".into());
+        }
+        entry
+            .native_html
+            .clone()
+            .ok_or_else(|| "This native grant is not a HyperFrames contribution.".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,133 +657,5 @@ mod tests {
             "render-../0123456789abcdef0123456789abcd"
         ));
         assert!(validate_manifest(b"{\"frames\":[]}", 1).is_none());
-    }
-}
-
-impl NativePreviewRegistry {
-    /// Extend the existing read-grant registry; never grant a WebView HTML execution.
-    pub fn register_hyperframes(
-        &self,
-        output_root: &Path,
-        project: &Project,
-        evidence: &HyperframesRenderEvidence,
-    ) -> Option<NativeFrameGrant> {
-        if evidence.project_id != project.id
-            || evidence.generation != project.generation
-            || evidence.revision != project.revision
-            || evidence.frame_count == 0
-            || evidence.frame_count > 3600
-            || evidence.job_ref.len() != 35
-            || !evidence.job_ref.starts_with("hf-")
-            || !evidence.job_ref.as_bytes()[3..]
-                .iter()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-        {
-            return None;
-        }
-        let source = project
-            .production_design
-            .workspace
-            .native_scenes
-            .iter()
-            .find(|doc| {
-                doc.id == evidence.document_id
-                    && doc.scene_id == evidence.scene_id
-                    && doc.profile_id == evidence.profile_id
-            })?;
-        if source.source.source_digest().ok()? != evidence.source_sha256 {
-            return None;
-        }
-        let bytes = read_verified_production_artifact(
-            output_root,
-            &evidence.frames.relative_path,
-            &evidence.frames.sha256,
-            4 * 1024 * 1024,
-        )
-        .ok()?;
-        let manifest: Value = serde_json::from_slice(&bytes).ok()?;
-        if manifest["source_sha256"] != evidence.source_sha256
-            || manifest["plan_sha256"] != evidence.plan_sha256
-            || manifest["project_id"] != project.id.to_string()
-            || manifest["generation"] != project.generation.to_string()
-            || manifest["revision"] != project.revision
-            || manifest["frame_count"] != evidence.frame_count
-        {
-            return None;
-        }
-        let source_frames = manifest["frames"].as_array()?;
-        if source_frames.len() != evidence.frame_count as usize {
-            return None;
-        }
-        let mut frames = Vec::with_capacity(source_frames.len());
-        for (index, frame) in source_frames.iter().enumerate() {
-            let file = format!("frames/frame-{index:06}.png");
-            let digest = frame["sha256"].as_str()?;
-            let size = frame["bytes"].as_u64()?;
-            if frame["relative_path"] != file
-                || frame["frame"] != index
-                || !is_digest(digest)
-                || size == 0
-                || size > MAX_FRAME_BYTES
-            {
-                return None;
-            }
-            frames.push(FrameMeta {
-                file,
-                sha256: digest.into(),
-                bytes: size,
-            });
-        }
-        let token = Uuid::new_v4();
-        let entry = GrantEntry {
-            token,
-            project_id: project.id,
-            generation: project.generation,
-            revision: project.revision,
-            deliverable_id: evidence.profile_id,
-            directory: evidence.job_ref.clone(),
-            output_root: output_root.to_path_buf(),
-            frames: Arc::new(frames),
-            source_evidence: None,
-            native_html: Some(evidence.clone()),
-        };
-        let mut entries = self.inner.grants.lock().ok()?;
-        if entries.len() >= MAX_GRANTS {
-            entries.pop_front();
-        }
-        entries.push_back(entry);
-        Some(NativeFrameGrant {
-            token,
-            segment_id: evidence.document_id.to_string(),
-            scene_ids: vec![evidence.scene_id],
-            frame_count: u64::from(evidence.frame_count),
-        })
-    }
-
-    /// Resolve retained native source only from a server-owned, current session token.
-    pub fn hyperframes_source(
-        &self,
-        project: &Project,
-        token: Uuid,
-    ) -> Result<HyperframesRenderEvidence, String> {
-        let entries = self
-            .inner
-            .grants
-            .lock()
-            .map_err(|_| "Native preview registry is unavailable.")?;
-        let entry = entries
-            .iter()
-            .find(|entry| entry.token == token)
-            .ok_or("Native source grant is unavailable.")?;
-        if entry.project_id != project.id
-            || entry.generation != project.generation
-            || entry.revision != project.revision
-        {
-            return Err("Native source grant belongs to another project revision.".into());
-        }
-        entry
-            .native_html
-            .clone()
-            .ok_or_else(|| "This native grant is not a HyperFrames contribution.".into())
     }
 }
