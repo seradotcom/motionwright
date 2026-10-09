@@ -383,6 +383,9 @@ impl ObservationProvider for MotionwrightObserver {
                 )
             })?
             .map_err(storage_error)?;
+            // A canceled agent never receives a verified-current result from
+            // a hashing task it no longer has permission to await.
+            context.check_cancelled()?;
             if report.generation != project.generation || report.revision != project.revision {
                 return Err(Error::new(
                     ErrorCode::StaleReference,
