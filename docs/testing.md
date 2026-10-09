@@ -60,7 +60,7 @@ The pinned Film adapter now projects per-scene static camera center shifts throu
 
 ## Experimental native MLT timeline assembly
 
-A separate owner-only native-semantic MLT runner builds a project/sequence/track from real FFV1 sources using typed Semwright driver refs. Rust contract tests validate exact project revisions, created semantic references and fail-closed lookups. The runtime demands a native success receipt, exact lossless FFV1 codec/frames/digest and owner-root readback. It is **not a user-facing feature until its own actual two-segment E2E passes**, and is not an H.264/AAC audio master; see [experimental timeline](mlt-native-timeline.md).
+A separate owner-only native-semantic MLT runner builds a project/sequence/track from real FFV1 sources using typed Semwright driver refs. Rust contract tests validate exact project revisions, created semantic references and fail-closed lookups. The runtime demands a native success receipt, exact lossless FFV1 codec/frames/digest and owner-root readback. It is **not a user-facing feature until its own newly added real two-segment pinned Broker/MLT E2E passes at the exact PR SHA**, and is not an H.264/AAC audio master; see [experimental timeline](mlt-native-timeline.md).
 
 ## Bounded native MLT FFV1 source preparation
 

@@ -1,0 +1,172 @@
+name: Native Motionwright MLT multisegment timeline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'SOURCE_LOCK.json'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/domain/**'
+      - 'crates/service/**'
+      - 'crates/storage/**'
+      - 'crates/native/**'
+      - 'apps/studio/**'
+      - 'tooling/native_av_master_e2e.py'
+      - '.github/workflows/native-mlt-sequence-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-mlt-sequence-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+
+jobs:
+  native-av-master:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-mlt-sequence-1.98.1
+          cache-on-failure: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install pinned native runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            melt ffmpeg libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/native-mlt-sequence-e2e
+          {
+            melt -version | head -5
+            ffmpeg -version | head -3
+            ffprobe -version | head -3
+            bwrap --version
+          } > verification/native-mlt-sequence-e2e/native-runtime-versions.txt
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          set -euo pipefail
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-mlt-sequence-e2e/sandbox-profile.txt"
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build exact Semwright Broker and native providers
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          test -x target/debug/semwright
+          test -x target/debug/semwrightd
+          test -x target/debug/semwright-sandbox
+          test -x target/debug/semwright-motion-canvas-driver
+          test -x target/debug/semwright-mlt-video-driver
+          test -x target/debug/semwright-mlt-runtime-runner
+
+      - name: Build Motionwright native multisegment timeline acceptance
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
+          cargo test --locked -p motionwright-native mlt_timeline -- --nocapture
+
+      - name: Produce a real two-segment video-only MLT timeline through pinned Driver Host
+        run: |
+          set -euo pipefail
+          python3 tooling/native_mlt_sequence_e2e.py | tee verification/native-mlt-sequence-e2e/run.log
+
+      - name: Verify source- and artifact-SHA-pinned FFV1 timeline evidence
+        run: |
+          set -euo pipefail
+          root="verification/native-mlt-sequence-e2e/$GITHUB_SHA"
+          test -s "$root/result.json"
+          test -s "$root/native-multisegment-timeline-evidence.json"
+          test -s "$root/native-two-segment-video.mkv"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/native-mlt-sequence-e2e") / os.environ["GITHUB_SHA"]
+          result = json.loads((root / "result.json").read_text())
+          evidence = json.loads((root / "native-multisegment-timeline-evidence.json").read_text())
+          assert result["native_mlt_multisegment_e2e"] == "PASS"
+          assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+          assert result["assembled_video_frames"] == 33
+          assert result["rendered_source_frames"] == [32, 1]
+          assert result["assembled_video_codec"] == "ffv1"
+          assert result["assembled_video_has_audio"] is False
+          assert evidence["evidence_scope"] == "actual-native-mlt-ffv1-video-only-no-audio-master"
+          assert evidence["frame_count"] == 33
+          assert len(evidence["source"]["verified_video_segments"]) == 2
+          artifact = root / "native-two-segment-video.mkv"
+          assert hashlib.sha256(artifact.read_bytes()).hexdigest() == result["video_sha256"]
+          assert artifact.stat().st_size == result["video_bytes"]
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: motionwright-native-mlt-sequence-${{ github.sha }}
+          path: verification/native-mlt-sequence-e2e
+          if-no-files-found: error
+          retention-days: 14
