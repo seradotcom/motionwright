@@ -58,6 +58,10 @@ The pinned Film adapter admits only paired, exact-frame-aligned linear X/Y motio
 
 The pinned Film adapter now projects per-scene static camera center shifts through native subject translation when zoom=1 and rotation=0, keeping source Canvas geometry, text size, frame count and safe areas explicit. Rust tests exercise two panned scenes, native Film realization, unsupported zoom/rotation and unsafe pan bounds. This is not independent rendered pixel parity. See [static camera pan](native-film-static-pan.md).
 
+## Experimental native MLT timeline assembly
+
+A separate owner-only native-semantic MLT runner builds a project/sequence/track from real FFV1 sources using typed Semwright driver refs. Rust contract tests validate exact project revisions, created semantic references and fail-closed lookups. The runtime demands a native success receipt, exact lossless FFV1 codec/frames/digest and owner-root readback. It is **not a user-facing feature until its own actual two-segment E2E passes**, and is not an H.264/AAC audio master; see [experimental timeline](mlt-native-timeline.md).
+
 ## Bounded native MLT FFV1 source preparation
 
 A deterministic, owner-only MLT timeline recipe maps each preflight segment to an exact half-open clip interval, stable SHA-256-derived FFV1 output name and pinned landscape profile. Rust tests verify source/scene/job uniqueness, gap-free frame accounting and no generated media claims. The internal production coordinator revalidates the native source preflight before invoking the pinned Semwright MLT frames encoder per segment, verifies video-only FFV1 codec/size/FPS and checks actual artifact bytes. These are separate verified intermediates, **not** a completed multisegment MP4; see [MLT preparation](mlt-multi-segment-preparation.md).

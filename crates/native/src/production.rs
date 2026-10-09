@@ -29,7 +29,9 @@ use tokio::{
 use uuid::Uuid;
 
 mod mlt_mezzanine;
+mod mlt_timeline;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
+pub use mlt_timeline::MltVerifiedVideoTimeline;
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -64,6 +66,18 @@ const MOTION_CANVAS_COMMANDS: &[&str] = &[
 ];
 
 const MLT_COMMANDS: &[&str] = &[
+    // Application-owned, typed, closed MLT timeline construction. No general
+    // operator/shell/graph scripting escapes are enabled.
+    "driver.mlt-video.project.create",
+    "driver.mlt-video.project.close",
+    "driver.mlt-video.sequence.create",
+    "driver.mlt-video.sequence.list",
+    "driver.mlt-video.sequence.duration",
+    "driver.mlt-video.track.create",
+    "driver.mlt-video.track.list",
+    "driver.mlt-video.asset.import",
+    "driver.mlt-video.clip.insert",
+    "driver.mlt-video.render.plan",
     "driver.mlt-video.frames.encode",
     "driver.mlt-video.sync.probe",
     "driver.mlt-video.av.mux",
