@@ -11,7 +11,7 @@ on:
       - 'crates/native/examples/native-render-e2e.rs'
       - 'tooling/native_av_master_e2e.py'
       - 'tooling/creative_frame_evidence.py'
-      - 'tooling/tests/test_creative_frame_evidence.py'
+      - 'tooling/native_tests/test_creative_frame_evidence.py'
       - '.github/workflows/product-hero-e2e.yml'
   push:
     branches: ['main', 'feat/v05-creative-production']
@@ -148,7 +148,7 @@ jobs:
             -- --nocapture
 
       - name: Exercise spatial regression guardrails against synthetic failures
-        run: python3 -m unittest discover -s tooling/tests -p 'test_creative_frame_evidence.py' -v
+        run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
 
       - name: Render and inspect three native Hero variants
         run: |

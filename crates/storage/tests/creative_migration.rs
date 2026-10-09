@@ -24,7 +24,7 @@ fn legacy_database_is_read_without_revision_changes_and_upgraded_only_on_success
     .unwrap();
     drop(db);
     let mut store = Store::open(&path).unwrap();
-    let observed = store.project(created.id).unwrap();
+    let observed = store.load_project(created.id).unwrap();
     assert_eq!(observed.schema_version, 1);
     assert_eq!(observed.revision, created.revision);
     assert_eq!(observed.generation, created.generation);
@@ -37,7 +37,7 @@ fn legacy_database_is_read_without_revision_changes_and_upgraded_only_on_success
         },
     );
     assert!(rejected.is_err());
-    assert_eq!(store.project(created.id).unwrap(), observed);
+    assert_eq!(store.load_project(created.id).unwrap(), observed);
     let updated = store
         .apply(
             created.id,
@@ -68,7 +68,7 @@ fn legacy_database_is_read_without_revision_changes_and_upgraded_only_on_success
         .unwrap()
         .project;
     assert_eq!(with_hero.production_design.heroes.len(), 1);
-    assert_eq!(store.project(with_hero.id).unwrap(), with_hero);
+    assert_eq!(store.load_project(with_hero.id).unwrap(), with_hero);
 }
 
 #[test]
