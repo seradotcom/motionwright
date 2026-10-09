@@ -30,6 +30,10 @@ GitHub Actions receipts must identify app SHA, Semwright pin, suite, environment
 
 The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter compatibility. It runs Semwright's own Project Graph adapter and Effect Conformance suites from the pinned source before Motionwright's wrapper tests. A green lane proves the consumer boundary compiles and preserves the upstream contracts; it does **not** claim Graph admission, render success, or a product-level Effects PASS for a Motionwright deliverable.
 
+## App-owned CAS filesystem shard boundary
+
+Rust storage tests cover non-overwriting SHA-256 source admission, owner-private Unix files, symlinked staging/root/digest shard refusal, arbitrary-source path denial and the same fail-closed policy in reads, asset registration and portable export. See [CAS shard boundary](cas-shard-boundary.md). These are code-level security regressions, not end-user product acceptance.
+
 ## Local asset integrity and truthful Dependencies
 
 An explicit read-only [local SHA-256 asset audit](asset-integrity.md) checks exact versioned asset-digest references in bounded pages. Rust tests ingest and alter real content-addressed files, inspect duplicate and missing references, reject symlinks and stale cursors, and confirm no project edits. Synthetic Chromium tests exercise opt-in paging, source revision and voice-track associations without claiming Project Graph or owner filesystem evidence. The browser demo remains Not checked.

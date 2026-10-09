@@ -16,7 +16,7 @@ Asset admission is content-addressed and fail-closed:
 
 - input files must be regular files, not symlinks or special filesystem entries;
 - imported bytes are hashed before a project change can reference them;
-- content-addressed storage is re-hashed before commit and on bounded reads;
+- content-addressed storage is re-hashed before commit and on bounded reads; [owned CAS shard/staging boundaries](cas-shard-boundary.md) reject symlinked internal directories, use create-new destination admission, and preserve private Unix file permissions;
 - SVG is inspected even when its extension or declared media type is misleading;
 - static SVG is allowed, while scripts, event handlers, external references, active embedded content, CSS URL loading, XML entities and external stylesheets are rejected;
 - measured voice evidence enters through the dedicated audio import boundary rather than a caller-authored project mutation.

@@ -357,6 +357,7 @@ impl Store {
             conn.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
         fs::create_dir_all(&blob_root)?;
+        ensure_regular_directory(&blob_root, "content-addressed storage root")?;
         Ok(Self {
             conn,
             path,
@@ -375,15 +376,20 @@ impl Store {
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> Result<BlobDescriptor> {
         let source = source.as_ref();
         ensure_regular_file(source, "blob source")?;
+        ensure_regular_directory(&self.blob_root, "content-addressed storage root")?;
         let staging_root = self.blob_root.join(".staging");
-        fs::create_dir_all(&staging_root)?;
+        create_checked_blob_directory(&staging_root)?;
         let staging_path = staging_root.join(format!("{}.part", Uuid::now_v7()));
 
         let mut input = File::open(source)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staging_path)?;
+        let mut stage_options = OpenOptions::new();
+        stage_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            stage_options.mode(0o600);
+        }
+        let mut output = stage_options.open(&staging_path)?;
         let mut hasher = Sha256::new();
         let mut size_bytes = 0_u64;
         let mut buffer = [0_u8; 128 * 1024];
@@ -402,20 +408,28 @@ impl Store {
 
         let sha256 = hex::encode(hasher.finalize());
         let destination = self.blob_path(&sha256)?;
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if destination.exists() {
-            let existing = hash_file(&destination)?;
-            if existing.sha256 != sha256 || existing.size_bytes != size_bytes {
-                return Err(StorageError::InvalidBackup(
-                    "content-addressed blob path contains different bytes".into(),
-                ));
+        let shas = self.blob_root.join("sha256");
+        create_checked_blob_directory(&shas)?;
+        create_checked_blob_directory(&shas.join(&sha256[..2]))?;
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => {
+                let existing_path = self.checked_existing_blob_path(&sha256)?;
+                let existing = hash_file(&existing_path)?;
+                if existing.sha256 != sha256 || existing.size_bytes != size_bytes {
+                    return Err(StorageError::InvalidBackup(
+                        "content-addressed blob path contains different bytes".into(),
+                    ));
+                }
+                fs::remove_file(&staging_path)?;
             }
-            fs::remove_file(&staging_path)?;
-        } else {
-            fs::rename(&staging_path, &destination)?;
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A hard link is create-new: unlike rename, it refuses to
+                // replace a destination inserted after our preflight check.
+                // Both directories live under the same CAS root/device.
+                fs::hard_link(&staging_path, &destination)?;
+                fs::remove_file(&staging_path)?;
+            }
+            Err(error) => return Err(error.into()),
         }
 
         Ok(BlobDescriptor { sha256, size_bytes })
@@ -427,12 +441,7 @@ impl Store {
     }
 
     pub fn verify_blob(&self, digest: &str) -> Result<BlobDescriptor> {
-        let path = self.blob_path(digest)?;
-        if !path.is_file() {
-            return Err(StorageError::BlobMissing {
-                digest: digest.to_owned(),
-            });
-        }
+        let path = self.checked_existing_blob_path(digest)?;
         let descriptor = hash_file(&path)?;
         if descriptor.sha256 != digest {
             return Err(StorageError::InvalidBackup(
@@ -443,12 +452,7 @@ impl Store {
     }
 
     pub fn read_blob(&self, digest: &str, limit: u64) -> Result<Vec<u8>> {
-        let path = self.blob_path(digest)?;
-        if !path.is_file() {
-            return Err(StorageError::BlobMissing {
-                digest: digest.to_owned(),
-            });
-        }
+        let path = self.checked_existing_blob_path(digest)?;
         let size = ensure_regular_file(&path, "content-addressed blob")?.len();
         if size > limit {
             return Err(StorageError::BlobTooLarge { size, limit });
@@ -485,10 +489,7 @@ impl Store {
 
         let mut blobs = Vec::with_capacity(digests.len());
         for digest in digests {
-            let source = self.blob_path(&digest)?;
-            if !source.is_file() {
-                return Err(StorageError::BlobMissing { digest });
-            }
+            let source = self.checked_existing_blob_path(&digest)?;
             if project_blob_requires_secret_scan(&backup.project, &digest) {
                 ensure_secret_free_file(&source, "portable text-like asset")?;
             }
@@ -518,7 +519,7 @@ impl Store {
         fs::create_dir(&staging)?;
 
         for blob in &manifest.blobs {
-            let source = self.blob_path(&blob.sha256)?;
+            let source = self.checked_existing_blob_path(&blob.sha256)?;
             let target = staging.join(&blob.relative_path);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
@@ -650,6 +651,43 @@ impl Store {
             .join("sha256")
             .join(&digest[..2])
             .join(digest))
+    }
+
+    /// CAS readers must not follow symlinked staging/root/shard directories.
+    /// Checking only the final digest-named leaf misses a replaced shard.
+    fn checked_existing_blob_path(&self, digest: &str) -> Result<PathBuf> {
+        validate_digest(digest)?;
+        let dirs = [
+            self.blob_root.clone(),
+            self.blob_root.join("sha256"),
+            self.blob_root.join("sha256").join(&digest[..2]),
+        ];
+        for directory in &dirs {
+            match ensure_regular_directory(directory, "content-addressed source directory") {
+                Ok(_) => {}
+                Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(StorageError::BlobMissing {
+                        digest: digest.to_owned(),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let path = self.blob_path(digest)?;
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+                Err(StorageError::UnsafeSourcePath(
+                    "content-addressed blob leaf must be a regular non-symlink file".into(),
+                ))
+            }
+            Ok(_) => Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(StorageError::BlobMissing {
+                    digest: digest.to_owned(),
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn create_project(&mut self, project: &Project) -> Result<()> {
@@ -957,7 +995,9 @@ impl Store {
         let required_blob = match change {
             Change::AddAsset { asset } | Change::ImportMeasuredVoice { asset, .. } => {
                 match asset.content_sha256.as_deref() {
-                    Some(digest) => Some((digest.to_owned(), self.blob_path(digest)?)),
+                    Some(digest) => {
+                        Some((digest.to_owned(), self.checked_existing_blob_path(digest)?))
+                    }
                     None => None,
                 }
             }
@@ -1009,9 +1049,6 @@ impl Store {
         }
 
         if let Some((digest, path)) = required_blob {
-            if !path.is_file() {
-                return Err(StorageError::BlobMissing { digest });
-            }
             let descriptor = hash_file(&path)?;
             if descriptor.sha256 != digest {
                 return Err(StorageError::InvalidBackup(
@@ -1246,6 +1283,18 @@ fn ensure_regular_file(path: &Path, label: &str) -> Result<fs::Metadata> {
     Ok(metadata)
 }
 
+/// CAS subdirectories are created one component at a time and always
+/// revalidated; create_dir_all would silently follow an existing symlink.
+fn create_checked_blob_directory(path: &Path) -> Result<()> {
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    ensure_regular_directory(path, "content-addressed storage directory")?;
+    Ok(())
+}
+
 fn ensure_regular_directory(path: &Path, label: &str) -> Result<fs::Metadata> {
     let metadata = fs::symlink_metadata(path)?;
     let file_type = metadata.file_type();
@@ -1477,6 +1526,139 @@ mod tests {
             store.read_blob("../not-a-digest", 1024).unwrap_err(),
             StorageError::InvalidBlobDigest
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cas_shard_substitution_blocks_read_registration_export_and_ingest() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("database.sqlite3")).unwrap();
+        let source = root.path().join("original-source.bin");
+        fs::write(&source, b"bounded safe CAS bytes").unwrap();
+        let blob = store.ingest_blob_file(&source).unwrap();
+        let blob_path = store.blob_path(&blob.sha256).unwrap();
+        assert_eq!(
+            fs::metadata(&blob_path).unwrap().permissions().mode() & 0o077,
+            0,
+            "newly imported CAS bytes must be owner-private"
+        );
+        let project = store.create_named_project("Symlink-resistant CAS").unwrap();
+        let outcome = store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "cas-test-admit-asset",
+                &Change::AddAsset {
+                    asset: Asset {
+                        id: Uuid::now_v7(),
+                        name: "safe-asset.bin".into(),
+                        media_type: "application/octet-stream".into(),
+                        content_sha256: Some(blob.sha256.clone()),
+                        source_revision: None,
+                    },
+                },
+            )
+            .unwrap();
+        let shard = blob_path.parent().unwrap();
+        let preserved_shard = root.path().join("preserved-shard");
+        fs::rename(shard, &preserved_shard).unwrap();
+        symlink(&preserved_shard, shard).unwrap();
+
+        assert!(matches!(
+            store.verify_blob(&blob.sha256),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(matches!(
+            store.read_blob(&blob.sha256, 512),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(matches!(
+            store.ingest_blob_file(&source),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(matches!(
+            store.apply(
+                outcome.project.id,
+                &RevisionStamp::from(&outcome.project),
+                "cas-test-admit-another",
+                &Change::AddAsset {
+                    asset: Asset {
+                        id: Uuid::now_v7(),
+                        name: "replay.bin".into(),
+                        media_type: "application/octet-stream".into(),
+                        content_sha256: Some(blob.sha256.clone()),
+                        source_revision: None,
+                    },
+                },
+            ),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        let delivery = root.path().join("unsafe-bundle-output");
+        assert!(matches!(
+            store.export_project_bundle(project.id, &delivery),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(
+            !delivery.exists(),
+            "a failed export cannot create a destination"
+        );
+        assert_eq!(
+            fs::read(preserved_shard.join(&blob.sha256)).unwrap(),
+            b"bounded safe CAS bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cas_symlinked_staging_and_root_are_rejected_before_writes() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let external = root.path().join("outside-blobs");
+        fs::create_dir(&external).unwrap();
+        let alias = root.path().join("aliased-blob-root");
+        symlink(&external, &alias).unwrap();
+        let failed = Store::open_with_blob_root(root.path().join("aliased.sqlite3"), &alias)
+            .err()
+            .expect("symlinked blob root must not open");
+        assert!(matches!(failed, StorageError::UnsafeSourcePath(_)));
+
+        let store = Store::open(root.path().join("legit.sqlite3")).unwrap();
+        symlink(&external, store.blob_root().join(".staging")).unwrap();
+        let source = root.path().join("input.bin");
+        fs::write(&source, b"safe input stays out of outside dir").unwrap();
+        assert!(matches!(
+            store.ingest_blob_file(&source),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_dangling_cas_leaf_cannot_be_replaced_by_ingest() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("db.sqlite3")).unwrap();
+        let content = b"same bytes cannot replace existing symlink";
+        let digest = hex::encode(Sha256::digest(content));
+        let expected = store.blob_path(&digest).unwrap();
+        fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        let victim = root.path().join("nonexistent-owner-target");
+        symlink(&victim, &expected).unwrap();
+        let input = root.path().join("source.bin");
+        fs::write(&input, content).unwrap();
+        assert!(matches!(
+            store.ingest_blob_file(&input),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(
+            fs::symlink_metadata(&expected)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!victim.exists());
     }
 
     #[test]
