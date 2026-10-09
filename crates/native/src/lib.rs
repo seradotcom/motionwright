@@ -13,10 +13,12 @@ use semwright_native_sdk::{
 use std::sync::Arc;
 use uuid::Uuid;
 
+pub mod assembly;
 pub mod canonical;
 mod component_text;
 mod expressive;
 pub mod film;
+pub mod mlt_edit_plan;
 pub mod multi_renderer;
 pub mod production;
 

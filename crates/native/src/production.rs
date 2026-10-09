@@ -28,6 +28,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod mlt_mezzanine;
+pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
+
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
 const MAX_ARGS_BYTES: usize = 220_000;
@@ -786,7 +789,7 @@ fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<
         .ok_or_else(|| backend(context))
 }
 
-fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
+pub(crate) fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
     if value
         .pointer("/report/execution_status")
         .and_then(Value::as_str)
