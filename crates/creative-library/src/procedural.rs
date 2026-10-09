@@ -146,7 +146,8 @@ pub fn placements(
         let distance = (u - options.influence_x).hypot(v - options.influence_y);
         let response = (1.0 - distance / (0.10 + options.falloff * 1.5)).clamp(0.0, 1.0);
         let response = response * response * (3.0 - 2.0 * response);
-        let (mut x, mut y, mut scale, mut rotation) = (u * width, v * height, 1.0, 0.0);
+        let (mut x, mut y, mut rotation) = (u * width, v * height, 0.0);
+        let scale;
         match recipe {
             RecipeId::Repeater => {
                 x = u * width;

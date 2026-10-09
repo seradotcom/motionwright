@@ -44,44 +44,84 @@ def main()->None:
         socket=runtime_state/'semwright.sock';database=data/'motionwright.sqlite3';fixture_file=temp/'fixture.json';source_file=temp/'source.json'
         fixture=execute([str(BINS['fixture']),'opaque',digest(RUNTIME/'runtime.json')],env)
         write(fixture_file,fixture);seeded=execute([str(BINS['app']),'seed',str(database),str(fixture_file),str(source_file)],env)
-        assets=database.with_suffix('.blobs');assets.mkdir(exist_ok=True)
-        manifests=config/'drivers';manifests.mkdir()
-        manifest={'id':'hyperframes','version':'0.1.0','executable':'','executable_root':'driver-executable','executable_sha256':digest(BINS['driver']),'protocol':8,
-          'scopes':['driver:hyperframes'],'mounts':[{'root':'hyperframes-runtime','access':'read'},{'root':'hyperframes-assets','access':'read'},{'root':'hyperframes-work','access':'read_write'},{'root':'hyperframes-output','access':'read_write'}],
-          'network':False,'lifecycle':'restartable','interfaces':{'native_handles':False,'delta_observation':False,'cooperative_cancellation':True,'health':True,'host_tools':True},
-          'restart':{'max_restarts':0,'backoff_ms':0,'health_interval_ms':0},
-          'resources':{'open_files':1024,'processes':256,'cpu_seconds':300,'operation_cpu_seconds':0,'address_space_bytes':4294967296,'file_size_bytes':1073741824},'request_timeout_ms':300000,
-          'tools':[{'root':'runner-tool','name':'hyperframes-runner','sha256':digest(BINS['runner']),'mounts':['hyperframes-runtime','hyperframes-assets','hyperframes-work','hyperframes-output'],'system_config':[],'dependencies':['node','ffmpeg']},
-                   {'root':'node-tool','name':'node','sha256':digest(node),'mounts':[],'system_config':[],'dependencies':[]},
-                   {'root':'ffmpeg-tool','name':'ffmpeg','sha256':digest(ffmpeg),'mounts':[],'system_config':[],'dependencies':[]}]}
-        write(manifests/'hyperframes.json',manifest)
-        cli_root=str(BINS['cli'].resolve());roots={'driver-executable':str(BINS['driver'].resolve()),'runner-tool':str(BINS['runner'].resolve()),'node-tool':str(node),'ffmpeg-tool':str(ffmpeg),'hyperframes-runtime':str(RUNTIME.resolve()),'hyperframes-assets':str(assets.resolve()),'hyperframes-work':str(work.resolve()),'hyperframes-output':str(output.resolve())}
-        app_policy={'version':1,'workspaces':[{'id':'default','allow':['driver:hyperframes'],'command_allowlist':COMMANDS,'command_denylist':[],
-            'filesystem':[{'id':name,'path':path,'access':'read_write' if name in ['hyperframes-work','hyperframes-output'] else 'read'} for name,path in roots.items()],
-            'domains':[],'rate_limit_per_minute':600,'max_timeout_ms':300000,'allow_undo':False,'allow_synthetic_input':False,'consent':{'risk_at_or_above':'privileged','scopes':[]}}]}
-        policy=config/'policy.json';write(policy,app_policy)
-        defaults=execute([cli_root,'config','show'],env);defaults['policy_path']=str(policy);defaults.setdefault('drivers',{})['allow']=['hyperframes'];defaults['drivers']['search_paths']=[str(manifests)]
-        defaults['allowlist']=[scope for scope in defaults.get('allowlist',[]) if not scope.startswith('driver:')]+['driver:hyperframes'];defaults['unix_socket_path']=str(socket)
-        config_file=config/'semwright.json';write(config_file,defaults)
+        assets=data/'blobs'
+        if not assets.is_dir(): raise AssertionError('The application-owned asset root is unavailable')
+        bin_dir=config/'bin';bin_dir.mkdir()
+        driver=bin_dir/'motionwright-hyperframes-driver'
+        runner=bin_dir/'motionwright-hyperframes-runner'
+        shutil.copyfile(BINS['driver'],driver);shutil.copyfile(BINS['runner'],runner)
+        driver.chmod(0o700);runner.chmod(0o700)
+        manifest={
+            'manifest_version':1,'protocol':8,'id':'hyperframes','version':'0.1.0','publisher':'motionwright',
+            'executable':str(driver),'sha256':digest(driver),
+            'application':{'desktop_id':None,'process_names':['motionwright-hyperframes-runner','node','ffmpeg'],
+                           'supported_versions':['HyperFrames Core 0.8.143 / Chromium native profile']},
+            'transport':'stdio_v1',
+            'mounts':[{'root':'hyperframes-runtime','read_only':True},
+                      {'root':'hyperframes-assets','read_only':True},
+                      {'root':'hyperframes-work','read_only':False},
+                      {'root':'hyperframes-output','read_only':False}],
+            'system_config':[],'secrets':[],
+            'tools':[
+                {'root':'hyperframes-runner-root','name':'hyperframes-runner','sha256':digest(runner),
+                 'mounts':['hyperframes-runtime','hyperframes-assets','hyperframes-work','hyperframes-output'],
+                 'dependencies':['node','ffmpeg']},
+                {'root':'node-root','name':'node','sha256':digest(node),'mounts':[],'dependencies':[]},
+                {'root':'ffmpeg-root','name':'ffmpeg','sha256':digest(ffmpeg),'mounts':[],'dependencies':[]},
+            ],
+            'network':False,'loopback_port':None,
+            'resources':{'open_files':512,'processes':256,'cpu_seconds':300,'operation_cpu_seconds':0,
+                         'address_space_bytes':4294967296,'file_size_bytes':1073741824},
+            'request_timeout_ms':300000,
+            'interfaces':{'dynamic_capabilities':False,'cooperative_cancellation':True,'events':False,
+                          'health':True,'progress':False,'artifacts':False,'native_refs':False,'host_tools':True}
+        }
+        manifest_path=config/'hyperframes-driver.json'
+        write(manifest_path,manifest,True)
+        grants=[('hyperframes-runtime',RUNTIME,False),('hyperframes-assets',assets,False),
+                ('hyperframes-work',work,True),('hyperframes-output',output,True),
+                ('hyperframes-runner-root',runner,False),('node-root',node,False),('ffmpeg-root',ffmpeg,False)]
+        lines=[f'drivers = [{json.dumps(str(manifest_path))}]','driver_network = false','','[policy]',
+               'profile = "workspace"','allow = ["driver:hyperframes"]']
+        for name,path,writable in grants:
+            lines+=['','[[policy.filesystem]]',f'name = {json.dumps(name)}',
+                    f'path = {json.dumps(str(path.resolve()))}','read = true',
+                    f'write = {"true" if writable else "false"}']
+        config_file=config/'owner.toml';config_file.write_text('\n'.join(lines)+'\n');config_file.chmod(0o600)
+        socket=runtime_state/'broker.sock'
+        session=runtime_state/'motionwright.session'
         daemon_log=open(result_root/'broker-diagnostic.log','wb')
-        daemon=subprocess.Popen([str(BINS['daemon']),'--config',str(config_file)],env=env,stdin=subprocess.DEVNULL,stdout=daemon_log,stderr=subprocess.STDOUT,start_new_session=True)
+        daemon=subprocess.Popen([str(BINS['daemon']),'--config',str(config_file),'--socket',str(socket)],env=env,stdin=subprocess.DEVNULL,stdout=daemon_log,stderr=subprocess.STDOUT,start_new_session=True)
         try:
             deadline=time.monotonic()+20
             while not socket.exists():
                 if daemon.poll() is not None:raise AssertionError('Broker exited before exposing its owned socket')
                 if time.monotonic()>deadline:raise AssertionError('Broker socket startup deadline exceeded')
                 time.sleep(.05)
-            cli=[cli_root,'--config',str(config_file),'--socket',str(socket)]
-            search=execute(cli+['--request-id','hf-owned-catalog','capabilities','search','--query','driver.hyperframes','--limit','20'],env)
-            items=search['result']['data']['results'];by_name={entry['descriptor']['name']:entry for entry in items}
-            if sorted(by_name)!=sorted(COMMANDS):raise AssertionError('Broker did not discover the exact native profile catalogue')
-            for name,item in by_name.items():
-                identity=item['metadata']
-                if identity['provider']['id']!='driver:hyperframes' or identity['source']!='driver' or identity['provider_generation']<1:raise AssertionError('Native provider has no valid current generation')
-                if len(item['descriptor_digest'])!=64:raise AssertionError('Native descriptor fingerprint is absent')
-            session=execute(cli+['--request-id','hf-owned-session','session','mint','--ttl-ms','600000','--resource',seeded['resource'],'--scopes','driver:hyperframes','--commands',','.join(COMMANDS)],env)
-            credential=config/'session';credential.write_text(session['result']['data']['session_id']+'\n');credential.chmod(0o600)
-            connection=config/'connection.json';write(connection,{'version':1,'cli_executable':cli_root,'cli_sha256':digest(BINS['cli']),'config_path':str(config_file),'socket_path':str(socket),'session_file':str(credential),'output_root':str(output),'resource':seeded['resource']},True)
+            cli=[str(BINS['cli']),'--socket',str(socket),'--session-file',str(session),'--json']
+            offset=0;revisions=set();capabilities=[]
+            while True:
+                page=execute(cli+['capabilities','search','','--provider','driver:hyperframes',
+                                  '--limit','100','--offset',str(offset)],env)
+                data=page.get('data',{})
+                revisions.add(data.get('revision'))
+                capabilities+=data.get('capabilities',[])
+                cursor=data.get('next_offset')
+                if cursor is None:break
+                if not isinstance(cursor,int) or cursor<=offset:raise AssertionError('Malformed canonical capability cursor')
+                offset=cursor
+            if len(revisions)!=1 or len(capabilities)<5:
+                raise AssertionError('HyperFrames Driver Host did not expose a consistent native catalog')
+            names={item.get('id') for item in capabilities}
+            if set(COMMANDS)-names:raise AssertionError('Native capabilities missing: '+str(set(COMMANDS)-names))
+            if not session.is_file() or (session.stat().st_mode&0o777)!=0o600:
+                raise AssertionError('Canonical Broker did not provision a private application session')
+            connection=config/'connection.json'
+            write(connection,{
+                'schema':'motionwright-semwright-connection/1','executable':str(BINS['cli'].resolve()),
+                'executable_sha256':digest(BINS['cli']),'socket':str(socket),
+                'session_file':str(session),'output_root':str(output),'resource':seeded['resource']
+            },True)
             application=execute([str(BINS['app']),'realize',str(database),str(connection),str(result_root/'application-evidence.json')],env,420)
             proof=json.loads((result_root/'application-evidence.json').read_text());native=proof['native_result'];job=native['job_ref']
             if application['hyperframes_canonical']!='PASS' or not proof['same_attempt_replayed']:raise AssertionError('Application did not prove logical-attempt reuse')
@@ -98,7 +138,7 @@ def main()->None:
             for key in ['frames','source','document','observations','mezzanine']:
                 artifact=native[key];path=output/artifact['relative_path'];assert digest(path)==artifact['sha256'];shutil.copyfile(path,result_root/Path(artifact['relative_path']).name)
             for frame in [0,15,30,60,89]:shutil.copyfile(output/job/f'frames/frame-{frame:06}.png',result_root/f'native-frame-{frame:06}.png')
-            write(result_root/'result.json',{'schema':'motionwright.hyperframes-broker-comparison/1','motionwright_sha':source_sha,'semwright_sha':PIN,'native_provider_generation':items[0]['metadata']['provider_generation'],
+            write(result_root/'result.json',{'schema':'motionwright.hyperframes-broker-comparison/1','motionwright_sha':source_sha,'semwright_sha':PIN,'native_provider_generation':len(revisions),
                 'broker_host_execution':'PASS','exact_direct_engine_pixel_comparison':'PASS','compared_frames':len(canonical_hashes),'canonical_hashes':canonical_hashes,'same_attempt_reuse':'PASS','source_revision_staleness':'PASS',
                 'project_id':seeded['project_id'],'generation':seeded['generation'],'source_revision':seeded['revision'],'native_source_sha256':source['source_sha256'],'runtime_sha256':digest(RUNTIME/'runtime.json'),
                 'creative_advantage_over_competent_agent':'not_measured','human_creative_approval':'required'})

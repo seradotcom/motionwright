@@ -1,7 +1,7 @@
 use crate::*;
 use native::{
-    Blend, Clip, Content, Curve, Effects, Fit, Font, Keyframe, Node, Point, Pose, Property,
-    TextAlign, TextRun,
+    Blend, Clip, Content, Curve, Effects, Fit, Keyframe, Node, Point, Pose, Property, TextAlign,
+    TextRun,
 };
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "backend", content = "source", rename_all = "snake_case")]
@@ -76,7 +76,7 @@ pub fn realize(
         source_sha256,
         output,
         media_asset_ids,
-        source_classification: classified.into(),
+        source_classification: classified.to_owned(),
         creative_approval: "human_review_required".into(),
     })
 }

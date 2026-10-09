@@ -160,27 +160,72 @@ jobs:
         run: |
           set -euo pipefail
           /usr/bin/python3 tooling/hyperframes/native_smoke.py
-      - name: Resolve the canonical Broker dependency
-        id: provider
+      - name: Publish source-bound native evidence, not creative acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-native-${{ github.sha }}
+          path: verification/hyperframes-native/
+          if-no-files-found: warn
+          retention-days: 7
+
+  canonical-broker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Resolve pinned Semwright version
+        id: pin
         run: |
-          set -euo pipefail
           echo "sha=$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: seradotcom/semwright
-          ref: ${{ steps.provider.outputs.sha }}
+          ref: ${{ steps.pin.outputs.sha }}
           path: _semwright
           persist-credentials: false
-      - name: Build exact canonical Broker and Driver Host
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: hyperframes-broker-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: runtime/hyperframes/package-lock.json
+      - name: Provision disposable sandbox-compatible browser and pinned runtime
         run: |
           set -euo pipefail
-          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.provider.outputs.sha }}"
-          sudo apt-get install -y --no-install-recommends bubblewrap libpipewire-0.3-dev pkg-config clang
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
+          # Only on this disposable CI worker: admit Chromium's own unprivileged
+          # namespace sandbox under Ubuntu 24 AppArmor. Browser sandbox and
+          # the distinct Semwright/bwrap policy must both remain enabled.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          unshare -Ur true
+          cd runtime/hyperframes
+          npm ci --ignore-scripts --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps chromium
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
+      - name: Build application driver and pinned Semwright Host
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-hyperframes-driver --bins
+          cargo build --locked -p motionwright-hyperframes-profile --example native_fixture
           cargo build --locked -p motionwright-native --example native-hyperframes-e2e
           cd _semwright
           cargo build --locked -p semwright-daemon -p semwright-cli --bins
           cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
-      - name: Exercise the real Driver Host and compare every frame with the direct engine
+      - name: Compare canonical Host execution against the same source in the direct renderer
         env:
           SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
@@ -190,14 +235,10 @@ jobs:
           mkdir -p verification/hyperframes-broker
           bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh "$GITHUB_WORKSPACE/verification/hyperframes-broker/sandbox-profile.txt"
           /usr/bin/python3 tooling/hyperframes/broker_smoke.py
-
-      - name: Publish source-bound native evidence, not creative acceptance
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: hyperframes-native-${{ github.sha }}
-          path: |
-            verification/hyperframes-native/
-            verification/hyperframes-broker/
+          name: hyperframes-canonical-broker-${{ github.sha }}
+          path: verification/hyperframes-broker/
           if-no-files-found: warn
           retention-days: 7
