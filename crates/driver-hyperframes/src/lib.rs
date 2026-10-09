@@ -121,11 +121,11 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn atomic_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
     write_new(&temporary, &serde_json::to_vec(value)?)?;
-    if let Ok(metadata) = fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            let _ = fs::remove_file(temporary);
-            return Err(invalid("Refusing to replace a non-regular driver journal"));
-        }
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        let _ = fs::remove_file(temporary);
+        return Err(invalid("Refusing to replace a non-regular driver journal"));
     }
     fs::rename(&temporary, path)?;
     Ok(())
