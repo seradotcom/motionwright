@@ -404,7 +404,7 @@ impl ObservationProvider for MotionwrightObserver {
                     .production_jobs_snapshot(project_id, &snapshot)
                     .map_err(storage_error)?;
                 let offset = if let Some((_, position)) = &cursor {
-                    let parsed = position
+                    position
                         .parse::<usize>()
                         .ok()
                         .filter(|offset| {
@@ -412,8 +412,7 @@ impl ObservationProvider for MotionwrightObserver {
                         })
                         .ok_or_else(|| {
                             Error::invalid("Production job cursor does not make progress")
-                        })?;
-                    parsed
+                        })?
                 } else {
                     0
                 };
