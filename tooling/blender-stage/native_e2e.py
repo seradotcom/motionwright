@@ -14,7 +14,8 @@ def digest(path:Path)->str:
 def command(args:list[str],log:Path,timeout:int=360)->bytes:
  observed=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=timeout,check=False)
  log.write_bytes(observed.stdout)
- if observed.returncode:raise AssertionError('Native Blender stage process failed: '+str(args[:2])+'\n'+observed.stdout.decode(errors='replace')[-5500:])
+ if observed.returncode or b'Traceback (most recent call last)' in observed.stdout or b'RuntimeError:' in observed.stdout:
+  raise AssertionError('Native Blender stage process failed: '+str(args[:2])+'\n'+observed.stdout.decode(errors='replace')[-5500:])
  return observed.stdout
 def main()->None:
  if os.getenv('GITHUB_ACTIONS')!='true':raise SystemExit('Blender production acceptance must run on a disposable CI worker')

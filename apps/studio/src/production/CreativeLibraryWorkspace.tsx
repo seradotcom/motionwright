@@ -168,6 +168,21 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
           {auditionUrl&&<audio controls src={auditionUrl} preload="none" aria-label="Original sound audition"/>}
           <p className="production-help">48 kHz stereo PCM, deterministic and self-contained. No claim of voice sync, loudness mastering or licensed library music.</p>
         </section>}
+        {preview&&<details className="native-runtime-panel">
+          <summary>Renderer compatibility and explicit losses · 7 targets</summary>
+          <p className="production-help">These are authoring-level assessments, not pixel test results. Runtime grants and creative approval are always separate.</p>
+          <table className="native-fidelity-table"><thead><tr><th>Target</th><th>Editable</th><th>Converted</th><th>Unavailable</th></tr></thead>
+          <tbody>{preview.fidelity_reports.map(report=><tr key={report.target}>
+            <td>{emphasis(report.target)}</td>
+            <td>{report.properties.filter(p=>p.state==='native'||p.state==='translated').length}</td>
+            <td>{report.properties.filter(p=>p.state==='baked'||p.state==='approximated').length}</td>
+            <td>{report.properties.filter(p=>p.state==='unavailable').length}</td>
+          </tr>)}</tbody></table>
+          {preview.fidelity_reports.map(report=><details key={report.target}><summary>{emphasis(report.target)} · {report.properties.length} authored feature groups</summary>
+            <p className="production-help">{report.summary}</p>
+            <ul>{report.properties.map(property=><li key={property.feature}><strong>{emphasis(property.feature)} — {property.state}.</strong> {property.loss_or_limitation}</li>)}</ul>
+          </details>)}
+        </details>}
         {preview&&<details><summary>Read the retained typed plan</summary><pre className="native-source-code" style={{overflow:'auto',maxHeight:340,fontSize:10}}>{JSON.stringify(preview.renderer_plan,null,2)}</pre></details>}
       </section>
     </div>}

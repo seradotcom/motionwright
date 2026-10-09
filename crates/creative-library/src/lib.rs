@@ -2,6 +2,7 @@
 //! All outputs are editable, bounded native documents with stable component identities.
 mod catalog;
 mod data;
+mod fidelity;
 mod procedural;
 mod profiles;
 mod realization;
@@ -10,6 +11,7 @@ mod stage;
 mod wav;
 pub use catalog::*;
 pub use data::*;
+pub use fidelity::*;
 pub use motionwright_hyperframes_profile as native;
 pub use procedural::*;
 pub use profiles::*;

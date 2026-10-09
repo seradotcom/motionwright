@@ -215,3 +215,121 @@ fn prior_schema_reads_are_pure_but_renderer_native_state_cannot_be_mislabeled_as
     project.schema_version = 2;
     assert!(project.validate().is_err());
 }
+
+#[test]
+fn ten_consecutive_source_revisions_preserve_human_protection_and_reject_stale_agents() {
+    let (mut project, native) = fixture();
+    project
+        .apply_change(&Change::EditCreativeWorkspace {
+            edit: CreativeWorkspaceEdit::UpsertNativeScene {
+                scene: native.clone(),
+                expected_source_sha256: None,
+            },
+        })
+        .unwrap();
+    let node_id = match &native.source {
+        NativeSceneSource::Hyperframes(doc) => doc.nodes[0].id,
+    };
+    let initial = project.production_design.workspace.native_scenes[0]
+        .source
+        .source_digest()
+        .unwrap();
+    project
+        .apply_change(&Change::EditCreativeWorkspace {
+            edit: CreativeWorkspaceEdit::SetNativeProtection {
+                id: native.id,
+                node_id,
+                protection: NativeProtection::Field {
+                    field: h::NodeField::Content,
+                },
+                locked: true,
+                expected_source_sha256: initial,
+                rationale: "Owner-protected original visual content across ten agent revisions"
+                    .into(),
+            },
+        })
+        .unwrap();
+    let protected = project.production_design.workspace.native_scenes[0].clone();
+    let start_revision = project.revision;
+    for iteration in 0..10 {
+        let before = project.clone();
+        let current = before.production_design.workspace.native_scenes[0].clone();
+        let expected = current.source.source_digest().unwrap();
+        let mut proposed = current.clone();
+        let NativeSceneSource::Hyperframes(doc) = &mut proposed.source;
+        doc.nodes[0].pose.y = 41.0 + iteration as f64 * 3.0;
+        doc.nodes[0].effects.blur = iteration as f64 / 4.0;
+        let change = Change::EditCreativeWorkspace {
+            edit: CreativeWorkspaceEdit::UpsertNativeScene {
+                scene: proposed.clone(),
+                expected_source_sha256: Some(expected.clone()),
+            },
+        };
+        let diff = project
+            .preview_creative_workspace(match &change {
+                Change::EditCreativeWorkspace { edit } => edit,
+                _ => unreachable!("only one native change"),
+            })
+            .unwrap();
+        assert_eq!(project, before, "Preview must remain read-only");
+        assert_eq!(diff.changed_nodes, vec![node_id]);
+        assert_eq!(diff.source_sha256, Some(expected.clone()));
+        project.apply_change(&change).unwrap();
+        assert!(
+            project.revision > before.revision,
+            "Agent commit must create a revision"
+        );
+        assert_eq!(
+            project.production_design.workspace.native_scenes[0],
+            proposed
+        );
+        // Different clients may retain an old digest. It cannot be applied later,
+        // even when the proposed scene happens to be structurally equivalent.
+        let stale = Change::EditCreativeWorkspace {
+            edit: CreativeWorkspaceEdit::UpsertNativeScene {
+                scene: proposed.clone(),
+                expected_source_sha256: Some(expected),
+            },
+        };
+        assert!(
+            project.apply_change(&stale).is_err(),
+            "stale revision {iteration} was accepted"
+        );
+        assert_eq!(
+            project.production_design.workspace.native_scenes[0],
+            proposed
+        );
+        let decoded: Project =
+            serde_json::from_slice(&serde_json::to_vec(&project).unwrap()).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(
+            decoded.production_design.workspace.native_scenes[0],
+            proposed
+        );
+    }
+    assert!(project.revision >= start_revision + 10);
+    let current = project.production_design.workspace.native_scenes[0].clone();
+    let mut forbidden = current.clone();
+    let NativeSceneSource::Hyperframes(document) = &mut forbidden.source;
+    document.nodes[0].content = h::Content::Group;
+    let before = project.clone();
+    assert!(
+        project
+            .apply_change(&Change::EditCreativeWorkspace {
+                edit: CreativeWorkspaceEdit::UpsertNativeScene {
+                    scene: forbidden,
+                    expected_source_sha256: Some(current.source.source_digest().unwrap())
+                }
+            })
+            .is_err()
+    );
+    assert_eq!(project, before);
+    let NativeSceneSource::Hyperframes(doc) = &current.source;
+    assert_eq!(doc.nodes[0].locked_fields, vec![h::NodeField::Content]);
+    assert_eq!(
+        doc.nodes[0].content,
+        match protected.source {
+            NativeSceneSource::Hyperframes(ref doc) => doc.nodes[0].content.clone(),
+        }
+    );
+}

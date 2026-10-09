@@ -409,6 +409,19 @@ pub async fn creative_component_proposal(
     }
     let contribution = library::realize(&request.component, &request.brand, &request.taste)
         .map_err(|e| e.to_string())?;
+    let fidelity_reports = [
+        library::RealizationTarget::Hyperframes,
+        library::RealizationTarget::Blender,
+        library::RealizationTarget::MotionCanvas,
+        library::RealizationTarget::MltVideo,
+        library::RealizationTarget::ManimCommunity,
+        library::RealizationTarget::FframesExperimental,
+        library::RealizationTarget::OriginalPcmWav,
+    ]
+    .into_iter()
+    .map(|target| library::negotiate_realization(&contribution, target))
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
     let mut reply = json!({
         "component_id":contribution.component_id,
         "recipe":contribution.recipe,
@@ -422,6 +435,7 @@ pub async fn creative_component_proposal(
         "source_classification":contribution.source_classification,
         "creative_approval":contribution.creative_approval,
         "renderer_plan":contribution.output,
+        "fidelity_reports":fidelity_reports,
         "committed":false,
         "authority":"read_only_source_proposal_not_renderer_execution"
     });

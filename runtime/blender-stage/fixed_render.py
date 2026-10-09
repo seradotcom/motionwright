@@ -39,6 +39,7 @@ def box(name,center,dims,surface,bevel=0,parent=None):
     if bevel:
         b=obj.modifiers.new('Physical rounded edge','BEVEL')
         b.width=bevel;b.segments=4
+        if hasattr(obj.data,'use_auto_smooth'):obj.data.use_auto_smooth=True
         n=obj.modifiers.new('Light-weighted normals','WEIGHTED_NORMAL');n.keep_sharp=True
     return obj
 def source_image(root,declared,id_):

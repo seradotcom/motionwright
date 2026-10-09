@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends blender python3-pil
+          sudo apt-get install -y --no-install-recommends blender python3-pil python3-numpy
           blender -b --version | head -1
           python3 -m py_compile runtime/blender-stage/fixed_render.py runtime/blender-stage/inspect_scene.py
       - name: Build typed stage plan and reopen actual Blender camera/geometry

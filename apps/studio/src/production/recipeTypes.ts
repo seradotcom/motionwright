@@ -44,5 +44,20 @@ export interface CreativeComponentProposal {
  component_id:string;recipe:string;recipe_version:number;input_sha256:string;source_sha256:string;
  brand_id:string;brand_revision:number;taste_id:string;taste_revision:number;
  source_classification:string;creative_approval:string;renderer_plan:{backend:RecipeBackend;source:unknown};
+ fidelity_reports:RealizationFidelity[];
  committed:false;authority:string;normalized_edit?:CreativeWorkspaceEdit;difference?:NativeSceneDifference
+}
+
+export type FidelityState='native'|'translated'|'baked'|'approximated'|'unavailable';
+export type RealizationTarget='hyperframes'|'blender'|'motion_canvas'|'mlt_video'|'manim_community'|'fframes_experimental'|'original_pcm_wav';
+export interface PropertyFidelity {
+ feature:string;state:FidelityState;original_source_retained:boolean;target_editable:boolean;
+ source_explanation:string;loss_or_limitation:string
+}
+export interface RealizationFidelity {
+ schema:'motionwright.realization-fidelity/1';component_id:string;recipe:string;source_sha256:string;
+ target:RealizationTarget;native_source_retained:boolean;
+ project_level_source_admission_verified:boolean;renderer_readback_verified:boolean;
+ creative_quality_approved:boolean;score:null;
+ properties:PropertyFidelity[];executable_without_separate_owner_grant:boolean;summary:string
 }
