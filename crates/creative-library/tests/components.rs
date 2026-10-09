@@ -232,3 +232,40 @@ fn a_transparent_native_canvas_is_not_replaced_with_an_opaque_brand_color() {
             .contains("background:transparent")
     );
 }
+
+#[test]
+fn original_wav_is_real_pcm_and_bit_reproducible() {
+    let request = fixture(RecipeId::FocusHit, 0, Locale::En);
+    let plan = sound_component(&request).unwrap();
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    let first = write_original_wav(&plan, &mut a).unwrap();
+    let second = write_original_wav(&plan, &mut b).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(a, b);
+    assert_eq!(&a[0..4], b"RIFF");
+    assert_eq!(&a[8..12], b"WAVE");
+    assert_eq!(u16::from_le_bytes(a[22..24].try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(a[24..28].try_into().unwrap()), 48000);
+    assert_eq!(u16::from_le_bytes(a[34..36].try_into().unwrap()), 16);
+    assert_eq!(first.file_bytes as usize, a.len());
+    assert!(first.measured_sample_peak_dbfs < 0.0);
+    let silence = fixture(RecipeId::SilenceRelease, 0, Locale::En);
+    let plan = sound_component(&silence).unwrap();
+    assert!(write_original_wav(&plan, &mut Vec::new()).is_err());
+}
+#[test]
+fn silence_release_acts_only_on_a_real_existing_pcm_bus() {
+    let mut request = fixture(RecipeId::SilenceRelease, 0, Locale::En);
+    request.motion = false;
+    let plan = sound_component(&request).unwrap();
+    let start = plan.sample_frames - 4;
+    let input = vec![[0.5_f32, 0.25_f32]; 4];
+    let output = apply_existing_bus_envelope(&input, start, &plan.gain_envelope).unwrap();
+    assert_eq!(output[3], [0.0, 0.0]);
+    assert!(
+        output
+            .iter()
+            .all(|frame| frame[0] <= 0.5 && frame[1] <= 0.25)
+    );
+}

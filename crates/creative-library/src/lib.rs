@@ -7,6 +7,7 @@ mod profiles;
 mod realization;
 mod sound;
 mod stage;
+mod wav;
 pub use catalog::*;
 pub use data::*;
 pub use motionwright_hyperframes_profile as native;
@@ -19,6 +20,7 @@ pub use sound::*;
 pub use stage::*;
 use thiserror::Error;
 use uuid::Uuid;
+pub use wav::*;
 
 #[derive(Debug, Clone, Error, PartialEq)]
 #[error("{0}")]

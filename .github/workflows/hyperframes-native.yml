@@ -169,6 +169,52 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  creative-visual-review:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: creative-visual-${{ matrix.shard }}-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: runtime/hyperframes/package-lock.json
+      - name: Provision isolated native renderer without executing imported source programs
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
+          cd runtime/hyperframes
+          npm ci --ignore-scripts --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps chromium
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
+      - name: Build typed catalog/renderer profile and execute native frame review
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-hyperframes-driver --bin motionwright-hyperframes-runner
+          cargo build --locked -p motionwright-creative-library --example native_catalog_fixture
+          /usr/bin/python3 tooling/hyperframes/creative_visual_e2e.py ${{ matrix.shard }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-creative-review-shard-${{ matrix.shard }}-${{ github.sha }}
+          path: verification/hyperframes-creative/
+          if-no-files-found: warn
+          retention-days: 7
+
   canonical-broker:
     runs-on: ubuntu-24.04
     timeout-minutes: 50

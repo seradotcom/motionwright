@@ -23,9 +23,14 @@ def write(path:Path,value:dict,private:bool=False)->None:
 def execute(command:list[str],env:dict[str,str],timeout:int=360)->dict:
     result=subprocess.run(command,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
     if result.returncode:raise AssertionError('Native acceptance command failed: '+str(command[:2])+'\n'+result.stderr.decode(errors='replace')[-15000:])
-    lines=result.stdout.decode().strip().splitlines()
-    if not lines:raise AssertionError('Native acceptance command returned no data')
-    return json.loads(lines[-1])
+    output=result.stdout.decode().strip()
+    if not output:raise AssertionError('Native acceptance command returned no data')
+    try:return json.loads(output)
+    except json.JSONDecodeError:
+        for line in reversed(output.splitlines()):
+            try:return json.loads(line)
+            except json.JSONDecodeError:pass
+        raise AssertionError('Native command output was neither one JSON document nor newline-delimited JSON')
 def schema(body:dict)->dict:
     return body.get('result',{}).get('data',body)
 def main()->None:

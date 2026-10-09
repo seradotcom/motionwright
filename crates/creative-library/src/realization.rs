@@ -89,7 +89,6 @@ struct Compositor<'a> {
     assets: Vec<native::Asset>,
     w: f64,
     h: f64,
-    margin: f64,
     portrait: bool,
 }
 impl<'a> Compositor<'a> {
@@ -104,7 +103,6 @@ impl<'a> Compositor<'a> {
             assets: Vec::new(),
             w,
             h,
-            margin: w.min(h) * brand.minimum_margin_ratio,
             portrait: h > w,
         }
     }
@@ -484,7 +482,7 @@ pub fn realize_html(
                 )?;
                 let frames = req.output.frames;
                 let start = (index as u32 * 4).min(frames - 1);
-                if req.motion {
+                if req.motion && start > 0 {
                     c.key(n, 0, Property::Opacity, 0.0, Curve::Hold);
                     c.key(n, start, Property::Opacity, 1.0, Curve::EaseInOut);
                 }

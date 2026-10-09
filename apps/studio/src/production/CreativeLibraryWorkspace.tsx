@@ -33,7 +33,7 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
   const [sourceId,setSourceId]=useState(''),[secondId,setSecondId]=useState('');
   const [owner,setOwner]=useState(''),[license,setLicense]=useState(''),[authorized,setAuthorized]=useState(false);
   const [dataJson,setDataJson]=useState(''),[preview,setPreview]=useState<CreativeComponentProposal|null>(null);
-  const [instanceId,setInstanceId]=useState(()=>crypto.randomUUID());
+  const [instanceId,setInstanceId]=useState<string>(()=>crypto.randomUUID());
   useEffect(()=>{
     let active=true;
     if(!available)return;
