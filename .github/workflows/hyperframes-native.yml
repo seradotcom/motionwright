@@ -47,6 +47,40 @@ jobs:
           cargo test --locked -p motionwright-creative-library --all-targets
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
 
+  native-blender-stage-preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-blender-stage-1.98.1
+          cache-on-failure: true
+      - name: Install disposable CPU-only Blender and native source dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends blender python3-pil
+          blender -b --version | head -1
+          python3 -m py_compile runtime/blender-stage/fixed_render.py runtime/blender-stage/inspect_scene.py
+      - name: Build typed stage plan and reopen actual Blender camera/geometry
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-creative-library --example native_catalog_fixture
+          /usr/bin/python3 tooling/blender-stage/native_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: original-blender-stage-preview-${{ github.sha }}
+          path: verification/blender-native-stage/
+          if-no-files-found: warn
+          retention-days: 7
+
   creative-original-audio:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

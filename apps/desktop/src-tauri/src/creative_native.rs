@@ -552,7 +552,7 @@ pub async fn creative_sound_audition(
         return Err("Audition source changed after it was proposed.".into());
     }
     let plan = request.plan;
-    let bytes = tauri::async_runtime::spawn_blocking(move || {
+    let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
         let mut pcm = Vec::new();
         let receipt = write_original_wav(&plan, &mut pcm).map_err(|error| error.to_string())?;
         if pcm.len() > 3 * 1024 * 1024 || receipt.file_bytes != pcm.len() as u64 {

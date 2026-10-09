@@ -9,6 +9,7 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -214,6 +215,34 @@ fn artifact(output: &Path, relative: &str, mime: &'static str, max: u64) -> Resu
         media_type: mime,
     })
 }
+/// Bounded phase-only evidence for an owner-granted disposable job. Never logs
+/// source, paths, environment, arguments, stderr or credentials.
+fn phase(work: &Path, name: &'static str) -> Result<()> {
+    let allowed = [
+        "roots",
+        "runtime",
+        "document",
+        "source",
+        "launcher",
+        "capture",
+        "capture_nonzero",
+        "encoder",
+        "encoder_nonzero",
+        "finished",
+    ];
+    if !allowed.contains(&name) {
+        return Err(invalid("Unrecognized native phase identifier"));
+    }
+    let file = work.join("native-run-phases.txt");
+    let mut stream = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)?;
+    stream.write_all(name.as_bytes())?;
+    stream.write_all(b"\n")?;
+    stream.sync_data()?;
+    Ok(())
+}
 fn render(args: Args) -> Result<()> {
     let runtime = root(&args.runtime)?;
     let work_parent = root(&args.work)?;
@@ -221,9 +250,11 @@ fn render(args: Args) -> Result<()> {
     let assets = root(&args.assets)?;
     executable(&args.node)?;
     executable(&args.ffmpeg)?;
-    let _receipt = validate_runtime(&runtime)?;
     let work = root(&work_parent.join(&args.job))?;
     let output = root(&output_parent.join(&args.job))?;
+    phase(&work, "roots")?;
+    let _receipt = validate_runtime(&runtime)?;
+    phase(&work, "runtime")?;
     let plan_bytes = read(&work, "plan.json", 2 * 1024 * 1024)?;
     if sha(&plan_bytes) != args.plan_sha {
         return Err(invalid("Plan digest changed after admission"));
@@ -235,6 +266,7 @@ fn render(args: Args) -> Result<()> {
         ));
     }
     validate_plan(&plan).map_err(|e| invalid(e.to_string()))?;
+    phase(&work, "document")?;
     let html = compile_html(&plan.document).map_err(|e| invalid(e.to_string()))?;
     if sha(html.as_bytes()) != args.source_sha {
         return Err(invalid(
@@ -246,6 +278,7 @@ fn render(args: Args) -> Result<()> {
             "Retained native source was modified before execution",
         ));
     }
+    phase(&work, "source")?;
     write_new(&work.join("authoring.js"), AUTHOR.as_bytes())?;
     write_new(&work.join("capture.mjs"), CAPTURE.as_bytes())?;
     let mut capture = Command::new(&args.node);
@@ -257,12 +290,15 @@ fn render(args: Args) -> Result<()> {
         .arg(&assets)
         .arg(&args.plan_sha);
     child_environment(&mut capture, &runtime, &work)?;
+    phase(&work, "launcher")?;
     let status = capture.status()?;
     if !status.success() {
+        phase(&work, "capture_nonzero")?;
         return Err(invalid(format!(
             "HyperFrames native capture failed with {status}"
         )));
     }
+    phase(&work, "capture")?;
     let manifest_bytes = read(&output, "frames.json", 4 * 1024 * 1024)?;
     let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
     let c = &plan.document.canvas;
@@ -327,10 +363,12 @@ fn render(args: Args) -> Result<()> {
         .args(["-f", "matroska", "mezzanine.mkv"]);
     let status = encode.status()?;
     if !status.success() {
+        phase(&work, "encoder_nonzero")?;
         return Err(invalid(format!(
             "Native mezzanine encoding failed with {status}"
         )));
     }
+    phase(&work, "encoder")?;
     // Keep the HTML, original typed plan and source digests with the native result.
     write_new(&output.join("source.html"), html.as_bytes())?;
     write_new(&output.join("source.json"), &plan_bytes)?;
@@ -346,6 +384,7 @@ fn render(args: Args) -> Result<()> {
         &output.join("result.json"),
         &serde_json::to_vec_pretty(&result)?,
     )?;
+    phase(&work, "finished")?;
     println!(
         "{}",
         json!({"job":args.job,"frame_count":c.frames,"source_sha256":args.source_sha})

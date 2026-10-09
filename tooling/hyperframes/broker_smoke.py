@@ -139,7 +139,8 @@ def main()->None:
                                      'journal':json.loads(journal.read_text()) if journal.is_file() else None,
                                      'has_native_plan':(folder/'plan.json').is_file(),
                                      'has_native_source':(folder/'index.html').is_file(),
-                                     'native_result_present':(output/folder.name/'result.json').is_file()})
+                                     'native_result_present':(output/folder.name/'result.json').is_file(),
+                                     'phases':(folder/'native-run-phases.txt').read_text().splitlines() if (folder/'native-run-phases.txt').is_file() else []})
                 write(result_root/'attempt-diagnostics.json',{'schema':'motionwright.synthetic-attempt-diagnostics/1','attempts':attempts,
                      'source_sha256':json.loads(source_file.read_text())['source_sha256']})
                 raise
