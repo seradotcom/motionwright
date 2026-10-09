@@ -201,7 +201,7 @@ impl<'a> Compositor<'a> {
                     .max()
                     .unwrap_or(1)
                     .max(1) as f64
-                    * 0.5),
+                    * 0.78),
         );
         let size = target.min(max_from_height).clamp(4.0, 128.0);
         pose.height = pose.height.max(lines * size * 1.2);

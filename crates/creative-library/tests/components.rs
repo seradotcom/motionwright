@@ -102,7 +102,7 @@ fn all_recipes_create_distinct_editable_native_or_source_plans_in_three_ratios_a
                     }
                     CreativeRealization::BlenderStage(plan) => {
                         plan.validate().unwrap();
-                        assert!(plan.devices.len() >= 1);
+                        assert!(!plan.devices.is_empty());
                         assert_eq!(plan.cameras[0].frame, 0);
                     }
                     CreativeRealization::AudioScore(plan) => {

@@ -42,6 +42,7 @@ jobs:
       - name: Verify every first-party creative realization and its determinism
         run: |
           set -euo pipefail
+          python3 tooling/hyperframes/test_owner_provision.py -v
           cargo fmt --all -- --check
           cargo test --locked -p motionwright-creative-library --all-targets
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
