@@ -34,6 +34,10 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 
 The storage tests create a 260-change SQLite journal and verify descending keyset pages, complete non-overlapping coverage, cross-project isolation, and backward compatibility with ascending event reads. Studio unit tests reject malformed/out-of-order pages; Chromium tests exercise recent-first pagination, older-page navigation and transient read retry through a synthetic Tauri boundary. All tests are source-SHA scoped and do not establish independent creative acceptance. See [history pagination](history-pagination.md).
 
+## Semantic camera projection and world-space pointer editing
+
+Canvas applies the stored scene camera center, zoom and inverse rotation to its editorial object layer, while retaining a viewport-fixed safe-frame overlay. Pure TS tests check math for identity and panned/rotated/zoomed cameras and inverse pointer movement. Chromium tests exercise camera controls and drag gestures under 2× zoom/90° camera rotation without inadvertently creating motion keyframes. This is semantic editing quality, **not rendered-frame parity or human acceptance**. See [camera projection](canvas-camera.md).
+
 ## Atomic Canvas Auto-key motion
 
 Rust domain tests verify one authored revision for an X/Y position pair, no base-transform mutation, strict property locks, rational half-open scene timing, and rejection of invalid coordinates without half-keyframe commits. Native SDK public-operation tests validate the closed contract for agent use. Browser fixture and Chromium pointer regressions compare Auto-key on/off, exact scene-local timing, history event count, and locked-gesture no-op. Native renderer Film still rejects motion it cannot preserve exactly; see [typed motion authoring](motion-authoring.md).

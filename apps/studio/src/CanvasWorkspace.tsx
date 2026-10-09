@@ -1,6 +1,11 @@
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import CanvasStructureEditor from "./CanvasStructureEditor";
+import {
+  cameraLayerTransform, cameraPointerDelta,
+  PROJECT_CANVAS_HEIGHT as PROJECT_HEIGHT,
+  PROJECT_CANVAS_WIDTH as PROJECT_WIDTH,
+} from "./canvasCamera";
 import type {
   CanvasNode,
   CanvasTransform,
@@ -15,9 +20,6 @@ import { rationalSeconds, seconds } from "./types";
 import VisualLanguageEditor from "./VisualLanguageEditor";
 
 type Commit = (change: Change) => Promise<void>;
-
-const PROJECT_WIDTH = 1920;
-const PROJECT_HEIGHT = 1080;
 
 function nodeTransform(node: CanvasNode): CanvasTransform {
   return {
@@ -255,10 +257,18 @@ export default function CanvasWorkspace({
     if (!stage) return;
     const width = Math.max(stage.clientWidth, 1);
     const height = Math.max(stage.clientHeight, 1);
+    const delta = cameraPointerDelta(
+      scene.camera,
+      event.clientX - active.clientX,
+      event.clientY - active.clientY,
+      width,
+      height,
+    );
+    if (!delta) return;
     const next = {
       ...active.initial,
-      x: active.initial.x + ((event.clientX - active.clientX) / width) * PROJECT_WIDTH,
-      y: active.initial.y + ((event.clientY - active.clientY) / height) * PROJECT_HEIGHT,
+      x: active.initial.x + delta.x,
+      y: active.initial.y + delta.y,
     };
     setDraftTransforms((current) => ({ ...current, [active.nodeId]: next }));
     if (active.nodeId === selectedNodeId) setFormTransform(next);
@@ -425,13 +435,15 @@ export default function CanvasWorkspace({
         <section className="canvas-stage-shell" aria-label="Semantic canvas">
           <div className="canvas-stage-meta">
             <span>{PROJECT_WIDTH} × {PROJECT_HEIGHT}</span>
-            <span>Semantic state · no renderer evidence</span>
+            <span>Semantic camera · no renderer evidence</span>
           </div>
           <div className="canvas-stage">
             <div className="canvas-safe-area" style={{ inset: (scene.camera.safe_margin * 100) + "%" }}>
               <span>SAFE</span>
             </div>
-            {scene.nodes.map((node) => {
+            <div className="canvas-camera-layer" data-testid="canvas-camera-layer"
+              style={{ transform: cameraLayerTransform(scene.camera) }}>
+              {scene.nodes.map((node) => {
               const transform = stageTransform(node);
               const positionLocked = scenePositionLocked || node.property_locks.includes("position");
               return (
@@ -472,7 +484,8 @@ export default function CanvasWorkspace({
                   {positionLocked && <LockKeyhole className="canvas-object-lock" size={12} />}
                 </button>
               );
-            })}
+              })}
+            </div>
             {scene.nodes.length === 0 && (
               <div className="canvas-stage-empty">
                 <CircleDashed size={25} />
@@ -659,6 +672,23 @@ export default function CanvasWorkspace({
 
               <div className="camera-controls">
                 <span className="field-label">Camera</span>
+                {([
+                  ["Center X", "center_x"],
+                  ["Center Y", "center_y"],
+                  ["Rotation", "rotation_deg"],
+                ] as const).map(([label, property]) => (
+                  <label key={property}>
+                    <span>{label}</span>
+                    <input type="number" step="1"
+                      aria-label={"Camera " + label}
+                      value={scene.camera[property]}
+                      onChange={(event) => {
+                        const value = numberValue(event.target.value, scene.camera[property]);
+                        void commit({ type: "set_camera", scene_id: scene.id,
+                          camera: { ...scene.camera, [property]: value } });
+                      }} />
+                  </label>
+                ))}
                 <label>
                   <span>Zoom</span>
                   <input
