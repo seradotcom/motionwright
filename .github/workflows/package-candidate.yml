@@ -114,14 +114,32 @@ jobs:
             --artifact "$deb" --installed-binary "${deb_bins[0]}" \
             --linux-desktop-entry "${deb_desktop[0]}" \
             --output ci-evidence/linux-deb-smoke.json
+          echo "Debian extracted program and desktop metadata validated"
           chmod u+x "$appimage"
-          (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          echo "Extracting AppImage to disposable runner directory"
+          if ! (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null); then
+            echo "::error::AppImage extraction failed (no FUSE or sandbox bypass was attempted)"
+            exit 1
+          fi
           extracted="$work/appimage/squashfs-root"
-          test -x "$extracted/AppRun"
+          if ! test -x "$extracted/AppRun"; then
+            echo "::error::AppImage extraction contains no executable AppRun"
+            find "$extracted" -maxdepth 2 -name 'AppRun' -o -name '*.desktop'
+            exit 1
+          fi
           mapfile -t image_bins < <(find "$extracted/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
           mapfile -t image_desktop < <(find "$extracted" -maxdepth 1 -type f -name '*.desktop')
-          test "${#image_bins[@]}" -eq 1
-          test "${#image_desktop[@]}" -eq 1
+          if [ "${#image_bins[@]}" -ne 1 ]; then
+            echo "::error::Expected one Motionwright binary in extracted AppImage, found ${#image_bins[@]}"
+            find "$extracted/usr/bin" -maxdepth 1 -type f -printf '%f\n'
+            exit 1
+          fi
+          if [ "${#image_desktop[@]}" -ne 1 ]; then
+            echo "::error::Expected one AppImage desktop entry, found ${#image_desktop[@]}"
+            find "$extracted" -maxdepth 1 -name '*.desktop' -printf '%f\n'
+            exit 1
+          fi
+          echo "AppImage source payload extracted and identified; testing Xvfb window"
           xvfb-run -a -s "-screen 0 1440x940x24" \
             dbus-run-session -- python3 tooling/linux_gui_probe.py \
               --app-run "$extracted/AppRun" \
