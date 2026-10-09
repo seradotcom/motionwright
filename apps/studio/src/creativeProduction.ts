@@ -210,9 +210,9 @@ export async function applyProductionDesignChange(project: Project, change: Prod
         nodes = mergeComponentNodes(existing.baseline,scene.nodes,baseline);
       } else {
         if (design.heroes.length >= 64 || design.heroes.some(h => h.scene_id === scene.id) || scene.nodes.some(n => baseline.some(b => n.id === b.id))) throw new Error("Component limit or identity collision.");
-        nodes = [...scene.nodes,...baseline];
+        nodes = [...scene.nodes,...structuredClone(baseline)];
       }
-      const hero: ProductHeroInstance = {id:change.instance_id,scene_id:scene.id,component_version:1,config:structuredClone(change.config),baseline};
+      const hero: ProductHeroInstance = {id:change.instance_id,scene_id:scene.id,component_version:1,config:structuredClone(change.config),baseline:structuredClone(baseline)};
       const index = design.heroes.findIndex(h => h.id === hero.id);
       if (index < 0) design.heroes.push(hero); else design.heroes[index] = hero;
       scene.nodes = nodes; scene.status = "draft"; break;

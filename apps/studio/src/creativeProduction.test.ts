@@ -45,6 +45,7 @@ describe("first-party creative production",()=>{
   });
   it("preserves a human override through ten agent-style revisions and serialization",async()=>{
     let p=await seeded(); const sceneId=p.scenes[0].id, body=await heroNodeId(instance,"body");
+    expect(p.scenes[0].nodes[0]).not.toBe(p.production_design!.heroes[0].baseline[0]);
     p=await applyChange(p,{type:"update_canvas_text",scene_id:sceneId,node_id:body,text:"A deliberate human line."});
     for(let revision=1;revision<=10;revision++){
       p=await applyChange(p,{type:"upsert_product_hero",instance_id:instance,scene_id:sceneId,config:{...defaultHeroConfig(),eyebrow:`CREATIVE PRODUCTION / REVISION ${revision}`}});
