@@ -130,3 +130,28 @@ fn motion_is_not_restarted_for_each_editorial_beat() {
     let error = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
     assert!(error.message.contains("continuity mapping"));
 }
+
+#[test]
+fn unsupported_font_weight_is_rejected_before_an_expensive_native_render() {
+    let (mut p, options, id) = fixture();
+    p.scenes[0]
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == hero_node_id(id, "headline"))
+        .unwrap()
+        .style
+        .font_weight = Some(650);
+    let error = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
+    assert!(error.message.contains("exact face evidence"));
+    // The user-authored value is not coerced to the nearest loaded face.
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == hero_node_id(id, "headline"))
+            .unwrap()
+            .style
+            .font_weight,
+        Some(650)
+    );
+}

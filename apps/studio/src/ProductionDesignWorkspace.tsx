@@ -1,6 +1,7 @@
+import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Check, FileBox, Layers, Plus, RefreshCw, Save } from "lucide-react";
-import type { CanvasNode, Change, Project, Scene } from "./types";
+import type { CanvasNode, Change, Project, Scene, DeliverableProfile, MotionCanvasRenderEvidence } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { defaultHeroConfig, emptyProductionDesign, realizeProductHero, sameValue, planContentDigest } from "./creativeProduction";
@@ -102,8 +103,9 @@ function PlanWorkbench({project,commit,busy}:{project:Project;commit:Commit;busy
   const reload = () => {setDraft(structuredClone(stored ?? defaultPlan(project)));setBase(project.revision);setError(null);};
   useEffect(() => { if (stored && sameValue(stored,draft)) setBase(project.revision); },[stored,draft,project.revision]);
   const patch = (value:Partial<ProductionPlan>) => setDraft({...draft,...value,approval:null});
+  const cleanDraft = ():ProductionPlan => ({...draft,reference_constraints:draft.reference_constraints.map(v=>v.trim()).filter(Boolean),exclusions:draft.exclusions.map(v=>v.trim()).filter(Boolean),approval:null});
   const approve = async () => {
-    try { const approval={reviewer,note,content_sha256:await planContentDigest(draft)}; await commit({type:"set_production_plan",plan:{...draft,approval}}); }
+    try { const cleaned=cleanDraft(); const approval={reviewer,note,content_sha256:await planContentDigest(cleaned)}; setDraft({...cleaned,approval}); await commit({type:"set_production_plan",plan:{...cleaned,approval}}); }
     catch (reason) {setError(reason instanceof Error?reason.message:String(reason));}
   };
   return <div className="production-plan">
@@ -112,8 +114,8 @@ function PlanWorkbench({project,commit,busy}:{project:Project;commit:Commit;busy
     <div className="production-plan-grid"><label className="production-field"><span>Objective</span><textarea rows={3} value={draft.objective} onChange={e => patch({objective:e.target.value})}/></label>
       <label className="production-field"><span>Audience</span><textarea rows={3} value={draft.audience} onChange={e => patch({audience:e.target.value})}/></label></div>
     <label className="production-field"><span>Creative concept</span><textarea rows={4} value={draft.concept} onChange={e => patch({concept:e.target.value})}/></label>
-    <div className="production-plan-grid"><label className="production-field"><span>Reference-derived constraints · one per line</span><textarea rows={4} value={draft.reference_constraints.join("\n")} onChange={e => patch({reference_constraints:e.target.value.split("\n").filter(Boolean)})}/></label>
-      <label className="production-field"><span>Exclusions · one per line</span><textarea rows={4} value={draft.exclusions.join("\n")} onChange={e => patch({exclusions:e.target.value.split("\n").filter(Boolean)})}/></label></div>
+    <div className="production-plan-grid"><label className="production-field"><span>Reference-derived constraints · one per line</span><textarea rows={4} value={draft.reference_constraints.join("\n")} onChange={e => patch({reference_constraints:e.target.value.split("\n")})}/></label>
+      <label className="production-field"><span>Exclusions · one per line</span><textarea rows={4} value={draft.exclusions.join("\n")} onChange={e => patch({exclusions:e.target.value.split("\n")})}/></label></div>
     <label className="production-field"><span>Governing clock</span><select value={draft.clock.kind === "voice" ? draft.clock.voice_track_id : draft.clock.kind} onChange={e => patch({clock:e.target.value === "timeline" ? {kind:"timeline"} : {kind:"voice",voice_track_id:e.target.value}})}>
       <option value="timeline">Timeline</option>{project.audio.voice_tracks.map(track => <option key={track.id} value={track.id}>Measured voice · {track.id.slice(0,8)}</option>)}
       {draft.clock.kind === "music" && <option value="music" disabled>Measured music clock · retained</option>}</select></label>
@@ -125,7 +127,7 @@ function PlanWorkbench({project,commit,busy}:{project:Project;commit:Commit;busy
       <label className="production-field"><span>Source asset</span><select value={shot.asset_ids[0] ?? ""} onChange={e => patch({shots:draft.shots.map((s,j)=>j===i?{...s,asset_ids:e.target.value?[e.target.value]:[]}:s)})}><option value="">No source attached</option>{project.assets.filter(a=>a.content_sha256).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       {!!project.brief.claims.length && <fieldset className="production-claims"><legend>Claims this shot supports</legend>{project.brief.claims.map(claim=><label key={claim.id}><input type="checkbox" checked={shot.claim_ids.includes(claim.id)} onChange={e=>patch({shots:draft.shots.map((s,j)=>j===i?{...s,claim_ids:e.target.checked?[...s.claim_ids,claim.id]:s.claim_ids.filter(id=>id!==claim.id)}:s)})}/>{claim.text}</label>)}</fieldset>}
     </div>)}</div>
-    <div className="production-button-row"><button className="primary-button" disabled={busy || base!==project.revision} onClick={() => commit({type:"set_production_plan",plan:{...draft,approval:null}})}><Save size={14}/> Save production plan</button>
+    <div className="production-button-row"><button className="primary-button" disabled={busy || base!==project.revision} onClick={() => {const cleaned=cleanDraft();setDraft(cleaned);return commit({type:"set_production_plan",plan:cleaned});}}><Save size={14}/> Save production plan</button>
       <button className="secondary-button" disabled={busy} onClick={() => patch({shots:project.scenes.map(s => draft.shots.find(shot=>shot.scene_id===s.id) ?? {scene_id:s.id,purpose:s.objective || s.name,claim_ids:[],asset_ids:[],evidence_kind:"graphic_study"})})}>Refresh shot list</button></div>
     <section className="production-approval"><h3>Content-bound concept approval</h3><p>A creative decision only. It does not approve renderer fidelity, capture provenance, rights or technical delivery.</p>
       <div className="production-plan-grid"><label className="production-field"><span>Reviewer</span><input value={reviewer} onChange={e=>setReviewer(e.target.value)}/></label><label className="production-field"><span>Approval note</span><input value={note} onChange={e=>setNote(e.target.value)}/></label></div>
@@ -156,14 +158,14 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
   </div>;
 }
 
-export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void}) {
-  const [tab,setTab]=useState<"component"|"plan"|"sources"|"patch">("component");
+export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
+  const [tab,setTab]=useState<"component"|"plan"|"sources"|"patch"|"inspection">("component");
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);
   return <section className="production-workspace" aria-label="Creative production workstation">
     <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} · {design.capsules.length} native source{design.capsules.length===1?"":"s"} · revision {props.project.revision}</p></div>
       <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>props.onSelectScene(e.target.value)}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
-    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["plan","Production plan"],["sources","Native sources"],["patch","Scoped changes"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>setTab(key)}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="sources"?<SourcesWorkbench {...props}/>:<CreativePatchWorkbench {...props}/>}
+    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["plan","Production plan"],["sources","Native sources"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>setTab(key)}>{label}</button>)}</nav>
+    {tab==="component"?<HeroWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="inspection"?<NativeInspectionWorkbench {...props}/>:<CreativePatchWorkbench {...props}/>}
   </section>;
 }
