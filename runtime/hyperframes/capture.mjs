@@ -100,7 +100,7 @@ try {
     if(Date.now()>deadline)throw new Error('Native capture deadline exceeded');
     const time=frame*c.rate.den/c.rate.num;
     const state=await page.evaluate(async({time,frame,videoSources})=>{
-      window.__player.renderSeek(time,{suppressEvents:true});
+      window.__player.renderSeek(time,{suppressEvents:true,exact:true});
       await window.__hfWaitForSeekCompletion?.();
       for(const source of videoSources){
         const video=document.querySelector(`[data-mw-video="${source.id}"]`);
