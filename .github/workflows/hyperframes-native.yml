@@ -62,7 +62,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
           cd runtime/hyperframes
           npm ci --ignore-scripts --no-audit --no-fund
-          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps firefox
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps chromium
           PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
       - name: Capture actual native frames, alpha, custom curves and rational clocks
         run: |

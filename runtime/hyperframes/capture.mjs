@@ -22,7 +22,7 @@ if(doc.version!==1 || doc.nodes.length>256 || c.frames<1 || c.frames>3600 || c.w
 const receiptBytes=readBounded(runtimeRoot,'runtime.json',1024*1024),receipt=JSON.parse(receiptBytes);
 if(receipt.schema!==1 || receipt.hyperframes!=='0.8.143' || receipt.gsap!=='3.15.0' || receipt.playwright!=='1.55.1')throw new Error('Native runtime receipt is incompatible');
 const require=createRequire(path.join(runtimeRoot,'package.json'));
-const {firefox}=require('playwright');
+const {chromium}=require('playwright');
 const fontkit=require('fontkit');
 const files=new Map();
 const source=readBounded(workRoot,'index.html',3*1024*1024);
@@ -63,7 +63,7 @@ const framesDir=path.join(outputRoot,'frames');fs.mkdirSync(framesDir,{recursive
 const observationsPath=path.join(outputRoot,'observations.ndjson');
 const observationFd=fs.openSync(observationsPath,'wx',0o600);let observationBytes=0;
 const diagnostics=[];const refused=[];const deadline=Date.now()+240000;
-const browser=await firefox.launch({headless:true,timeout:30000});
+const browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),headless:true,chromiumSandbox:true,timeout:30000});
 try {
   const context=await browser.newContext({viewport:{width:c.width,height:c.height},deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'light',reducedMotion:'no-preference',serviceWorkers:'block',acceptDownloads:false});
   await context.route('**/*',async route=>{

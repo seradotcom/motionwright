@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Core/Firefox profile acceptance on disposable CI only. Not a creative verdict."""
+"""Native Core/Chromium profile acceptance on disposable CI only. Not a creative verdict."""
 from __future__ import annotations
 import hashlib,json,os,shutil,subprocess,tempfile,uuid
 from pathlib import Path
@@ -65,7 +65,7 @@ def main()->None:
         # A malformed source digest must not launch a second rendering or overwrite its output.
         bad=list(args);bad[-1]='0'*64
         denied=run(bad,30);assert denied.returncode!=0
-        output_summary={'schema':'motionwright.hyperframes-native-smoke/1','source_sha':head,'native_profile':'hyperframes-core-firefox-png-v1','technical':'PASS',
+        output_summary={'schema':'motionwright.hyperframes-native-smoke/1','source_sha':head,'native_profile':'hyperframes-core-chromium-png-v1','technical':'PASS',
                         'same_worker_repeat_all_frames':'PASS','rgba_alpha':'PASS','ntsc_clock':'PASS','mask_rotation_opacity_blur':'PASS','tampered_source_rejected':True,
                         'creative_approval':'required','results':results}
         (evidence/'result.json').write_text(json.dumps(output_summary,indent=2)+'\n')

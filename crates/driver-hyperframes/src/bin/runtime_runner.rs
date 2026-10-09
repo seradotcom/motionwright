@@ -126,7 +126,7 @@ fn validate_runtime(runtime: &Path) -> Result<RuntimeReceipt> {
         || receipt.gsap != "3.15.0"
         || receipt.playwright != "1.55.1"
         || receipt.fontkit != "2.0.4"
-        || receipt.capture_profile != "hyperframes-core-firefox-png-v1"
+        || receipt.capture_profile != "hyperframes-core-chromium-png-v1"
         || receipt.platform != "linux"
         || receipt.architecture != "x64"
         || receipt.files.len() != 5
