@@ -6,6 +6,7 @@ members = [
   "crates/service",
   "crates/manim-profile",
   "crates/hyperframes-profile",
+  "crates/creative-library",
   "crates/driver-hyperframes",
   "crates/driver-manim-community",
   "crates/native",
