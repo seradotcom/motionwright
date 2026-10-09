@@ -28,6 +28,14 @@ Even a page whose **all references were examined** may contain unverified entrie
 
 The existing browser demo has no authority to inspect the owner's filesystem. Its Check local assets control is disabled, and all assets remain **Not checked**. It does not fabricate valid hashes or inferred dependencies.
 
+## Agent read-only Native SDK observation
+
+The pinned Semwright Native SDK now exposes `driver.motionwright.observe` with the application-owned scope `asset-integrity`. Authorized agents can obtain the same per-asset status and byte count returned by the desktop inspector, without choosing paths, passing source hashes, reading media bytes, installing runtime tools or issuing any mutating effect grant. Results include only `asset_id`, `status` and `size_bytes`, not the local owner path, filename, media payload or recorded SHA-256. The caller can correlate an `asset_id` with the versioned project it was already authorized to observe.
+
+Native responses are bounded to **16 assets per page**, even when the SDK query asks for a larger result. Each continuation uses a canonical `assets:v1:<page-limit>:<offset>` cursor associated with the exact SDK resource/generation/revision and scope. Changing the page size, switching observation scope, using a malformed/terminal offset or advancing the creative revision invalidates continuation. File hashing runs in a bounded blocking worker and the project version is checked again before returning the page. `complete: true` means all asset references have been visited, **not** that each blob verified: missing, corrupt and deferred entries remain explicitly recorded.
+
+A filesystem actor who alters source bytes without changing the creative revision can change a later page's integrity result; the cursor therefore represents a stable **asset list**, not a frozen external filesystem snapshot. For delivery decisions, rerun the check close to export time. No Graph CURRENT/STALE verdict or source rights are inferred.
+
 ## Evidence and remaining work
 
 - Rust storage tests ingest **real content-addressed files** through the existing import boundary, commit their references to SQLite, verify duplicate-digest handling and pagination, then detect missing/modified files without altering creative revisions. Symlink substitution is refused. A stale revision or malformed cursor fails closed.

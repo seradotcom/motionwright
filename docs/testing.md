@@ -34,6 +34,10 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 
 An explicit read-only [local SHA-256 asset audit](asset-integrity.md) checks exact versioned asset-digest references in bounded pages. Rust tests ingest and alter real content-addressed files, inspect duplicate and missing references, reject symlinks and stale cursors, and confirm no project edits. Synthetic Chromium tests exercise opt-in paging, source revision and voice-track associations without claiming Project Graph or owner filesystem evidence. The browser demo remains Not checked.
 
+## Native SDK read-only asset integrity scope
+
+Native SDK integration tests import a genuine CAS blob, reference it through 19 application-owned assets and enumerate every status in three source-versioned pages without exposing raw paths or digests. They reject malformed/size-switched/forged cursors and a continuation from an older creative revision. The observer hashes only project-owned digests in a bounded worker; `complete` means list coverage, not universal byte verification or Project Graph admission. See [asset integrity](asset-integrity.md).
+
 ## Native SDK project-scope enumeration
 
 Source-bound Rust tests enumerate 271 project-owned records with several bounded Native SDK page limits, verifying complete, ordered, nonoverlapping coverage and reject invalid offsets, wrong-scope cursors and stale creative revisions. Integration writes eleven real scenes and checks both Timeline and Canvas native observation pagination end-to-end through StudioService. Production Jobs use a separate [append-only receipt watermark and keyset history](production-receipt-pagination.md), rather than a project-revision-only offset cursor; the latest-window Studio UI stays lightweight, while a separately requested [Full history](production-jobs-history.md) view walks bounded job pages with explicit stale-receipt recovery. The browser regression uses synthetic Tauri transport to check 42 jobs over three pages and does not infer Driver Host state. See [Native SDK scope pagination](native-scope-pagination.md).
