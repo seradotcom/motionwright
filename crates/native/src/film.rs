@@ -591,13 +591,13 @@ fn output_profile(
         .map(|scene| scene.camera.safe_margin)
         .fold(0.0_f64, f64::max);
     for scene in scenes {
-        if scene.camera.center_x != CANVAS_WIDTH / 2.0
-            || scene.camera.center_y != CANVAS_HEIGHT / 2.0
-            || scene.camera.zoom != 1.0
-            || scene.camera.rotation_deg != 0.0
-        {
+        // A static camera translation can be represented exactly by a
+        // per-scene position offset on every native subject. Zoom/rotation
+        // require transformed bounds and glyph geometry, which the pinned
+        // Film contract cannot guarantee and therefore remain unsupported.
+        if scene.camera.zoom != 1.0 || scene.camera.rotation_deg != 0.0 {
             return Err(unsupported(format!(
-                "Scene {} uses camera state that canonical Film cannot preserve yet",
+                "Scene {} uses camera zoom or rotation that canonical Film cannot preserve yet",
                 scene.id
             )));
         }
@@ -686,10 +686,18 @@ fn projected_shot(
     let (layers, layer_names) = layers(scene)?;
     let mut subjects = Vec::with_capacity(scene.nodes.len());
     let mut visual_constraints = Vec::new();
+    // Pan is a pure translation of all authored subjects before output
+    // replan/crop. Applying it to the existing fixed-layout projection keeps
+    // text size, stroke, z-order, and canonical safe-area validation intact.
+    let mut projection = context.projection;
+    projection.offset_x +=
+        (CANVAS_WIDTH / 2.0 - scene.camera.center_x) * projection.position_scale_x;
+    projection.offset_y +=
+        (CANVAS_HEIGHT / 2.0 - scene.camera.center_y) * projection.position_scale_y;
     let subject_context = SubjectProjectionContext {
         text_style: context.text_style,
         profile: context.profile,
-        projection: context.projection,
+        projection,
         output: context.output,
         font_family: context.font_family,
     };
@@ -1091,6 +1099,97 @@ mod tests {
                 .any(|constraint| matches!(constraint, VisualConstraint::NativeText { .. }))
         );
         assert!(realize(&segments[0].film).is_ok());
+    }
+
+    fn fixture_options(project: &Project) -> FilmBuildOptions {
+        FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        }
+    }
+
+    fn fixed_position(segment: &MotionCanvasSegment, scene_index: usize) -> Point {
+        let subject = &segment.film.sequences[scene_index].beats[0].shots[0].subjects[0];
+        match &subject.layout {
+            SpatialIntent::Fixed { position, .. } => *position,
+            other => panic!("Expected fixed Film subject after static camera pan: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projects_exact_native_film_static_pan_per_scene_without_changing_source() {
+        let baseline = fixture_project();
+        let profile_id = baseline.deliverables[0].id;
+        let before =
+            build_motion_canvas_segments(&baseline, profile_id, &fixture_options(&baseline))
+                .unwrap();
+        let baseline_a = fixed_position(&before[0], 0);
+        let baseline_b = fixed_position(&before[0], 1);
+        let mut panned = baseline.clone();
+        panned.scenes[0].camera.center_x -= 64.0;
+        panned.scenes[0].camera.center_y -= 40.0;
+        panned.scenes[1].camera.center_x += 30.0;
+        panned.scenes[1].camera.center_y += 20.0;
+        // Film pan translates subjects, not the versioned semantic Canvas
+        // object base transforms, text glyph size, frame rate or cut duration.
+        let base_a = (panned.scenes[0].nodes[0].x, panned.scenes[0].nodes[0].y);
+        let base_b = (panned.scenes[1].nodes[0].x, panned.scenes[1].nodes[0].y);
+        let native =
+            build_motion_canvas_segments(&panned, profile_id, &fixture_options(&panned)).unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].frame_count, 90);
+        assert_eq!(native[0].scene_ids, before[0].scene_ids);
+        let a = fixed_position(&native[0], 0);
+        let b = fixed_position(&native[0], 1);
+        assert!((a.x - baseline_a.x - 64.0).abs() < 1e-8);
+        assert!((a.y - baseline_a.y - 40.0).abs() < 1e-8);
+        assert!((b.x - baseline_b.x + 30.0).abs() < 1e-8);
+        assert!((b.y - baseline_b.y + 20.0).abs() < 1e-8);
+        assert_eq!(
+            (panned.scenes[0].nodes[0].x, panned.scenes[0].nodes[0].y),
+            base_a
+        );
+        assert_eq!(
+            (panned.scenes[1].nodes[0].x, panned.scenes[1].nodes[0].y),
+            base_b
+        );
+        assert_eq!(
+            native[0].film.editorial.type_scale,
+            before[0].film.editorial.type_scale
+        );
+        assert!(realize(&native[0].film).is_ok());
+    }
+
+    #[test]
+    fn native_film_pan_preserves_safe_area_and_rejects_zoom_or_rotation() {
+        let mut project = fixture_project();
+        let profile_id = project.deliverables[0].id;
+        project.scenes[0].camera.center_x = 1100.0;
+        let err = build_motion_canvas_segments(&project, profile_id, &fixture_options(&project))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("safe area"));
+        project.scenes[0].camera.center_x = CANVAS_WIDTH / 2.0;
+        project.scenes[0].camera.zoom = 1.25;
+        let err = build_motion_canvas_segments(&project, profile_id, &fixture_options(&project))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("camera zoom or rotation"));
+        project.scenes[0].camera.zoom = 1.0;
+        project.scenes[0].camera.rotation_deg = 7.0;
+        let err = build_motion_canvas_segments(&project, profile_id, &fixture_options(&project))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
     }
 
     #[test]
