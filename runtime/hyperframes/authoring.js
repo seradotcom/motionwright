@@ -91,6 +91,9 @@
   function tracks(el,base,keys,camera=false) {
     let initial={};
     for(const [name,value] of Object.entries(base))initial={...initial,...property(name,value,camera)};
+    // The initial frame is a real authored pose. A paused timeline has not crossed
+    // any zero-duration event yet, so materialize zero-time keys before registration.
+    for(const key of keys)if(instant(key)===0)initial={...initial,...property(key.property,key.value,camera)};
     gsap.set(el,initial);timeline.set(el,initial,0);
     const channels=[...new Set(keys.map(k=>k.property))];
     for(const channel of channels) {
