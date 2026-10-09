@@ -125,6 +125,7 @@ for path in ROOT.rglob("*"):
         process_allowlist = {
             "crates/native/src/production.rs",
             "crates/driver-manim-community/src/bin/runtime_runner.rs",
+            "crates/driver-hyperframes/src/bin/runtime_runner.rs",
         }
         if any(token in text for token in process_tokens) and rel not in process_allowlist:
             errors.append(f"unreviewed first-party process execution primitive found: {rel}")

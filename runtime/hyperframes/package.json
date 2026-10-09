@@ -1,0 +1,15 @@
+{
+  "name": "@motionwright/hyperframes-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Owner-installed, pinned HyperFrames Core native HTML capture profile; no automatic installation on project open.",
+  "dependencies": {
+    "@hyperframes/core": "0.8.143",
+    "@fontsource-variable/instrument-sans": "5.2.7",
+    "@fontsource/ibm-plex-mono": "5.2.7",
+    "fontkit": "2.0.4",
+    "gsap": "3.15.0",
+    "playwright": "1.55.1"
+  }
+}

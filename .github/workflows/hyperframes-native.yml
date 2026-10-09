@@ -1,0 +1,78 @@
+name: HyperFrames native profile
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-hyperframes-native']
+  pull_request:
+    paths:
+      - 'crates/hyperframes-profile/**'
+      - 'crates/driver-hyperframes/**'
+      - 'runtime/hyperframes/**'
+      - 'tooling/hyperframes/**'
+      - '.github/workflows/hyperframes-native.yml'
+
+permissions:
+  contents: read
+concurrency:
+  group: hyperframes-profile-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  native-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: hyperframes-native-profile-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: runtime/hyperframes/package-lock.json
+      - name: Validate the bounded source and driver contracts
+        run: |
+          set -euo pipefail
+          python3 tooling/source_policy.py
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-hyperframes-profile -p motionwright-hyperframes-driver --all-targets
+          cargo clippy --locked -p motionwright-hyperframes-profile -p motionwright-hyperframes-driver --all-targets -- -D warnings
+          cargo build --locked -p motionwright-hyperframes-driver --bins
+          cargo build --locked -p motionwright-hyperframes-profile --example native_fixture
+          node --check runtime/hyperframes/authoring.js
+          node --check runtime/hyperframes/capture.mjs
+      - name: Provision the exact opt-in native runtime on this disposable worker
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
+          cd runtime/hyperframes
+          npm ci --ignore-scripts --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps firefox
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
+      - name: Capture actual native frames, alpha, custom curves and rational clocks
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 tooling/hyperframes/native_smoke.py
+      - name: Publish source-bound native evidence, not creative acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-native-${{ github.sha }}
+          path: verification/hyperframes-native/
+          if-no-files-found: warn
+          retention-days: 7

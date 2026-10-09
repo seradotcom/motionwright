@@ -5,6 +5,8 @@ members = [
   "crates/storage",
   "crates/service",
   "crates/manim-profile",
+  "crates/hyperframes-profile",
+  "crates/driver-hyperframes",
   "crates/driver-manim-community",
   "crates/native",
   "apps/desktop/src-tauri",
