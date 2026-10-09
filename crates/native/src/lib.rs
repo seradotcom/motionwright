@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use motionwright_domain::{Change, Project, RevisionStamp};
-use motionwright_service::StudioService;
+use motionwright_service::{ProductionReceiptWatermark, StudioService};
 use motionwright_storage::StorageError;
 use semwright_native_sdk::cooperation::{
     Application, CallContext, CancellationSemantics, CommitSemantics, Completion, ObservationPage,
@@ -76,6 +76,10 @@ fn storage_error(error: StorageError) -> Error {
         StorageError::RequestReuse => Error::new(
             ErrorCode::Conflict,
             "Request id was already used for different input",
+        ),
+        StorageError::ReceiptStreamChanged => Error::new(
+            ErrorCode::StaleReference,
+            "Production receipt stream changed during observation; begin a new snapshot",
         ),
         StorageError::Domain(error) => Error::new(ErrorCode::InvalidArgument, error.to_string()),
         StorageError::Serde(_)
@@ -157,6 +161,62 @@ fn paginate_project_observation(
     };
     page.validate_for(query)?;
     Ok(page)
+}
+
+/// Production receipt cursors have a second, independent watermark in
+/// addition to the SDK creative resource version. Receipt writes do not
+/// advance the creative revision and must invalidate in-flight enumeration.
+fn parse_production_cursor(
+    query: &Query,
+    version: &ResourceVersion,
+    namespace: &str,
+) -> NativeResult<Option<(ProductionReceiptWatermark, String)>> {
+    let Some(cursor) = &query.cursor else {
+        return Ok(None);
+    };
+    if cursor.version != *version {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Creative project changed during production enumeration",
+        ));
+    }
+    let segments: Vec<&str> = cursor.token.split(':').collect();
+    if segments.len() != 5 || segments[0] != namespace || segments[1] != "v1" {
+        return Err(Error::invalid("Malformed production receipt cursor"));
+    }
+    let latest_id = Uuid::parse_str(segments[2])
+        .ok()
+        .filter(|id| id.to_string() == segments[2])
+        .ok_or_else(|| Error::invalid("Malformed production receipt watermark ID"))?;
+    let count = segments[3]
+        .parse::<u64>()
+        .ok()
+        .filter(|count| *count > 0 && count.to_string() == segments[3])
+        .ok_or_else(|| Error::invalid("Malformed production receipt count"))?;
+    Ok(Some((
+        ProductionReceiptWatermark {
+            latest_id: Some(latest_id),
+            count,
+        },
+        segments[4].to_owned(),
+    )))
+}
+
+fn production_cursor(
+    query: &Query,
+    version: &ResourceVersion,
+    namespace: &str,
+    snapshot: &ProductionReceiptWatermark,
+    position: &str,
+) -> NativeResult<PageCursor> {
+    let latest = snapshot.latest_id.ok_or_else(|| {
+        Error::invalid("Cannot create a continuation for an empty receipt stream")
+    })?;
+    Ok(PageCursor {
+        version: version.clone(),
+        scope: query.scope.clone(),
+        token: format!("{namespace}:v1:{latest}:{}:{position}", snapshot.count),
+    })
 }
 
 #[derive(Clone)]
@@ -268,6 +328,140 @@ impl ObservationProvider for MotionwrightObserver {
             return Ok(page);
         }
 
+        if query.scope == "production-receipts" || query.scope == "production-jobs" {
+            let receipts_scope = query.scope == "production-receipts";
+            let namespace = if receipts_scope { "receipts" } else { "jobs" };
+            let cursor = parse_production_cursor(query, &version, namespace)?;
+            let snapshot = if let Some((head, _)) = &cursor {
+                head.clone()
+            } else {
+                self.service
+                    .production_receipt_watermark(project_id)
+                    .map_err(storage_error)?
+            };
+            if (snapshot.count == 0) != snapshot.latest_id.is_none() {
+                return Err(Error::invalid(
+                    "Production receipt snapshot is inconsistent",
+                ));
+            }
+            let limit = usize::from(query.limit);
+            let (items, next) = if receipts_scope {
+                let before = match &cursor {
+                    Some((head, position)) => {
+                        let before = Uuid::parse_str(position)
+                            .ok()
+                            .filter(|value| value.to_string() == *position)
+                            .ok_or_else(|| Error::invalid("Malformed receipt keyset position"))?;
+                        if head.latest_id.is_none_or(|latest| before > latest) {
+                            return Err(Error::invalid(
+                                "Production receipt cursor exceeds the snapshot watermark",
+                            ));
+                        }
+                        Some(before)
+                    }
+                    None => None,
+                };
+                let receipts = self
+                    .service
+                    .production_receipts_snapshot_page(project_id, &snapshot, before, limit)
+                    .map_err(storage_error)?;
+                let continuation = if let Some(last) = receipts.last() {
+                    let probe = self
+                        .service
+                        .production_receipts_snapshot_page(project_id, &snapshot, Some(last.id), 1)
+                        .map_err(storage_error)?;
+                    (!probe.is_empty()).then(|| last.id.to_string())
+                } else {
+                    None
+                };
+                // Raw driver payload may contain private execution details.
+                // Expose only the bounded owner-app journal metadata, not
+                // provider results, source paths or untrusted payload JSON.
+                let items = receipts
+                    .into_iter()
+                    .map(|receipt| {
+                        json!({
+                            "id": receipt.id.to_string(),
+                            "generation": receipt.generation.to_string(),
+                            "revision": receipt.revision.to_string(),
+                            "request_id": receipt.request_id,
+                            "request_sha256": receipt.request_sha256,
+                            "command": receipt.command,
+                            "stage": receipt.stage,
+                            "created_at": receipt.created_at
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let next = continuation
+                    .map(|position| {
+                        production_cursor(query, &version, namespace, &snapshot, &position)
+                    })
+                    .transpose()?;
+                (items, next)
+            } else {
+                let jobs = self
+                    .service
+                    .production_jobs_snapshot(project_id, &snapshot)
+                    .map_err(storage_error)?;
+                let offset = if let Some((_, position)) = &cursor {
+                    position
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|offset| {
+                            *offset > 0 && *offset < jobs.len() && offset.to_string() == *position
+                        })
+                        .ok_or_else(|| {
+                            Error::invalid("Production job cursor does not make progress")
+                        })?
+                } else {
+                    0
+                };
+                let end = offset.saturating_add(limit).min(jobs.len());
+                let items = jobs[offset..end]
+                    .iter()
+                    .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
+                    .collect::<Vec<_>>();
+                let next = if end < jobs.len() {
+                    Some(production_cursor(
+                        query,
+                        &version,
+                        namespace,
+                        &snapshot,
+                        &end.to_string(),
+                    )?)
+                } else {
+                    None
+                };
+                (items, next)
+            };
+            // Both creative and independent production watermarks must still
+            // match at the end. New status receipts otherwise make historical
+            // job rows look like the latest driver state without consent.
+            let observed_again = self.service.project(project_id).map_err(storage_error)?;
+            if observed_again.generation != project.generation
+                || observed_again.revision != project.revision
+                || self
+                    .service
+                    .production_receipt_watermark(project_id)
+                    .map_err(storage_error)?
+                    != snapshot
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Creative revision or production receipt stream changed during enumeration",
+                ));
+            }
+            let page = ObservationPage {
+                version,
+                scope: query.scope.clone(),
+                items,
+                complete: next.is_none(),
+                next,
+            };
+            page.validate_for(query)?;
+            return Ok(page);
+        }
+
         // Project-owned scopes enumerate *all* elements over revision-bound
         // pages. The prior take(limit)+complete:true pattern silently hid
         // every scene/object/review past the first page from native agents.
@@ -355,34 +549,6 @@ impl ObservationProvider for MotionwrightObserver {
                 paginate_project_observation(query, &version, project.merges.len(), |index| {
                     serde_json::to_value(&project.merges[index]).unwrap_or(Value::Null)
                 })?
-            }
-            "production-jobs" => {
-                if query.cursor.is_some() {
-                    return Err(Error::invalid(
-                        "Production jobs cannot use a project-revision offset cursor",
-                    ));
-                }
-                let items = self
-                    .service
-                    .production_jobs(project_id, usize::from(query.limit))
-                    .map_err(storage_error)?
-                    .into_iter()
-                    .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
-                    .collect();
-                // Production receipts mutate independently of project
-                // revision and the existing service only reads 256 receipts.
-                // The projection is a useful bounded window, NOT provably
-                // complete. Do not return a false native pagination promise:
-                // a durable receipt-keyset iterator is a separate contract.
-                let page = ObservationPage {
-                    version: version.clone(),
-                    scope: query.scope.clone(),
-                    items,
-                    next: None,
-                    complete: false,
-                };
-                page.validate_for(query)?;
-                page
             }
             _ => {
                 return Err(Error::new(
@@ -2503,34 +2669,183 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_production_jobs_are_explicitly_partial_not_fake_complete() {
+    async fn native_empty_production_windows_are_provably_complete() {
         let (service, project) = fixture();
         let observer = MotionwrightObserver::new(service);
-        let context = CallContext::application_local("native-jobs-window").unwrap();
-        let query = Query {
-            resource: project.resource_key(),
-            scope: "production-jobs".into(),
-            limit: 1,
-            cursor: None,
-        };
-        let page = observer.observe(&query, &context).await.unwrap();
-        assert!(page.items.is_empty());
-        assert!(!page.complete);
-        assert!(page.next.is_none());
-        let attempted = observer
+        let context = CallContext::application_local("native-empty-production").unwrap();
+        for scope in ["production-jobs", "production-receipts"] {
+            let query = Query {
+                resource: project.resource_key(),
+                scope: scope.into(),
+                limit: 1,
+                cursor: None,
+            };
+            let page = observer.observe(&query, &context).await.unwrap();
+            assert!(page.items.is_empty());
+            assert!(page.complete);
+            assert!(page.next.is_none());
+            let attempted = observer
+                .observe(
+                    &Query {
+                        cursor: Some(PageCursor {
+                            version: page.version,
+                            scope: scope.into(),
+                            token: "offset:1".into(),
+                        }),
+                        ..query
+                    },
+                    &context,
+                )
+                .await;
+            assert!(attempted.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_production_receipts_and_jobs_cover_more_than_old_256_receipt_window() {
+        use motionwright_service::ProductionReceiptInput;
+        let (service, project) = fixture();
+        let digest = "a".repeat(64);
+        // 85 separate jobs x 4 observations = 340 append-only receipts.
+        // The preexisting UI reads only the latest 256 and caps jobs at 64.
+        for index in 0..340 {
+            let ordinal = index / 4;
+            let command = if index % 4 == 0 {
+                "driver.motion-canvas.render.start"
+            } else {
+                "driver.motion-canvas.render.status"
+            };
+            let payload = json!({
+                "result": {
+                    "data": {
+                        "job_ref": format!("actual-job-{ordinal:03}"),
+                        "state": "running",
+                        // Provider-owned output may contain private text.
+                        "private_path": "/private/do-not-expose/recording.wav"
+                    }
+                }
+            });
+            service
+                .append_production_receipt(ProductionReceiptInput {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: format!("job-{ordinal:03}-observation-{index}"),
+                    request_sha256: digest.clone(),
+                    command: command.into(),
+                    stage: "completed".into(),
+                    payload,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            service.production_receipts(project.id, 256).unwrap().len(),
+            256
+        );
+        assert_eq!(service.production_jobs(project.id, 256).unwrap().len(), 64);
+        let observer = MotionwrightObserver::new(service.clone());
+        let context = CallContext::application_local("native-full-production").unwrap();
+        for (scope, limit, expected) in [
+            ("production-receipts", 17_u16, 340_usize),
+            ("production-jobs", 11_u16, 85_usize),
+        ] {
+            let mut cursor = None;
+            let mut values = Vec::new();
+            for _ in 0..32 {
+                let query = Query {
+                    resource: project.resource_key(),
+                    scope: scope.into(),
+                    limit,
+                    cursor,
+                };
+                let page = observer.observe(&query, &context).await.unwrap();
+                assert!(page.items.len() <= usize::from(limit));
+                for item in &page.items {
+                    if scope == "production-receipts" {
+                        assert!(item.get("payload").is_none());
+                        assert!(!item.to_string().contains("/private/do-not-expose/"));
+                        values.push(item["id"].as_str().unwrap().to_owned());
+                    } else {
+                        assert_eq!(item["local_observations"].as_u64(), Some(4));
+                        values.push(item["job_ref"].as_str().unwrap().to_owned());
+                    }
+                }
+                if page.complete {
+                    assert!(page.next.is_none());
+                    break;
+                }
+                cursor = page.next;
+                assert!(cursor.is_some());
+            }
+            assert_eq!(values.len(), expected);
+            let unique: std::collections::HashSet<_> = values.iter().collect();
+            assert_eq!(unique.len(), expected, "{scope} must not duplicate rows");
+        }
+
+        // Receipt observations change independently of creative revisions.
+        let first = observer
             .observe(
                 &Query {
-                    cursor: Some(PageCursor {
-                        version: page.version,
-                        scope: "production-jobs".into(),
-                        token: "offset:1".into(),
-                    }),
-                    ..query
+                    resource: project.resource_key(),
+                    scope: "production-receipts".into(),
+                    limit: 3,
+                    cursor: None,
                 },
                 &context,
             )
-            .await;
-        assert!(attempted.is_err());
+            .await
+            .unwrap();
+        let prior_receipt_cursor = first.next.unwrap();
+        let prior_jobs_cursor = observer
+            .observe(
+                &Query {
+                    resource: project.resource_key(),
+                    scope: "production-jobs".into(),
+                    limit: 3,
+                    cursor: None,
+                },
+                &context,
+            )
+            .await
+            .unwrap()
+            .next
+            .unwrap();
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: "late-new-status-without-creative-commit".into(),
+                request_sha256: digest,
+                command: "driver.motion-canvas.render.status".into(),
+                stage: "completed".into(),
+                payload: json!({"result":{"data":{
+                    "job_ref":"actual-job-000","state":"succeeded"
+                }}}),
+            })
+            .unwrap();
+        assert_eq!(
+            service.project(project.id).unwrap().revision,
+            project.revision
+        );
+        for (scope, cursor) in [
+            ("production-receipts", prior_receipt_cursor),
+            ("production-jobs", prior_jobs_cursor),
+        ] {
+            let error = observer
+                .observe(
+                    &Query {
+                        resource: project.resource_key(),
+                        scope: scope.into(),
+                        limit: 3,
+                        cursor: Some(cursor),
+                    },
+                    &context,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::StaleReference);
+        }
     }
 
     #[tokio::test]

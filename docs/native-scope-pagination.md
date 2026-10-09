@@ -18,9 +18,9 @@ The existing application-owned journal scopes remain distinct and **unchanged**:
 
 ## Production jobs: intentionally partial, not complete
 
-`production-jobs` is **not** a versioned project array. Its receipt ledger can receive new observations without advancing the creative project revision. The current service also loads only its newest 256 receipts before deriving job summaries. A project-revision-bound offset cursor would therefore be deceptive, with missing/duplicated jobs across reads or unseen older receipts.
+`production-jobs` is **not** a versioned project array. Its receipt ledger can receive new observations without advancing the creative project revision. The original Studio interactive job service loads only its newest 256 receipts before deriving job summaries. A project-revision-bound offset cursor would therefore be deceptive, with missing/duplicated jobs across reads or unseen older receipts.
 
-For now this scope returns the same bounded latest-window job projection with `complete: false` and **no cursor**, which the pinned Semwright Native SDK explicitly defines as **partial/unknown coverage**, never as complete enumeration. A forged cursor request is rejected. Full, replay-safe pagination will require a separate receipt-watermark/keyset contract and should not be claimed until implemented.
+The follow-up [receipt-watermark and job pagination](production-receipt-pagination.md) implements that separate contract. The new Native SDK `production-jobs` scope has two watermark-bound safeguards—latest UUIDv7 receipt ID and exact receipt count—and reconstructs the full bounded historical projection; `production-receipts` adds metadata-only descending keyset pages. Both invalidate cursors when the receipt stream changes independently of project revision. Studio's interactive bounded latest-job view remains unchanged. Exhaustive job reconstruction refuses streams above the documented 20,000-row safety budget rather than falsely claiming completeness.
 
 ## Evidence and boundaries
 
