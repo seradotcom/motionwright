@@ -114,6 +114,14 @@ fn asset_kind(assets: &[Asset], id: Uuid, allowed: &[AssetKind]) -> Result<()> {
 }
 pub fn validate_plan(plan: &HyperframesPlan) -> Result<()> {
     check(
+        plan.runtime_receipt_sha256.len() == 64
+            && plan
+                .runtime_receipt_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "Native execution requires the exact owner-selected runtime fingerprint",
+    )?;
+    check(
         plan.revision <= i64::MAX as u64,
         "Project revision is outside persistent bounds",
     )?;

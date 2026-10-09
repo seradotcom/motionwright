@@ -26,6 +26,7 @@ pub type Result<T> = std::result::Result<T, ProfileError>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperframesPlan {
+    pub runtime_receipt_sha256: String,
     pub project_id: Uuid,
     pub generation: Uuid,
     pub revision: u64,

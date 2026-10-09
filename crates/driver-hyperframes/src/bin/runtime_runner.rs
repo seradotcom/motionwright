@@ -212,6 +212,11 @@ fn render(args: Args) -> Result<()> {
         return Err(invalid("Plan digest changed after admission"));
     }
     let plan: HyperframesPlan = serde_json::from_slice(&plan_bytes)?;
+    if sha(&read(&runtime, "runtime.json", 1024 * 1024)?) != plan.runtime_receipt_sha256 {
+        return Err(invalid(
+            "Installed native runtime changed after the owner-selected profile was recorded; explicit update is required",
+        ));
+    }
     validate_plan(&plan).map_err(|e| invalid(e.to_string()))?;
     let html = compile_html(&plan.document).map_err(|e| invalid(e.to_string()))?;
     if sha(html.as_bytes()) != args.source_sha {

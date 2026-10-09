@@ -211,6 +211,7 @@ impl ProductionCoordinator {
             || raw["rate"] != json!(canvas.rate)
             || raw["alpha"] != canvas.background.is_none()
             || raw["color"] != "srgb"
+            || raw["runtime_receipt_sha256"] != plan.runtime_receipt_sha256
         {
             return Err(backend(
                 "Native result no longer matches this editable document and current revision",

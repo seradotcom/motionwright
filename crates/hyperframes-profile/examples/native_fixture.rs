@@ -187,6 +187,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assets: vec![],
     };
     let plan = HyperframesPlan {
+        runtime_receipt_sha256: std::env::args().nth(2).unwrap_or_else(|| "0".repeat(64)),
         project_id: Uuid::from_u128(1),
         generation: Uuid::from_u128(2),
         revision: 7,

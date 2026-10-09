@@ -16,7 +16,8 @@ def main()->None:
     if os.environ.get('GITHUB_ACTIONS')!='true':raise SystemExit('Heavy native acceptance belongs on a disposable CI runner')
     head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     evidence=ROOT/'verification/hyperframes-native'/head;evidence.mkdir(parents=True,exist_ok=False)
-    entries={mode:json.loads(subprocess.check_output([str(FIXTURE),mode])) for mode in ['opaque','alpha','ntsc']}
+    runtime_sha=digest((RUNTIME/'runtime.json').read_bytes())
+    entries={mode:json.loads(subprocess.check_output([str(FIXTURE),mode,runtime_sha])) for mode in ['opaque','alpha','ntsc']}
     results={}
     with tempfile.TemporaryDirectory(prefix='motionwright-hyperframes-') as directory:
         root=Path(directory);work=root/'work';output=root/'output';assets=root/'assets'

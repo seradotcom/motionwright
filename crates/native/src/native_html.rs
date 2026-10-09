@@ -99,6 +99,17 @@ pub fn prepare_hyperframes_plan(
         ));
     }
     let plan = h::HyperframesPlan {
+        runtime_receipt_sha256: project
+            .extensions
+            .iter()
+            .find(|extension| {
+                extension.kind == d::ExtensionKind::HyperframesRenderer
+                    && extension.enabled
+                    && extension.rights_status == d::RightsStatus::Cleared
+            })
+            .ok_or_else(|| unsupported("No owner-selected native runtime identity is enabled"))?
+            .digest_sha256
+            .clone(),
         project_id: project.id,
         generation: project.generation,
         revision: project.revision,

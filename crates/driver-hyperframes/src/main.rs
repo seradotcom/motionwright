@@ -115,7 +115,7 @@ impl HyperframesDriver {
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         json!({"driver":ID,"profile":"hyperframes-core-chromium-png-v1","runtime_version_contract":HYPERFRAMES_VERSION,
-            "runtime_receipt_present":receipt.is_some(),"configured_hyperframes":receipt.as_ref().and_then(|v|v["hyperframes"].as_str()),
+            "runtime_receipt_present":receipt.is_some(),"runtime_receipt_sha256":read(&self.runtime,"runtime.json",1024*1024).ok().map(|bytes|sha(&bytes)),"configured_hyperframes":receipt.as_ref().and_then(|v|v["hyperframes"].as_str()),
             "network":false,"arbitrary_source_execution":false,"source_preserved":true,"retained_jobs_limit":MAX_RETAINED,
             "host_tools":std::env::var_os("SEMWRIGHT_DRIVER_HOST_TOOLS").is_some(),"admission":"runtime bytes, assets and fonts are reverified during render; this diagnostic does not certify pixels"})
     }
@@ -452,9 +452,9 @@ impl Driver for HyperframesDriver {
 }
 fn plan_schema() -> Value {
     json!({"type":"object","properties":{
-    "project_id":{"type":"string","format":"uuid"},"generation":{"type":"string","format":"uuid"},"revision":{"type":"integer","minimum":0},"scene_id":{"type":"string","format":"uuid"},
+    "runtime_receipt_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"project_id":{"type":"string","format":"uuid"},"generation":{"type":"string","format":"uuid"},"revision":{"type":"integer","minimum":0},"scene_id":{"type":"string","format":"uuid"},
     "document":{"type":"object","properties":{"version":{"const":1},"canvas":{"type":"object"},"camera":{"type":"object"},"nodes":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"object"}},"assets":{"type":"array","maxItems":64,"items":{"type":"object"}}},"required":["version","canvas","nodes"],"additionalProperties":false}
-},"required":["project_id","generation","revision","scene_id","document"],"additionalProperties":false})
+},"required":["runtime_receipt_sha256","project_id","generation","revision","scene_id","document"],"additionalProperties":false})
 }
 fn catalog() -> Vec<Capability> {
     let start = json!({"type":"object","properties":{"attempt_id":{"type":"string","format":"uuid"},"plan":plan_schema(),"expected_source_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}},"required":["attempt_id","plan","expected_source_sha256"],"additionalProperties":false});

@@ -21,6 +21,7 @@ const plan=JSON.parse(planBytes),doc=plan.document,c=doc.canvas;
 if(doc.version!==1 || doc.nodes.length>256 || c.frames<1 || c.frames>3600 || c.width*c.height>8294400)throw new Error('Unadmitted capture dimensions or document version');
 const receiptBytes=readBounded(runtimeRoot,'runtime.json',1024*1024),receipt=JSON.parse(receiptBytes);
 if(receipt.schema!==1 || receipt.hyperframes!=='0.8.143' || receipt.gsap!=='3.15.0' || receipt.playwright!=='1.55.1')throw new Error('Native runtime receipt is incompatible');
+if(hash(receiptBytes)!==plan.runtime_receipt_sha256)throw new Error('Native runtime identity changed after source admission');
 const require=createRequire(path.join(runtimeRoot,'package.json'));
 const {chromium}=require('playwright');
 const fontkit=require('fontkit');
