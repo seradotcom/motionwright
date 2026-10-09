@@ -3,7 +3,8 @@
 //! no renderer is dispatched, and no finished MP4 is claimed.
 use crate::film::{FilmBuildOptions, build_motion_canvas_segments};
 use crate::production::{
-    MotionCanvasRenderEvidence, ensure_native_motion_verification, verify_output_artifact,
+    MotionCanvasRenderEvidence, ensure_native_motion_verification,
+    read_verified_production_artifact,
 };
 use motionwright_domain::{
     AudioCodec, OutputColorSpace, OutputContainer, Project, RationalTime, RendererKind, VideoCodec,
@@ -11,7 +12,7 @@ use motionwright_domain::{
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, path::Path};
 use uuid::Uuid;
 
 const MAX_SEGMENTS: usize = 64;
@@ -269,7 +270,9 @@ pub fn preflight_multi_segment_mlt(
             .ok_or_else(|| invalid("Native artifact frame directory is missing"))?;
         if directory.len() != 39
             || !directory.starts_with("render-")
-            || !directory.as_bytes()[7..].iter().all(u8::is_ascii_hexdigit)
+            || !directory.as_bytes()[7..]
+                .iter()
+                .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(ch))
             || path != format!("{directory}/artifact-manifest.json")
             || actual.artifact.get("frame_count").and_then(Value::as_u64)
                 != Some(expected.frame_count)
@@ -278,9 +281,10 @@ pub fn preflight_multi_segment_mlt(
                 "Native artifact lacks a canonical source-bound frame directory",
             ));
         }
-        let checked = verify_output_artifact(owner_output_root, path, sha, MAX_MANIFEST_BYTES)?;
+        // Parse precisely the bytes that passed the SHA-256 verification,
+        // not a second reopened file after a separate path-only hash.
         let bytes =
-            fs::read(checked).map_err(|_| stale("Native frame manifest became inaccessible"))?;
+            read_verified_production_artifact(owner_output_root, path, sha, MAX_MANIFEST_BYTES)?;
         verify_manifest(
             &bytes,
             expected.frame_count,

@@ -277,7 +277,7 @@ pub fn read_verified_production_artifact(
     Ok(bytes)
 }
 
-pub(crate) fn verify_output_artifact(
+fn verify_output_artifact(
     root: &Path,
     relative: &str,
     expected_sha256: &str,
