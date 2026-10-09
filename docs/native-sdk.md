@@ -15,9 +15,9 @@ The integration follows the Native SDK public contracts:
 
 ## Observation scopes
 
-The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `visual-language`, `canvas`, `alternatives`, `history`, `history-recent` and `locks` scopes.
+The provider exposes project-level `summary`, `timeline`, `brief`, `narrative`, `audio`, `deliverables`, `visual-language`, `canvas`, `alternatives`, `history`, `history-recent`, `locks`, `branches`, `reviews`, `merges` and `production-jobs` scopes.
 
-Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels. History returns only application-owned committed journal rows. It is not a reconstruction of private model reasoning.
+Canvas observations return semantic object/camera state; they do not claim that a native renderer produced matching pixels. History returns only application-owned committed journal rows. It is not a reconstruction of private model reasoning. **All versioned project-array scopes now expose truthful continuation cursors** rather than truncating a long list and claiming it is complete; see [Native SDK scope pagination](native-scope-pagination.md).
 
 The SDK exposes two **revision-bound, read-only** history scopes. Existing `history` preserves its original oldest-first order and now returns a `PageCursor` when more chronological entries remain. `history-recent` starts with the newest recorded commit and advances backwards by revision, matching the Changes workspace's recent-first journal. Both scopes use strictly bounded keyset reads (no OFFSET), a cursor tied to resource/generation/revision and scope, and truthful `complete`/`next` fields. A cursor from another revision, a malformed token or an attempted order swap is rejected. The native observer checks the project version again after reading so it cannot attribute a concurrent write to an earlier observation. See [recent-first pagination](history-pagination.md).
 
@@ -70,6 +70,6 @@ These helpers intentionally stop before authority. A Motionwright process cannot
 
 The dedicated `Canonical Graph and Effects` workflow re-runs the upstream adapter/conformance tests at the exact `SOURCE_LOCK.json` SHA and then exercises Motionwright's consumer wrappers.
 
-The provider also exposes production-jobs, a read-only projection derived from Motionwright production receipts. The job scope is application history only: Semwright remains the scheduler/runtime authority, and CURRENT/STALE applicability is evaluated against the open Motionwright revision.
+The provider also exposes `production-jobs`, a read-only projection derived from Motionwright production receipts. The job scope is application history only: Semwright remains the scheduler/runtime authority, and CURRENT/STALE applicability is evaluated against the open Motionwright revision. Because its receipts can change without a project revision and the current input window is capped, this scope now explicitly returns **partial/unknown enumeration** (`complete: false`, `next: null`) instead of falsely claiming complete historical coverage; this scope cannot accept a project-array cursor. See [Native SDK scope pagination](native-scope-pagination.md).
 
 The desktop Workflow workspace uses the same owner-provisioned `ProductionConnection` boundary for canonical Semwright workflow distillation. Reads plus the explicitly supported record/compile/plan/accept/verify/replay/promote commands are hard-allowlisted and must carry built-in `semwright-core` provenance. Replay is treated as a mutation for uncertain-outcome handling even though Semwright supports planning/dry-run semantics. Destructive or unrelated workflow commands are not exposed by Motionwright; see `workflows.md`.

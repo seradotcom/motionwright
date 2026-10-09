@@ -30,6 +30,10 @@ GitHub Actions receipts must identify app SHA, Semwright pin, suite, environment
 
 The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter compatibility. It runs Semwright's own Project Graph adapter and Effect Conformance suites from the pinned source before Motionwright's wrapper tests. A green lane proves the consumer boundary compiles and preserves the upstream contracts; it does **not** claim Graph admission, render success, or a product-level Effects PASS for a Motionwright deliverable.
 
+## Native SDK project-scope enumeration
+
+Source-bound Rust tests enumerate 271 project-owned records with several bounded Native SDK page limits, verifying complete, ordered, nonoverlapping coverage and reject invalid offsets, wrong-scope cursors and stale creative revisions. Integration writes eleven real scenes and checks both Timeline and Canvas native observation pagination end-to-end through StudioService. Production Jobs observations deliberately remain partial/unknown when a complete receipt-history cursor is unavailable. See [Native SDK scope pagination](native-scope-pagination.md).
+
 ## Recent-first event journal acceptance
 
 The storage tests create a 260-change SQLite journal and verify descending keyset pages, complete non-overlapping coverage, cross-project isolation, and backward compatibility with ascending event reads. Studio unit tests reject malformed/out-of-order pages; Chromium tests exercise recent-first pagination, older-page navigation and transient read retry through a synthetic Tauri boundary. All tests are source-SHA scoped and do not establish independent creative acceptance. See [history pagination](history-pagination.md).
