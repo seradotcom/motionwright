@@ -128,7 +128,7 @@ jobs:
             exit 1
           fi
           mapfile -t image_bins < <(find "$extracted/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
-          mapfile -t image_desktop < <(find "$extracted" -maxdepth 1 -type f -name '*.desktop')
+          mapfile -t image_desktop < <(find "$extracted" -maxdepth 1 -name '*.desktop')
           if [ "${#image_bins[@]}" -ne 1 ]; then
             echo "::error::Expected one Motionwright binary in extracted AppImage, found ${#image_bins[@]}"
             find "$extracted/usr/bin" -maxdepth 1 -type f -printf '%f\n'

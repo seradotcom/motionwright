@@ -116,6 +116,36 @@ class CandidateSmokeTests(unittest.TestCase):
         )
         self.assertEqual(passed["automated_inspection"]["gui_window_probe"], "WINDOW_OBSERVED")
 
+    def test_appimage_internal_desktop_symlink_is_allowed_but_escape_is_not(self):
+        # Linuxdeploy creates a top-level symlink to usr/share/applications.
+        # The legitimate relative link must not be confused with a host-path
+        # escape, and Debian's extracted entry must remain a regular file.
+        root = self.folder / "squashfs-root"
+        target_dir = root / "usr" / "share" / "applications"
+        target_dir.mkdir(parents=True)
+        executable = root / "usr" / "bin" / "motionwright-desktop"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(elf_binary())
+        target = target_dir / "Motionwright.desktop"
+        target.write_text(
+            "[Desktop Entry]\nName=Motionwright\nType=Application\nExec=motionwright-desktop\n"
+        )
+        entry = root / "Motionwright.desktop"
+        entry.symlink_to("usr/share/applications/Motionwright.desktop")
+        data = mod.verify_linux_desktop_entry(
+            entry, executable, allow_internal_link=True
+        )
+        self.assertEqual(data["desktop_entry_filename"], "Motionwright.desktop")
+        with self.assertRaisesRegex(mod.CandidateError, "may not be a symlink"):
+            mod.verify_linux_desktop_entry(entry, executable)
+
+        entry.unlink()
+        outsider = self.folder / "outside.desktop"
+        outsider.write_bytes(target.read_bytes())
+        entry.symlink_to(outsider)
+        with self.assertRaisesRegex(mod.CandidateError, "escapes the extracted bundle"):
+            mod.verify_linux_desktop_entry(entry, executable, allow_internal_link=True)
+
     def test_windows_silent_current_user_installer_candidate(self):
         receipt, artifact = self.receipt("nsis", b"fake-windows-installer", "x86_64")
         executable = self.folder / "Motionwright.exe"

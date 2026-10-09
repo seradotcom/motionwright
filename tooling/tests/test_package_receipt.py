@@ -1,5 +1,7 @@
 import importlib.util
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -38,6 +40,25 @@ class PackageReceiptTests(unittest.TestCase):
     def test_cross_platform_suffix_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported linux"):
             module.classify("linux", pathlib.Path("Motionwright.dmg"))
+
+    def test_cli_rejects_symlinked_package_before_path_resolve(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = pathlib.Path(raw)
+            original = directory / "Motionwright_0.1.0_x64-setup.exe"
+            original.write_bytes(b"untrusted-installed-byte-stream")
+            link = directory / "Motionwright-linked-setup.exe"
+            link.symlink_to(original)
+            receipt = directory / "receipt.json"
+            command = [
+                sys.executable, str(ROOT / "tooling" / "package_receipt.py"),
+                "--git-sha", "a" * 40, "--platform", "windows",
+                "--arch", "x86_64", "--artifact", str(link),
+                "--output", str(receipt),
+            ]
+            run = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn("non-symlink", run.stderr)
+            self.assertFalse(receipt.exists())
 
     def test_sha256_is_streamed_and_exact(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

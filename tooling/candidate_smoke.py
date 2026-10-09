@@ -144,8 +144,21 @@ def binary_identity(binary: Path, platform: str, arch: str) -> dict:
     }
 
 
-def verify_linux_desktop_entry(path: Path, executable: Path) -> dict:
-    regular(path)
+def verify_linux_desktop_entry(
+    path: Path, executable: Path, *, allow_internal_link: bool = False,
+) -> dict:
+    if path.is_symlink():
+        require(allow_internal_link,
+                "Debian desktop entry may not be a symlink")
+        # Linuxdeploy/AppImage normally exports a top-level .desktop symlink
+        # into its own usr/share/applications. Accept ONLY an internal
+        # regular-file target, never an escape into the host filesystem.
+        extracted_root = path.parent.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        require(resolved.is_relative_to(extracted_root) and resolved.is_file(),
+                "AppImage desktop entry symlink escapes the extracted bundle")
+    else:
+        regular(path)
     parser = configparser.ConfigParser(interpolation=None, strict=True)
     parser.optionxform = str
     parser.read(path, encoding="utf-8")
@@ -189,7 +202,10 @@ def build_receipt(*, candidate_receipt: Path, artifact: Path,
     extra = {}
     if platform == "linux":
         require(linux_desktop_entry is not None, "Linux package must expose a Desktop Entry")
-        extra = verify_linux_desktop_entry(linux_desktop_entry, installed_binary)
+        extra = verify_linux_desktop_entry(
+            linux_desktop_entry, installed_binary,
+            allow_internal_link=(kind == "appimage"),
+        )
     elif platform == "macos":
         require(mac_info_plist is not None, "macOS package requires Info.plist inspection")
         extra = verify_macos_bundle(mac_info_plist, installed_binary)

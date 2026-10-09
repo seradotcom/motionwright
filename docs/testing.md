@@ -32,7 +32,7 @@ The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter com
 
 ## Automated desktop candidate install/extraction inspection
 
-The Candidate Packages workflow verifies exact bundle SHA-256 against its source receipt, extracts Linux Debian/AppImage bundles, inspects real installed PE/Mach-O/ELF executable identity and desktop/bundle metadata, performs a disposable NSIS current-user installation and checks a rootless Xvfb AppImage window. Its 8 Python adversarial unit tests refuse altered archives, mismatched Semwright/source stamps, architecture/metadata substitution and fabricated GUI evidence. These checks are explicitly [automated package smoke](installed-candidate-smoke.md), **not human-installed platform acceptance**, media compatibility, notarization or publication.
+The Candidate Packages workflow verifies exact bundle SHA-256 against its source receipt, extracts Linux Debian/AppImage bundles, inspects real installed PE/Mach-O/ELF executable identity and desktop/bundle metadata, performs a disposable NSIS current-user installation and checks a rootless Xvfb AppImage window. Its 9 Python adversarial unit tests refuse altered archives, mismatched Semwright/source stamps, architecture/metadata substitution and fabricated GUI evidence. These checks are explicitly [automated package smoke](installed-candidate-smoke.md), **not human-installed platform acceptance**, media compatibility, notarization or publication.
 
 ## Native SDK project-scope enumeration
 

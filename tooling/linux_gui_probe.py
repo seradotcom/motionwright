@@ -40,8 +40,11 @@ def run_probe(app_run: Path, scratch: Path, *, seconds: int) -> dict:
         path = scratch / folder
         path.mkdir(mode=0o700, exist_ok=True)
         env[label] = str(path)
-    env["MOTIONWRIGHT_SEMWRIGHT_CONNECTION"] = ""
+    # No owner-provisioned Semwright runtime or connection can leak into the
+    # disposable GUI smoke process, even if the runner inherited one.
+    env.pop("MOTIONWRIGHT_SEMWRIGHT_CONNECTION", None)
     env["APPDIR"] = str(app_dir)
+    env["GDK_BACKEND"] = "x11"
     log_file = scratch / "app-run.log"
     result = {"status": "NO_WINDOW", "window_title": "", "elapsed_seconds": 0}
     with log_file.open("wb") as log:

@@ -9,7 +9,7 @@ The additional **post-build candidate smoke** tests validate what the installers
 | Candidate | Isolated package operation | Verified evidence |
 |---|---|---|
 | Linux Debian `.deb` | `dpkg-deb --extract` into a fresh runner temporary directory, without installing a system package | Exactly one installed executable and desktop entry; source archive SHA-256, correct 64-bit x86 ELF, desktop name/Exec identity, executable digest |
-| Linux `.AppImage` | Runtime-independent `--appimage-extract` into an isolated temporary directory | Exact AppImage SHA-256, contained executable/desktop entry, ELF architecture, internal AppRun path; a rootless **Xvfb** run creates an actual window titled **Motionwright** |
+| Linux `.AppImage` | Runtime-independent `--appimage-extract` into an isolated temporary directory | Exact AppImage SHA-256, contained executable/desktop entry (allowing Linuxdeploy's top-level symlink **only when its target stays within the extracted AppImage**), ELF architecture, internal AppRun path; a rootless **Xvfb** run creates an actual window titled **Motionwright** |
 | Windows NSIS `-setup.exe` | Real NSIS **silent current-user installation** to a new temporary install directory on the disposable Windows runner | Installer SHA-256, expected installed app executable and 64-bit x86 Windows PE header, executable byte count/hash; no admin-level install |
 | macOS `.dmg` | Read-only DMG mount, `ditto` copy of the contained `.app` into the disposable runner's temporary directory | Exact DMG SHA-256, unique app bundle, exact `CFBundleIdentifier`, matching `CFBundleExecutable` and correct Mach-O machine architecture |
 
@@ -33,7 +33,7 @@ Each new `ci-evidence/*-smoke.json` records `automated_inspection.status=PASS` *
 
 ## How it is enforced
 
-`tooling/candidate_smoke.py` refuses to consume archive bytes different from the build receipt, verifies source revision against the caller-provided exact GitHub SHA and validates platform-specific executable headers without invoking arbitrary external commands. Its 8 adversarial Python unit tests run in the fast `receipt-policy` job, before any heavyweight packages are built. The additional isolated Linux GUI probe lives in `tooling/linux_gui_probe.py`.
+`tooling/candidate_smoke.py` refuses to consume archive bytes different from the build receipt, verifies source revision against the caller-provided exact GitHub SHA and validates platform-specific executable headers without invoking arbitrary external commands. Its 9 adversarial Python unit tests run in the fast `receipt-policy` job, before any heavyweight packages are built. The additional isolated Linux GUI probe lives in `tooling/linux_gui_probe.py`.
 
 The real package checks run only after the corresponding `tauri build` and candidate receipt creation. Their SHA-256 findings are uploaded alongside the existing unsigned installers and source-bound candidate receipt, without changing the release/tag/update policy. A failed smoke gate retains the build evidence in the workflow logs; it must be corrected or documented, never replaced with a fabricated PASS.
 
