@@ -168,7 +168,7 @@ export async function planContentDigest(plan: ProductionPlan): Promise<string> {
   // Keep the Rust struct order explicit; arbitrary object insertion order is not a wire contract.
   const value = { objective:plan.objective,audience:plan.audience,concept:plan.concept,reference_constraints:plan.reference_constraints,exclusions:plan.exclusions,
     shots:plan.shots.map((s) => ({scene_id:s.scene_id,purpose:s.purpose,claim_ids:s.claim_ids,asset_ids:s.asset_ids,evidence_kind:s.evidence_kind})),
-    clock: plan.clock.kind === "timeline" ? { kind:"timeline" } : plan.clock.kind === "voice" ? { kind:"voice",voice_track_id:plan.clock.voice_track_id } : { kind:"music",asset_id:plan.clock.asset_id,beats:plan.clock.beats }, approval:null };
+    clock: plan.clock.kind === "timeline" ? { kind:"timeline" } : plan.clock.kind === "voice" ? { kind:"voice",voice_track_id:plan.clock.voice_track_id } : { kind:"music",asset_id:plan.clock.asset_id,beats:plan.clock.beats.map(at=>({num:at.num,den:at.den})) }, approval:null };
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify(value)))), b => b.toString(16).padStart(2,"0")).join("");
 }
 export async function validateProductionPlan(project: Project, plan: ProductionPlan) {
