@@ -46,6 +46,10 @@ Canvas applies the stored scene camera center, zoom and inverse rotation to its 
 
 Rust domain tests verify one authored revision for an X/Y position pair, no base-transform mutation, strict property locks, rational half-open scene timing, and rejection of invalid coordinates without half-keyframe commits. Native SDK public-operation tests validate the closed contract for agent use. Browser fixture and Chromium pointer regressions compare Auto-key on/off, exact scene-local timing, history event count, and locked-gesture no-op. Native renderer Film still rejects motion it cannot preserve exactly; see [typed motion authoring](motion-authoring.md).
 
+## Native Film exact linear X/Y position motion
+
+The pinned Film adapter admits only paired, exact-frame-aligned linear X/Y motion from an authored pose at scene-local 0 to the unchanged node base at T. Rust tests verify the actual native Settle and compiled Position tween, unsupported easing/channels/missing axes, frame alignment and starting-frame safe areas. The real pinned Broker/Driver Host E2E now seeds a visible keyed tile and independently checks 60 native frame hashes, including distinct frame 0 and frame 30 PNGs. This is native runtime evidence, **not independently approved creative quality**. See [motion projection](native-linear-position-motion.md).
+
 ## Native Film static camera pan
 
 The pinned Film adapter now projects per-scene static camera center shifts through native subject translation when zoom=1 and rotation=0, keeping source Canvas geometry, text size, frame count and safe areas explicit. Rust tests exercise two panned scenes, native Film realization, unsupported zoom/rotation and unsafe pan bounds. This is not independent rendered pixel parity. See [static camera pan](native-film-static-pan.md).
