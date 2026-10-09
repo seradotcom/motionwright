@@ -4485,6 +4485,46 @@ select:focus {
 .job-observation-cell > span:last-child {
   white-space: normal !important;
 }
+.jobs-history-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.jobs-history-banner > div {
+  display: grid;
+  gap: 4px;
+  max-width: 80ch;
+}
+.jobs-history-banner strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.jobs-history-banner span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.jobs-history-pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  padding: 9px 14px;
+  color: var(--muted);
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+}
+.jobs-history-pager .button {
+  flex: 0 0 auto;
+}
+
 .jobs-footnote {
   flex: 0 0 auto;
   padding: 8px 14px;

@@ -314,6 +314,22 @@ export interface ProductionJobProjection {
   last_observation: ProductionObservationState;
 }
 
+/** Cursor issued by the local Tauri service for a frozen app-owned receipt
+ * snapshot. A changed receipt stream makes this cursor stale, even when the
+ * creative revision is unchanged.
+ */
+export interface ProductionJobsHistoryCursor {
+  latest_id: string;
+  receipt_count: number;
+  offset: number;
+}
+export interface ProductionJobsHistoryPage {
+  items: ProductionJobProjection[];
+  total_jobs: number;
+  next: ProductionJobsHistoryCursor | null;
+  complete: boolean;
+}
+
 export type MotionCanvasNarrativeRole =
   | "hook" | "problem" | "mechanism" | "evidence"
   | "comparison" | "reveal" | "payoff" | "cta";

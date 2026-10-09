@@ -27,7 +27,7 @@ The job cursor is `jobs:v1:<highest-uuid>:<count>:<offset>`; offset is safe **on
 
 For safety, this on-demand exhaustive job reconstruction refuses streams exceeding **20,000 receipts** rather than loading an unbounded ledger in memory or fabricating completeness. This is a deliberate and explicit `InvalidArgument` error at the service boundary, **not** a successful partial response. Larger enterprise histories require independently indexed persisted job summaries and an explicit migration before the guardrail can be lifted safely.
 
-The existing Studio `Production Jobs` panel continues using its independent bounded most-recent 256-receipt/64-job view for interactive responsiveness; it is not silently converted into a full-history scan. Semwright remains the job runtime authority.
+The existing Studio `Production Jobs` panel continues using its independent bounded most-recent 256-receipt/64-job view for interactive responsiveness; it is not silently converted into a full-history scan. An explicit [Full history](production-jobs-history.md) action invokes the same service snapshot code in a bounded worker only when requested, and pages older jobs without altering normal auto-refresh behavior. Semwright remains the job runtime authority.
 
 ## Tests and evidence
 

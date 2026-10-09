@@ -7,10 +7,12 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { productionJobs } from "./api";
+import { productionJobs, productionJobsHistory } from "./api";
 import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
 import type {
   ProductionJobProjection,
+  ProductionJobsHistoryCursor,
+  ProductionJobsHistoryPage,
   ProductionJobState,
   Project,
 } from "./types";
@@ -130,6 +132,19 @@ export default function ProductionJobsWorkspace({
   const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshRef = useRef<() => void>(() => {});
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historicalJobs, setHistoricalJobs] = useState<ProductionJobProjection[]>([]);
+  const [historicalCursor, setHistoricalCursor] = useState<ProductionJobsHistoryCursor | null>(null);
+  const [historicalComplete, setHistoricalComplete] = useState(false);
+  const [historicalTotal, setHistoricalTotal] = useState(0);
+  const [historicalReadAt, setHistoricalReadAt] = useState<string | null>(null);
+  const [historicalLoading, setHistoricalLoading] = useState(false);
+  const [historicalError, setHistoricalError] = useState<string | null>(null);
+  const historyEpochRef = useRef(0);
+  const historyKey = [project.id, project.generation, project.revision].join(":");
+  const historyKeyRef = useRef(historyKey);
+  historyKeyRef.current = historyKey;
+  const historicalInFlight = useRef<{ key: string; epoch: number } | null>(null);
   // Survives React Strict Mode's effect cleanup/setup; it never caches a settled read.
   const pendingReadRef = useRef<{
     key: string;
@@ -209,6 +224,15 @@ export default function ProductionJobsWorkspace({
     }
 
     // Invalidate rows from the previous project or revision before the new read.
+    historyEpochRef.current += 1;
+    setHistoryOpen(false);
+    setHistoricalJobs([]);
+    setHistoricalCursor(null);
+    setHistoricalComplete(false);
+    setHistoricalTotal(0);
+    setHistoricalReadAt(null);
+    setHistoricalLoading(false);
+    setHistoricalError(null);
     setJobs([]);
     setLastReadAt(null);
     setError(null);
@@ -226,6 +250,70 @@ export default function ProductionJobsWorkspace({
     };
   }, [project.id, project.generation, project.revision, desktopMode]);
 
+  // A separate on-demand history view never triggers polling or driver
+  // commands. Pages are stable only while both creative revision and the
+  // independent production receipt watermark remain unchanged.
+  async function readHistory(
+    cursor: ProductionJobsHistoryCursor | null,
+    epoch: number,
+  ) {
+    const existing = historicalInFlight.current;
+    if (existing?.key === historyKey && existing.epoch === epoch) return;
+    const token = { key: historyKey, epoch };
+    historicalInFlight.current = token;
+    setHistoricalLoading(true);
+    setHistoricalError(null);
+    try {
+      const page: ProductionJobsHistoryPage = await productionJobsHistory(project, 16, cursor);
+      if (historyKeyRef.current !== token.key || historyEpochRef.current !== epoch) return;
+      if (cursor === null) {
+        setHistoricalJobs(page.items);
+        setHistoricalReadAt(new Date().toISOString());
+      } else {
+        // Refuse duplicate pages without mutating the canonical source.
+        setHistoricalJobs((current) => {
+          const seen = new Set(current.map((entry) => entry.job_ref));
+          return [...current, ...page.items.filter((entry) => !seen.has(entry.job_ref))];
+        });
+      }
+      setHistoricalCursor(page.next);
+      setHistoricalComplete(page.complete);
+      setHistoricalTotal(page.total_jobs);
+    } catch (reason) {
+      if (historyKeyRef.current === token.key && historyEpochRef.current === epoch) {
+        setHistoricalError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (historicalInFlight.current === token) historicalInFlight.current = null;
+      if (historyKeyRef.current === token.key && historyEpochRef.current === epoch) {
+        setHistoricalLoading(false);
+      }
+    }
+  }
+
+  function openHistory() {
+    if (historyOpen) {
+      historyEpochRef.current += 1;
+      setHistoryOpen(false);
+      return;
+    }
+    setHistoryOpen(true);
+    restartHistory();
+  }
+
+  function restartHistory() {
+    const epoch = ++historyEpochRef.current;
+    setHistoricalJobs([]);
+    setHistoricalCursor(null);
+    setHistoricalComplete(false);
+    setHistoricalTotal(0);
+    setHistoricalReadAt(null);
+    void readHistory(null, epoch);
+  }
+
+  const visibleJobs = historyOpen ? historicalJobs : jobs;
+  const waitingForFirstPage = historyOpen ? historicalLoading && historicalJobs.length === 0 : loading;
+
   return (
     <section className="jobs-workspace" aria-label="Production jobs">
       <header className="workspace-heading jobs-heading">
@@ -238,11 +326,27 @@ export default function ProductionJobsWorkspace({
         </div>
         <div className="jobs-heading-actions">
           <span className="count-label" aria-live="polite">
-            {loading ? "Reading receipts…" : jobs.length + (jobs.length === 1 ? " job" : " jobs")}
+            {historyOpen
+              ? historicalLoading && historicalJobs.length === 0
+                ? "Reading history…"
+                : historicalJobs.length + " / " + historicalTotal + " historical jobs"
+              : loading ? "Reading receipts…" : jobs.length + (jobs.length === 1 ? " job" : " jobs")}
           </span>
           <span className="jobs-read-at">
             {lastReadAt ? "Local receipts read " + observedAt(lastReadAt) : "No successful receipt read yet"}
           </span>
+          <button
+            type="button"
+            className="button compact"
+            aria-label={historyOpen ? "Back to recent jobs" : "Browse full production history"}
+            disabled={!desktopMode}
+            title={historyOpen
+              ? "Return to the lightweight latest-window job projection."
+              : "On-demand, locally persisted historical jobs at a fixed receipt watermark."}
+            onClick={openHistory}
+          >
+            {historyOpen ? "Recent jobs" : "Full history"}
+          </button>
           <button
             type="button"
             className="button compact"
@@ -271,7 +375,31 @@ export default function ProductionJobsWorkspace({
         </div>
       </div>
 
-      {error && (
+      {historyOpen && (
+        <div className="jobs-history-banner" role="region" aria-label="Historical production snapshot">
+          <div>
+            <strong>Read-only historical snapshot</strong>
+            <span>All locally persisted job receipts as of one verified watermark.
+              New status receipts require restarting the snapshot; no driver is queried.</span>
+            {historicalReadAt && <span>Snapshot read {observedAt(historicalReadAt)}</span>}
+          </div>
+          <button type="button" className="button compact"
+            disabled={historicalLoading}
+            onClick={restartHistory}>Restart history</button>
+        </div>
+      )}
+      {historyOpen && historicalError && (
+        <div className="jobs-inline-error" role="alert">
+          <TriangleAlert size={15} aria-hidden="true" />
+          <div>
+            <strong>Historical receipt snapshot could not be continued.</strong>
+            <span>{historicalError}</span>
+            <span>Existing rows belong to the earlier snapshot; restart to check the latest receipts.</span>
+          </div>
+        </div>
+      )}
+
+      {!historyOpen && error && (
         <div className="jobs-inline-error" role="alert">
           <TriangleAlert size={15} aria-hidden="true" />
           <div>
@@ -282,21 +410,27 @@ export default function ProductionJobsWorkspace({
         </div>
       )}
 
-      {!loading && jobs.length === 0 ? (
+      {!waitingForFirstPage && visibleJobs.length === 0 ? (
         <div className="jobs-empty">
           <CircleDashed size={20} aria-hidden="true" />
-          <strong>No canonical render job receipts yet.</strong>
+          <strong>{historyOpen ? "No historical production jobs in this snapshot." :
+            "No canonical render job receipts yet."}</strong>
           <span>
-            {error
-              ? "Receipt read failed. Use Refresh receipts to try again; no driver action was dispatched."
-              : desktopMode
-                ? "Start production through the Semwright-backed production boundary to create traceable job evidence."
-                : "Browser demo mode intentionally does not fabricate runtime jobs or render evidence."}
+            {historyOpen
+              ? historicalError
+                ? "The history read failed; restart to validate the receipt stream again."
+                : "All persisted observations are checked without invoking the native driver."
+              : error
+                ? "Receipt read failed. Use Refresh receipts to try again; no driver action was dispatched."
+                : desktopMode
+                  ? "Start production through the Semwright-backed production boundary to create traceable job evidence."
+                  : "Browser demo mode intentionally does not fabricate runtime jobs or render evidence."}
           </span>
         </div>
       ) : (
         <div className="jobs-ledger-scroll">
-          <div className="jobs-ledger" role="table" aria-label="Canonical production job receipts">
+          <div className="jobs-ledger" role="table"
+            aria-label={historyOpen ? "Historical production job receipts" : "Canonical production job receipts"}>
             <div className="jobs-ledger-row jobs-ledger-head" role="row">
               <span role="columnheader">Job</span>
               <span role="columnheader">Provider</span>
@@ -305,11 +439,25 @@ export default function ProductionJobsWorkspace({
               <span role="columnheader">Applicability</span>
               <span role="columnheader">Last observation</span>
             </div>
-            {jobs.map((job) => <JobRow key={job.job_ref} job={job} />)}
+            {visibleJobs.map((job) => <JobRow key={job.job_ref} job={job} />)}
           </div>
         </div>
       )}
 
+      {historyOpen && (
+        <div className="jobs-history-pager">
+          <span className="mono">{historicalJobs.length} of {historicalTotal} persisted jobs
+            {historicalComplete ? " · complete at verified snapshot" : " · more may remain"}</span>
+          <button type="button" className="button compact"
+            aria-label="Load older production jobs"
+            disabled={historicalLoading || historicalError !== null || historicalCursor === null}
+            onClick={() => {
+              if (historicalCursor) void readHistory(historicalCursor, historyEpochRef.current);
+            }}>
+            {historicalLoading ? "Reading…" : "Load older jobs"}
+          </button>
+        </div>
+      )}
       <footer className="jobs-footnote">
         Local observations are derived from immutable request receipts; they do not mint Project
         Graph admission, Effect Conformance PASS, creative approval, or new runtime authority.
