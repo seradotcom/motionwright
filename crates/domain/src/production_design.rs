@@ -409,6 +409,15 @@ pub struct CreativePatchPreview {
 }
 impl Project {
     pub fn preview_creative_patch(&self, patch: &CreativePatch) -> Result<CreativePatchPreview> {
+        self.ensure_unlocked(
+            &self.resource_key(),
+            &[
+                LockKind::Content,
+                LockKind::Style,
+                LockKind::Position,
+                LockKind::Timing,
+            ],
+        )?;
         if patch.base_revision != self.revision {
             return Err(DomainError::Invalid("creative patch base is stale".into()));
         }
