@@ -468,6 +468,15 @@ impl ObservationProvider for MotionwrightObserver {
         // pages. The prior take(limit)+complete:true pattern silently hid
         // every scene/object/review past the first page from native agents.
         let page = match query.scope.as_str() {
+            "creative-patches" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.patches.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.patches[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
             "production-plan" => paginate_project_observation(
                 query,
                 &version,
@@ -604,6 +613,7 @@ struct ApplyHandler {
 
 #[derive(Clone, Copy)]
 enum OperationKind {
+    UndoCreativePatch,
     UpsertProductHero,
     DetachProductHero,
     SetProductionPlan,
@@ -760,6 +770,9 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
     }
 
     match kind {
+        OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
+            patch_id: uuid(args, "patch_id")?,
+        }),
         OperationKind::UpsertProductHero => Ok(Change::UpsertProductHero {
             instance_id: uuid(args, "instance_id")?,
             scene_id: uuid(args, "scene_id")?,
@@ -2095,6 +2108,17 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UndoCreativePatch,
+            descriptor(
+                "creative.patch.undo",
+                "Revert a stored scoped patch as a new revision, preserving compatible later edits",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},"patch_id":{"type":"string","format":"uuid","maxLength":64}}),
+                    &["ref", "patch_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetVisualLanguage,
             descriptor(
                 "visual-language.set",
@@ -2353,7 +2377,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
-        assert_eq!(capabilities.len(), 51);
+        assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
+        assert_eq!(capabilities.len(), 52);
     }
 
     #[tokio::test]

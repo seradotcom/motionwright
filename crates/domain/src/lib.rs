@@ -1,5 +1,6 @@
 mod canvas;
 mod creative;
+mod creative_revisions;
 mod delivery;
 mod extensions;
 mod hero;
@@ -8,6 +9,7 @@ mod integrations;
 mod production_design;
 pub use canvas::*;
 pub use creative::*;
+pub use creative_revisions::*;
 pub use delivery::*;
 pub use extensions::*;
 pub use hero::*;
@@ -982,6 +984,7 @@ impl Project {
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
         match change {
+            Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
             Change::UpsertProductHero {
                 instance_id,
                 scene_id,
@@ -2210,6 +2213,9 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    UndoCreativePatch {
+        patch_id: Uuid,
+    },
     UpsertProductHero {
         instance_id: Uuid,
         scene_id: Uuid,

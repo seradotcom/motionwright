@@ -11,6 +11,8 @@ pub struct ProductionDesign {
     pub heroes: Vec<ProductHeroInstance>,
     #[serde(default)]
     pub capsules: Vec<NativeCapsule>,
+    #[serde(default)]
+    pub patches: Vec<CreativePatchRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +304,7 @@ impl ProductionDesign {
         brief: &Brief,
         audio: &AudioState,
     ) -> Result<()> {
+        crate::creative_revisions::validate_creative_patch_records(&self.patches)?;
         if self.heroes.len() > 64 || self.capsules.len() > 256 {
             return Err(DomainError::Invalid(
                 "production design collection is too large".into(),
@@ -475,23 +478,6 @@ impl Project {
     }
     pub(crate) fn apply_creative_patch(&mut self, patch: &CreativePatch) -> Result<()> {
         let preview = self.preview_creative_patch(patch)?;
-        let mut candidate = self.clone();
-        let scene = candidate
-            .scenes
-            .iter_mut()
-            .find(|scene| scene.id == patch.scene_id)
-            .expect("preview validated scene");
-        for updated in preview.after {
-            let node_id = updated.id;
-            *scene
-                .nodes
-                .iter_mut()
-                .find(|node| node.id == node_id)
-                .expect("preview validated node") = updated;
-        }
-        scene.status = SceneStatus::Draft;
-        candidate.validate()?;
-        *self = candidate;
-        Ok(())
+        self.commit_creative_preview(preview, patch.rationale.clone(), None)
     }
 }
