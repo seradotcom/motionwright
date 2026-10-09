@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs::{self, File},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::Path,
 };
 use uuid::Uuid;
@@ -73,7 +73,113 @@ fn measured_voice_matches_cut(
     Ok(())
 }
 
-fn verify_measured_voice_file(voice: &VerifiedMasterVoice) -> NativeResult<()> {
+fn wav_u16(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+fn wav_u32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Inspect the complete bounded WAV chunk index. Voice metadata is not a
+/// substitute for sample rate/channels/frame count declared by the file.
+fn wave_sample_frames(file: &mut File, file_len: u64) -> NativeResult<u64> {
+    file.rewind()
+        .map_err(|_| stale("Imported WAV cannot be rewound"))?;
+    let mut riff = [0_u8; 12];
+    file.read_exact(&mut riff)
+        .map_err(|_| stale("Imported measured WAV has an incomplete RIFF header"))?;
+    if &riff[..4] != b"RIFF"
+        || &riff[8..12] != b"WAVE"
+        || u64::from(wav_u32(&riff[4..8])) + 8 != file_len
+    {
+        return Err(unsupported(
+            "Measured source is not a complete RIFF/WAVE file",
+        ));
+    }
+    let mut pos = 12_u64;
+    let mut format: Option<u16> = None;
+    let mut audio_bytes: Option<u64> = None;
+    for _ in 0..256 {
+        if pos == file_len {
+            break;
+        }
+        if pos.checked_add(8).is_none_or(|after| after > file_len) {
+            return Err(unsupported(
+                "Imported WAV contains a truncated chunk header",
+            ));
+        }
+        file.seek(SeekFrom::Start(pos))
+            .map_err(|_| stale("Imported WAV chunk cannot be located"))?;
+        let mut header = [0_u8; 8];
+        file.read_exact(&mut header)
+            .map_err(|_| stale("Imported WAV chunk header changed"))?;
+        let size = u64::from(wav_u32(&header[4..8]));
+        let end = pos
+            .checked_add(8)
+            .and_then(|start| start.checked_add(size))
+            .ok_or_else(|| invalid("RIFF chunk size overflow"))?;
+        if end > file_len {
+            return Err(unsupported("Imported WAV chunk extends outside the source"));
+        }
+        if &header[..4] == b"fmt " {
+            if format.is_some() || size < 16 {
+                return Err(unsupported(
+                    "Imported WAV has missing or duplicate PCM format",
+                ));
+            }
+            let mut fmt = [0_u8; 16];
+            file.read_exact(&mut fmt)
+                .map_err(|_| stale("Measured WAV format chunk changed"))?;
+            let kind = wav_u16(&fmt[0..2]);
+            let channels = wav_u16(&fmt[2..4]);
+            let hz = wav_u32(&fmt[4..8]);
+            let byte_rate = wav_u32(&fmt[8..12]);
+            let align = wav_u16(&fmt[12..14]);
+            let bits = wav_u16(&fmt[14..16]);
+            if !matches!((kind, bits), (1, 16 | 24 | 32) | (3, 32))
+                || channels != 2
+                || hz != 48_000
+                || align != channels * bits / 8
+                || byte_rate != hz * u32::from(align)
+            {
+                return Err(unsupported(
+                    "Measured WAV content is not 48 kHz stereo PCM16/24/32 or float32",
+                ));
+            }
+            format = Some(align);
+        } else if &header[..4] == b"data" {
+            if audio_bytes.is_some() {
+                return Err(unsupported(
+                    "WAV contains ambiguous duplicate audio sample chunks",
+                ));
+            }
+            audio_bytes = Some(size);
+        }
+        pos = end
+            .checked_add(size % 2)
+            .ok_or_else(|| invalid("WAV padding overflows its source length"))?;
+        if pos > file_len {
+            return Err(unsupported("WAV has incomplete chunk padding"));
+        }
+    }
+    if pos != file_len {
+        return Err(unsupported(
+            "Measured WAV contains too many or incomplete chunks",
+        ));
+    }
+    let align = u64::from(
+        format.ok_or_else(|| unsupported("Measured WAV is missing a supported format chunk"))?,
+    );
+    let size = audio_bytes.ok_or_else(|| unsupported("Measured WAV is missing sample data"))?;
+    if size == 0 || align == 0 || size % align != 0 {
+        return Err(unsupported(
+            "Measured WAV does not contain complete stereo PCM frames",
+        ));
+    }
+    Ok(size / align)
+}
+
+fn verify_measured_voice_file(voice: &VerifiedMasterVoice) -> NativeResult<u64> {
     if !digest_valid(&voice.sha256) || !(44..=MAX_WAV_BYTES).contains(&voice.size_bytes) {
         return Err(invalid(
             "Measured voice has invalid SHA-256 or bounded size",
@@ -93,19 +199,12 @@ fn verify_measured_voice_file(voice: &VerifiedMasterVoice) -> NativeResult<()> {
     }
     let mut input =
         File::open(&voice.path).map_err(|_| stale("Imported measured WAV cannot be opened"))?;
-    let mut signature = [0_u8; 12];
+    let sample_frames = wave_sample_frames(&mut input, voice.size_bytes)?;
     input
-        .read_exact(&mut signature)
-        .map_err(|_| stale("Imported WAV lacks the RIFF header"))?;
-    if &signature[0..4] != b"RIFF" || &signature[8..12] != b"WAVE" {
-        return Err(unsupported(
-            "Native AV only accepts an imported RIFF/WAVE source",
-        ));
-    }
-    // Rehash the same source from the beginning, not only the header.
+        .rewind()
+        .map_err(|_| stale("Imported measured WAV cannot be rewound"))?;
     let mut hash = Sha256::new();
-    hash.update(signature);
-    let mut consumed = signature.len() as u64;
+    let mut consumed = 0_u64;
     let mut block = [0_u8; 128 * 1024];
     loop {
         let n = input
@@ -125,7 +224,7 @@ fn verify_measured_voice_file(voice: &VerifiedMasterVoice) -> NativeResult<()> {
     if consumed != voice.size_bytes || hex::encode(hash.finalize()) != voice.sha256 {
         return Err(stale("Measured WAV no longer matches its imported SHA-256"));
     }
-    Ok(())
+    Ok(sample_frames)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,7 +427,20 @@ pub fn preflight_multi_segment_audio(
             "MLT FFV1 segments have an incomplete or overlapping exact cut",
         ));
     }
-    verify_measured_voice_file(voice)?;
+    let samples = verify_measured_voice_file(voice)?;
+    // The sample-count declared by the actual WAV must itself match the
+    // source track's measured duration, not just its project-level metadata.
+    let measured = i128::from(track.measured_duration.num)
+        .checked_mul(i128::from(AUDIO_RATE))
+        .ok_or_else(|| invalid("Measured audio sample count overflow"))?;
+    let actual = i128::from(samples)
+        .checked_mul(i128::from(track.measured_duration.den))
+        .ok_or_else(|| invalid("Actual WAV sample count overflow"))?;
+    if measured.abs_diff(actual) > track.measured_duration.den as u128 {
+        return Err(unsupported(
+            "Actual WAV PCM sample count disagrees with the recorded measured voice duration",
+        ));
+    }
 
     // Stable, nonpath identity. No real media, absolute CAS paths or raw
     // source payloads are serialized to the result or available to WebView.
@@ -623,6 +735,58 @@ mod tests {
         f = fixture();
         fs::write(&f.voice.path, b"RIFFbadwav-but-different-digest").unwrap();
         assert_eq!(check(&f).unwrap_err().code, ErrorCode::StaleReference);
+    }
+
+    fn rebind_source_bytes(f: &mut Fixture, bytes: &[u8]) {
+        fs::write(&f.voice.path, bytes).unwrap();
+        let sha = hex::encode(Sha256::digest(bytes));
+        f.voice.sha256 = sha.clone();
+        f.voice.size_bytes = bytes.len() as u64;
+        f.project.assets[0].content_sha256 = Some(sha.clone());
+        f.project.audio.voice_tracks[0].source_sha256 = sha;
+    }
+
+    #[test]
+    fn actual_wave_header_and_pcm_sample_count_must_match_recorded_audio_metadata() {
+        let mut f = fixture();
+        // A cryptographically correct WAV may still declare 44.1kHz even if
+        // a caller forged 48kHz VoiceTrack metadata. Never infer 48k from it.
+        let mut rate = synthetic_wav(48_000 * 4);
+        rate[24..28].copy_from_slice(&44_100_u32.to_le_bytes());
+        rate[28..32].copy_from_slice(&(44_100 * 4_u32).to_le_bytes());
+        rebind_source_bytes(&mut f, &rate);
+        assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+
+        f = fixture();
+        let mut channels = synthetic_wav(48_000 * 4);
+        channels[22..24].copy_from_slice(&1_u16.to_le_bytes());
+        channels[28..32].copy_from_slice(&(48_000 * 2_u32).to_le_bytes());
+        channels[32..34].copy_from_slice(&2_u16.to_le_bytes());
+        rebind_source_bytes(&mut f, &channels);
+        assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+
+        // The hash and headers are both valid, but only 3 seconds of actual
+        // stereo samples were provided instead of the recorded 4 seconds.
+        f = fixture();
+        let short = synthetic_wav(48_000 * 3);
+        rebind_source_bytes(&mut f, &short);
+        assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+
+        f = fixture();
+        let mut bad_riff = synthetic_wav(48_000 * 4);
+        bad_riff[4..8].copy_from_slice(&123_u32.to_le_bytes());
+        rebind_source_bytes(&mut f, &bad_riff);
+        assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+
+        f = fixture();
+        let mut doubled = synthetic_wav(48_000 * 4);
+        doubled.extend_from_slice(b"data");
+        doubled.extend_from_slice(&4_u32.to_le_bytes());
+        doubled.extend_from_slice(&[0u8; 4]);
+        let new_riff_size = (doubled.len() as u32 - 8).to_le_bytes();
+        doubled[4..8].copy_from_slice(&new_riff_size);
+        rebind_source_bytes(&mut f, &doubled);
+        assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
     }
 
     #[cfg(unix)]

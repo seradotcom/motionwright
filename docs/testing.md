@@ -64,7 +64,7 @@ A deterministic, owner-only MLT timeline recipe maps each preflight segment to a
 
 ## Bounded multisegment audio/video source readiness
 
-A separate Rust native preflight checks that verified per-segment FFV1 files and the exact saved 48kHz stereo WAV from the app-owned CAS belong to one project/profile/creative revision. It rehashes actual source files within strict byte ceilings, rejects changed/missing/stale media and unimplemented mix/burn-in claims, and aligns the recorded voice duration to the exact rational output FPS within one 48kHz sample. Tests use synthetic FFV1 file bytes and a real test WAV, so no actual MLT mux or decoded AV success is inferred. See [multisegment audio readiness](mlt-multisegment-audio-readiness.md).
+A separate Rust native preflight checks that verified per-segment FFV1 files and the exact saved 48kHz stereo WAV from the app-owned CAS belong to one project/profile/creative revision. It rehashes actual source files within strict byte ceilings, checks the entire WAV RIFF chunk index, actual 48 kHz stereo PCM/float header and sample-frame count, rejects changed/missing/stale media and unimplemented mix/burn-in claims, and aligns the voice duration to the exact rational output FPS within one 48kHz sample. Tests use synthetic FFV1 file bytes and a real test WAV, so no actual MLT mux or decoded AV success is inferred. See [multisegment audio readiness](mlt-multisegment-audio-readiness.md).
 
 ## Multi-segment native MLT source conformance
 
