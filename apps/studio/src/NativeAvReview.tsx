@@ -15,13 +15,26 @@ type PlaybackState =
 export default function NativeAvReview({
   project,
   exportToken,
+  seekTimeSeconds,
+  onMediaTime,
+  onMediaPlay,
+  embedded = false,
+  editorialPlaying = false,
 }: {
   project: Project;
   exportToken: string;
+  /** Optional exact Film output-relative time when embedded in Program. */
+  seekTimeSeconds?: number;
+  onMediaTime?: (seconds: number) => void;
+  onMediaPlay?: () => void;
+  embedded?: boolean;
+  editorialPlaying?: boolean;
 }) {
   const [playback, setPlayback] = useState<PlaybackState>({ kind: "loading" });
   const [retry, setRetry] = useState(0);
   const [metadata, setMetadata] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const lastReportedMediaTimeRef = useRef<number | null>(null);
   // React Strict Mode replays effect setup/cleanup during mount. Reuse the
   // same in-flight read without caching settled media beyond the active view.
   const pendingRef = useRef<{ key: string; promise: Promise<Uint8Array> } | null>(null);
@@ -66,8 +79,35 @@ export default function NativeAvReview({
     };
   }, [project.id, project.generation, project.revision, exportToken, retry]);
 
+  useEffect(() => {
+    if (playback.kind !== "ready" || typeof seekTimeSeconds !== "number"
+      || !Number.isFinite(seekTimeSeconds)) return;
+    const player = videoRef.current;
+    if (!player) return;
+    const requested = Math.max(0, seekTimeSeconds);
+    // A media clock update should not seek the decoder back to itself;
+    // explicit editor stepping or timeline scrubbing *does* change the source.
+    if (lastReportedMediaTimeRef.current !== null &&
+      Math.abs(lastReportedMediaTimeRef.current - requested) < 0.015) {
+      lastReportedMediaTimeRef.current = null;
+      return;
+    }
+    if (Math.abs(player.currentTime - requested) >= 0.015) {
+      try {
+        player.currentTime = requested;
+      } catch {
+        // Some WebViews require loadedmetadata; that event re-applies the seek.
+      }
+    }
+  }, [playback.kind, seekTimeSeconds]);
+
+  useEffect(() => {
+    if (editorialPlaying) videoRef.current?.pause();
+  }, [editorialPlaying]);
+
   return (
-    <div className="native-av-review" role="region" aria-label="Native master playback review">
+    <div className={"native-av-review" + (embedded ? " in-program" : "")}
+      role="region" aria-label="Native master playback review">
       <div className="native-av-review-header">
         <strong>Native H.264/AAC review</strong>
         <span>Verified current r{project.revision} · at most 16 MiB</span>
@@ -75,6 +115,7 @@ export default function NativeAvReview({
       {playback.kind === "ready" ? (
         <video
           key={playback.url}
+          ref={videoRef}
           src={playback.url}
           controls
           playsInline
@@ -82,12 +123,27 @@ export default function NativeAvReview({
           aria-label="Verified native MP4 review player"
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
+            if (typeof seekTimeSeconds === "number" && Number.isFinite(seekTimeSeconds)
+              && Number.isFinite(video.duration)) {
+              try {
+                video.currentTime = Math.max(0, Math.min(seekTimeSeconds, video.duration));
+              } catch {
+                // Some native decoders reject seeks until the initial frame is ready.
+              }
+            }
             if (Number.isFinite(video.duration)) {
               setMetadata(
                 video.videoWidth + " × " + video.videoHeight + " · " +
                 video.duration.toFixed(2) + " s decoded metadata",
               );
             }
+          }}
+          onPlay={onMediaPlay}
+          onTimeUpdate={(event) => {
+            const current = event.currentTarget.currentTime;
+            if (!Number.isFinite(current)) return;
+            lastReportedMediaTimeRef.current = current;
+            onMediaTime?.(current);
           }}
           onError={() => {
             setPlayback({
@@ -114,7 +170,9 @@ export default function NativeAvReview({
       )}
       <div className="native-av-review-footnote">
         {metadata ?? "Source-bound MP4; playback availability depends on this WebView decoder."}
-        <span>Independent media review · not timeline-synchronized</span>
+        <span>{embedded
+          ? "Native media clock follows source-scoped editorial seeks"
+          : "Independent media review · not timeline-synchronized"}</span>
       </div>
     </div>
   );

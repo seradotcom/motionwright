@@ -1,6 +1,6 @@
 # One editorial clock across workspaces
 
-The project-global playhead in `App.tsx` is the single source of **editorial time** for Timeline, Storyboard, Canvas and Audio. Seeking does not mutate the creative project or increment its opaque revision. [Display timecode and frame stepping](editor-timebase.md) follow an explicitly selected delivery profile's rational frame rate; this selection does not change media or export metadata.
+The project-global playhead in `App.tsx` is the single source of **editorial time** for Timeline, Storyboard, Canvas and Audio. The optional [source-scoped native H.264/AAC Program monitor](program-av-monitor.md) maps verified MLT output time back onto that playhead for the included Film scenes, while the semantic/PNG representations remain available. Seeking does not mutate the creative project or increment its opaque revision. [Display timecode and frame stepping](editor-timebase.md) follow an explicitly selected delivery profile's rational frame rate; this selection does not change media or export metadata.
 
 ## Time domains
 

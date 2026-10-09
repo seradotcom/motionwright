@@ -53,8 +53,10 @@ import CanvasWorkspace from "./CanvasWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
+import NativeAvReview from "./NativeAvReview";
 import NativeFrameStage from "./NativeFrameStage";
 import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
+import { editorialTimeForMasterMedia, programMasterAtPlayhead } from "./programMaster";
 import { resolveSceneRenderReceipt } from "./renderReceipt";
 import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
@@ -205,7 +207,11 @@ function PreviewSurface({
   mode,
   profile,
   renderEvidence,
+  avEvidence,
   onInspectRender,
+  onSeek,
+  onPauseEditorial,
+  editorialPlaying,
 }: {
   scene: Scene | null;
   project: Project;
@@ -214,12 +220,21 @@ function PreviewSurface({
   mode: TimecodeMode;
   profile: Project["deliverables"][number] | null;
   renderEvidence: MotionCanvasRenderEvidence | null;
+  avEvidence: MltAvMasterEvidence | null;
   onInspectRender: () => void;
+  onSeek: (seconds: number) => void;
+  onPauseEditorial: () => void;
+  editorialPlaying: boolean;
 }) {
   const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
-  const [nativeFrameMode, setNativeFrameMode] = useState(false);
+  // App keys this view by exact project revision, display profile, render
+  // grant and AV grant. A source change remounts the monitor in DESIGN mode,
+  // preventing an old media opt-in from reappearing when a user switches back.
+  const [previewSource, selectPreviewSource] = useState<"design" | "frames" | "av">("design");
   const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
-  const showingNative = nativeFrameMode && nativeFrame !== null;
+  const nativeAv = programMasterAtPlayhead(project, scene, profile, renderEvidence, avEvidence, playhead);
+  const showingNative = previewSource === "frames" && nativeFrame !== null;
+  const showingAv = previewSource === "av" && nativeAv !== null;
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
 
   return (
@@ -230,7 +245,8 @@ function PreviewSurface({
           Program
           <span className="toolbar-divider" />
           <span className="muted">
-            {showingNative ? "Verified native PNG · sampled frames" : "Design representation"}
+            {showingAv ? "Verified H.264/AAC master · decoded review" :
+              showingNative ? "Verified native PNG · sampled frames" : "Design representation"}
           </span>
           <span
             className="preview-revision"
@@ -245,8 +261,18 @@ function PreviewSurface({
             title={nativeFrame === null
               ? "No verified local frame grant was returned with this native render."
               : "Read-only sampled PNG preview. Does not alter project or certify live AV playback."}
-            onClick={() => setNativeFrameMode((value) => !value)}>
+            onClick={() => selectPreviewSource(showingNative ? "design" : "frames")}>
             {showingNative ? "Show design" : "Show native frames"}
+          </button>
+        )}
+        {nativeAv && (
+          <button type="button" className={"button compact native-frame-toggle " + (showingAv ? "selected" : "")}
+            title="Review the exact source-bound native H.264/AAC master. This is not a general media import."
+            onClick={() => {
+              onPauseEditorial();
+              selectPreviewSource(showingAv ? "design" : "av");
+            }}>
+            {showingAv ? "Show design" : "Review final AV"}
           </button>
         )}
         <div className="timecode">{formatTime(playhead, rate, mode)}</div>
@@ -289,6 +315,21 @@ function PreviewSurface({
           {showingNative && nativeFrame && (
             <NativeFrameStage key={nativeFrame.token + ":" + (scene?.id ?? "")}
               project={project} selection={nativeFrame} />
+          )}
+          {showingAv && nativeAv && (
+            <NativeAvReview
+              key={nativeAv.exportToken}
+              embedded
+              project={project}
+              exportToken={nativeAv.exportToken}
+              editorialPlaying={editorialPlaying}
+              seekTimeSeconds={nativeAv.mediaTimeSeconds}
+              onMediaPlay={onPauseEditorial}
+              onMediaTime={(mediaTime) => {
+                const editorial = editorialTimeForMasterMedia(project, nativeAv, mediaTime);
+                if (editorial !== null) onSeek(editorial);
+              }}
+            />
           )}
         </div>
       </div>
@@ -1975,9 +2016,17 @@ export default function App() {
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":
-        return <PreviewSurface scene={selectedScene} project={project} playhead={playhead}
+        return <PreviewSurface
+          key={JSON.stringify([
+            project.id, project.generation, project.revision, selectedProfile?.id,
+            nativeRenderReceipt?.preview?.[0]?.token, nativeAvReceipt?.export_token,
+          ])}
+          scene={selectedScene} project={project} playhead={playhead}
           rate={timebaseRate} mode={displayMode} profile={selectedProfile}
-          renderEvidence={nativeRenderReceipt} onInspectRender={() => setWorkspace("Deliver")} />;
+          renderEvidence={nativeRenderReceipt} avEvidence={nativeAvReceipt}
+          onInspectRender={() => setWorkspace("Deliver")}
+          onSeek={seekTo} onPauseEditorial={() => setPlaying(false)}
+          editorialPlaying={playing} />;
       case "Jobs":
         return (
           <ProductionJobsWorkspace
