@@ -67,7 +67,8 @@ impl Store {
             });
         }
         let start = offset.unwrap_or(0);
-        if (offset.is_some() && (start == 0 || start >= project.assets.len() || start % limit != 0))
+        if (offset.is_some()
+            && (start == 0 || start >= project.assets.len() || !start.is_multiple_of(limit)))
             || start > project.assets.len()
         {
             return Err(StorageError::Domain(DomainError::Invalid(
