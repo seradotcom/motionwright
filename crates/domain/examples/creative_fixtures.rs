@@ -3,7 +3,7 @@ use motionwright_domain::*;
 use serde_json::json;
 use uuid::Uuid;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let id = Uuid::parse_str("00000000-0000-4000-8000-000000000005")?;
     let configs = [HeroConfig::default(), HeroConfig { motion: false, ..HeroConfig::default() }, HeroConfig {
         eyebrow: "CREATIVE SYSTEM / FIELD NOTES".into(), headline: "One project.\nEvery revision.".into(),
