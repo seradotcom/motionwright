@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Exact-SHA Motionwright -> Semwright -> Motion Canvas -> MLT AV acceptance.
+"""Exact-SHA source-bound two-segment Motion Canvas / MLT FFV1 video E2E.
 
-CI-only by design. The test creates application-owned Motionwright state, provisions
-the exact Motion Canvas and MLT drivers through Semwright's Broker/Driver Host,
-renders the revision, encodes its verified frames to FFV1 and closes an H.264/AAC
-master through the bounded MLT AV operations. No product shell-out is used.
+CI only. Provisions a 33-scene application-owned project and pinned Semwright
+Broker/Driver Host, renders 32+1 real Motion Canvas segments, and assembles
+video-only Matroska FFV1 through the semantic MLT timeline, not an AAC master.
 """
 from __future__ import annotations
 

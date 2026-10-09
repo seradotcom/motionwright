@@ -12,7 +12,7 @@ on:
       - 'crates/storage/**'
       - 'crates/native/**'
       - 'apps/studio/**'
-      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_mlt_sequence_e2e.py'
       - '.github/workflows/native-mlt-sequence-e2e.yml'
 
 permissions:
@@ -34,7 +34,7 @@ env:
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
 
 jobs:
-  native-av-master:
+  native-mlt-sequence:
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     steps:

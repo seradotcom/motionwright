@@ -44,7 +44,7 @@ fn node(scene_number: usize) -> CanvasNode {
         coordinate_space: CoordinateSpace::ProjectPixels,
         z_index: 1,
         style: NodeStyle {
-            fill: Some(if scene_number % 2 == 0 {
+            fill: Some(if scene_number.is_multiple_of(2) {
                 "#F5F5F2".into()
             } else {
                 "#8FCEDB".into()
