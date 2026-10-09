@@ -133,6 +133,10 @@ impl<'a> Compositor<'a> {
         });
         self.nodes.len() - 1
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "native composition recipes require explicit named bounds, paint and radius for reviewability"
+    )]
     fn rect(
         &mut self,
         role: &str,
@@ -158,6 +162,10 @@ impl<'a> Compositor<'a> {
     fn rule(&mut self, role: &str, x: f64, y: f64, w: f64, color: ColorRole) -> usize {
         self.rect(role, x, y, w, 0.0035, color, 0.0)
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "native composition recipes require explicit text hierarchy, bounds and paint for reviewability"
+    )]
     fn headline(
         &mut self,
         role: &str,

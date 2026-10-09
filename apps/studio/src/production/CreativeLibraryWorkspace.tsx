@@ -97,7 +97,7 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
   const canEdit=available&&!busy&&!working;
   return <div className="native-creative-editor" aria-label="Creative component library">
     <header className="native-editor-heading"><div><span className="eyebrow">ORIGINAL FIRST-PARTY LIBRARY</span><h2>Design with native recipes</h2>
-      <p>36 distinct components · six art-direction kits · explicit brand, evidence and authored source. No generic screenshot automation.</p></div>
+      <p>36 candidate recipes · six art-direction kits · explicit brand, evidence and authored source. No generic screenshot automation.</p></div>
       <span className="production-status">REVISIONED SOURCE · NO IMPLICIT RENDER</span></header>
     {!available&&<div className="production-notice"><strong>Open in Motionwright desktop</strong><p>This browser preview cannot assert native recipe realization or create verified render frames.</p></div>}
     {error&&<p className="production-error" role="alert">{error}</p>}

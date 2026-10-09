@@ -88,7 +88,7 @@ def main()->None:
    with Image.open(selected)as im:
     if im.size!=((640,360)if aspect=='landscape' else ((360,640)if aspect=='portrait' else (640,640))):
      raise AssertionError('Native output dimensions drifted')
-    thumb=im.convert('RGB');thumb.thumbnail((290,190),Image.Resampling.LANCZOS)
+    thumb=im.convert('RGB');thumb.thumbnail((290,190),Image.LANCZOS)
     contact.append((f'{recipe} | {aspect} | {locale}',thumb.copy()))
    rows.append({'recipe':recipe,'aspect':aspect,'locale':locale,'source_sha256':fixture['source_sha256'],'frames':90,'animated':True,'native_approval':'required'})
  # Source-bound proof is also a human-review contact sheet; generated thumbnails are never technical PASSes.

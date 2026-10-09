@@ -115,7 +115,7 @@ try {
       return {frame,time,observed_time:window.__player.getTime(),nodes:window.__mwInspect()};
     },{time,frame,videoSources:doc.nodes.filter(n=>n.content.kind==='video').map(n=>({id:n.id,start:n.content.source_start_frame*n.content.source_rate.den/n.content.source_rate.num}))});
     if(Math.abs(state.observed_time-time)>1e-7)throw new Error('HyperFrames quantized to a different frame time');
-    if(state.nodes.length!==doc.nodes.length || state.nodes.some(n=>n.truncated))throw new Error('Native text clipping or source identity drift was observed');
+    if(state.nodes.length!==doc.nodes.length || state.nodes.some(n=>n.truncated)){ const clipped=state.nodes.filter(n=>n.truncated).map(n=>({id:n.id,text:n.text,box:n.box,font:n.computed_font})); throw new Error('Native text clipping or source identity drift '+JSON.stringify({frame,node_count:state.nodes.length,expected:doc.nodes.length,clipped:clipped.slice(0,8)}).slice(0,2000)); }
     if(diagnostics.length || refused.length)throw new Error('Native composition requested an unadmitted operation: '+[...diagnostics,...refused].join(';').slice(0,1500));
     const bytes=await page.screenshot({type:'png',omitBackground:c.background===null,animations:'allow',caret:'hide',timeout:15000});
     bytesWritten+=bytes.length;if(bytes.length>32*1024*1024 || bytesWritten>512*1024*1024)throw new Error('Native frame artifact budget exceeded');

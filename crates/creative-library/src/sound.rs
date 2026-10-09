@@ -126,7 +126,7 @@ pub fn sound_component(request: &ComponentRequest) -> Result<SoundPlan> {
     let samples = (u64::from(request.output.frames) * 48000 * u64::from(request.output.rate.den))
         .div_ceil(u64::from(request.output.rate.num));
     check(
-        samples >= 48000 && samples <= 48000 * 600,
+        (48000..=48000 * 600).contains(&samples),
         "Sound requires 1..600 seconds of explicit context",
     )?;
     let envelope = |sample, amplitude| GainPoint {

@@ -127,7 +127,22 @@ def main()->None:
                 'executable_sha256':digest(BINS['cli']),'socket':str(socket),
                 'session_file':str(session),'output_root':str(output),'resource':seeded['resource']
             },True)
-            application=execute([str(BINS['app']),'realize',str(database),str(connection),str(result_root/'application-evidence.json')],env,420)
+            try:
+                application=execute([str(BINS['app']),'realize',str(database),str(connection),str(result_root/'application-evidence.json')],env,420)
+            except Exception:
+                # Disposable synthetic fixture only. Do not log session credentials
+                # or user filesystem content when preserving failure evidence.
+                attempts=[]
+                for folder in sorted(work.glob('hf-*')):
+                    journal=folder/'job.json'
+                    attempts.append({'attempt_folder':folder.name,
+                                     'journal':json.loads(journal.read_text()) if journal.is_file() else None,
+                                     'has_native_plan':(folder/'plan.json').is_file(),
+                                     'has_native_source':(folder/'index.html').is_file(),
+                                     'native_result_present':(output/folder.name/'result.json').is_file()})
+                write(result_root/'attempt-diagnostics.json',{'schema':'motionwright.synthetic-attempt-diagnostics/1','attempts':attempts,
+                     'source_sha256':json.loads(source_file.read_text())['source_sha256']})
+                raise
             proof=json.loads((result_root/'application-evidence.json').read_text());native=proof['native_result'];job=native['job_ref']
             if application['hyperframes_canonical']!='PASS' or not proof['same_attempt_replayed']:raise AssertionError('Application did not prove logical-attempt reuse')
             if len(list(work.glob('hf-*')))!=1:raise AssertionError('Reconciliation submitted a duplicate native capture')

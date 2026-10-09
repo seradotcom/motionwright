@@ -492,7 +492,7 @@ pub fn creative_component_catalog() -> Value {
     use motionwright_creative_library as library;
     json!({
         "schema":"motionwright.creative-library-catalog/1",
-        "recipes":library::RecipeId::ALL.map(|recipe|recipe.definition()),
+        "recipes":library::RecipeId::ALL.into_iter().map(|recipe|recipe.definition()).collect::<Vec<_>>(),
         "kits":library::creative_kits(),
         "default_brand":library::BrandProfile::neutral(Uuid::from_u128(1)),
         "default_taste":library::TasteProfile::editorial(Uuid::from_u128(2)),
