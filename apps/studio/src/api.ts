@@ -16,6 +16,7 @@ import type {
   MotionCanvasFilmOptions,
   MotionCanvasRenderEvidence,
   MotionCanvasProjectionPreflight,
+  MultiSegmentReadinessReport,
   MltAvMasterEvidence,
   MasterExportReceipt,
   OtioExportResult,
@@ -580,6 +581,29 @@ export async function renderMotionCanvas(
       effect_grant: grant.token,
       deliverable_id: deliverableId,
       options,
+    },
+  });
+}
+
+/** Check manifest-source readiness of a multi-segment native cut.
+ * Backend resolves original render options, evidence and root from the
+ * opaque owner-issued token; no caller-provided file paths or hashes.
+ */
+export async function preflightMultiSegmentReadiness(
+  project: Project,
+  deliverableId: string,
+  previewToken: string,
+): Promise<MultiSegmentReadinessReport> {
+  if (!isTauri()) {
+    throw new Error("Native multi-segment readiness requires the desktop runtime.");
+  }
+  return invoke<MultiSegmentReadinessReport>("preflight_multi_segment_mlt_readiness", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      deliverable_id: deliverableId,
+      preview_token: previewToken,
     },
   });
 }

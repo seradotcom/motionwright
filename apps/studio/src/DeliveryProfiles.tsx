@@ -7,6 +7,7 @@ import {
   exportOtio,
   exportVerifiedNativeMaster,
   preflightMotionCanvas,
+  preflightMultiSegmentReadiness,
   renderMotionCanvas,
 } from "./api";
 import type {
@@ -16,6 +17,7 @@ import type {
   MotionCanvasNarrativeRole,
   MotionCanvasRenderEvidence,
   MotionCanvasProjectionPreflight,
+  MultiSegmentReadinessReport,
   MotionCanvasFilmOptions,
   MltAvMasterEvidence,
   MasterExportReceipt,
@@ -130,10 +132,14 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "master" | "export-master" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "export-master" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
+  } | null>(null);
+  const [multiSource, setMultiSource] = useState<{
+    key: string;
+    report: MultiSegmentReadinessReport;
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -228,6 +234,15 @@ export default function DeliveryProfiles({
     && ["audio/wav", "audio/wave", "audio/x-wav"].includes(voiceAsset.media_type)
     && selectedVoice.sample_rate_hz === 48_000 && selectedVoice.channels === 2);
   const currentMotion = visibleEvidence?.revision === project.revision ? visibleEvidence : null;
+  const multiSourceToken = currentMotion && currentMotion.segments.length > 1
+    ? currentMotion.preview?.find((grant) => (
+      grant.segment_id === currentMotion.segments[0].segment_id
+    ))?.token ?? null
+    : null;
+  const multiSourceKey = [
+    project.id, project.generation, project.revision, selected?.id, multiSourceToken,
+  ].join(":");
+  const currentMultiSource = multiSource?.key === multiSourceKey ? multiSource.report : null;
   const masterPreviewToken = currentMotion?.segments.length === 1
     ? currentMotion.preview?.find((handle) =>
       handle.segment_id === currentMotion.segments[0].segment_id)?.token ?? null
@@ -377,6 +392,19 @@ export default function DeliveryProfiles({
       setMessage(report.verdict === "projection_ready"
         ? "Semantic Film projection is supported at this revision. Native rendering is a separate operation."
         : "Semantic Film projection rejected this revision. No render or native job was dispatched.");
+    });
+  };
+
+  const checkMultiSegmentSources = () => {
+    if (!selected || !multiSourceToken || dirty || !desktopMode) return;
+    const key = multiSourceKey;
+    void run("multi-source", async () => {
+      const report = await preflightMultiSegmentReadiness(
+        project, selected.id, multiSourceToken
+      );
+      setMultiSource({ key, report });
+      setMessage("Verified " + report.segments.length + " native source manifests and "
+        + report.total_frames + " exact timeline frames. No final MP4 was rendered.");
     });
   };
 
@@ -870,6 +898,40 @@ export default function DeliveryProfiles({
               )}
               {motionScenes.length === 0 && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> This revision has no scenes assigned to Motion Canvas.</div>
+              )}
+              {currentMotion && currentMotion.segments.length > 1 && (
+                <div className="delivery-multi-source" role="region"
+                  aria-label="Multi-segment native MLT source readiness">
+                  <div>
+                    <strong>Multi-segment MLT source check</strong>
+                    <span>Verify the full native Film cut and actual segment manifests.
+                      No rendering, muxing or arbitrary filesystem access.</span>
+                  </div>
+                  <button type="button" className="button compact"
+                    aria-label="Check native multi-segment sources"
+                    disabled={!multiSourceToken || dirty || !desktopMode || busy !== null}
+                    onClick={checkMultiSegmentSources}>
+                    <CircleDashed size={14} />
+                    {busy === "multi-source" ? "Checking source manifests…" : "Check native sources"}
+                  </button>
+                  {!multiSourceToken && (
+                    <span className="delivery-truth-note warning">
+                      Native source handles are not available in this desktop session. Render again to establish trusted source identity.
+                    </span>
+                  )}
+                  {currentMultiSource && (
+                    <div className="delivery-truth-note" role="status"
+                      aria-label="Multi-segment source preflight result">
+                      <CircleCheck size={14} aria-hidden="true" />
+                      Manifest-ready at r{currentMultiSource.revision}:
+                      {" "}{currentMultiSource.segments.length} segments,
+                      {" "}{currentMultiSource.total_frames} exact frames,
+                      {" "}MLT profile {currentMultiSource.mlt_profile}.
+                      This checks source manifests only; a multi-segment master MP4 has
+                      NOT been assembled.
+                    </div>
+                  )}
+                </div>
               )}
               {visibleEvidence && (
                 <div className="portable-plan" aria-label="Native render evidence">

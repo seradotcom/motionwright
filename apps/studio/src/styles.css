@@ -3863,6 +3863,35 @@ select:focus {
   align-items: end;
   gap: 8px;
 }
+.delivery-multi-source {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.delivery-multi-source > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+.delivery-multi-source strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.delivery-multi-source span {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.delivery-multi-source > .button {
+  justify-self: start;
+}
+.delivery-multi-source .delivery-truth-note {
+  font-size: 11px;
+  align-items: flex-start;
+}
+
 .delivery-truth-note {
   display: flex;
   align-items: center;

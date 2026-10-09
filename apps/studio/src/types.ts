@@ -391,6 +391,26 @@ export interface MotionCanvasRenderEvidence {
   preview?: NativePreviewGrant[];
 }
 
+/** Read-only, session-authorized native multi-segment manifest/Film check.
+ * It is not a completed MLT render and intentionally contains no paths.
+ */
+export interface MultiSegmentReadinessReport {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  verdict: "source_manifest_ready";
+  mlt_profile: "h264-1080p" | "h264-720p";
+  total_frames: number;
+  segments: Array<{
+    segment_id: string;
+    scene_ids: string[];
+    start_frame: number;
+    frame_count: number;
+  }>;
+  evidence_scope: "manifest-digest-verified-not-composited-mp4";
+}
+
 export interface MltAudioArtifact {
   relative_path: string;
   sha256: string;
