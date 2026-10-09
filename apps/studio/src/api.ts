@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
 import type {
+  AssetIntegrityPage,
   Bootstrap,
   BranchState,
   CanvasKeyframe,
@@ -498,6 +499,32 @@ export async function workflowAction(
       action,
       effect_grant: grant?.token ?? null,
       args,
+    },
+  });
+}
+
+/** Audit only already-imported project-bound blobs on demand. The WebView
+ * passes no arbitrary file paths and receives no owner filesystem paths.
+ */
+export async function assetIntegrityPage(
+  project: Project,
+  offset: number | null = null,
+  limit = 8,
+): Promise<AssetIntegrityPage> {
+  if (!isTauri()) throw new Error("Local asset integrity requires the desktop runtime.");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16) {
+    throw new Error("Asset integrity page size must be between 1 and 16.");
+  }
+  if (offset !== null && (!Number.isSafeInteger(offset) || offset < 1 || offset % limit !== 0)) {
+    throw new Error("Invalid asset integrity continuation cursor.");
+  }
+  return invoke<AssetIntegrityPage>("asset_integrity_page", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      offset,
+      limit,
     },
   });
 }

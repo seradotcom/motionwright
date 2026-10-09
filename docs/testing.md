@@ -30,6 +30,10 @@ GitHub Actions receipts must identify app SHA, Semwright pin, suite, environment
 
 The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter compatibility. It runs Semwright's own Project Graph adapter and Effect Conformance suites from the pinned source before Motionwright's wrapper tests. A green lane proves the consumer boundary compiles and preserves the upstream contracts; it does **not** claim Graph admission, render success, or a product-level Effects PASS for a Motionwright deliverable.
 
+## Local asset integrity and truthful Dependencies
+
+An explicit read-only [local SHA-256 asset audit](asset-integrity.md) checks exact versioned asset-digest references in bounded pages. Rust tests ingest and alter real content-addressed files, inspect duplicate and missing references, reject symlinks and stale cursors, and confirm no project edits. Synthetic Chromium tests exercise opt-in paging, source revision and voice-track associations without claiming Project Graph or owner filesystem evidence. The browser demo remains Not checked.
+
 ## Native SDK project-scope enumeration
 
 Source-bound Rust tests enumerate 271 project-owned records with several bounded Native SDK page limits, verifying complete, ordered, nonoverlapping coverage and reject invalid offsets, wrong-scope cursors and stale creative revisions. Integration writes eleven real scenes and checks both Timeline and Canvas native observation pagination end-to-end through StudioService. Production Jobs use a separate [append-only receipt watermark and keyset history](production-receipt-pagination.md), rather than a project-revision-only offset cursor; the latest-window Studio UI stays lightweight, while a separately requested [Full history](production-jobs-history.md) view walks bounded job pages with explicit stale-receipt recovery. The browser regression uses synthetic Tauri transport to check 42 jobs over three pages and does not infer Driver Host state. See [Native SDK scope pagination](native-scope-pagination.md).

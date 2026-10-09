@@ -109,6 +109,25 @@ export interface Asset {
   content_sha256: string | null; source_revision: string | null;
 }
 
+/** SHA-256 state of an existing content-addressed local file, never Project Graph admission. */
+export type AssetIntegrityStatus = "verified" | "missing" | "corrupt" | "unsafe" |
+  "unreadable" | "not_content_addressed" | "deferred_by_budget";
+export interface AssetIntegrityRecord {
+  asset_id: string;
+  status: AssetIntegrityStatus;
+  size_bytes: number | null;
+}
+export interface AssetIntegrityPage {
+  project_id: string;
+  generation: string;
+  revision: number;
+  total_assets: number;
+  items: AssetIntegrityRecord[];
+  next: number | null;
+  complete: boolean;
+  checked_bytes: number;
+}
+
 export type ExtensionKind =
   | "remotion-renderer"
   | "manim-gl-renderer"

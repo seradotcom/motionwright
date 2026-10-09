@@ -13,8 +13,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod derived_cache;
+mod integrity;
 mod production;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
+pub use integrity::{
+    AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
+};
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
 
 #[derive(Debug, Error)]

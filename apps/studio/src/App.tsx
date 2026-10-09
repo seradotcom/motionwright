@@ -50,6 +50,7 @@ import {
 } from "./api";
 import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
+import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
@@ -572,33 +573,6 @@ function AlternativesView({ scene }: { scene: Scene | null }) {
       <p className="honesty-note">
         Selection here is local comparison state. No project mutation is claimed until a change set is committed.
       </p>
-    </div>
-  );
-}
-
-function DependenciesView({ project }: { project: Project }) {
-  return (
-    <div className="workspace-scroll table-view">
-      <header className="workspace-heading">
-        <div>
-          <h2>Dependencies</h2>
-          <p>Local projections are visible here; canonical CURRENT / STALE / UNKNOWN requires Project Graph evidence.</p>
-        </div>
-        <span className="status-pill status-unknown">UNKNOWN</span>
-      </header>
-      <div className="data-table" role="table" aria-label="Project dependencies">
-        <div className="data-row dependency-row data-head" role="row">
-          <span>Source</span><span>Consumer</span><span>Projection</span><span>Canonical state</span>
-        </div>
-        {project.assets.map((asset, index) => (
-          <div className="data-row dependency-row" role="row" key={asset.id}>
-            <span>{asset.name}</span>
-            <span>{project.scenes[index % Math.max(project.scenes.length, 1)]?.name ?? "Project"}</span>
-            <span>{asset.source_revision ?? "unversioned"}</span>
-            <span className="status-pill status-unknown">NOT ADMITTED</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -2044,7 +2018,9 @@ export default function App() {
       case "Changes":
         return <ChangesWorkspace project={project} commit={commit} />;
       case "Dependencies":
-        return <DependenciesView project={project} />;
+        return <DependenciesWorkspace
+          key={[project.id, project.generation, project.revision].join(":")}
+          project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
       case "Review":
         return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Deliver":

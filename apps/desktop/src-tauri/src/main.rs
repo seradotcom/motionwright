@@ -23,8 +23,8 @@ use motionwright_native::{
     },
 };
 use motionwright_service::{
-    ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection, ProjectEvent, StudioService,
-    VoiceImportMetadata, WaveformPage,
+    AssetIntegrityPage, ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection,
+    ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use serde::{Deserialize, Serialize};
@@ -88,6 +88,16 @@ struct HistoryRequest {
 struct RecentHistoryRequest {
     project_id: Uuid,
     through_revision: u64,
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssetIntegrityRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    offset: Option<usize>,
     limit: usize,
 }
 
@@ -438,6 +448,46 @@ fn issue_effect_grant(
     state
         .effect_grants
         .issue(request.effect, scope, request.subject.trim())
+}
+
+/// Explicit, read-only asset SHA-256 audit. No path/digest sources or broad
+/// filesystem plugin inputs from WebView; verifies app-owned CAS bytes only.
+#[tauri::command]
+async fn asset_integrity_page(
+    state: State<'_, AppState>,
+    request: AssetIntegrityRequest,
+) -> Result<AssetIntegrityPage, String> {
+    if request.limit == 0 || request.limit > 16 {
+        return Err("Asset integrity pages contain between 1 and 16 assets.".into());
+    }
+    let before = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if before.generation != request.generation || before.revision != request.revision {
+        return Err("Project changed before its asset integrity inspection.".into());
+    }
+    let service = state.service.clone();
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        service
+            .asset_integrity_page(
+                project_id,
+                &RevisionStamp::from(&before),
+                request.offset,
+                request.limit,
+            )
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Asset integrity inspection task failed.".to_string())??;
+    let after = state.service.project(project_id).map_err(sanitized)?;
+    if after.generation != generation || after.revision != revision {
+        return Err("Project changed during its asset integrity inspection.".into());
+    }
+    Ok(report)
 }
 
 #[tauri::command]
@@ -1753,6 +1803,7 @@ fn main() {
             issue_effect_grant,
             project_history,
             project_history_recent,
+            asset_integrity_page,
             model_request_preflight,
             production_runtime_status,
             workflow_overview,
