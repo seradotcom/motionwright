@@ -2,14 +2,18 @@ mod canvas;
 mod creative;
 mod delivery;
 mod extensions;
+mod hero;
 mod history;
 mod integrations;
+mod production_design;
 pub use canvas::*;
 pub use creative::*;
 pub use delivery::*;
 pub use extensions::*;
+pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use production_design::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -455,6 +459,8 @@ pub struct Project {
     pub extensions: Vec<ExtensionProfile>,
     #[serde(default)]
     pub handoffs: Vec<HandoffBinding>,
+    #[serde(default)]
+    pub production_design: ProductionDesign,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -586,6 +592,7 @@ impl Project {
             model_invocations: vec![],
             extensions: vec![],
             handoffs: vec![],
+            production_design: ProductionDesign::default(),
             updated_at: now,
         };
         project.validate()?;
@@ -618,6 +625,8 @@ impl Project {
             return Err(DomainError::Invalid("invalid branch set".into()));
         }
         self.validate_history()?;
+        self.production_design
+            .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -973,6 +982,50 @@ impl Project {
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
         match change {
+            Change::UpsertProductHero {
+                instance_id,
+                scene_id,
+                config,
+            } => self.upsert_product_hero(*instance_id, *scene_id, config)?,
+            Change::SetProductionPlan { plan } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if let Some(plan) = plan {
+                    plan.validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+                }
+                self.production_design.plan = plan.clone();
+            }
+            Change::UpsertNativeCapsule { capsule } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.ensure_unlocked(&format!("scene:{}", capsule.scene_id), &[LockKind::Content])?;
+                capsule.validate(&self.scenes, &self.assets)?;
+                if let Some(existing) = self
+                    .production_design
+                    .capsules
+                    .iter_mut()
+                    .find(|item| item.id == capsule.id)
+                {
+                    *existing = capsule.clone();
+                } else {
+                    if self.production_design.capsules.len() >= 256 {
+                        return Err(DomainError::Invalid("capsule budget exceeded".into()));
+                    }
+                    self.production_design.capsules.push(capsule.clone());
+                }
+            }
+            Change::ApplyCreativePatch { patch } => self.apply_creative_patch(patch)?,
+            Change::DetachProductHero { instance_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                let hero = self
+                    .production_design
+                    .heroes
+                    .iter()
+                    .find(|hero| hero.id == *instance_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("component:{instance_id}")))?;
+                self.ensure_unlocked(&format!("scene:{}", hero.scene_id), &[LockKind::Content])?;
+                self.production_design
+                    .heroes
+                    .retain(|hero| hero.id != *instance_id);
+            }
             Change::RenameProject { title } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if title.trim().is_empty() || title.len() > 200 {
@@ -2037,6 +2090,23 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    UpsertProductHero {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        config: HeroConfig,
+    },
+    DetachProductHero {
+        instance_id: Uuid,
+    },
+    SetProductionPlan {
+        plan: Option<ProductionPlan>,
+    },
+    UpsertNativeCapsule {
+        capsule: NativeCapsule,
+    },
+    ApplyCreativePatch {
+        patch: CreativePatch,
+    },
     RenameProject {
         title: String,
     },

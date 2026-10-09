@@ -24,6 +24,8 @@ pub struct BranchState {
     pub proposal_sets: Vec<ProposalSet>,
     #[serde(default)]
     pub model_invocations: Vec<ModelInvocationReceipt>,
+    #[serde(default)]
+    pub production_design: ProductionDesign,
 }
 
 impl BranchState {
@@ -61,6 +63,8 @@ impl BranchState {
         self.narrative.validate()?;
         self.audio.validate()?;
         self.visual_language.validate()?;
+        self.production_design
+            .validate(&self.scenes, assets, &self.brief, &self.audio)?;
 
         if self.proposal_sets.len() > 512 || self.model_invocations.len() > 10_000 {
             return Err(DomainError::Invalid(
@@ -126,6 +130,13 @@ impl BranchState {
 
         let mut conflicts = Vec::new();
         let merged = Self {
+            production_design: field(
+                "production_design",
+                &base.production_design,
+                &target.production_design,
+                &source.production_design,
+                &mut conflicts,
+            ),
             scenes: field(
                 "scenes",
                 &base.scenes,
@@ -314,6 +325,7 @@ impl Project {
             visual_language: self.visual_language.clone(),
             proposal_sets: self.proposal_sets.clone(),
             model_invocations: self.model_invocations.clone(),
+            production_design: self.production_design.clone(),
         }
     }
 
@@ -328,6 +340,7 @@ impl Project {
         self.visual_language = state.visual_language.clone();
         self.proposal_sets = state.proposal_sets.clone();
         self.model_invocations = state.model_invocations.clone();
+        self.production_design = state.production_design.clone();
     }
 
     fn save_active_workspace(&mut self) -> Result<()> {

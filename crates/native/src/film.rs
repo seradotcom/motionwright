@@ -1,3 +1,4 @@
+use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
     BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy, Project,
     RationalTime, RendererKind, Scene,
@@ -5,9 +6,10 @@ use motionwright_domain::{
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
     AUTHORING_VERSION, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat, EditorialSystem,
-    Film, FontFallback, FontSpec, Insets, Layer, NarrativeRole, OutputProfile, Point, Sequence,
-    Shot, Size, SpatialIntent, StartAnchor, Subject, SubjectContent, TemporalConstraint,
-    TemporalGraph, TemporalSpan, TextDirection, TextRun, VisualConstraint, realize,
+    Film, FontFallback, FontSpec, Insets, Invocation, Layer, MotionEasing, NarrativeRole,
+    OutputProfile, Point, Primitive, Sequence, Shot, Size, SpatialIntent, StartAnchor, Subject,
+    SubjectContent, TemporalConstraint, TemporalGraph, TemporalSpan, TextDirection, TextRun,
+    VisualConstraint, realize,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use semwright_semantic_composition::Digest;
@@ -134,7 +136,7 @@ fn variant_scene_sequence(
     let mut cursor = RationalTime::ZERO;
     let mut output = Vec::with_capacity(source.len());
     for scene in source {
-        let mut projected = scene.clone();
+        let mut projected = responsive_scene(project, scene, profile)?;
         projected.start = cursor;
         cursor = add(cursor, projected.duration, "Variant scene timing overflow")?;
         output.push(projected);
@@ -150,6 +152,11 @@ fn flush_run(runs: &mut Vec<Vec<Scene>>, current: &mut Vec<Scene>) {
 
 fn scene_span_cost(scene: &Scene) -> usize {
     1 + scene.beats.len().max(1)
+        + scene
+            .nodes
+            .iter()
+            .filter(|node| !node.keyframes.is_empty())
+            .count()
 }
 
 fn motion_canvas_runs(
@@ -293,12 +300,7 @@ fn validate_static_safe_area(
 }
 
 fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResult<()> {
-    if !node.keyframes.is_empty() {
-        return Err(unsupported(format!(
-            "Canvas node {} has authored motion keyframes that require an exact canonical Film motion projection",
-            node.id
-        )));
-    }
+    entry_motion(node)?;
     if node.coordinate_space != CoordinateSpace::ProjectPixels {
         return Err(unsupported(format!(
             "Canvas node {} uses a coordinate space not yet representable by canonical Film",
@@ -558,7 +560,7 @@ fn subject(
                     height: node.height * projection.object_scale,
                 },
             },
-            initially_visible: true,
+            initially_visible: node.keyframes.is_empty(),
             clip_intentional: false,
         },
         constraints,
@@ -712,7 +714,69 @@ fn projected_shot(
     })
 }
 
+fn attach_entrance_motion(
+    shot: &mut Shot,
+    scene: &Scene,
+    scene_start: RationalTime,
+    projection: LayoutProjection,
+    spans: &mut Vec<TemporalSpan>,
+) -> NativeResult<()> {
+    for node in &scene.nodes {
+        let Some(entry) = entry_motion(node)? else {
+            continue;
+        };
+        let target = subject_id(node.id, None);
+        let span_id = format!("entrance-{}", node.id.simple());
+        let duration = sub(entry.end, entry.start, "Entrance duration underflow")?;
+        spans.push(TemporalSpan {
+            id: span_id.clone(),
+            minimum: duration,
+            preferred: duration,
+            maximum: duration,
+            anchor: StartAnchor::Absolute {
+                time: add(scene_start, entry.start, "Entrance start overflow")?,
+            },
+            preference_priority: 0,
+        });
+        let offset = Point {
+            x: 0.0,
+            y: entry.offset_y * projection.position_scale_y,
+        };
+        if entry.rotation_deg == 0.0 {
+            shot.motion.push(Invocation {
+                id: format!("slide-{}", node.id.simple()),
+                span_id,
+                easing: MotionEasing::OutCubic,
+                primitive: Primitive::SlideIn { target, offset },
+            });
+        } else {
+            shot.motion.push(Invocation {
+                id: format!("settle-{}", node.id.simple()),
+                span_id: span_id.clone(),
+                easing: MotionEasing::OutCubic,
+                primitive: Primitive::Settle {
+                    target: target.clone(),
+                    offset,
+                    rotation: entry.rotation_deg,
+                },
+            });
+            shot.motion.push(Invocation {
+                id: format!("fade-{}", node.id.simple()),
+                span_id,
+                easing: MotionEasing::OutCubic,
+                primitive: Primitive::FadeIn { target },
+            });
+        }
+    }
+    Ok(())
+}
+
 fn authored_beats_tile_scene(scene: &Scene) -> NativeResult<()> {
+    if !scene.beats.is_empty() && scene.nodes.iter().any(|node| !node.keyframes.is_empty()) {
+        return Err(unsupported(
+            "Authored motion keyframes across multiple beat scopes need an explicit continuity mapping; motion is not restarted silently",
+        ));
+    }
     if scene.beats.is_empty() {
         return Ok(());
     }
@@ -809,7 +873,7 @@ fn build_segment(
                 parent: sequence_span.clone(),
                 child: shot_span.clone(),
             });
-            let shot = projected_shot(
+            let mut shot = projected_shot(
                 scene,
                 &shot_context,
                 ShotIdentity {
@@ -819,6 +883,7 @@ fn build_segment(
                     beat_scope: None,
                 },
             )?;
+            attach_entrance_motion(&mut shot, scene, local_start, projection, &mut spans)?;
             authoring_beats.push(AuthoringBeat {
                 id: uid("beat", scene.id),
                 role: intent.role,
