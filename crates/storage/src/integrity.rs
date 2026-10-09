@@ -200,7 +200,7 @@ impl Store {
             }
             #[cfg(not(unix))]
             {
-                true
+                later.len() == opened.len()
             }
         });
         if !unchanged {
