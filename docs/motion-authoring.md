@@ -45,8 +45,11 @@ The public cooperation surface includes:
 - `driver.motionwright.canvas.keyframe.set`
 - `driver.motionwright.canvas.keyframe.remove`
 - `driver.motionwright.canvas.position-keyframe.set` — one paired X/Y key at a scene-relative rational timestamp
+- `driver.motionwright.canvas.motion.linear-position.set` — four source-bound linear X/Y keys in a single frame-aligned motion transaction
 
-All three commands use closed schemas and the same opaque Native SDK target binding as other mutating operations. The application never parses a Native SDK ref as a Motionwright resource identifier.
+All four commands use closed schemas and the same opaque Native SDK target binding as other mutating operations. The application never parses a Native SDK ref as a Motionwright resource identifier.
+
+The Canvas inspector also provides **Create native linear move**: choose the initial X/Y and an ending frame against the saved output profile. The action creates all four compatible source keys in one CAS-protected project revision without replacing existing curves or changing the base pose. It is disabled for authored beat spans, grouped/parented objects, locked positions or missing profiles. A later Film preflight still rejects unsupported framing. See [native linear motion authoring](native-linear-position-motion.md).
 
 ## Renderer boundary
 

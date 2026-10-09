@@ -34,7 +34,7 @@ The provider intentionally exposes composable commands instead of an unrestricte
 - creative system: set visual language, add a bounded proposal set and select one proposal;
 - authority hints owned by the app: set and remove explicit project/resource locks.
 
-Together with `driver.motionwright.observe`, this is currently 45 Native SDK capabilities, including `canvas.position-keyframe.set` for atomic paired X/Y motion keys.
+Together with `driver.motionwright.observe`, this is currently 46 Native SDK capabilities, including `canvas.position-keyframe.set` for atomic paired X/Y motion keys and `canvas.motion.linear-position.set` for one frame-bound four-key native motion authoring transaction.
 
 Proposal selection records intent only. It does not execute the proposal's edits or bypass the normal project locks, revision CAS, Broker/Policy or Driver Host boundaries. Scene-duration ripple changes presentation timing and later scene starts; it does not silently retime measured audio.
 

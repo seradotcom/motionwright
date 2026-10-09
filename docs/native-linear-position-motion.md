@@ -23,6 +23,10 @@ For Replan, the **initial and final node bounds must each fit inside the version
 
 This feature budgets one extra temporal span per admitted animated node, checked against the existing 128-span Film ceiling. It does not broaden file privileges, enable arbitrary JavaScript/Python, change the Semwright Native SDK pin, or create another renderer/backend.
 
+## One-operation authoring
+
+Motionwright's Canvas inspector exposes the same source-bounded pattern as an explicit **Create native linear move** action. The caller specifies start X, start Y and end frame for a saved deliverable profile. The canonical Rust Change `set_canvas_linear_position_motion` creates the four rational keyframes in **one store transaction** with the existing project revision CAS and scene/node locks. The public Native SDK capability `canvas.motion.linear-position.set` exposes this exact operation to agents, with closed typed parameters. Existing keyframes are never overwritten, a move without displacement is rejected, and the authoring operation does not claim the Film renderer has run until its separate preflight and Semwright production evidence pass.
+
 ## Verification
 
 - Rust native Film tests compare source positions with native `Primitive::Settle` and the deterministic `realize` Position Tween, verify rational timing, unchanged creative base state/frame count and explicit refusal for incomplete/mixed/eased/off-frame/unsafe keyframes.

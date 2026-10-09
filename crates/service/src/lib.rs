@@ -672,6 +672,139 @@ impl StudioService {
 }
 
 #[cfg(test)]
+mod native_linear_motion_service_tests {
+    use super::*;
+    use motionwright_domain::{
+        BlendMode, CanvasNode, CoordinateSpace, MotionInterpolation, MotionProperty, NodeStyle,
+    };
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn one_native_linear_motion_change_is_one_durable_cas_revision() {
+        let folder = tempfile::tempdir().unwrap();
+        let service = StudioService::open(folder.path().join("motionwright.sqlite3")).unwrap();
+        let project = service.create_project("Durable native motion").unwrap();
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-motion-create-scene",
+                &Change::AddScene {
+                    name: "Keyed native scene".into(),
+                    objective: "real four-point Motion Canvas authoring".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project;
+        let node = CanvasNode {
+            id: Uuid::now_v7(),
+            name: "Animated tile".into(),
+            kind: "rectangle".into(),
+            parent_id: None,
+            x: 780.0,
+            y: 320.0,
+            width: 180.0,
+            height: 100.0,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: None,
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 1,
+            style: NodeStyle {
+                fill: Some("#F5F5F2".into()),
+                stroke: None,
+                stroke_width: 0.0,
+                font_family: None,
+                font_size: None,
+                font_weight: None,
+                line_height: None,
+                blend_mode: BlendMode::Normal,
+            },
+            relations: Vec::new(),
+            property_locks: BTreeSet::new(),
+            keyframes: Vec::new(),
+        };
+        let node_id = node.id;
+        let scene_id = project.scenes[0].id;
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-motion-create-tile",
+                &Change::AddCanvasNode { scene_id, node },
+            )
+            .unwrap()
+            .project;
+        let profile_id = project.deliverables[0].id;
+        let base_revision = project.revision;
+        let move_change = Change::SetCanvasLinearPositionMotion {
+            scene_id,
+            node_id,
+            deliverable_id: profile_id,
+            start_x: 600.0,
+            start_y: 320.0,
+            end_frame: 30,
+        };
+        let result = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-motion-one-transaction",
+                &move_change,
+            )
+            .unwrap()
+            .project;
+        assert_eq!(result.revision, base_revision + 1);
+        assert_eq!(result.scenes[0].nodes[0].keyframes.len(), 4);
+        assert_eq!(result.scenes[0].nodes[0].x, 780.0);
+        assert_eq!(result.scenes[0].nodes[0].keyframes[0].value, 600.0);
+        assert_eq!(
+            result.scenes[0].nodes[0].keyframes[3].property,
+            MotionProperty::Y
+        );
+        assert_eq!(
+            result.scenes[0].nodes[0].keyframes[3].interpolation,
+            MotionInterpolation::Linear,
+        );
+        assert_eq!(
+            service
+                .history(project.id, base_revision, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    "native-motion-stale-base",
+                    &move_change
+                )
+                .is_err()
+        );
+        assert!(
+            service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&result),
+                    "native-motion-must-not-overwrite",
+                    &move_change
+                )
+                .is_err()
+        );
+        let reopened = StudioService::open(folder.path().join("motionwright.sqlite3")).unwrap();
+        let readback = reopened.project(project.id).unwrap();
+        assert_eq!(readback.revision, result.revision);
+        assert_eq!(
+            readback.scenes[0].nodes[0].keyframes,
+            result.scenes[0].nodes[0].keyframes
+        );
+    }
+}
+
+#[cfg(test)]
 mod asset_import_security_tests {
     use super::*;
 

@@ -516,6 +516,7 @@ export type Change =
   | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }
   | { type: "set_canvas_keyframe"; scene_id: string; node_id: string; keyframe: CanvasKeyframe }
   | { type: "set_canvas_position_keyframe"; scene_id: string; node_id: string; at: RationalTime; x: number; y: number; interpolation: MotionInterpolation }
+  | { type: "set_canvas_linear_position_motion"; scene_id: string; node_id: string; deliverable_id: string; start_x: number; start_y: number; end_frame: number }
   | { type: "remove_canvas_keyframe"; scene_id: string; node_id: string; at: RationalTime; property: MotionProperty }
   | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
   | { type: "update_canvas_style"; scene_id: string; node_id: string; style: NodeStyle }

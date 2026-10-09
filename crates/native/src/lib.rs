@@ -592,6 +592,7 @@ enum OperationKind {
     TransformCanvasNode,
     SetCanvasKeyframe,
     SetCanvasPositionKeyframe,
+    SetCanvasLinearPositionMotion,
     RemoveCanvasKeyframe,
     UpdateCanvasText,
     UpdateCanvasStyle,
@@ -867,6 +868,23 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 x: number(args, "x")?,
                 y: number(args, "y")?,
                 interpolation,
+            })
+        }
+        OperationKind::SetCanvasLinearPositionMotion => {
+            let end_frame = args.get("end_frame")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|frame| (1..=36_000).contains(frame))
+                .ok_or_else(|| Error::invalid(
+                    "Native linear position move endpoint must be a bounded positive frame index",
+                ))?;
+            Ok(Change::SetCanvasLinearPositionMotion {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                deliverable_id: uuid(args, "deliverable_id")?,
+                start_x: number(args, "start_x")?,
+                start_y: number(args, "start_y")?,
+                end_frame,
             })
         }
         OperationKind::RemoveCanvasKeyframe => {
@@ -1538,6 +1556,33 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::SetCanvasLinearPositionMotion,
+            descriptor(
+                "canvas.motion.linear-position.set",
+                "Create four exact paired linear X/Y keys from source pose to unchanged base in one revision, frame-bound to the saved deliverable",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "scene_id":{"type":"string","maxLength":64},
+                        "node_id":{"type":"string","maxLength":64},
+                        "deliverable_id":{"type":"string","maxLength":64},
+                        "start_x":{"type":"number"},
+                        "start_y":{"type":"number"},
+                        "end_frame":{"type":"integer","minimum":1,"maximum":36000}
+                    }),
+                    &[
+                        "ref",
+                        "scene_id",
+                        "node_id",
+                        "deliverable_id",
+                        "start_x",
+                        "start_y",
+                        "end_frame",
+                    ],
+                ),
+            ),
+        ),
+        (
             OperationKind::RemoveCanvasKeyframe,
             descriptor(
                 "canvas.keyframe.remove",
@@ -2183,7 +2228,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
-        assert_eq!(capabilities.len(), 45);
+        assert_eq!(capabilities.len(), 46);
     }
 
     #[tokio::test]
@@ -2408,6 +2453,52 @@ mod tests {
             }
             _ => panic!("Atomic X/Y operation returned a different creative change"),
         }
+        let frame_move = change_from_args(
+            OperationKind::SetCanvasLinearPositionMotion,
+            &json!({
+                "scene_id": Uuid::now_v7().to_string(),
+                "node_id": Uuid::now_v7().to_string(),
+                "deliverable_id": Uuid::now_v7().to_string(),
+                "start_x": 120.0,
+                "start_y": 250.0,
+                "end_frame": 30
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            frame_move,
+            Change::SetCanvasLinearPositionMotion {
+                start_x: 120.0,
+                start_y: 250.0,
+                end_frame: 30,
+                ..
+            }
+        ));
+        assert!(
+            change_from_args(
+                OperationKind::SetCanvasLinearPositionMotion,
+                &json!({
+                    "scene_id": Uuid::now_v7().to_string(),
+                    "node_id": Uuid::now_v7().to_string(),
+                    "deliverable_id": Uuid::now_v7().to_string(),
+                    "start_x": 120.0, "start_y": 250.0, "end_frame": -1
+                })
+            )
+            .is_err()
+        );
+        assert!(
+            change_from_args(
+                OperationKind::SetCanvasLinearPositionMotion,
+                &json!({
+                    "scene_id": Uuid::now_v7().to_string(),
+                    "node_id": Uuid::now_v7().to_string(),
+                    "deliverable_id": Uuid::now_v7().to_string(),
+                    "start_x": "unsafe", "start_y": 250.0, "end_frame": 30
+                })
+            )
+            .is_err()
+        );
+
         assert!(
             change_from_args(
                 OperationKind::SetCanvasPositionKeyframe,
