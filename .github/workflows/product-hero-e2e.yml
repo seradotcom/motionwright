@@ -7,6 +7,7 @@ on:
     paths:
       - 'crates/domain/src/hero.rs'
       - 'crates/native/src/expressive.rs'
+      - 'crates/native/src/component_text.rs'
       - 'crates/native/src/film.rs'
       - 'crates/native/examples/native-render-e2e.rs'
       - 'tooling/native_av_master_e2e.py'
@@ -157,6 +158,7 @@ jobs:
               assert (result["project"]["width"], result["project"]["height"]) == size
               assert inspection["revision"] == result["project"]["revision"]
               assert inspection["technical_sampling"] == "PASS"
+              assert inspection["layout_regression"] == "PASS"
               assert inspection["creative_approval"] == "required"
               for entry in [inspection["source_project"], inspection["contact_sheet"], *inspection["samples"]]:
                   assert hashlib.sha256((folder / entry["path"]).read_bytes()).hexdigest() == entry["sha256"]

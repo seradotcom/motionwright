@@ -68,12 +68,14 @@ def inspect_native_frames(frames: list[Path], destination: Path, size: tuple[int
     onion.save(destination/"native-onion-012-020-030.png", optimize=True)
     difference = ImageChops.difference(images[2],images[3])
     difference.save(destination/"native-diff-012-020.png", optimize=True)
+    layout_report = inspect_layout_regions(images[-1], destination, project)
     report = {
         "schema":"motionwright.native-creative-frame-inspection/1",
         "project_id":project["project_id"],"generation":project["generation"],"revision":project["revision"],
         "motionwright_sha":source_sha,"provider":"semwright.motion-canvas","provider_sha":provider_sha,
         "method":"decoded-native-png-difference-and-temporal-sampling/1","units":"decoded RGB channel values [0,255]",
         "samples":samples,"first_to_final_mean_channel_difference":changed_mean,"settled_drift":False,
+        "layout_regression":layout_report["spatial_regression"],
         "technical_sampling":"PASS","creative_approval":"required","pixel_equivalence_with_editorial_preview":"not_claimed",
         "limitations":["This detects frozen or drifting fixtures, not aesthetic quality.",
                        "No OCR or independently measured glyph layout is inferred from these samples.",
@@ -84,4 +86,60 @@ def inspect_native_frames(frames: list[Path], destination: Path, size: tuple[int
         "source_project":{"path":"editable-project.json","sha256":sha256(destination/"editable-project.json")},
     }
     (destination/"creative-frame-inspection.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+    return report
+
+
+def inspect_layout_regions(image, destination: Path, project: dict) -> dict:
+    """A deterministic spatial regression gate, not glyph recognition or aesthetic scoring."""
+    import math
+    from PIL import Image, ImageChops, ImageDraw
+    expected_path = destination / "expected-component-layout.json"
+    if expected_path.stat().st_size > 131_072:
+        raise AssertionError("expected component layout exceeds its fixed budget")
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    if expected.get("schema") != "motionwright.component-layout-regions/1" or len(expected["nodes"]) != 6:
+        raise AssertionError("unexpected layout region contract")
+    for key in ("project_id", "generation", "revision"):
+        if expected[key] != project[key]:
+            raise AssertionError("layout region source revision mismatch")
+    if image.size != (expected["width"], expected["height"]):
+        raise AssertionError("layout region output size mismatch")
+    masks, allowed, observations = {}, {}, []
+    for node in expected["nodes"]:
+        color = node["style"]["fill"]
+        if color not in masks:
+            delta = ImageChops.difference(image, Image.new("RGB", image.size, color))
+            red, green, blue = delta.split()
+            maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+            masks[color] = maximum.point(lambda value: 255 if value <= 18 else 0)
+            allowed[color] = Image.new("L", image.size, 0)
+        left = max(0, math.floor(node["x"] - 8))
+        top = max(0, math.floor(node["y"] - 8))
+        right = min(image.width, math.ceil(node["x"] + node["width"] + 8))
+        bottom = min(image.height, math.ceil(node["y"] + node["height"] + 8))
+        region = (left, top, right, bottom)
+        crop = masks[color].crop(region)
+        pixels = crop.histogram()[255]
+        bounds = crop.getbbox()
+        observed = None if bounds is None else [bounds[0]+left, bounds[1]+top, bounds[2]+left, bounds[3]+top]
+        observations.append({"node_id":node["id"], "name":node["name"], "expected_region":list(region),
+                             "observed_color_bounds":observed, "foreground_pixels":pixels, "verdict":"PASS" if pixels >= 16 else "FAIL"})
+        ImageDraw.Draw(allowed[color]).rectangle((left, top, right-1, bottom-1), fill=255)
+    outside = []
+    for color, mask in masks.items():
+        total = mask.histogram()[255]
+        escaped = ImageChops.subtract(mask, allowed[color]).histogram()[255]
+        outside.append({"color":color, "total_pixels":total, "outside_expected_regions":escaped,
+                        "verdict":"PASS" if total > 0 and escaped / total <= .02 else "FAIL"})
+    passed = all(item["verdict"] == "PASS" for item in [*observations, *outside])
+    report = {"schema":"motionwright.native-layout-region-inspection/1", "source_revision":project["revision"],
+              "expected_layout_sha256":sha256(expected_path), "spatial_regression":"PASS" if passed else "FAIL",
+              "method":"native-rgb-occupancy-in-authoritative-component-regions/1",
+              "tolerance":{"rgb_channel":18,"box_padding_pixels":8,"maximum_outside_fraction":.02},
+              "nodes":observations, "outside":outside, "creative_approval":"required",
+              "limitations":["Detects relocated or missing text/marks, not exact glyph shaping.",
+                             "This fixture uses distinct known paint values; not a general image classifier."]}
+    (destination/"native-layout-inspection.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
+    if not passed:
+        raise AssertionError("Native layout does not preserve the authored component regions; see native-layout-inspection.json")
     return report

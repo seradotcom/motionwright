@@ -14,6 +14,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod canonical;
+mod component_text;
 mod expressive;
 pub mod film;
 pub mod multi_renderer;

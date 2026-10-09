@@ -45,7 +45,25 @@ fn hero_entrance_is_real_canonical_motion_in_all_three_aspects() {
         assert_eq!(film.output.width, profile.width);
         assert_eq!(film.output.height, profile.height);
         let shot = &film.sequences[0].beats[0].shots[0];
-        assert_eq!(shot.subjects.len(), 6);
+        assert_eq!(
+            shot.subjects
+                .iter()
+                .filter(|subject| subject.parent.is_none())
+                .count(),
+            6
+        );
+        assert_eq!(
+            shot.subjects
+                .iter()
+                .filter(|subject| subject.role == "component-text-container")
+                .count(),
+            5
+        );
+        assert!(
+            shot.subjects
+                .iter()
+                .any(|subject| subject.id.ends_with("-line-1"))
+        );
         assert_eq!(shot.motion.len(), 7);
         assert!(
             shot.motion
@@ -56,6 +74,7 @@ fn hero_entrance_is_real_canonical_motion_in_all_three_aspects() {
         assert!(
             shot.subjects
                 .iter()
+                .filter(|subject| subject.parent.is_none())
                 .all(|subject| !subject.initially_visible)
         );
         let realization = realize(film).unwrap();

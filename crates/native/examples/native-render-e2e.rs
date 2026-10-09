@@ -632,6 +632,22 @@ fn seed_hero(
     output.write_all(b"\n")?;
     output.sync_all()?;
     let deliverable = &project.deliverables[0];
+    let expected_layout = motionwright_domain::realize_product_hero(
+        project.production_design.heroes[0].id,
+        &project.production_design.heroes[0].config,
+        width,
+        height,
+    )?;
+    let mut layout_output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json.with_file_name("expected-component-layout.json"))?;
+    layout_output.write_all(&serde_json::to_vec_pretty(&json!({
+        "schema": "motionwright.component-layout-regions/1",
+        "project_id": project.id, "generation": project.generation, "revision": project.revision,
+        "width": width, "height": height, "nodes": expected_layout
+    }))?)?;
+    layout_output.sync_all()?;
     println!(
         "{}",
         serde_json::to_string(&json!({

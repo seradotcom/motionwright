@@ -1,3 +1,4 @@
+use crate::component_text::fixed_component_text;
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
     BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy,
@@ -774,6 +775,7 @@ fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
 }
 
 struct ShotProjectionContext<'a> {
+    component_texts: &'a BTreeSet<Uuid>,
     profile: &'a DeliverableProfile,
     projection: LayoutProjection,
     output: &'a OutputProfile,
@@ -810,8 +812,20 @@ fn projected_shot(
     for node in &scene.nodes {
         let (mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
-        subjects.push(mapped);
-        visual_constraints.append(&mut node_constraints);
+        if node.kind == "text" && context.component_texts.contains(&node.id) {
+            let (mut lines, mut constraints) =
+                fixed_component_text(node, mapped, projection.object_scale)?;
+            subjects.append(&mut lines);
+            visual_constraints.append(&mut constraints);
+        } else {
+            subjects.push(mapped);
+            visual_constraints.append(&mut node_constraints);
+        }
+        if subjects.len() > 512 {
+            return Err(unsupported(
+                "Component text realization exceeds the native subject budget",
+            ));
+        }
     }
     Ok(Shot {
         id: identity.shot_id,
@@ -948,7 +962,14 @@ fn build_segment(
     let (text_style, type_scale) =
         text_styles(&scene_refs, &options.font_family, projection.object_scale)?;
     let stroke = global_stroke(&scene_refs, projection.object_scale)?;
+    let component_texts = project
+        .production_design
+        .heroes
+        .iter()
+        .flat_map(|hero| hero.baseline.iter().map(|node| node.id))
+        .collect::<BTreeSet<_>>();
     let shot_context = ShotProjectionContext {
+        component_texts: &component_texts,
         profile,
         projection,
         output: &output,
