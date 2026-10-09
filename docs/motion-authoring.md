@@ -32,7 +32,7 @@ Scene position locks also block keyframe edits. Native SDK mutations remain targ
 
 The Canvas workspace provides a scene-local playhead, typed property/value/interpolation controls, exact keyframe rows and explicit add/replace/remove actions.
 
-The preview evaluates the stored keyframes for editorial feedback. It is not renderer evidence and does not claim pixel parity with a production backend. Static transforms remain the editable base state; moving the preview playhead does not bake interpolated values back into the project.
+The preview evaluates the stored keyframes for editorial feedback. It is not renderer evidence and does not claim pixel parity with a production backend. The [semantic camera projection](canvas-camera.md) applies authored pan, zoom and rotation to this editorial stage while keeping the safe-frame viewport anchored and pointer world deltas consistent. Static transforms remain the editable base state; moving the preview playhead does not bake interpolated values back into the project.
 
 Canvas additionally provides an **explicit Auto-key X/Y** toggle, off by default. When on, a pointer drag at a scene-local playhead creates/replaces exactly **two position keyframes (X and Y) in one committed semantic change and one project revision**, capturing interpolation, time and selected object at gesture start. The base X/Y pose is unchanged. When off, dragging retains the existing base-pose transform behavior. Numeric **Commit transform** remains explicitly a base-state action in both modes, rather than silently converting size/rotation/opacity controls into new curves. The status label distinguishes BASE POSITION from KEYED POSITION; seeking itself never mutates project state.
 
