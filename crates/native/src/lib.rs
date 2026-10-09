@@ -347,6 +347,7 @@ enum OperationKind {
     RemoveCanvasNode,
     TransformCanvasNode,
     SetCanvasKeyframe,
+    SetCanvasPositionKeyframe,
     RemoveCanvasKeyframe,
     UpdateCanvasText,
     UpdateCanvasStyle,
@@ -457,6 +458,12 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             return Err(Error::invalid(format!("{name} is out of bounds")));
         }
         Ok(value.to_owned())
+    }
+    fn number(args: &Value, name: &str) -> NativeResult<f64> {
+        args.get(name)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| Error::invalid(format!("{name} must be a finite number")))
     }
     fn strings(
         args: &Value,
@@ -595,6 +602,27 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 scene_id: uuid(args, "scene_id")?,
                 node_id: uuid(args, "node_id")?,
                 keyframe,
+            })
+        }
+        OperationKind::SetCanvasPositionKeyframe => {
+            let at = serde_json::from_value(
+                args.get("at")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("position keyframe time is required"))?,
+            )
+            .map_err(|_| Error::invalid("position keyframe time is invalid"))?;
+            let interpolation =
+                serde_json::from_value(args.get("interpolation").cloned().ok_or_else(|| {
+                    Error::invalid("position keyframe interpolation is required")
+                })?)
+                .map_err(|_| Error::invalid("position keyframe interpolation is invalid"))?;
+            Ok(Change::SetCanvasPositionKeyframe {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                at,
+                x: number(args, "x")?,
+                y: number(args, "y")?,
+                interpolation,
             })
         }
         OperationKind::RemoveCanvasKeyframe => {
@@ -1235,6 +1263,33 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         }
                     }),
                     &["ref", "scene_id", "node_id", "keyframe"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetCanvasPositionKeyframe,
+            descriptor(
+                "canvas.position-keyframe.set",
+                "Atomically record both scene-local X and Y animation axes in one revision with exact locks and provenance",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "scene_id":{"type":"string","maxLength":64},
+                        "node_id":{"type":"string","maxLength":64},
+                        "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
+                        "x":{"type":"number"},
+                        "y":{"type":"number"},
+                        "interpolation":{"type":"string","enum":["hold","linear","ease_in_out"]}
+                    }),
+                    &[
+                        "ref",
+                        "scene_id",
+                        "node_id",
+                        "at",
+                        "x",
+                        "y",
+                        "interpolation",
+                    ],
                 ),
             ),
         ),
@@ -1884,7 +1939,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
-        assert_eq!(capabilities.len(), 44);
+        assert_eq!(capabilities.len(), 45);
     }
 
     #[tokio::test]
@@ -2080,6 +2135,49 @@ mod tests {
                 ..
             }
         ));
+
+        let pair = change_from_args(
+            OperationKind::SetCanvasPositionKeyframe,
+            &json!({
+                "scene_id": Uuid::now_v7().to_string(),
+                "node_id": Uuid::now_v7().to_string(),
+                "at": {"num": "3", "den": "2"},
+                "x": 15.0,
+                "y": 250.0,
+                "interpolation": "ease_in_out"
+            }),
+        )
+        .unwrap();
+        match pair {
+            Change::SetCanvasPositionKeyframe {
+                x,
+                y,
+                interpolation,
+                ..
+            } => {
+                assert_eq!(x, 15.0);
+                assert_eq!(y, 250.0);
+                assert_eq!(
+                    interpolation,
+                    motionwright_domain::MotionInterpolation::EaseInOut
+                );
+            }
+            _ => panic!("Atomic X/Y operation returned a different creative change"),
+        }
+        assert!(
+            change_from_args(
+                OperationKind::SetCanvasPositionKeyframe,
+                &json!({
+                    "scene_id": Uuid::now_v7().to_string(),
+                    "node_id": Uuid::now_v7().to_string(),
+                    "at": {"num": "3", "den": "2"},
+                    "x": "invalid",
+                    "y": 250.0,
+                    "interpolation": "linear"
+                })
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

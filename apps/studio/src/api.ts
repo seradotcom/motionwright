@@ -3,6 +3,7 @@ import { fixtureBootstrap } from "./fixture";
 import type {
   Bootstrap,
   BranchState,
+  CanvasKeyframe,
   CaptionExportResult,
   Change,
   DataClass,
@@ -961,6 +962,46 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
         const leftAt = Number(left.at.num) / Number(left.at.den);
         const rightAt = Number(right.at.num) / Number(right.at.den);
         return leftAt - rightAt || left.property.localeCompare(right.property);
+      });
+      break;
+    }
+    case "set_canvas_position_keyframe": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
+      const node = scene?.nodes.find((entry) => entry.id === change.node_id);
+      if (!scene || !node) throw new Error("resource not found: node:" + change.node_id);
+      const at = Number(change.at.num) / Number(change.at.den);
+      const duration = Number(scene.duration.num) / Number(scene.duration.den);
+      if (!Number.isFinite(at) || at < 0 || at >= duration ||
+          !Number.isFinite(change.x) || !Number.isFinite(change.y)) {
+        throw new Error("atomic canvas position keyframe is out of bounds");
+      }
+      if (node.property_locks.includes("position")) {
+        throw new Error("resource is locked: node motion property");
+      }
+      const keys: CanvasKeyframe[] = [
+        { at: change.at, property: "x", value: change.x, interpolation: change.interpolation },
+        { at: change.at, property: "y", value: change.y, interpolation: change.interpolation },
+      ];
+      const existing = keys.filter((key) => node.keyframes.some((item) =>
+        item.at.num === key.at.num && item.at.den === key.at.den &&
+        item.property === key.property
+      )).length;
+      if (node.keyframes.length + keys.length - existing > 128) {
+        throw new Error("atomic canvas position keyframes exceed node budget");
+      }
+      for (const key of keys) {
+        const index = node.keyframes.findIndex((item) =>
+          item.at.num === key.at.num && item.at.den === key.at.den &&
+          item.property === key.property
+        );
+        if (index >= 0) node.keyframes[index] = structuredClone(key);
+        else node.keyframes.push(structuredClone(key));
+      }
+      node.keyframes.sort((left, right) => {
+        const atLeft = Number(left.at.num) / Number(left.at.den);
+        const atRight = Number(right.at.num) / Number(right.at.den);
+        return atLeft - atRight || left.property.localeCompare(right.property);
       });
       break;
     }

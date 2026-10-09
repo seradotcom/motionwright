@@ -134,12 +134,18 @@ export default function CanvasWorkspace({
   const [motionProperty, setMotionProperty] = useState<MotionProperty>("opacity");
   const [motionValue, setMotionValue] = useState(scene?.nodes[0]?.opacity ?? 1);
   const [motionInterpolation, setMotionInterpolation] = useState<MotionInterpolation>("linear");
+  // Explicit opt-in: dragging writes one pair of motion keys instead of
+  // silently altering the base layout when editing a later animation time.
+  const [autoKeyPosition, setAutoKeyPosition] = useState(false);
   const drag = useRef<{
     pointerId: number;
     nodeId: string;
     clientX: number;
     clientY: number;
     initial: CanvasTransform;
+    autoKey: boolean;
+    at: number;
+    interpolation: MotionInterpolation;
   } | null>(null);
 
   useEffect(() => {
@@ -148,7 +154,11 @@ export default function CanvasWorkspace({
     setFormTransform(next ? nodeTransform(next) : null);
     setTextValue(next?.text ?? "");
     setDraftTransforms({});
-  }, [scene?.id]);
+    // Auto-key is consent for the selected scene, not a sticky global input
+    // mode that can silently author motion on another project or scene.
+    setAutoKeyPosition(false);
+    drag.current = null;
+  }, [scene?.id, project.generation]);
 
   const selectedNode = useMemo(
     () => scene?.nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -229,7 +239,12 @@ export default function CanvasWorkspace({
       nodeId: node.id,
       clientX: event.clientX,
       clientY: event.clientY,
-      initial: objectTransform(node),
+      // Freeze the entire gesture mode/time so a slider seek or toggled
+      // checkbox while dragging cannot split the transaction.
+      initial: autoKeyPosition ? stageTransform(node) : objectTransform(node),
+      autoKey: autoKeyPosition,
+      at: scenePlayhead,
+      interpolation: motionInterpolation,
     };
   };
 
@@ -255,7 +270,15 @@ export default function CanvasWorkspace({
     drag.current = null;
     const next = draftTransforms[active.nodeId];
     if (!next) return;
-    void commit({
+    void commit(active.autoKey ? {
+      type: "set_canvas_position_keyframe",
+      scene_id: scene.id,
+      node_id: active.nodeId,
+      at: rationalSeconds(active.at),
+      x: next.x,
+      y: next.y,
+      interpolation: active.interpolation,
+    } : {
       type: "transform_canvas_node",
       scene_id: scene.id,
       node_id: active.nodeId,
@@ -338,7 +361,19 @@ export default function CanvasWorkspace({
               onChange={(event) => seekSceneTime(numberValue(event.target.value, 0))}
             />
           </label>
-          <span className="status-pill status-unknown">EDITORIAL PREVIEW</span>
+          <label className="canvas-auto-key" title="When enabled, dragging an object creates one atomic X/Y motion keyframe at the current scene-relative playhead instead of changing its base layout.">
+            <input
+              type="checkbox"
+              aria-label="Auto-key position"
+              checked={autoKeyPosition}
+              disabled={scenePositionLocked}
+              onChange={(event) => setAutoKeyPosition(event.target.checked)}
+            />
+            <span>Auto-key X/Y</span>
+          </label>
+          <span className="status-pill status-unknown">
+            {autoKeyPosition ? "KEYED POSITION" : "BASE POSITION"}
+          </span>
           <span className="mono">{scene.nodes.length} objects</span>
         </div>
       </header>
@@ -422,7 +457,15 @@ export default function CanvasWorkspace({
                   onPointerDown={(event) => beginDrag(event, node)}
                   onPointerMove={moveDrag}
                   onPointerUp={endDrag}
-                  onPointerCancel={() => { drag.current = null; }}
+                  onPointerCancel={() => {
+                    const aborted = drag.current;
+                    drag.current = null;
+                    if (aborted) setDraftTransforms((current) => {
+                      const copy = { ...current };
+                      delete copy[aborted.nodeId];
+                      return copy;
+                    });
+                  }}
                   onClick={() => selectNode(node)}
                 >
                   <span className="canvas-object-label">{node.text || node.name}</span>

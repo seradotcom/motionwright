@@ -26,6 +26,69 @@ describe("creative project fixture", () => {
     expect(fixtureProject.deliverables.every((profile) => profile.container === "mp4" && profile.color_space === "rec709")).toBe(true);
   });
 
+  it("commits paired X/Y auto-keys as one semantic revision without changing base pose", async () => {
+    const source = structuredClone(fixtureProject);
+    const scene = source.scenes[0];
+    const node = scene.nodes[0];
+    const initialRevision = source.revision;
+    const original = { x: node.x, y: node.y };
+    const keyed = await applyChange(source, {
+      type: "set_canvas_position_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      at: rationalSeconds(2),
+      x: original.x + 75,
+      y: original.y + 55,
+      interpolation: "ease_in_out",
+    });
+    expect(keyed.revision).toBe(initialRevision + 1);
+    const result = keyed.scenes[0].nodes[0];
+    expect({ x: result.x, y: result.y }).toEqual(original);
+    const axes = result.keyframes.filter((key) =>
+      ["x", "y"].includes(key.property) && seconds(key.at) === 2,
+    );
+    expect(axes.map((key) => [key.property, key.value])).toEqual([
+      ["x", original.x + 75],
+      ["y", original.y + 55],
+    ]);
+    const changed = await applyChange(keyed, {
+      type: "set_canvas_position_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      at: rationalSeconds(2),
+      x: original.x + 125,
+      y: original.y + 70,
+      interpolation: "hold",
+    });
+    expect(changed.revision).toBe(initialRevision + 2);
+    expect(changed.scenes[0].nodes[0].keyframes.filter((key) => seconds(key.at) === 2)).toHaveLength(2);
+    await expect(applyChange(changed, {
+      type: "set_canvas_position_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      at: scene.duration,
+      x: 15,
+      y: 25,
+      interpolation: "hold",
+    })).rejects.toThrow("out of bounds");
+    const locked = await applyChange(changed, {
+      type: "set_node_property_lock",
+      scene_id: scene.id,
+      node_id: node.id,
+      property: "position",
+      locked: true,
+    });
+    await expect(applyChange(locked, {
+      type: "set_canvas_position_keyframe",
+      scene_id: scene.id,
+      node_id: node.id,
+      at: rationalSeconds(2.5),
+      x: 140,
+      y: 120,
+      interpolation: "linear",
+    })).rejects.toThrow("locked");
+  });
+
   it("never represents project truth only as color", () => {
     expect(["current", "stale", "unknown"]).toContain(fixtureProject.state);
     expect(fixtureProject.locks[0].kind).toBe("timing");

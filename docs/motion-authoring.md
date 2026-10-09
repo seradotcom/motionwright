@@ -34,14 +34,19 @@ The Canvas workspace provides a scene-local playhead, typed property/value/inter
 
 The preview evaluates the stored keyframes for editorial feedback. It is not renderer evidence and does not claim pixel parity with a production backend. Static transforms remain the editable base state; moving the preview playhead does not bake interpolated values back into the project.
 
+Canvas additionally provides an **explicit Auto-key X/Y** toggle, off by default. When on, a pointer drag at a scene-local playhead creates/replaces exactly **two position keyframes (X and Y) in one committed semantic change and one project revision**, capturing interpolation, time and selected object at gesture start. The base X/Y pose is unchanged. When off, dragging retains the existing base-pose transform behavior. Numeric **Commit transform** remains explicitly a base-state action in both modes, rather than silently converting size/rotation/opacity controls into new curves. The status label distinguishes BASE POSITION from KEYED POSITION; seeking itself never mutates project state.
+
+Atomic position drag respects scene/node position locks, half-open rational scene bounds, existing keyframe replacement and the 128-key budget. Both axes are prevalidated before either is written; failed edits do not leave a half-keyed position. Pointer cancellation removes only local drag previews without creating creative changes.
+
 ## Native SDK
 
 The public cooperation surface includes:
 
 - `driver.motionwright.canvas.keyframe.set`
 - `driver.motionwright.canvas.keyframe.remove`
+- `driver.motionwright.canvas.position-keyframe.set` — one paired X/Y key at a scene-relative rational timestamp
 
-Both commands use closed schemas and the same opaque Native SDK target binding as other mutating operations. The application never parses a Native SDK ref as a Motionwright resource identifier.
+All three commands use closed schemas and the same opaque Native SDK target binding as other mutating operations. The application never parses a Native SDK ref as a Motionwright resource identifier.
 
 ## Renderer boundary
 

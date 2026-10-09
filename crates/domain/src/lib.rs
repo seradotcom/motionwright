@@ -1380,6 +1380,86 @@ impl Project {
                         .then(left.property.cmp(&right.property))
                 });
             }
+            Change::SetCanvasPositionKeyframe {
+                scene_id,
+                node_id,
+                at,
+                x,
+                y,
+                interpolation,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                let keys = [
+                    CanvasKeyframe {
+                        at: *at,
+                        property: MotionProperty::X,
+                        value: *x,
+                        interpolation: *interpolation,
+                    },
+                    CanvasKeyframe {
+                        at: *at,
+                        property: MotionProperty::Y,
+                        value: *y,
+                        interpolation: *interpolation,
+                    },
+                ];
+                for key in &keys {
+                    key.validate()?;
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if *at >= scene.duration {
+                    return Err(DomainError::Invalid(
+                        "atomic position keys must stay inside the half-open scene".into(),
+                    ));
+                }
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if node.property_locks.contains(&NodeProperty::Position) {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} position motion property"
+                    )));
+                }
+                let existing = keys
+                    .iter()
+                    .filter(|key| {
+                        node.keyframes
+                            .iter()
+                            .any(|item| item.at == key.at && item.property == key.property)
+                    })
+                    .count();
+                if node.keyframes.len() + 2 - existing > 128 {
+                    return Err(DomainError::Invalid(
+                        "atomic position keyframes exceed node keyframe budget".into(),
+                    ));
+                }
+                // All validation is complete before either axis is mutated:
+                // this remains one committed Change/undo/revision, never two
+                // independently interleaved X/Y edits from a drag gesture.
+                for key in keys {
+                    if let Some(previous) = node
+                        .keyframes
+                        .iter_mut()
+                        .find(|item| item.at == key.at && item.property == key.property)
+                    {
+                        *previous = key;
+                    } else {
+                        node.keyframes.push(key);
+                    }
+                }
+                node.keyframes.sort_by(|left, right| {
+                    left.at
+                        .cmp(&right.at)
+                        .then(left.property.cmp(&right.property))
+                });
+            }
             Change::RemoveCanvasKeyframe {
                 scene_id,
                 node_id,
@@ -2033,6 +2113,16 @@ pub enum Change {
         node_id: Uuid,
         keyframe: CanvasKeyframe,
     },
+    /// Two scene-local position axes in one verified creative transaction.
+    /// Used by explicit Canvas Auto-key and available to Native SDK agents.
+    SetCanvasPositionKeyframe {
+        scene_id: Uuid,
+        node_id: Uuid,
+        at: RationalTime,
+        x: f64,
+        y: f64,
+        interpolation: MotionInterpolation,
+    },
     RemoveCanvasKeyframe {
         scene_id: Uuid,
         node_id: Uuid,
@@ -2366,6 +2456,125 @@ mod tests {
                 .iter()
                 .all(|node| node.id != parent_id)
         );
+    }
+
+    #[test]
+    fn atomic_position_keyframe_writes_both_axes_once_without_changing_base_transform() {
+        let mut project = Project::new("Atomic Canvas motion").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Position animated".into(),
+                objective: "animate both axes".into(),
+                duration_seconds: 5,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Move me");
+        let initial_x = node.x;
+        let initial_y = node.y;
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+
+        let change = Change::SetCanvasPositionKeyframe {
+            scene_id,
+            node_id,
+            at: whole_seconds(2),
+            x: 320.0,
+            y: 210.0,
+            interpolation: MotionInterpolation::EaseInOut,
+        };
+        let serialized = serde_json::to_value(&change).unwrap();
+        assert_eq!(serialized["type"], "set_canvas_position_keyframe");
+        project.apply_change(&change).unwrap();
+        let object = &project.scenes[0].nodes[0];
+        assert_eq!(object.x, initial_x);
+        assert_eq!(object.y, initial_y);
+        assert_eq!(object.keyframes.len(), 2);
+        assert_eq!(object.keyframes[0].property, MotionProperty::X);
+        assert_eq!(object.keyframes[1].property, MotionProperty::Y);
+        assert_eq!(object.keyframes[0].at, whole_seconds(2));
+        assert_eq!(object.keyframes[1].value, 210.0);
+
+        // One replacement updates both axes without accumulating duplicates.
+        project
+            .apply_change(&Change::SetCanvasPositionKeyframe {
+                scene_id,
+                node_id,
+                at: whole_seconds(2),
+                x: 480.0,
+                y: 290.0,
+                interpolation: MotionInterpolation::Hold,
+            })
+            .unwrap();
+        let keys = &project.scenes[0].nodes[0].keyframes;
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].value, 480.0);
+        assert_eq!(keys[1].value, 290.0);
+        assert_eq!(keys[0].interpolation, MotionInterpolation::Hold);
+    }
+
+    #[test]
+    fn atomic_position_keyframe_rejects_invalid_axis_or_lock_without_partial_edits() {
+        let mut project = Project::new("Atomic Canvas lock").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Locked".into(),
+                objective: "protect position".into(),
+                duration_seconds: 4,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let node = canvas_node("Locked motion");
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        let valid = Change::SetCanvasPositionKeyframe {
+            scene_id,
+            node_id,
+            at: whole_seconds(1),
+            x: 12.0,
+            y: 24.0,
+            interpolation: MotionInterpolation::Linear,
+        };
+        assert!(
+            project
+                .apply_change(&Change::SetCanvasPositionKeyframe {
+                    scene_id,
+                    node_id,
+                    at: whole_seconds(1),
+                    x: 12.0,
+                    y: f64::NAN,
+                    interpolation: MotionInterpolation::Linear,
+                })
+                .is_err()
+        );
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
+        assert!(
+            project
+                .apply_change(&Change::SetCanvasPositionKeyframe {
+                    scene_id,
+                    node_id,
+                    at: whole_seconds(4),
+                    x: 12.0,
+                    y: 24.0,
+                    interpolation: MotionInterpolation::Linear,
+                })
+                .is_err()
+        );
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
+        project
+            .apply_change(&Change::SetNodePropertyLock {
+                scene_id,
+                node_id,
+                property: NodeProperty::Position,
+                locked: true,
+            })
+            .unwrap();
+        assert!(project.apply_change(&valid).is_err());
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
     }
 
     #[test]
