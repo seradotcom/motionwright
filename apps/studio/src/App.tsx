@@ -1,3 +1,4 @@
+import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import {
   Activity,
   AlignLeft,
@@ -93,6 +94,7 @@ type Workspace =
   | "Audio"
   | "Storyboard"
   | "Canvas"
+  | "Production"
   | "Timeline"
   | "Jobs"
   | "Workflows"
@@ -124,6 +126,7 @@ const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Audio", icon: AudioLines },
   { name: "Storyboard", icon: Columns3 },
   { name: "Canvas", icon: Box },
+  { name: "Production", icon: Layers3 },
   { name: "Timeline", icon: Film },
   { name: "Jobs", icon: Activity },
   { name: "Workflows", icon: Wand2 },
@@ -1943,7 +1946,7 @@ export default function App() {
     try {
       const next = await applyChange(boot.project, change);
       setBoot({ ...boot, project: next });
-      if (selectedSceneId && !next.scenes.some((scene) => scene.id === selectedSceneId)) {
+      if (!selectedSceneId || !next.scenes.some((scene) => scene.id === selectedSceneId)) {
         setSelectedSceneId(next.scenes[0]?.id ?? null);
       }
     } catch (reason) {
@@ -2013,6 +2016,8 @@ export default function App() {
         );
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
+      case "Production":
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Timeline":
