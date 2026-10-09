@@ -29,9 +29,27 @@ if(!/^[0-9]+$/.test(revision || ''))throw new Error('Pinned headless browser rev
 const browser=path.join(root,'.browsers','chromium_headless_shell-'+revision,'chrome-linux','headless_shell');
 if(!fs.realpathSync(browser).startsWith(root+path.sep))throw new Error('Install browser into this profile root, not an ambient user cache');
 files.browser={path:path.relative(root,fs.realpathSync(browser)).split(path.sep).join('/'),sha256:hash(fs.readFileSync(browser)),bytes:fs.statSync(browser).size};
+const inventoryRows=[];let totalBytes=0;
+function inventoryTree(directory) {
+  for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name,'en'))) {
+    if(entry.name==='.bin')continue;
+    const file=path.join(directory,entry.name),relative=path.relative(root,file).split(path.sep).join('/');
+    if(entry.isSymbolicLink())throw new Error('Installed runtime code must not traverse a symlink: '+relative);
+    if(entry.isDirectory()){inventoryTree(file);continue;}
+    if(!entry.isFile())throw new Error('Installed runtime contains a non-regular program dependency');
+    const size=fs.statSync(file).size;totalBytes+=size;
+    if(inventoryRows.length>=20000||size>512*1024*1024||totalBytes>2*1024*1024*1024)throw new Error('Runtime inventory exceeds the admitted profile');
+    inventoryRows.push({path:relative,sha256:hash(fs.readFileSync(file)),bytes:size});
+  }
+}
+inventoryTree(path.join(root,'node_modules'));inventoryTree(path.dirname(browser));
+const inventoryBody=JSON.stringify({schema:1,files:inventoryRows},null,2)+'\n';
+if(Buffer.byteLength(inventoryBody)>8*1024*1024)throw new Error('Runtime inventory manifest exceeds its budget');
+fs.writeFileSync(path.join(root,'runtime-files.json'),inventoryBody,{flag:'wx'});
+const inventory={path:'runtime-files.json',sha256:hash(Buffer.from(inventoryBody)),files:inventoryRows.length,bytes:totalBytes};
 const lock=fs.readFileSync(path.join(root,'package-lock.json'));
 const receipt={schema:1,hyperframes:'0.8.143',gsap:'3.15.0',playwright:'1.55.1',fontkit:'2.0.4',npm_lock_sha256:hash(lock),
-  capture_profile:'hyperframes-core-chromium-png-v1',platform:process.platform,architecture:process.arch,files,
+  capture_profile:'hyperframes-core-chromium-png-v1',platform:process.platform,architecture:process.arch,files,inventory,
   package_rights:'Owner-installed dependencies retain their own licenses. Installation is not source-code or asset redistribution permission.',
   sandbox:'Browser sandbox retained. Driver Host separately confines this process and its dependency roots. No external URL inputs.'};
 fs.writeFileSync(path.join(root,'runtime.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});

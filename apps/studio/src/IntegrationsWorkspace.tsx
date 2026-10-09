@@ -15,6 +15,7 @@ import type {
 } from "./types";
 
 const kindLabels: Record<ExtensionKind, string> = {
+  "hyperframes-renderer": "HyperFrames native HTML",
   "remotion-renderer": "Remotion renderer",
   "manim-gl-renderer": "ManimGL renderer",
   "generative-assets": "Generative assets",

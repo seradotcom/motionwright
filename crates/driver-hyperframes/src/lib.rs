@@ -65,7 +65,7 @@ pub fn regular(root: &Path, relative: &str, max: u64) -> Result<(PathBuf, u64)> 
     }
     let canonical = fs::canonicalize(&cursor)?;
     let m = fs::metadata(&canonical)?;
-    if !canonical.starts_with(root) || !m.is_file() || m.len() == 0 || m.len() > max {
+    if !canonical.starts_with(root) || !m.is_file() || m.len() > max {
         return Err(invalid(
             "Artifact is outside its owner-granted root or byte budget",
         ));

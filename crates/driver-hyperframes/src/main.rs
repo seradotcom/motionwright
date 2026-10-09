@@ -279,7 +279,10 @@ impl HyperframesDriver {
                 .ok_or_else(|| invalid("Missing native artifact locator"))?
                 .to_owned();
             let (file, size) = regular(&directory, &relative, 512 * 1024 * 1024)?;
-            if item["bytes"] != size || item["sha256"] != file_sha(&file, 512 * 1024 * 1024)? {
+            if size == 0
+                || item["bytes"] != size
+                || item["sha256"] != file_sha(&file, 512 * 1024 * 1024)?
+            {
                 return Err(invalid("Native artifact digest/size mismatch"));
             }
             result[key]["relative_path"] = json!(format!("{}/{relative}", job.job_ref));

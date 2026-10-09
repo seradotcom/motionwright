@@ -38,6 +38,7 @@ struct RuntimeFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeReceipt {
+    inventory: RuntimeInventoryReceipt,
     schema: u32,
     hyperframes: String,
     gsap: String,
@@ -51,6 +52,21 @@ struct RuntimeReceipt {
     package_rights: String,
     sandbox: String,
 }
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeInventoryReceipt {
+    path: String,
+    sha256: String,
+    files: usize,
+    bytes: u64,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeInventory {
+    schema: u32,
+    files: Vec<RuntimeFile>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Artifact {
@@ -171,6 +187,7 @@ fn validate_runtime(runtime: &Path) -> Result<RuntimeReceipt> {
             "Runtime dependency lock changed after installation",
         ));
     }
+    verify_runtime_inventory(runtime, &receipt)?;
     Ok(receipt)
 }
 fn child_environment(command: &mut Command, runtime: &Path, work: &Path) -> Result<()> {
@@ -361,4 +378,128 @@ mod tests {
         assert!(AUTHOR.contains("textContent=run.text"));
         assert!(!AUTHOR.contains("innerHTML"));
     }
+}
+
+fn verify_runtime_inventory(runtime: &Path, receipt: &RuntimeReceipt) -> Result<()> {
+    use std::collections::BTreeSet;
+    let descriptor = &receipt.inventory;
+    if descriptor.path != "runtime-files.json"
+        || !hex_digest(&descriptor.sha256)
+        || descriptor.files == 0
+        || descriptor.files > 20000
+        || descriptor.bytes > 2 * 1024 * 1024 * 1024
+    {
+        return Err(invalid(
+            "Installed runtime inventory metadata is outside its explicit contract",
+        ));
+    }
+    let bytes = read(runtime, &descriptor.path, 8 * 1024 * 1024)?;
+    if sha(&bytes) != descriptor.sha256 {
+        return Err(invalid(
+            "Installed runtime inventory changed after owner admission",
+        ));
+    }
+    let inventory: RuntimeInventory = serde_json::from_slice(&bytes)?;
+    if inventory.schema != 1 || inventory.files.len() != descriptor.files {
+        return Err(invalid("Installed runtime inventory is incomplete"));
+    }
+    let browser = receipt
+        .files
+        .get("browser")
+        .ok_or_else(|| invalid("Browser runtime identity is missing"))?;
+    let browser_directory = Path::new(&browser.path)
+        .parent()
+        .ok_or_else(|| invalid("Browser directory is absent"))?;
+    if !browser_directory.starts_with(".browsers") {
+        return Err(invalid(
+            "Browser dependency inventory must stay within the owner-installed browser root",
+        ));
+    }
+    let mut expected = BTreeSet::new();
+    let mut total = 0u64;
+    for entry in &inventory.files {
+        let relative = Path::new(&entry.path);
+        if !(relative.starts_with("node_modules") || relative.starts_with(browser_directory))
+            || !expected.insert(entry.path.clone())
+            || !hex_digest(&entry.sha256)
+        {
+            return Err(invalid(
+                "Runtime inventory contains a duplicate, escaping or malformed dependency",
+            ));
+        }
+        let (file, size) = regular(runtime, &entry.path, 512 * 1024 * 1024)?;
+        if size != entry.bytes || file_sha(&file, 512 * 1024 * 1024)? != entry.sha256 {
+            return Err(invalid(format!(
+                "Installed runtime dependency changed: {}",
+                entry.path
+            )));
+        }
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| invalid("Runtime dependency byte count overflow"))?;
+        if total > 2 * 1024 * 1024 * 1024 {
+            return Err(invalid(
+                "Runtime dependency tree exceeds the selected profile",
+            ));
+        }
+    }
+    if total != descriptor.bytes {
+        return Err(invalid(
+            "Runtime inventory total differs from the owner-selected identity",
+        ));
+    }
+    fn walk(
+        runtime: &Path,
+        directory: &Path,
+        actual: &mut BTreeSet<String>,
+        depth: u32,
+    ) -> Result<()> {
+        if depth > 64 {
+            return Err(invalid(
+                "Runtime dependency hierarchy exceeds its traversal budget",
+            ));
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_name() == ".bin" {
+                continue;
+            }
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                return Err(invalid(
+                    "Runtime dependencies cannot traverse symbolic links",
+                ));
+            }
+            if kind.is_dir() {
+                walk(runtime, &entry.path(), actual, depth + 1)?;
+            } else if kind.is_file() {
+                let relative = entry
+                    .path()
+                    .strip_prefix(runtime)
+                    .map_err(|_| invalid("Runtime file escaped its root"))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                actual.insert(relative);
+            } else {
+                return Err(invalid(
+                    "Runtime dependency tree contains a non-regular entry",
+                ));
+            }
+            if actual.len() > 20000 {
+                return Err(invalid(
+                    "Runtime dependency file count exceeds its fixed bound",
+                ));
+            }
+        }
+        Ok(())
+    }
+    let mut actual = BTreeSet::new();
+    walk(runtime, &runtime.join("node_modules"), &mut actual, 0)?;
+    walk(runtime, &runtime.join(browser_directory), &mut actual, 0)?;
+    if actual != expected {
+        return Err(invalid(
+            "Runtime module tree has additional or missing files; implicit updates are not admitted",
+        ));
+    }
+    Ok(())
 }
