@@ -169,6 +169,20 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
           <p className="production-help">48 kHz stereo PCM, deterministic and self-contained. No claim of voice sync, loudness mastering or licensed library music.</p>
         </section>}
         {preview&&<details className="native-runtime-panel">
+          <summary>Original direction, craft and review advisors · 12</summary>
+          <p className="production-help">Knowledge-only advisors cannot grant authority, install code, publish or independently approve the producer's output. Findings are scoped to the exact source revision and can be rejected by the owner.</p>
+          {preview.skill_audit.skill_definitions.map(definition=><details key={definition.id}>
+            <summary>{emphasis(definition.canonical_id)} · {definition.status.replaceAll('_',' ')}</summary>
+            <p className="production-help">{definition.work_product}</p>
+            <p className="production-help">Review condition: {definition.review_condition}</p>
+            {preview.skill_audit.findings.filter(f=>f.skill===definition.id).map((item,index)=><div className="native-difference" key={index}>
+              <div><strong>{emphasis(item.kind)}</strong><p>{item.observation}</p>
+              <p>Risk: {item.risk}</p><p>Scoped next action: {item.scoped_next_action}</p>
+              {item.object_id&&<p className="mono">Native object {item.object_id} · frames {item.source_frame_start}–{item.source_frame_end}</p>}</div>
+            </div>)}
+          </details>)}
+        </details>}
+        {preview&&<details className="native-runtime-panel">
           <summary>Renderer compatibility and explicit losses · 7 targets</summary>
           <p className="production-help">These are authoring-level assessments, not pixel test results. Runtime grants and creative approval are always separate.</p>
           <table className="native-fidelity-table"><thead><tr><th>Target</th><th>Editable</th><th>Converted</th><th>Unavailable</th></tr></thead>

@@ -6,6 +6,14 @@ import {createRequire} from 'node:module';
 
 const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha] = process.argv.slice(2);
 if(process.argv.length!==7 || ![runtimeRoot,workRoot,outputRoot,assetRoot].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
+// Static diagnostic milestones in an already owner-writable job root. No
+// user text, secret values, browser stderr, URLs or system paths are logged.
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames']);
+function phase(name){
+  if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
+  fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
+}
+phase('entry');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function readBounded(root,relative,max) {
   if(!relative || path.isAbsolute(relative) || relative.split(/[\\/]/).some(p=>!p || p==='.' || p==='..')) throw new Error('Unnormalized native asset path');
@@ -18,13 +26,16 @@ function readBounded(root,relative,max) {
 const planBytes=readBounded(workRoot,'plan.json',2*1024*1024);
 if(hash(planBytes)!==expectedPlanSha)throw new Error('Native plan changed after driver admission');
 const plan=JSON.parse(planBytes),doc=plan.document,c=doc.canvas;
+phase('plan');
 if(doc.version!==1 || doc.nodes.length>256 || c.frames<1 || c.frames>3600 || c.width*c.height>8294400)throw new Error('Unadmitted capture dimensions or document version');
 const receiptBytes=readBounded(runtimeRoot,'runtime.json',1024*1024),receipt=JSON.parse(receiptBytes);
 if(receipt.schema!==1 || receipt.hyperframes!=='0.8.143' || receipt.gsap!=='3.15.0' || receipt.playwright!=='1.55.1')throw new Error('Native runtime receipt is incompatible');
 if(hash(receiptBytes)!==plan.runtime_receipt_sha256)throw new Error('Native runtime identity changed after source admission');
+phase('runtime');
 const require=createRequire(path.join(runtimeRoot,'package.json'));
 const {chromium}=require('playwright');
 const fontkit=require('fontkit');
+phase('modules');
 const files=new Map();
 const source=readBounded(workRoot,'index.html',3*1024*1024);
 files.set('/index.html',{bytes:source,type:'text/html; charset=utf-8'});
@@ -43,6 +54,7 @@ for(const asset of doc.assets) {
   if(assetBytes>256*1024*1024 || hash(bytes)!==asset.sha256)throw new Error('Native asset changed or total resource budget exceeded');
   const item={bytes,type:assetMimes[asset.kind]};files.set('/assets/'+asset.sha256+'.'+extensions[asset.kind],item);assetById.set(asset.id,{...asset,bytes});
 }
+phase('assets');
 const fonts=new Map();
 const fontFaces=[];
 for(const node of doc.nodes)if(node.content.kind==='text') {
@@ -60,11 +72,13 @@ for(const node of doc.nodes)if(node.content.kind==='text') {
     if(!weight || (run.italic && !face.italicAngle))throw new Error('Requested exact font face is unavailable; no synthetic weight or italic substitution');
   }
 }
+phase('fonts');
 const framesDir=path.join(outputRoot,'frames');fs.mkdirSync(framesDir,{recursive:false});
 const observationsPath=path.join(outputRoot,'observations.ndjson');
 const observationFd=fs.openSync(observationsPath,'wx',0o600);let observationBytes=0;
 const diagnostics=[];const refused=[];const deadline=Date.now()+240000;
 const browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),headless:true,chromiumSandbox:true,args:['--enable-logging=stderr'],timeout:30000});
+phase('browser');
 try {
   const context=await browser.newContext({viewport:{width:c.width,height:c.height},deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'light',reducedMotion:'no-preference',serviceWorkers:'block',acceptDownloads:false});
   await context.route('**/*',async route=>{
@@ -82,6 +96,7 @@ try {
     return route.fulfill({status:200,contentType:item.type,headers:{'Cache-Control':'no-store'},body:item.bytes});
   });
   const page=await context.newPage();page.setDefaultTimeout(15000);
+  phase('page');
   page.on('popup',popup=>popup.close());page.on('pageerror',e=>{if(diagnostics.length<8)diagnostics.push(e.message.slice(0,1024));});
   await page.goto('http://motionwright.invalid/index.html',{waitUntil:'load'});
   await page.waitForFunction(()=>!!window.__playerReady && !!window.__renderReady && typeof window.__player?.renderSeek==='function' && typeof window.__mwInspect==='function');
@@ -93,6 +108,7 @@ try {
     }
     await Promise.all([...document.images].map(img=>img.decode()));
   });
+  phase('fonts_loaded');
   const duration=await page.evaluate(()=>window.__player.getDuration());
   if(Math.abs(duration-c.frames*c.rate.den/c.rate.num)>1e-7)throw new Error('HyperFrames timeline duration differs from the exact output contract');
   const captured=[];let bytesWritten=0;
@@ -123,6 +139,7 @@ try {
     captured.push({frame,time:{num:String(frame*c.rate.den),den:String(c.rate.num)},relative_path:'frames/'+name,sha256:hash(bytes),bytes:bytes.length});
     const line=JSON.stringify(state)+'\n';observationBytes+=Buffer.byteLength(line);if(observationBytes>64*1024*1024)throw new Error('Readback observation budget exceeded');fs.writeSync(observationFd,line);
   }
+  phase('frames');
   fs.fsyncSync(observationFd);
   const result={schema:'motionwright.hyperframes-native-frames/1',project_id:plan.project_id,generation:plan.generation,revision:plan.revision,scene_id:plan.scene_id,
     width:c.width,height:c.height,rate:c.rate,frame_count:c.frames,alpha:c.background===null,color:'srgb',source_sha256:hash(source),plan_sha256:expectedPlanSha,

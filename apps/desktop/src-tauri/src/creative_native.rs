@@ -409,6 +409,13 @@ pub async fn creative_component_proposal(
     }
     let contribution = library::realize(&request.component, &request.brand, &request.taste)
         .map_err(|e| e.to_string())?;
+    let skill_audit = library::preflight_creative_skills(
+        &request.component,
+        &request.brand,
+        &request.taste,
+        &contribution,
+    )
+    .map_err(|e| e.to_string())?;
     let fidelity_reports = [
         library::RealizationTarget::Hyperframes,
         library::RealizationTarget::Blender,
@@ -436,6 +443,7 @@ pub async fn creative_component_proposal(
         "creative_approval":contribution.creative_approval,
         "renderer_plan":contribution.output,
         "fidelity_reports":fidelity_reports,
+        "skill_audit":skill_audit,
         "committed":false,
         "authority":"read_only_source_proposal_not_renderer_execution"
     });

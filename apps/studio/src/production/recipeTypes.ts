@@ -45,6 +45,7 @@ export interface CreativeComponentProposal {
  brand_id:string;brand_revision:number;taste_id:string;taste_revision:number;
  source_classification:string;creative_approval:string;renderer_plan:{backend:RecipeBackend;source:unknown};
  fidelity_reports:RealizationFidelity[];
+ skill_audit:SkillAudit;
  committed:false;authority:string;normalized_edit?:CreativeWorkspaceEdit;difference?:NativeSceneDifference
 }
 
@@ -60,4 +61,22 @@ export interface RealizationFidelity {
  project_level_source_admission_verified:boolean;renderer_readback_verified:boolean;
  creative_quality_approved:boolean;score:null;
  properties:PropertyFidelity[];executable_without_separate_owner_grant:boolean;summary:string
+}
+
+export type CreativeSkillId='direction'|'causal-story'|'typography'|'motion'|'product-stage'|'capture'|'sound'|'responsive'|'critic'|'repair'|'distillation'|'delivery';
+export interface CreativeSkillDefinition {
+  id:CreativeSkillId;canonical_id:string;version:string;status:string;work_product:string;
+  review_condition:string;may_grant_execution:boolean;may_approve_own_work:boolean
+}
+export interface SkillFinding {
+  skill:CreativeSkillId;kind:'technical_preflight'|'unverified_evidence'|'human_creative_decision'|'scope_conflict';
+  object_id:string|null;source_frame_start:number|null;source_frame_end:number|null;
+  observation:string;risk:string;scoped_next_action:string;evidence_level:string
+}
+export interface SkillAudit {
+  schema:'motionwright.creative-skill-advisory/1';component_id:string;recipe:string;
+  input_sha256:string;source_sha256:string;
+  skill_definitions:CreativeSkillDefinition[];findings:SkillFinding[];
+  artifact_classification:string;standalone_runtime_authority:false;
+  independent_human_approval:false;source_changed:false
 }

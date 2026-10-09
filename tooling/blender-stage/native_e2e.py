@@ -37,6 +37,8 @@ def main()->None:
    manifest=json.loads((case/'stage.json').read_text())
    if manifest['schema']!='motionwright.blender-native-stage-preview/1' or manifest['source_sha256']!=hashlib.sha256(scene_bytes).hexdigest():
     raise AssertionError('Blender stage output is not bound to the exact typed input')
+   if manifest['preview_render_engine'] not in ('BLENDER_EEVEE','BLENDER_EEVEE_NEXT'):
+    raise AssertionError('Blender preview engine was not stated or was not Eevee')
    if manifest['sampling']!='sampled_only_not_full_animation' or manifest['sampled_count']!=3:
     raise AssertionError('Blender sample-only render is falsely reported as a completed native master')
    if manifest['native_camera_keys']<2 or not manifest['editable_devices']:

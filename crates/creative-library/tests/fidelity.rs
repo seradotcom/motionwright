@@ -33,10 +33,10 @@ fn design(recipe: RecipeId) -> library::CreativeContribution {
     )
     .unwrap()
 }
-fn property<'a>(
-    audit: &'a library::RealizationFidelity,
+fn property(
+    audit: &library::RealizationFidelity,
     name: CreativeFeature,
-) -> &'a library::PropertyFidelity {
+) -> &library::PropertyFidelity {
     audit.properties.iter().find(|p| p.feature == name).unwrap()
 }
 #[test]

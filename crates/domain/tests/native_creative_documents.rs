@@ -217,7 +217,7 @@ fn prior_schema_reads_are_pure_but_renderer_native_state_cannot_be_mislabeled_as
 }
 
 #[test]
-fn ten_consecutive_source_revisions_preserve_human_protection_and_reject_stale_agents() {
+fn ten_consecutive_source_edits_preserve_human_protection_and_reject_stale_agents() {
     let (mut project, native) = fixture();
     project
         .apply_change(&Change::EditCreativeWorkspace {
@@ -250,6 +250,8 @@ fn ten_consecutive_source_revisions_preserve_human_protection_and_reject_stale_a
         })
         .unwrap();
     let protected = project.production_design.workspace.native_scenes[0].clone();
+    // Domain edits are pure transforms. The StudioService owns revision allocation;
+    // this fixture checks ten authored transformations, not ten persisted commits.
     let start_revision = project.revision;
     for iteration in 0..10 {
         let before = project.clone();
@@ -275,9 +277,9 @@ fn ten_consecutive_source_revisions_preserve_human_protection_and_reject_stale_a
         assert_eq!(diff.changed_nodes, vec![node_id]);
         assert_eq!(diff.source_sha256, Some(expected.clone()));
         project.apply_change(&change).unwrap();
-        assert!(
-            project.revision > before.revision,
-            "Agent commit must create a revision"
+        assert_eq!(
+            project.revision, before.revision,
+            "The domain itself must not allocate a service revision"
         );
         assert_eq!(
             project.production_design.workspace.native_scenes[0],
@@ -307,7 +309,7 @@ fn ten_consecutive_source_revisions_preserve_human_protection_and_reject_stale_a
             proposed
         );
     }
-    assert!(project.revision >= start_revision + 10);
+    assert_eq!(project.revision, start_revision);
     let current = project.production_design.workspace.native_scenes[0].clone();
     let mut forbidden = current.clone();
     let NativeSceneSource::Hyperframes(document) = &mut forbidden.source;

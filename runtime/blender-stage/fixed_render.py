@@ -150,7 +150,15 @@ def main():
     camera=lens_aware_camera(plan['cameras'])
     lighting(plan['lights'])
     scene=bpy.context.scene;scene.frame_start=1;scene.frame_end=frames
-    scene.render.engine='CYCLES';scene.cycles.device='CPU';scene.cycles.samples=min(int(plan['samples']),12)
+    # Blender's distro Cycles build can lack OpenImageDenoise. A real, bounded
+    # native Eevee preview keeps geometry, camera, lights and depth of field.
+    # It does NOT claim Cycles parity or a photorealistic mastered clip.
+    engine_ids={item.identifier for item in scene.render.bl_rna.properties['engine'].enum_items}
+    engine='BLENDER_EEVEE' if 'BLENDER_EEVEE' in engine_ids else 'BLENDER_EEVEE_NEXT'
+    check(engine in engine_ids,'Distro Blender does not expose a supported Eevee preview engine')
+    scene.render.engine=engine
+    if hasattr(scene,'eevee') and hasattr(scene.eevee,'taa_render_samples'):
+        scene.eevee.taa_render_samples=max(8,min(int(plan['samples']),64))
     scene.render.resolution_x=width;scene.render.resolution_y=height;scene.render.resolution_percentage=100
     scene.render.image_settings.file_format='PNG';scene.render.image_settings.color_mode='RGBA'
     scene.render.film_transparent=canvas['background']is None
@@ -182,7 +190,9 @@ def main():
         'sample_resolution_percent':50,'sampled_count':len(indices),'native_camera_keys':len(plan['cameras']),
         'editable_devices':built,'original_source':entry(out/'stage.blend'),
         'interchange':entry(out/'stage.glb'),'frames':captures,'camera_observations':observations,
-        'creative_approval':'required','native_editable':True,'source_classification':plan['source_classification']}
+        'creative_approval':'required','native_editable':True,'source_classification':plan['source_classification'],
+        'glb_known_loss':['Blender AREA lighting is not directly preserved by glTF KHR_lights_punctual; editable Blender source remains authoritative'],
+        'preview_render_engine':engine,'denoising':'native_eevee_preview_no_oidn_dependency'}
     (out/'stage.json').write_text(json.dumps(doc,indent=2)+'\n')
     print(json.dumps({'native_stage':'PASS','source_sha256':doc['source_sha256'],'samples':len(indices),
                       'blender_version':bpy.app.version_string}))

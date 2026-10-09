@@ -101,3 +101,54 @@ reopen/backup/restore; full voice-to-AV output; non-simulated campaign variants;
 accessibility in installed desktop; and **independent human art-direction review**. A counter
 of 36 plan instances is not 36 approved designs. The SRS/W0–W7 production master remains the
 completion authority; this file does not remove any of its later stages.
+
+## Property-level fidelity and advisory skills (v0.5)
+
+`crates/creative-library/src/fidelity.rs` audits each authored property group
+against seven target routes, distinguishing `native`, `translated`, `baked`,
+`approximated` and `unavailable`. These labels are tied to the implemented
+semantic mapping, not a claim about output quality. For example, a chart may
+retain editable vector bars in HyperFrames while the original numeric table is
+**baked** because the typed data source is not yet a persisted first-class
+project object. Cross-provider targets without an implemented projection remain
+`unavailable`, even if their source files can be attached as opaque material.
+These reports expressly set runtime verification and creative approval false.
+
+The twelve authored v0.5 knowledge skills are `direction`, `causal-story`,
+`typography`, `motion`, `product-stage`, `capture`, `sound`, `responsive`,
+`critic`, `repair`, `distillation`, and `delivery`.
+`crates/creative-library/src/skills.rs` produces source-digest-bound
+**advisory preflight findings** and checks mechanical facts it can establish:
+minimum type size, synthetic data classification, authorized asset presence and
+missing temporal/approval evidence. They remain **knowledge-only, not installed**
+executors. No skill may grant an execution capability, rewrite a locked object
+or publish on its own; every assessment records an explicit evidence limit.
+
+`crates/service/tests/native_creative_revision_sequence.rs` is a separate
+persistent SQLite acceptance lane: ten successful edits and ten stale-write
+rejections, with reopens between changes and a preserved human content lock.
+It demonstrates the persistence/CAS boundary, **not** independent human
+creative review or a measured speed advantage.
+
+## Original 3D stage prototype (direct runtime, not Broker-ready)
+
+`runtime/blender-stage/fixed_render.py` consumes a source-validated first-party
+typed `StagePlan`, not arbitrary project Python. The direct CI lane must open
+actual Blender, save a fully editable `.blend`, generate a GLB interchange,
+and produce a few honest native camera-motion preview frames. Production
+source stays full resolution; the sampled preview runs at half resolution.
+The explicit renderer profile is **Eevee** to avoid the Ubuntu distro Blender
+Cycles build's unavailable OpenImageDenoise dependency. This does not claim
+Cycles equivalence or a mastered full-length scene. GLB loses certain Blender
+AREA light semantics, which the manifest must disclose; the editable Blender
+source remains authoritative. The direct script is not permission for an
+untrusted agent to execute arbitrary Blender Python. Final Broker/Host
+admission remains a separate required gate.
+
+## Source handoff and review boundaries
+
+A technical contact sheet, native-readback manifest, draft reference and
+sound PCM artifact do **not** constitute a production-ready campaign. Owners
+must review each target format, exact source, licensed materials, accessibility,
+readability and temporal continuity. Committing a recipe's typed native HTML
+source through Studio is one revision, never an implicit runtime grant.
