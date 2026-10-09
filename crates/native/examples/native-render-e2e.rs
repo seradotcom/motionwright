@@ -175,7 +175,8 @@ async fn render(
         .first()
         .ok_or("seeded project has no deliverable")?;
 
-    if (deliverable.width, deliverable.height) != (1920, 1080) {
+    let expected_frames = expected_fixture_frames(&project)?;
+    if expected_frames == 60 && (deliverable.width, deliverable.height) != (1920, 1080) {
         return Err("native-render-e2e expected the canonical 1920x1080 master".into());
     }
 
@@ -190,8 +191,16 @@ async fn render(
         mono_font_family: "IBM Plex Mono".into(),
         scene_intents: vec![SceneFilmIntent {
             scene_id: scene.id,
-            role: NarrativeRole::Mechanism,
-            archetype: Archetype::Statement,
+            role: if expected_frames == 180 {
+                NarrativeRole::Reveal
+            } else {
+                NarrativeRole::Mechanism
+            },
+            archetype: if expected_frames == 180 {
+                Archetype::ObjectSpotlight
+            } else {
+                Archetype::Statement
+            },
         }],
     };
     let result = match coordinator
@@ -238,7 +247,7 @@ async fn render(
     if result.generation != project.generation
         || result.revision != project.revision
         || result.segments.len() != 1
-        || result.segments[0].frame_count != 60
+        || result.segments[0].frame_count != expected_frames
     {
         return Err("native render evidence is not bound to the expected project revision".into());
     }
@@ -247,9 +256,12 @@ async fn render(
         .artifact
         .get("frame_count")
         .and_then(|value| value.as_u64())
-        != Some(60)
+        != Some(expected_frames)
     {
-        return Err("native Motion Canvas artifact did not report exactly 60 frames".into());
+        return Err(
+            "native Motion Canvas artifact did not report the fixture's exact expected frame count"
+                .into(),
+        );
     }
     if segment
         .verification
@@ -311,6 +323,7 @@ async fn master(
         .first()
         .ok_or("seeded project has no deliverable")?;
 
+    let expected_frames = expected_fixture_frames(&project)?;
     let motion_bytes = fs::read(motion_evidence_path)?;
     if motion_bytes.len() > 8 * 1024 * 1024 {
         return Err("Motion Canvas evidence exceeds the acceptance bound".into());
@@ -376,7 +389,7 @@ async fn master(
     if result.generation != project.generation
         || result.revision != project.revision
         || result.deliverable_id != deliverable.id
-        || result.frame_count != 60
+        || result.frame_count != expected_frames
         || result.frame_rate != Rate::new(30, 1)?
         || result
             .master
@@ -438,6 +451,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "seed-hero" => {
+            let database = path_arg(&mut args);
+            let aspect = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_hero(&database, &aspect, &project_json)
+        }
         "seed" => {
             let database = path_arg(&mut args);
             if args.next().is_some() {
@@ -476,4 +498,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => usage(),
     }
+}
+
+fn seed_hero(
+    database: &Path,
+    aspect: &str,
+    project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (width, height) = match aspect {
+        "landscape" => (1920, 1080),
+        "portrait" => (1080, 1920),
+        "square" => (1080, 1080),
+        _ => return Err("hero aspect must be landscape, portrait or square".into()),
+    };
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("hero seed database must start empty".into());
+    }
+    let initial = service.create_project("ProductHeroReveal native acceptance")?;
+    let scene_project = service
+        .apply(
+            initial.id,
+            &initial.stamp(),
+            "hero-seed-scene",
+            &Change::AddScene {
+                name: "ProductHeroReveal".into(),
+                objective:
+                    "Evaluate native typography, staggered entrances and editable preservation"
+                        .into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = scene_project.scenes[0].id;
+    let hero_project = service
+        .apply(
+            scene_project.id,
+            &scene_project.stamp(),
+            "hero-seed-component",
+            &Change::UpsertProductHero {
+                instance_id: Uuid::parse_str("00000000-0000-4000-8000-000000000005")?,
+                scene_id,
+                config: motionwright_domain::HeroConfig::default(),
+            },
+        )?
+        .project;
+    let mut profile = hero_project.deliverables[0].clone();
+    profile.width = width;
+    profile.height = height;
+    profile.name = format!("ProductHero / {aspect}");
+    let project = service
+        .apply(
+            hero_project.id,
+            &hero_project.stamp(),
+            "hero-seed-aspect",
+            &Change::UpsertDeliverable { profile },
+        )?
+        .project;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    output.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    output.write_all(b"\n")?;
+    output.sync_all()?;
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture": "product-hero-reveal/1", "project_id": project.id, "resource": project.resource_key(),
+            "generation": project.generation, "revision": project.revision, "scene_id": scene_id,
+            "deliverable_id": deliverable.id, "width": width, "height": height, "frame_count": 180,
+            "creative_approval": "required"
+        }))?
+    );
+    Ok(())
+}
+
+fn expected_fixture_frames(
+    project: &motionwright_domain::Project,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if project.production_design.heroes.is_empty() {
+        return Ok(60);
+    }
+    if project.production_design.heroes.len() != 1
+        || project.scenes.len() != 1
+        || project.scenes[0].duration != motionwright_domain::RationalTime::new(6, 1)?
+        || project.scenes[0].nodes.len() != 6
+        || !matches!(
+            (
+                project.deliverables[0].width,
+                project.deliverables[0].height
+            ),
+            (1920, 1080) | (1080, 1920) | (1080, 1080)
+        )
+    {
+        return Err(
+            "hero fixture no longer matches its explicit native acceptance contract".into(),
+        );
+    }
+    Ok(180)
 }

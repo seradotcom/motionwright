@@ -1,0 +1,177 @@
+name: ProductHero native design evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/v05-creative-production']
+    paths:
+      - 'crates/domain/src/hero.rs'
+      - 'crates/native/src/expressive.rs'
+      - 'crates/native/src/film.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/creative_frame_evidence.py'
+      - '.github/workflows/product-hero-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-hero-native-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+
+jobs:
+  product-hero-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-av-master-1.98.1
+          cache-on-failure: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install pinned native runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            melt ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/native-av-master-e2e
+          {
+            melt -version | head -5
+            ffmpeg -version | head -3
+            ffprobe -version | head -3
+            bwrap --version
+          } > verification/native-av-master-e2e/native-runtime-versions.txt
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          set -euo pipefail
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-av-master-e2e/sandbox-profile.txt"
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build exact Semwright Broker and native providers
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          test -x target/debug/semwright
+          test -x target/debug/semwrightd
+          test -x target/debug/semwright-sandbox
+          test -x target/debug/semwright-motion-canvas-driver
+          test -x target/debug/semwright-mlt-video-driver
+          test -x target/debug/semwright-mlt-runtime-runner
+
+      - name: Build Motionwright native AV acceptance
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-render-e2e
+          cargo test --locked -p motionwright-native \
+            motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
+            -- --nocapture
+
+      - name: Render and inspect three native Hero variants
+        run: |
+          set -euo pipefail
+          mkdir -p verification/product-hero-e2e
+          for aspect in landscape portrait square; do
+            MOTIONWRIGHT_E2E_FIXTURE="$aspect" python3 tooling/native_av_master_e2e.py \
+              | tee "verification/product-hero-e2e/$aspect.log"
+          done
+
+      - name: Check exact-SHA native evidence, editable source and technical master
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_VERIFY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/product-hero-e2e") / os.environ["GITHUB_SHA"]
+          for aspect, size in {"landscape":(1920,1080), "portrait":(1080,1920), "square":(1080,1080)}.items():
+              folder = root / aspect
+              result = json.loads((folder / "result.json").read_text())
+              inspection = json.loads((folder / "creative-frame-inspection.json").read_text())
+              assert result["native_av_master_e2e"] == "PASS"
+              assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+              assert result["frame_count"] == 180
+              assert (result["project"]["width"], result["project"]["height"]) == size
+              assert inspection["revision"] == result["project"]["revision"]
+              assert inspection["technical_sampling"] == "PASS"
+              assert inspection["creative_approval"] == "required"
+              for entry in [inspection["source_project"], inspection["contact_sheet"], *inspection["samples"]]:
+                  assert hashlib.sha256((folder / entry["path"]).read_bytes()).hexdigest() == entry["sha256"]
+              assert hashlib.sha256((folder / "motionwright-master.mp4").read_bytes()).hexdigest() == result["master_sha256"]
+              print(aspect, "native timing/source/master verified; creative review required")
+          PY_VERIFY
+
+      - name: Upload native design-review artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: product-hero-native-${{ github.sha }}
+          path: |
+            verification/product-hero-e2e/
+            verification/native-av-master-e2e/native-runtime-versions.txt
+            verification/native-av-master-e2e/sandbox-profile.txt
+          if-no-files-found: error
+          retention-days: 7

@@ -28,7 +28,16 @@ SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_BIN = ROOT / "target" / "debug" / "examples" / "native-render-e2e"
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
-EVIDENCE = ROOT / "verification" / "native-av-master-e2e" / GITHUB_SHA
+FIXTURE = os.environ.get("MOTIONWRIGHT_E2E_FIXTURE", "baseline")
+HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (1080, 1080)}
+if FIXTURE not in {"baseline", *HERO_ASPECTS}:
+    raise SystemExit("unknown bounded E2E fixture")
+IS_HERO = FIXTURE != "baseline"
+EXPECTED_FRAMES = 180 if IS_HERO else 60
+EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
+EVIDENCE = ROOT / "verification" / ("product-hero-e2e" if IS_HERO else "native-av-master-e2e") / GITHUB_SHA
+if IS_HERO:
+    EVIDENCE = EVIDENCE / FIXTURE
 
 
 def digest(path: Path) -> str:
@@ -146,8 +155,11 @@ def main() -> None:
         )
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if (seeded["width"], seeded["height"]) != (1920, 1080):
+        seed_command = [str(MW_BIN), "seed", str(database)]
+        if IS_HERO:
+            seed_command = [str(MW_BIN), "seed-hero", str(database), FIXTURE, str(EVIDENCE / "editable-project.json")]
+        seeded = run_json(seed_command, env=env)
+        if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
@@ -442,7 +454,7 @@ def main() -> None:
                 env=env,
                 timeout=420,
             )
-            if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
+            if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 
             artifact = result["artifact"]
@@ -452,7 +464,7 @@ def main() -> None:
             artifact_root = paths["output"] / directory
             manifest_file = artifact_root / "artifact-manifest.json"
             frames = sorted((artifact_root / "frames").glob("*.png"))
-            if not manifest_file.is_file() or len(frames) != 60:
+            if not manifest_file.is_file() or len(frames) != EXPECTED_FRAMES:
                 raise AssertionError(
                     f"native artifact is incomplete: manifest={manifest_file.is_file()} "
                     f"frames={len(frames)}"
@@ -472,13 +484,17 @@ def main() -> None:
             ]:
                 shutil.copyfile(source, EVIDENCE / name)
 
+            if IS_HERO:
+                from creative_frame_evidence import inspect_native_frames
+                inspect_native_frames(frames, EVIDENCE, EXPECTED_SIZE, project=seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
+
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
             with wave.open(str(audio_path), "wb") as stream:
                 stream.setnchannels(2)
                 stream.setsampwidth(2)
                 stream.setframerate(48_000)
-                stream.writeframes(b"\x00\x00\x00\x00" * 96_000)
+                stream.writeframes(b"\x00\x00\x00\x00" * (48_000 * EXPECTED_FRAMES // 30))
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
 
@@ -528,6 +544,9 @@ def main() -> None:
                     "artifact_directory": directory,
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
+                    "fixture": FIXTURE,
+                    "creative_approval": "required" if IS_HERO else "not_assessed",
+                    "audio_kind": "synthetic_silence_for_transport_acceptance_not_sound_design",
                     "audio_sha256": audio_sha256,
                     "master_path": master_relative,
                     "master_sha256": master_sha256,
