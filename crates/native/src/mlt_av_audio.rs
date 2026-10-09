@@ -237,6 +237,8 @@ pub struct MultiSegmentAudioReadiness {
     pub voice_track_id: Uuid,
     pub audio_sha256: String,
     pub audio_size_bytes: u64,
+    /// Exact PCM sample frames counted from the SHA-256-verified RIFF data chunk.
+    pub audio_pcm_frames: u64,
     pub audio_sample_rate: u32,
     pub audio_channels: u16,
     pub video_input_sha256: String,
@@ -467,6 +469,7 @@ pub fn preflight_multi_segment_audio(
         voice_track_id: track.id,
         audio_sha256: track.source_sha256.clone(),
         audio_size_bytes: voice.size_bytes,
+        audio_pcm_frames: samples,
         audio_sample_rate: 48_000,
         audio_channels: 2,
         video_input_sha256: recipe.input_sha256.clone(),
@@ -651,6 +654,7 @@ mod tests {
         let b = check(&f).unwrap();
         assert_eq!(a, b);
         assert_eq!(a.audio_sample_rate, 48_000);
+        assert_eq!(a.audio_pcm_frames, 192_000);
         assert_eq!(a.audio_channels, 2);
         assert_eq!(a.video_segment_count, 2);
         assert_eq!(a.total_frames, 120);

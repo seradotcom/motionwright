@@ -22,7 +22,7 @@ Since this path has no gain processing, output music mixing or loudness normaliz
 
 ## Evidence and downstream requirements
 
-The typed `MultiSegmentAudioReadiness` reports project/version, voice asset ID, verified digest/size, native frame total/FPS, segment count and a deterministic source fingerprint. It contains **no absolute CAS paths, raw WAV samples, FFV1 content, Driver Host secrets or media output URLs**.
+The typed `MultiSegmentAudioReadiness` reports project/version, voice asset ID, verified digest/size and actual PCM sample-frame count, native video frame total/FPS, segment count and a deterministic source fingerprint. It contains **no absolute CAS paths, raw WAV samples, FFV1 content, Driver Host secrets or media output URLs**.
 
 The evidence scope is deliberately:
 
