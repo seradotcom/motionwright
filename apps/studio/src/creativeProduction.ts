@@ -100,7 +100,7 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
   const textWidth = portrait || square ? w*.82 : w*.49;
   const entries: Array<[string, string, number, number, number, number, number, number, number, number, number, number]> = [
     ["eyebrow",config.eyebrow,left,h*.085,w*.80,40*scale,23*scale,500,0,500,14*scale,0],
-    ["headline",headline,left,headlineY,textWidth,portrait?h*.22:h*.30,(square?68:82)*scale,650,120,1060,54*scale,0],
+    ["headline",headline,left,headlineY,textWidth,portrait?h*.22:h*.30,(square?68:82)*scale,600,120,1060,54*scale,0],
     ["body",body,left,bodyY,textWidth,portrait?h*.13:h*.17,30*scale,400,460,1260,24*scale,0],
     ["wordmark",config.wordmark,markX,markY,markW,markH,(portrait?246:square?186:276)*scale,600,160,1460,86*scale,-5],
     ["rule","",left,h*.87,portrait?w*.18:w*.09,3*scale,0,400,600,1360,10*scale,0],

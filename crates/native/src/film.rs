@@ -487,9 +487,9 @@ fn subject(
                 .cloned()
                 .ok_or_else(|| invalid("Text style projection is missing"))?;
             let weight = node.style.font_weight.unwrap_or(400);
-            if !(100..=900).contains(&weight) {
+            if ![400, 500, 600, 700].contains(&weight) {
                 return Err(unsupported(format!(
-                    "Text node {} font weight is outside canonical Film bounds",
+                    "Text node {} font weight has no exact face evidence in the pinned native runtime; author an explicit 400, 500, 600 or 700 weight instead of silently approximating it",
                     node.id
                 )));
             }

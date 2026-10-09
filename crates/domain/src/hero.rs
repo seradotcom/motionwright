@@ -236,7 +236,7 @@ pub fn realize_product_hero(
             text_width,
             if portrait { h * 0.22 } else { h * 0.30 },
             if square { 68.0 } else { 82.0 } * scale,
-            650,
+            600,
             120,
             1060,
             54.0 * scale,
