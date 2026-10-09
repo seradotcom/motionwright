@@ -277,7 +277,7 @@ pub fn read_verified_production_artifact(
     Ok(bytes)
 }
 
-fn verify_output_artifact(
+pub(crate) fn verify_output_artifact(
     root: &Path,
     relative: &str,
     expected_sha256: &str,
@@ -786,7 +786,7 @@ fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<
         .ok_or_else(|| backend(context))
 }
 
-fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
+pub(crate) fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
     if value
         .pointer("/report/execution_status")
         .and_then(Value::as_str)

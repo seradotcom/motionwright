@@ -13,6 +13,7 @@ use semwright_native_sdk::{
 use std::sync::Arc;
 use uuid::Uuid;
 
+pub mod assembly;
 pub mod canonical;
 pub mod film;
 pub mod multi_renderer;

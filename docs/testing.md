@@ -58,6 +58,10 @@ The pinned Film adapter admits only paired, exact-frame-aligned linear X/Y motio
 
 The pinned Film adapter now projects per-scene static camera center shifts through native subject translation when zoom=1 and rotation=0, keeping source Canvas geometry, text size, frame count and safe areas explicit. Rust tests exercise two panned scenes, native Film realization, unsupported zoom/rotation and unsafe pan bounds. This is not independent rendered pixel parity. See [static camera pan](native-film-static-pan.md).
 
+## Multi-segment native MLT source conformance
+
+Rust tests compile 33 authored Motion Canvas scenes into canonical 32+1 native Film segments and check an exact, manifest-SHA-verified 990-frame MLT assembly preflight. They reject stale project revisions, duplicated job references, segment reordering, altered native verdicts, tampered manifest bytes, missing source segments, mixed-renderer cuts and unsupported portrait-only MLT output. **This is read-only source preparation, not a rendered multi-segment master.** See [multi-segment MLT source preflight](multi-segment-preflight.md).
+
 ## Native Film semantic preflight
 
 The native projection preflight uses the exact pinned Semwright Film adapter and current Motionwright project revision, with no native render dispatch or effect grant. Chromium tests exercise the typed read-only contract, supported/unsupported status and invalidation when creative inputs change. Native Film support is a semantic planning result, never certified renderer pixels or human acceptance; see [preflight semantics](film-preflight.md).
