@@ -343,10 +343,10 @@ fn native_linear_position_motion(
     // rejects timestamps that would need silent frame quantization.
     let numerator = i128::from(xs[1].at.num)
         .checked_mul(i128::from(frame_rate.num))
-        .ok_or_else(|| fail())?;
+        .ok_or_else(&fail)?;
     let denominator = i128::from(xs[1].at.den)
         .checked_mul(i128::from(frame_rate.den))
-        .ok_or_else(|| fail())?;
+        .ok_or_else(&fail)?;
     if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
         return Err(fail());
     }
