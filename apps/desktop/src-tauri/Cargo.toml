@@ -12,6 +12,7 @@ tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
 motionwright-domain = { path = "../../../crates/domain" }
+motionwright-creative-library = { path = "../../../crates/creative-library" }
 motionwright-service = { path = "../../../crates/service" }
 motionwright-native = { path = "../../../crates/native" }
 serde.workspace = true

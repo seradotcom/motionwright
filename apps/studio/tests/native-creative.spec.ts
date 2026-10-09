@@ -12,3 +12,13 @@ test('native editor exposes its source boundary without fabricating frames or ru
   await expect(page.getByText('Current native frames verified.',{exact:false})).toHaveCount(0);
   await page.screenshot({path:testInfo.outputPath('native-editor-browser-boundary.png'),fullPage:true});
 });
+
+test('creative library reports the native service boundary without inventing a visual result',async({page})=>{
+    await page.goto('/');
+    await page.getByRole('button',{name:'Production',exact:true}).click();
+    await page.getByRole('button',{name:'Creative library',exact:true}).click();
+    await expect(page.getByRole('heading',{name:'Design with native recipes'})).toBeVisible();
+    await expect(page.getByText('Open in Motionwright desktop',{exact:true})).toBeVisible();
+    await expect(page.locator('.native-creative-editor img')).toHaveCount(0);
+    await expect(page.getByText('Source plan, not a simulated render')).toHaveCount(0);
+});

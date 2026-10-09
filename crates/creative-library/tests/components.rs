@@ -214,3 +214,21 @@ fn procedural_parameter_changes_modify_geometry_without_random_source_drift() {
         }
     }
 }
+
+#[test]
+fn a_transparent_native_canvas_is_not_replaced_with_an_opaque_brand_color() {
+    let mut request = fixture(RecipeId::HeroFocus, 0, Locale::En);
+    request.output.background = None;
+    let result = realize_html(
+        &request,
+        &BrandProfile::neutral(Uuid::nil()),
+        &TasteProfile::editorial(Uuid::nil()),
+    )
+    .unwrap();
+    assert_eq!(result.canvas.background, None);
+    assert!(
+        native::compile_html(&result)
+            .unwrap()
+            .contains("background:transparent")
+    );
+}

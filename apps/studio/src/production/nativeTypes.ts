@@ -1,5 +1,6 @@
 import type { RationalTime } from '../types';
 export interface NativeRate {num:number;den:number}
+export interface NativeCanvas {width:number;height:number;rate:NativeRate;frames:number;background:string|null}
 export type NativeProperty='x'|'y'|'width'|'height'|'scale_x'|'scale_y'|'rotation'|'opacity'|'blur'|'clip_top'|'clip_right'|'clip_bottom'|'clip_left';
 export type NativeNodeField='content'|'appearance'|'parent'|'keyframes'|'metadata';
 export type NativeCurve={kind:'hold'|'linear'|'ease_out_cubic'|'ease_in_out'}|{kind:'cubic_bezier';x1:number;y1:number;x2:number;y2:number};
@@ -19,7 +20,7 @@ export type NativeContent=
 export type NativeClip={kind:'none'}|{kind:'inset';top:number;right:number;bottom:number;left:number;radius:number}|{kind:'circle';radius:number;center_x:number;center_y:number}|{kind:'polygon';points:NativePoint[]};
 export interface NativeNode{id:string;name:string;parent_id:string|null;pose:NativePose;content:NativeContent;blend:'normal'|'multiply'|'screen'|'overlay'|'difference'|'lighten'|'darken';clip:NativeClip;effects:{blur:number;shadow:{x:number;y:number;blur:number;color:string}|null};keyframes:NativeKeyframe[];locked_properties:NativeProperty[];locked_fields?:NativeNodeField[]}
 export interface NativeAsset{id:string;sha256:string;kind:'png'|'jpeg'|'mp4'|'woff2';rights:{owner:string;license:string;attribution:string;use_authorized:boolean;redistribute:boolean}}
-export interface HyperframesDocument{version:1;canvas:{width:number;height:number;rate:NativeRate;frames:number;background:string|null};camera:{x:number;y:number;zoom:number;rotation:number;keyframes:NativeKeyframe[]};nodes:NativeNode[];assets:NativeAsset[]}
+export interface HyperframesDocument{version:1;canvas:NativeCanvas;camera:{x:number;y:number;zoom:number;rotation:number;keyframes:NativeKeyframe[]};nodes:NativeNode[];assets:NativeAsset[]}
 export interface NativeSceneDocument{id:string;scene_id:string;profile_id:string;label:string;source:{renderer:'hyperframes';document:HyperframesDocument};source_capsule_id:string|null}
 export interface CreativeWorkspace{native_scenes:NativeSceneDocument[]}
 export type NativeProtection={kind:'property';property:NativeProperty}|{kind:'field';field:NativeNodeField};

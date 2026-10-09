@@ -63,7 +63,8 @@ pub fn realize(
         }
         CreativeRealization::BlenderStage(plan) => plan.source_classification.as_str(),
         CreativeRealization::AudioScore(plan) => plan.source_classification.as_str(),
-    };
+    }
+    .to_owned();
     Ok(CreativeContribution {
         component_id: request.instance_id,
         recipe: request.recipe,
@@ -76,7 +77,7 @@ pub fn realize(
         source_sha256,
         output,
         media_asset_ids,
-        source_classification: classified.to_owned(),
+        source_classification: classified,
         creative_approval: "human_review_required".into(),
     })
 }
@@ -332,15 +333,7 @@ impl<'a> Compositor<'a> {
         }
         let document = native::HyperframesDocument {
             version: 1,
-            canvas: native::Canvas {
-                background: self
-                    .req
-                    .output
-                    .background
-                    .clone()
-                    .or(Some(self.brand.color(ColorRole::Background).into())),
-                ..self.req.output.clone()
-            },
+            canvas: self.req.output.clone(),
             camera: native::Camera::default(),
             nodes: self.nodes,
             assets,

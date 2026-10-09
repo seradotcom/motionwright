@@ -206,12 +206,10 @@ jobs:
           python3 tooling/source_policy.py
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
-          # Only on this disposable CI worker: admit Chromium's own unprivileged
-          # namespace sandbox under Ubuntu 24 AppArmor. Browser sandbox and
-          # the distinct Semwright/bwrap policy must both remain enabled.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # The exact Semwright source pin installs its scoped AppArmor bwrap
+          # profile below. Do NOT disable host unprivileged-userns restrictions.
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" != 0
           test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
-          unshare -Ur true
           cd runtime/hyperframes
           npm ci --ignore-scripts --no-audit --no-fund
           PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps chromium

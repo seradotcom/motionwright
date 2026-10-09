@@ -1,3 +1,4 @@
+import type {CreativeCatalog, ComponentRequest, BrandProfile, TasteProfile, CreativeComponentProposal, DataSeries} from "./production/recipeTypes";
 import type { CreativeWorkspaceEdit, NativeSceneDocument, NativeSceneDifference, HyperframesRenderEvidence } from "./production/nativeTypes";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
@@ -1750,4 +1751,25 @@ export async function probeNativeHtmlRuntime(project:Project):Promise<{runtime_r
   if(!isTauri()) throw new Error("An actual installed runtime cannot be diagnosed from browser demo mode.");
   const envelope=await invoke<{result:{data:{runtime_receipt_present:boolean;runtime_receipt_sha256:string|null;runtime_version_contract:string;configured_hyperframes:string|null;profile:string;host_tools:boolean;network:boolean;arbitrary_source_execution:boolean;admission:string}}}>("hyperframes_runtime_probe",{request:{...nativeScope(project),request_id:crypto.randomUUID()}});
   return envelope.result.data;
+}
+
+export async function creativeComponentCatalog():Promise<CreativeCatalog>{
+  if(!isTauri())throw new Error("The real recipe catalog is provided by the local native service.");
+  return invoke<CreativeCatalog>("creative_component_catalog");
+}
+export async function creativeComponentProposal(
+  project:Project,sceneId:string,profileId:string,component:ComponentRequest,
+  brand:BrandProfile,taste:TasteProfile
+):Promise<CreativeComponentProposal>{
+  if(!isTauri())throw new Error("The native recipe engine is not simulated by the browser demo.");
+  const bytes=new TextEncoder().encode(JSON.stringify({component,brand,taste}));
+  if(bytes.byteLength>180_000)throw new Error("Creative recipe payload exceeds the bounded native request.");
+  return invoke<CreativeComponentProposal>("creative_component_proposal",{
+    request:{...nativeScope(project),scene_id:sceneId,profile_id:profileId,component,brand,taste}
+  });
+}
+
+export async function creativeDataNormalize(data:DataSeries):Promise<DataSeries>{
+  if(!isTauri())throw new Error("Numeric evidence normalization requires the native domain service.");
+  return invoke<DataSeries>("creative_data_normalize",{data});
 }
