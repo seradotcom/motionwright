@@ -64,7 +64,7 @@ const framesDir=path.join(outputRoot,'frames');fs.mkdirSync(framesDir,{recursive
 const observationsPath=path.join(outputRoot,'observations.ndjson');
 const observationFd=fs.openSync(observationsPath,'wx',0o600);let observationBytes=0;
 const diagnostics=[];const refused=[];const deadline=Date.now()+240000;
-const browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),headless:true,chromiumSandbox:true,timeout:30000});
+const browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),headless:true,chromiumSandbox:true,args:['--enable-logging=stderr'],timeout:30000});
 try {
   const context=await browser.newContext({viewport:{width:c.width,height:c.height},deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'light',reducedMotion:'no-preference',serviceWorkers:'block',acceptDownloads:false});
   await context.route('**/*',async route=>{

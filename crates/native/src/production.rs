@@ -850,6 +850,12 @@ pub(crate) fn ensure_native_motion_verification(value: &Value) -> NativeResult<(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExecutionPolicy {
+    mutation: bool,
+    allow_stale_native_observation: bool,
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -1810,7 +1816,15 @@ impl ProductionCoordinator {
         mutation: bool,
     ) -> NativeResult<Value> {
         self.execute_at_revision(
-            project_id, expected, request_id, command, args, mutation, false,
+            project_id,
+            expected,
+            request_id,
+            command,
+            args,
+            ExecutionPolicy {
+                mutation,
+                allow_stale_native_observation: false,
+            },
         )
         .await
     }
@@ -1822,9 +1836,12 @@ impl ProductionCoordinator {
         request_id: &str,
         command: &str,
         args: Value,
-        mutation: bool,
-        allow_stale_native_observation: bool,
+        policy: ExecutionPolicy,
     ) -> NativeResult<Value> {
+        let ExecutionPolicy {
+            mutation,
+            allow_stale_native_observation,
+        } = policy;
         if allow_stale_native_observation
             && !matches!(
                 command,

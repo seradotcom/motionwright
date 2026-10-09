@@ -23,7 +23,10 @@ for(const [key,file] of Object.entries(native)) {
   const resolved=fs.realpathSync(file);if(!resolved.startsWith(root+path.sep))throw new Error('Dependency escaped runtime root');
   const bytes=fs.readFileSync(resolved);files[key]={path:path.relative(root,resolved).split(path.sep).join('/'),sha256:hash(bytes),bytes:bytes.length};
 }
-const browser=require('playwright').chromium.executablePath();
+const browserIndex=JSON.parse(fs.readFileSync(path.join(root,'node_modules/playwright-core/browsers.json'),'utf8'));
+const revision=browserIndex.browsers.find(entry=>entry.name==='chromium-headless-shell')?.revision;
+if(!/^[0-9]+$/.test(revision || ''))throw new Error('Pinned headless browser revision is absent');
+const browser=path.join(root,'.browsers','chromium_headless_shell-'+revision,'chrome-linux','headless_shell');
 if(!fs.realpathSync(browser).startsWith(root+path.sep))throw new Error('Install browser into this profile root, not an ambient user cache');
 files.browser={path:path.relative(root,fs.realpathSync(browser)).split(path.sep).join('/'),sha256:hash(fs.readFileSync(browser)),bytes:fs.statSync(browser).size};
 const lock=fs.readFileSync(path.join(root,'package-lock.json'));

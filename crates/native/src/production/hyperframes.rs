@@ -156,7 +156,7 @@ impl ProductionCoordinator {
             generation: origin.generation,
             revision: origin.revision,
         };
-        let result=self.execute_at_revision(project_id,&stamp,request_id,action.command(),json!({"job_ref":format!("hf-{}",attempt_id.simple()),"project_id":project_id,"generation":origin.generation}),matches!(action,HyperframesJobAction::Cancel),true).await?;
+        let result=self.execute_at_revision(project_id,&stamp,request_id,action.command(),json!({"job_ref":format!("hf-{}",attempt_id.simple()),"project_id":project_id,"generation":origin.generation}),ExecutionPolicy { mutation: matches!(action, HyperframesJobAction::Cancel), allow_stale_native_observation: true }).await?;
         let data = response_data(&result)?;
         if data.pointer("/identity/project_id").and_then(Value::as_str)
             != Some(project_id.to_string().as_str())
