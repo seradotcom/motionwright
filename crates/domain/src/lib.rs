@@ -6,6 +6,7 @@ mod extensions;
 mod hero;
 mod history;
 mod integrations;
+mod native_scenes;
 mod production_design;
 pub use canvas::*;
 pub use creative::*;
@@ -15,6 +16,7 @@ pub use extensions::*;
 pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use native_scenes::*;
 pub use production_design::*;
 
 use chrono::{DateTime, Utc};
@@ -23,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const PROJECT_SCHEMA_VERSION: u32 = 2;
+pub const PROJECT_SCHEMA_VERSION: u32 = 3;
 pub const LEGACY_PROJECT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -74,6 +76,7 @@ pub enum RendererKind {
     ManimCommunity,
     Remotion,
     ManimGl,
+    Hyperframes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -615,7 +618,9 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if ![LEGACY_PROJECT_SCHEMA_VERSION, PROJECT_SCHEMA_VERSION].contains(&self.schema_version) {
+        if ![LEGACY_PROJECT_SCHEMA_VERSION, 2, PROJECT_SCHEMA_VERSION]
+            .contains(&self.schema_version)
+        {
             return Err(DomainError::Invalid("unsupported project schema".into()));
         }
         if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
@@ -629,6 +634,18 @@ impl Project {
                 return Err(DomainError::Invalid("creative production state requires project schema 2; legacy writers must not silently discard it".into()));
             }
         }
+        if self.schema_version < 3
+            && (!self.production_design.workspace.is_empty()
+                || self.branch_workspaces.iter().any(|state| {
+                    !state.base_state.production_design.workspace.is_empty()
+                        || !state.current_state.production_design.workspace.is_empty()
+                }))
+        {
+            return Err(DomainError::Invalid(
+                "renderer-native workspace state requires project schema 3".into(),
+            ));
+        }
+        self.production_design.workspace.validate(self)?;
         if self.title.trim().is_empty() || self.title.len() > 200 {
             return Err(DomainError::Invalid(
                 "project title is out of bounds".into(),
@@ -997,7 +1014,7 @@ impl Project {
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
         // Read schema 1 without changing its authority or revision. The first
         // successful write upgrades its format inside the same transaction.
-        if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
+        if [LEGACY_PROJECT_SCHEMA_VERSION, 2].contains(&self.schema_version) {
             self.validate()?;
             let mut candidate = self.clone();
             candidate.schema_version = PROJECT_SCHEMA_VERSION;
@@ -1009,6 +1026,7 @@ impl Project {
             return Err(DomainError::Invalid("unsupported project schema".into()));
         }
         match change {
+            Change::EditCreativeWorkspace { edit } => self.edit_creative_workspace(edit)?,
             Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
             Change::UpsertProductHero {
                 instance_id,
@@ -2238,6 +2256,9 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    EditCreativeWorkspace {
+        edit: CreativeWorkspaceEdit,
+    },
     UndoCreativePatch {
         patch_id: Uuid,
     },

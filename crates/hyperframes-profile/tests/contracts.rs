@@ -39,6 +39,7 @@ fn document() -> HyperframesDocument {
             effects: Effects::default(),
             keyframes: vec![],
             locked_properties: vec![],
+            locked_fields: vec![],
         }],
         assets: vec![],
     }

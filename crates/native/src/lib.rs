@@ -20,6 +20,7 @@ mod expressive;
 pub mod film;
 pub mod mlt_edit_plan;
 pub mod multi_renderer;
+pub mod native_html;
 pub mod production;
 
 pub const APP_ID: &str = "motionwright";
@@ -494,6 +495,15 @@ impl ObservationProvider for MotionwrightObserver {
                         .unwrap_or(Value::Null)
                 },
             )?,
+            "native-scenes" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.workspace.native_scenes.len(),
+                |index| {
+                    let doc = &project.production_design.workspace.native_scenes[index];
+                    json!({"id":doc.id,"scene_id":doc.scene_id,"profile_id":doc.profile_id,"label":doc.label,"renderer":doc.source.renderer(),"source_sha256":doc.source.source_digest().ok(),"source_capsule_id":doc.source_capsule_id})
+                },
+            )?,
             "native-capsules" => paginate_project_observation(
                 query,
                 &version,
@@ -617,6 +627,7 @@ struct ApplyHandler {
 
 #[derive(Clone, Copy)]
 enum OperationKind {
+    EditCreativeWorkspace,
     UndoCreativePatch,
     UpsertProductHero,
     DetachProductHero,
@@ -774,6 +785,14 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
     }
 
     match kind {
+        OperationKind::EditCreativeWorkspace => Ok(Change::EditCreativeWorkspace {
+            edit: serde_json::from_value(
+                args.get("edit")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("edit is required"))?,
+            )
+            .map_err(|_| Error::invalid("native creative workspace edit is malformed"))?,
+        }),
         OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
             patch_id: uuid(args, "patch_id")?,
         }),
@@ -1448,7 +1467,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                     json!({
                         "ref": {"type":"string","maxLength":512},
                         "scene_id": {"type":"string","maxLength":64},
-                        "renderer": {"type":"string","enum":["motion-canvas","mlt","blender","manim-community","remotion","manim-gl"]}
+                        "renderer": {"type":"string","enum":["motion-canvas","mlt","blender","manim-community","remotion","manim-gl","hyperframes"]}
                     }),
                     &["ref", "scene_id", "renderer"],
                 ),
@@ -2057,6 +2076,17 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::EditCreativeWorkspace,
+            descriptor(
+                "creative.workspace.edit",
+                "Atomically update a retained native creative document or explicit protection metadata without granting renderer authority",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},"edit":{"type":"object"}}),
+                    &["ref", "edit"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertProductHero,
             descriptor(
                 "product-hero.upsert",
@@ -2382,7 +2412,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
-        assert_eq!(capabilities.len(), 52);
+        assert!(names.contains(&"driver.motionwright.creative.workspace.edit"));
+        assert_eq!(capabilities.len(), 53);
     }
 
     #[tokio::test]

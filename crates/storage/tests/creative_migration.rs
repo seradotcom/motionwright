@@ -51,7 +51,10 @@ fn legacy_database_is_read_without_revision_changes_and_upgraded_only_on_success
         )
         .unwrap()
         .project;
-    assert_eq!(updated.schema_version, 2);
+    assert_eq!(
+        updated.schema_version,
+        motionwright_domain::PROJECT_SCHEMA_VERSION
+    );
     assert_eq!(updated.revision, observed.revision + 1);
     assert_eq!(updated.generation, observed.generation);
     let with_hero = store
@@ -105,7 +108,7 @@ fn newer_creative_state_cannot_be_mislabeled_as_the_legacy_format() {
             .is_err()
     );
     assert_eq!(project, previous);
-    project.schema_version = 3;
+    project.schema_version = motionwright_domain::PROJECT_SCHEMA_VERSION + 1;
     assert!(project.validate().is_err());
 }
 
@@ -151,7 +154,10 @@ fn creative_bundle_preserves_editable_state_but_not_previous_generation_authorit
             .rotates_generation
     );
     let imported = destination.import_project_bundle(&folder).unwrap();
-    assert_eq!(imported.schema_version, 2);
+    assert_eq!(
+        imported.schema_version,
+        motionwright_domain::PROJECT_SCHEMA_VERSION
+    );
     assert_eq!(imported.id, p.id);
     assert_eq!(imported.revision, p.revision);
     assert_eq!(imported.production_design, p.production_design);

@@ -10,11 +10,13 @@ pub enum ExtensionKind {
     ManimGlRenderer,
     GenerativeAssets,
     CatalogPackage,
+    HyperframesRenderer,
 }
 
 impl ExtensionKind {
     pub fn renderer(&self) -> Option<RendererKind> {
         match self {
+            Self::HyperframesRenderer => Some(RendererKind::Hyperframes),
             Self::RemotionRenderer => Some(RendererKind::Remotion),
             Self::ManimGlRenderer => Some(RendererKind::ManimGl),
             Self::GenerativeAssets | Self::CatalogPackage => None,
@@ -101,11 +103,13 @@ pub fn renderer_extension_enabled(
         | RendererKind::Mlt
         | RendererKind::Blender
         | RendererKind::ManimCommunity => true,
-        RendererKind::Remotion | RendererKind::ManimGl => extensions.iter().any(|extension| {
-            extension.enabled
-                && extension.kind.renderer().as_ref() == Some(renderer)
-                && extension.rights_status == RightsStatus::Cleared
-        }),
+        RendererKind::Remotion | RendererKind::ManimGl | RendererKind::Hyperframes => {
+            extensions.iter().any(|extension| {
+                extension.enabled
+                    && extension.kind.renderer().as_ref() == Some(renderer)
+                    && extension.rights_status == RightsStatus::Cleared
+            })
+        }
     }
 }
 

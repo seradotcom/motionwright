@@ -28,7 +28,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod hyperframes;
 mod mlt_mezzanine;
+pub use hyperframes::{HyperframesJobAction, HyperframesRenderEvidence, read_hyperframes_frame};
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
@@ -81,6 +83,14 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+];
+
+const HYPERFRAMES_COMMANDS: &[&str] = &[
+    "driver.hyperframes.doctor",
+    "driver.hyperframes.render.start",
+    "driver.hyperframes.render.status",
+    "driver.hyperframes.render.cancel",
+    "driver.hyperframes.render.result",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
@@ -402,6 +412,12 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
             source: SourceKind::Driver,
             provider_generation_required: true,
         })
+    } else if HYPERFRAMES_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "driver:hyperframes",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
     } else if MANIM_COMMANDS.contains(&command) {
         Some(ExpectedAuthority {
             provider: "driver:manim-community",
@@ -652,7 +668,12 @@ impl ProductionClient {
         let expected = expected_authority(command).ok_or_else(|| {
             Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
-        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
+        let mutation = mutation
+            || WORKFLOW_MUTATING_COMMANDS.contains(&command)
+            || matches!(
+                command,
+                "driver.hyperframes.render.start" | "driver.hyperframes.render.cancel"
+            );
         self.connection.validate()?;
         let encoded = serde_json::to_vec(&args)
             .map_err(|_| invalid("Production command arguments are malformed"))?;
@@ -698,6 +719,7 @@ impl ProductionClient {
         let deadline = if command.starts_with("driver.mlt-video.")
             || command.starts_with("driver.blender.")
             || command.starts_with("driver.manim-community.")
+            || command.starts_with("driver.hyperframes.")
         {
             MLT_DEADLINE_SECS
         } else {
@@ -1787,10 +1809,40 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
+        self.execute_at_revision(
+            project_id, expected, request_id, command, args, mutation, false,
+        )
+        .await
+    }
+
+    async fn execute_at_revision(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        command: &str,
+        args: Value,
+        mutation: bool,
+        allow_stale_native_observation: bool,
+    ) -> NativeResult<Value> {
+        if allow_stale_native_observation
+            && !matches!(
+                command,
+                "driver.hyperframes.render.status"
+                    | "driver.hyperframes.render.cancel"
+                    | "driver.hyperframes.render.result"
+            )
+        {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Only recorded native job reconciliation may observe an earlier revision",
+            ));
+        }
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
             || expected.generation != project.generation
-            || expected.revision != project.revision
+            || expected.revision > project.revision
+            || (!allow_stale_native_observation && expected.revision != project.revision)
         {
             return Err(Error::new(
                 ErrorCode::StaleReference,
@@ -1807,7 +1859,17 @@ impl ProductionCoordinator {
             .get("job_ref")
             .or_else(|| args.get("job"))
             .and_then(Value::as_str)
-            .map(str::to_owned);
+            .map(str::to_owned)
+            .or_else(|| {
+                if command == "driver.hyperframes.render.start" {
+                    args.get("attempt_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| Uuid::parse_str(id).ok())
+                        .map(|id| format!("hf-{}", id.simple()))
+                } else {
+                    None
+                }
+            });
         let digest = request_digest(command, &args)?;
 
         if let Some(prior) = self
@@ -1845,7 +1907,7 @@ impl ProductionCoordinator {
             .append_production_receipt(ProductionReceiptInput {
                 project_id,
                 generation: project.generation,
-                revision: project.revision,
+                revision: expected.revision,
                 request_id: request_id.into(),
                 request_sha256: digest.clone(),
                 command: command.into(),
@@ -1865,7 +1927,7 @@ impl ProductionCoordinator {
                     .append_production_receipt(ProductionReceiptInput {
                         project_id,
                         generation: project.generation,
-                        revision: project.revision,
+                        revision: expected.revision,
                         request_id: request_id.into(),
                         request_sha256: digest.clone(),
                         command: command.into(),
@@ -1899,7 +1961,7 @@ impl ProductionCoordinator {
                     .append_production_receipt(ProductionReceiptInput {
                         project_id,
                         generation: project.generation,
-                        revision: project.revision,
+                        revision: expected.revision,
                         request_id: request_id.into(),
                         request_sha256: digest,
                         command: command.into(),

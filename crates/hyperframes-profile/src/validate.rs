@@ -404,6 +404,10 @@ pub fn validate_document(doc: &HyperframesDocument) -> Result<()> {
                 "Animated inset requires an inset mask; masks are not approximated",
             )?;
         }
+        check(
+            node.locked_fields.iter().collect::<BTreeSet<_>>().len() == node.locked_fields.len(),
+            "Duplicate native field protection",
+        )?;
         let locks = node.locked_properties.iter().collect::<BTreeSet<_>>();
         check(
             locks.len() == node.locked_properties.len(),

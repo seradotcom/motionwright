@@ -5,6 +5,7 @@ mod effect_grants;
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
 };
+mod creative_native;
 mod native_preview;
 
 use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
@@ -1761,6 +1762,11 @@ fn main() {
             production_jobs_history,
             motion_canvas_preflight,
             render_motion_canvas,
+            creative_native::native_document_state,
+            creative_native::native_canvas_proposal,
+            creative_native::native_workspace_preflight,
+            creative_native::render_hyperframes,
+            creative_native::hyperframes_job_observe,
             assemble_av_master,
             export_native_av_master,
             review_native_av_master,

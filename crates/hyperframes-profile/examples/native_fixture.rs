@@ -12,6 +12,7 @@ fn node(id: u128, name: &str, pose: Pose, content: Content) -> Node {
         effects: Effects::default(),
         keyframes: vec![],
         locked_properties: vec![],
+        locked_fields: vec![],
     }
 }
 fn key(frame: u32, property: Property, value: f64, curve: Curve) -> Keyframe {

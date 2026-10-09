@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ProductionDesign {
+    #[serde(default, skip_serializing_if = "CreativeWorkspace::is_empty")]
+    pub workspace: CreativeWorkspace,
     #[serde(default)]
     pub plan: Option<ProductionPlan>,
     #[serde(default)]

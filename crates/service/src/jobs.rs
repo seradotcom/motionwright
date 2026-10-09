@@ -80,6 +80,10 @@ fn classify(command: &str) -> Option<(&'static str, RenderCommand)> {
         "driver:motion-canvas"
     } else if command.starts_with("driver.mlt-video.render.") {
         "driver:mlt-video"
+    } else if command.starts_with("driver.hyperframes.render.") {
+        "driver:hyperframes"
+    } else if command.starts_with("driver.manim-community.render.") {
+        "driver:manim-community"
     } else {
         return None;
     };
@@ -140,6 +144,7 @@ fn state_from_data(value: &Value) -> Option<ProductionJobState> {
         "failed" => Some(ProductionJobState::Failed),
         "cancelled" | "canceled" => Some(ProductionJobState::Cancelled),
         "unknown" | "outcome_unknown" => Some(ProductionJobState::OutcomeUnknown),
+        "cancelling" => Some(ProductionJobState::CancelRequested),
         _ => None,
     }
 }
@@ -164,8 +169,11 @@ fn progress_from_data(value: &Value) -> Option<ProductionJobProgress> {
 
 fn artifact_available(value: &Value) -> bool {
     value
-        .get("artifact")
+        .pointer("/result/mezzanine")
         .is_some_and(|artifact| !artifact.is_null())
+        || value
+            .get("artifact")
+            .is_some_and(|artifact| !artifact.is_null())
         || value
             .get("artifacts")
             .and_then(Value::as_array)

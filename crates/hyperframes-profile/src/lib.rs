@@ -82,6 +82,8 @@ pub struct Node {
     pub keyframes: Vec<Keyframe>,
     #[serde(default)]
     pub locked_properties: Vec<Property>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locked_fields: Vec<NodeField>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -233,6 +235,16 @@ pub struct Shadow {
     pub blur: f64,
     pub color: String,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeField {
+    Content,
+    Appearance,
+    Parent,
+    Keyframes,
+    Metadata,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Property {
