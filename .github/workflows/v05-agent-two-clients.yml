@@ -1,0 +1,73 @@
+name: V05 two independent local agent clients
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-agent-two-clients']
+    paths:
+      - 'crates/native/examples/local_agent_actor.rs'
+      - 'tooling/agent-local/**'
+      - 'docs/creative-production/**'
+      - '.github/workflows/v05-agent-two-clients.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: motionwright-owner-local-clients-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-native-sdk-two-processes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: v05-agent-owner-local-1.98.1
+          cache-on-failure: true
+      - name: Compile real Semwright Native SDK and canonical StudioService actor
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo build --locked -p motionwright-native --example local_agent_actor
+          cargo clippy --locked -p motionwright-native --example local_agent_actor -- -D warnings
+          python3 -m py_compile tooling/agent-local/two_clients_e2e.py
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+      - name: Run owner-local independent OS clients against one real SQLite project
+        run: |
+          set -euo pipefail
+          python3 tooling/agent-local/two_clients_e2e.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import json,subprocess
+          p=Path('verification/native-agent-two-clients/result.json')
+          report=json.loads(p.read_text())
+          assert report['same_sha']==subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert report['same_sqlite_project'] and report['independent_subprocess_per_request']
+          assert report['owner_local_cas_revisions']==3
+          assert report['host_authenticated_agent_write']=='NOT_TESTED_OR_GRANTED'
+          assert report['remote_listener']=='NONE'
+          print('source-bound-two-agent-clients=OWNER-LOCAL-PASS')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v05-two-independent-owner-local-clients-${{ github.sha }}
+          path: verification/native-agent-two-clients/
+          if-no-files-found: warn
+          retention-days: 7
