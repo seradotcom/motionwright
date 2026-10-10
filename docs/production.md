@@ -8,6 +8,12 @@ The desktop runtime accepts an explicit motionwright-semwright-connection/1 file
 
 The connection is not a generic command tunnel. Motionwright enables a closed production command set for Motion Canvas composition/render operations and MLT frame encoding, sync probing, AV muxing and render job operations. Broker output must be a typed Semwright envelope with Driver provenance, the expected provider identity, a descriptor SHA-256 and a provider generation.
 
+The bounded [cross-app selective recovery demonstration](reliability/cross-app-selective-recovery.md)
+reuses a verified Semwright Blender GLB across fresh Motionwright processes
+before the separate Motion Canvas render. It keeps unresolved native outcomes
+blocked instead of rerunning mutations; exact-source multi-provider CI is an
+independent verification gate. It is not a complete generic workflow scheduler.
+
 ## Receipts and retry safety
 
 Production receipts are application-owned history, not execution authority. Each row is anchored to:

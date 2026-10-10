@@ -1,6 +1,6 @@
 use crate::{Result, StorageError, Store};
 use motionwright_domain::DomainError;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -51,6 +51,151 @@ fn bounded_token(value: &str, max: usize, label: &str) -> Result<()> {
 }
 
 impl Store {
+    /// Atomically claim one application-owned recovery stage. This is deliberately
+    /// NOT a Semwright command: the Driver Host retains runtime authority.
+    /// An unfinished claim survives process death and blocks blind replay.
+    pub fn claim_recovery_stage(
+        &mut self,
+        mut input: ProductionReceiptInput,
+    ) -> Result<ProductionReceipt> {
+        if !matches!(
+            input.command.as_str(),
+            "motionwright.recovery.blender" | "motionwright.recovery.motion-canvas"
+        ) || input.stage != "dispatching"
+            || input.request_id.len() > 256
+            || input.request_id.is_empty()
+            || input.request_id.chars().any(char::is_control)
+            || input.request_sha256.len() != 64
+            || !input
+                .request_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(StorageError::Domain(DomainError::Invalid(
+                "Recovery stage claim is malformed".into(),
+            )));
+        }
+        // BEGIN IMMEDIATE serializes claims even across independent processes.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT generation,revision FROM projects WHERE id=?1",
+                params![input.project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (generation, revision) = current.ok_or(StorageError::NotFound)?;
+        if generation != input.generation.to_string() {
+            return Err(StorageError::GenerationConflict);
+        }
+        if revision != i64::try_from(input.revision).unwrap_or(-1) {
+            return Err(StorageError::Conflict {
+                expected: input.revision,
+                actual: u64::try_from(revision).unwrap_or(0),
+            });
+        }
+        // A changed input fingerprint (or newly named workflow) must NOT
+        // bypass an earlier uncertain mutation of the same native provider.
+        // Read the latest receipt for every stage key, not historic dispatches
+        // that were later resolved. The query runs under the write claim lock.
+        let unresolved: Option<String> = tx
+            .query_row(
+                "SELECT current.request_id
+                 FROM production_receipts AS current
+                 JOIN (
+                   SELECT request_id,MAX(receipt_id) AS latest
+                   FROM production_receipts
+                   WHERE project_id=?1 AND generation=?2 AND command=?3
+                   GROUP BY request_id
+                 ) AS recent ON current.receipt_id=recent.latest
+                 WHERE (current.stage IN ('dispatching','outcome_unknown')
+                   OR (current.stage='failed_known' AND current.command='motionwright.recovery.blender'))
+                   AND current.request_id<>?4
+                 LIMIT 1",
+                params![
+                    input.project_id.to_string(),
+                    input.generation.to_string(),
+                    input.command,
+                    input.request_id,
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if unresolved.is_some() {
+            return Err(StorageError::RequestReuse);
+        }
+        let prior: Option<(String, String, String, String)> = tx
+            .query_row(
+                "SELECT request_sha256,command,stage,payload_json
+                 FROM production_receipts WHERE project_id=?1 AND request_id=?2
+                 ORDER BY receipt_id DESC LIMIT 1",
+                params![input.project_id.to_string(), input.request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let attempt = match prior {
+            None => 1_u64,
+            Some((digest, command, stage, payload)) => {
+                if digest != input.request_sha256 || command != input.command {
+                    return Err(StorageError::RequestReuse);
+                }
+                let payload: Value = serde_json::from_str(&payload)?;
+                if stage != "failed_known"
+                    || input.command != "motionwright.recovery.motion-canvas"
+                    || payload.get("retryable").and_then(Value::as_bool) != Some(true)
+                {
+                    return Err(StorageError::RequestReuse);
+                }
+                payload
+                    .get("attempt")
+                    .and_then(Value::as_u64)
+                    .filter(|n| (1..16).contains(n))
+                    .ok_or(StorageError::RequestReuse)?
+                    + 1
+            }
+        };
+        let data = input.payload.as_object_mut().ok_or_else(|| {
+            StorageError::Domain(DomainError::Invalid(
+                "Recovery payload is not an object".into(),
+            ))
+        })?;
+        data.insert("attempt".into(), serde_json::json!(attempt));
+        let receipt = ProductionReceipt {
+            id: Uuid::now_v7(),
+            project_id: input.project_id,
+            generation: input.generation,
+            revision: input.revision,
+            request_id: input.request_id,
+            request_sha256: input.request_sha256,
+            command: input.command,
+            stage: input.stage,
+            payload: input.payload,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        tx.execute(
+            "INSERT INTO production_receipts(
+                receipt_id,project_id,generation,revision,request_id,request_sha256,
+                command,stage,payload_json,created_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                receipt.id.to_string(),
+                receipt.project_id.to_string(),
+                receipt.generation.to_string(),
+                receipt.revision as i64,
+                &receipt.request_id,
+                &receipt.request_sha256,
+                &receipt.command,
+                &receipt.stage,
+                serde_json::to_string(&receipt.payload)?,
+                &receipt.created_at,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(receipt)
+    }
+
     pub fn append_production_receipt(
         &mut self,
         input: ProductionReceiptInput,

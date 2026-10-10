@@ -1,0 +1,193 @@
+name: Native cross-app selective recovery
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'SOURCE_LOCK.json'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/native/**'
+      - 'crates/domain/**'
+      - 'crates/service/**'
+      - 'crates/storage/**'
+      - 'tooling/native_cross_app_recovery_e2e.py'
+      - 'tooling/cross_app_demo_report.py'
+      - 'tooling/tests/test_cross_app_demo_report.py'
+      - 'tooling/native_blender_e2e.py'
+      - 'tooling/native_render_e2e.py'
+      - '.github/workflows/native-cross-app-recovery.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-app-selective-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+  SEMWRIGHT_TEST_BLENDER_ROOT: /usr/local/blender-4.5.14-linux-x64
+
+jobs:
+  real-blender-motion-restart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve immutable Semwright Native SDK pin
+        id: pin
+        run: |
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify exact source identities
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-cross-app-recovery-1.98.1
+          cache-on-failure: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install pinned Blender and native sandbox requirements
+        env:
+          BLENDER_URL: https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
+          BLENDER_SHA256: 9ba871ff2ecd36526b77432745980b7e6664ecd0c7ca11c48849073dcfe06da3
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap xz-utils fontconfig libpipewire-0.3-dev pkg-config clang
+          curl --fail --location --retry 3 --output /tmp/blender.tar.xz "$BLENDER_URL"
+          echo "$BLENDER_SHA256  /tmp/blender.tar.xz" | sha256sum --check -
+          sudo tar -xJf /tmp/blender.tar.xz -C /usr/local
+          test "$("$SEMWRIGHT_TEST_BLENDER_ROOT/blender" --version | head -1)" = "Blender 4.5.14 LTS"
+          bwrap --version
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+          node --input-type=module -e "import { firefox } from 'playwright'; import { existsSync } from 'node:fs'; const p=firefox.executablePath(); if (!existsSync(p)) process.exit(2); console.log('Pinned Firefox bundle present');"
+
+      - name: Provision ephemeral Semwright driver sandbox
+        run: |
+          mkdir -p verification/native-cross-app-recovery
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-cross-app-recovery/sandbox-profile.txt"
+
+      - name: Build Semwright Broker and BOTH real drivers
+        working-directory: _semwright
+        run: |
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-blender --bin semwright-blender-driver --bin semwright-blender-session-runner \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver
+
+      - name: Test recovery semantics and build integration binary
+        run: |
+          cargo test --locked -p motionwright-native recovery -- --nocapture
+          cargo build --locked -p motionwright-native --example native-cross-app-recovery-e2e
+          python3 -m py_compile tooling/native_cross_app_recovery_e2e.py
+          python3 -m py_compile tooling/cross_app_demo_report.py
+          python3 -m unittest discover -s tooling/tests -p 'test_cross_app_demo_report.py' -v
+
+      - name: Cross-app native resume with immutable artifact evidence
+        env:
+          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+        run: |
+          python3 tooling/native_cross_app_recovery_e2e.py \
+            | tee verification/native-cross-app-recovery/run.log
+
+      - name: Independently verify bounded review evidence
+        run: |
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/result.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/stop.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/failure.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/bounded-native-failure-reasons.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/resume.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/repeat.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/reused-blender.glb"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/recovery-demo.html"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/artifact-manifest.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/first-frame.png"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/middle-frame.png"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/last-frame.png"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          p = Path("verification/native-cross-app-recovery") / os.environ["GITHUB_SHA"]
+          result = json.loads((p / "result.json").read_text())
+          stop = json.loads((p / "stop.json").read_text())
+          failure = json.loads((p / "failure.json").read_text())
+          bounded = json.loads((p / "bounded-native-failure-reasons.json").read_text())
+          resume = json.loads((p / "resume.json").read_text())
+          repeat = json.loads((p / "repeat.json").read_text())
+          sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()
+          assert result["native_cross_app_recovery_e2e"] == "PASS"
+          assert result["source_motionwright"] == os.environ["GITHUB_SHA"]
+          assert result["app_processes"] == 4
+          assert result["native_motion_canvas_failed_attempts"] == 1
+          assert result["native_motion_canvas_successful_attempts"] == 1
+          assert len(result["browser_original_sha256"]) == 64
+          assert failure["native_failure_class"] == "font_evidence"
+          assert failure["native_status"] == "failed"
+          assert failure["outcome_known"] is True
+          assert failure["retryable"] is True
+          assert failure["motion_canvas_attempt"] == 1
+          assert failure["blender_reexecution_count"] == 0
+          assert any(x.get("error_class") == "font_evidence"
+                     and "enoent" in x.get("reason_codes", [])
+                     for x in bounded["observations"])
+          assert result["blender_native_driver_reexecutions"] == 0
+          assert resume["recovery"]["blender"] == "reused"
+          assert repeat["recovery"]["blender"] == "reused"
+          assert repeat["recovery"]["motion_canvas"] == "reused"
+          assert stop["blender_proof"]["sha256"] == sha(p / "reused-blender.glb")
+          assert result["blender_glb_sha256"] == sha(p / "reused-blender.glb")
+          assert result["motion_canvas_frame_count"] == 60
+          assert result["motion_canvas_manifest_sha256"] == sha(p / "artifact-manifest.json")
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cross-app-selective-recovery-${{ github.sha }}
+          path: verification/native-cross-app-recovery
+          if-no-files-found: error
+          retention-days: 14

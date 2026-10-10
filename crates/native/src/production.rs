@@ -31,9 +31,11 @@ use uuid::Uuid;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
+mod recovery;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
+pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
