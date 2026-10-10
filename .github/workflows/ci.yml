@@ -130,3 +130,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check desktop shell
         run: cargo check -p motionwright-desktop
+      - name: Exercise read-only native portable MP4 verifier
+        run: cargo test -p motionwright-desktop --bin motionwright-desktop media_integrity::tests -- --nocapture
