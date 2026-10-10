@@ -546,3 +546,24 @@ A recorded reviewer label and checkbox **are not identity verification,
 legal e-signature, completed mastering, authenticated artistic approval
 or permission to publish**. The real approval identity, audio-media
 listening and final master timing remain separate acceptance gates.
+
+### Editing controls while a narration decision is recorded
+
+The Audio Workspace now reads the **persisted**
+`production_design.narration_take_lock` rather than relying on an
+ephemeral frontend flag. While locked, the original voice import,
+active-track selector, transcript timing/copy/speaker inputs,
+save/delete and add controls, and source cue labels/times/add/delete
+are disabled, with an accessible explanation directing the editor
+to the separate explicit release action. Seek and measured waveform
+inspection remain available. The music/voice `MixIntent` controls
+also remain editable, because they do not mutate the protected
+original words, source timing, cue identities or measured voice file.
+
+These are UX affordances only. `Project::apply_change`, serialized
+`NarrationTakeLock` validation and the SQLite CAS revision boundary
+remain authoritative even for API clients bypassing the WebView.
+A static-rendered Studio regression test checks that protected-source
+fields are disabled and the independent mix controls stay enabled;
+neither the test nor the lock claims an authenticated owner identity,
+external legal signature, artistic quality or publication clearance.
