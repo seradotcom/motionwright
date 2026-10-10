@@ -15,6 +15,7 @@ on:
           - creative-design
           - studio
           - browser-inspection
+          - native-dirty
   push:
     branches: ['ci/v05-hyperframes-native', 'ci/v05-native-fidelity-continuation']
   pull_request:
@@ -227,6 +228,58 @@ jobs:
           cargo fmt --all -- --check
           cargo test --locked -p motionwright-domain -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets
           cargo clippy --locked -p motionwright-domain -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+
+  creative-native-dirty:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'native-dirty'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-dirty-creative-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: runtime/hyperframes/package-lock.json
+      - name: Verify typed source invalidation and native fixture contracts
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-creative-library --test frame_invalidation
+          cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
+          cargo build --locked -p motionwright-hyperframes-driver --bin motionwright-hyperframes-runner
+          cargo build --locked -p motionwright-creative-library --example native_frame_delta_fixture
+          python3 -m py_compile tooling/hyperframes/native_dirty_e2e.py tooling/hyperframes/verify_dirty_transfer.py
+          python3 tooling/hyperframes/test_dirty_transfer.py -v
+      - name: Install exact disposable native renderer, not a new host backend
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
+          cd runtime/hyperframes
+          npm ci --ignore-scripts --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps chromium
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
+      - name: Compare 180 native frames, full FFV1 and exact dirty PNG transfer
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 tooling/hyperframes/native_dirty_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-dirty-exact-oracle-${{ github.sha }}
+          path: verification/native-dirty-e2e/
+          if-no-files-found: warn
+          retention-days: 7
 
   native-profile:
     if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full'

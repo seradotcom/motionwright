@@ -43,6 +43,17 @@ export interface LocalizedNativeRepair {
  schema:'motionwright.native-repair-proposal/1';expected_source_sha256:string;proposed_source_sha256:string;
  description:string;changed_nodes:string[];changed_properties:string[];
  dirty_first_frame:number;dirty_end_frame_exclusive:number;dirty_reason:string;
+ source_frame_invalidation:{
+   schema:'motionwright.native-source-invalidation/1';
+   before_source_sha256:string;after_source_sha256:string;total_frames:number;
+   dirty_intervals:{start:number;end_exclusive:number}[];
+   reusable_intervals:{start:number;end_exclusive:number}[];
+   dirty_frame_count:number;reusable_frame_count:number;
+   source_fidelity_class:string;invalidation_reason:string;
+   observation_readback_reusable:false;audio_samples_reusable:false;
+   encoder_output_reusable:false;rendered_pixel_equivalence_verified:false;
+   actual_native_frames_avoided:0;owner_granted_execution:false;
+ };
  document:HyperframesDocument;committed:false;runtime_executed:false;
  renderer_equivalence_checked:false;creative_approval:'human_approval_required'
 }

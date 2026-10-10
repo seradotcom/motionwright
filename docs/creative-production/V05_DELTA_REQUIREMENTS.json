@@ -3,7 +3,7 @@
   "source": "Motionwright v0.5 SRS delta, 64 requirements in 16 epics",
   "branch_scope": "isolated v0.5 creative expansion, not a full 208-requirement legacy reconciliation",
   "baseline_acceptance": "NOT_RECONCILED_IN_THIS_BRANCH",
-  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate. A source-only distillation trial has been added for E05-04; full experiment, owner admission and independent creative approval are still NOT_VERIFIED. E09-04 now has a fail-closed source-bound paired-study protocol and validator; real blinded direct-engine baseline, canonical Host parity and human preference remain NOT_RUN. E14-04 now provides an immutable, SHA-256 verified Motionwright project/master packaging contract; live Launchwright import, rights review and distribution remain NOT_VERIFIED.",
+  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate. A source-only distillation trial has been added for E05-04; full experiment, owner admission and independent creative approval are still NOT_VERIFIED. E09-04 now has a fail-closed source-bound paired-study protocol and validator; real blinded direct-engine baseline, canonical Host parity and human preference remain NOT_RUN. E14-04 now provides an immutable, SHA-256 verified Motionwright project/master packaging contract; live Launchwright import, rights review and distribution remain NOT_VERIFIED. E03-03/E03-04 now have a conservative source-proposed dirty frame partition and same-source native direct-browser full-frame oracle with measured transfer-byte differences. Actual avoided renders, future editing effect propagation, springs/shutter/audio tails, and production incremental rendering remain NOT_VERIFIED.",
   "requirements": [
     {
       "id": "MW05-E00-01",
@@ -151,18 +151,30 @@
       "id": "MW05-E03-03",
       "title": "Rangos sucios con dependencias",
       "epic": "E03",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "crates/creative-library/src/dirty.rs",
+        "crates/creative-library/tests/frame_invalidation.rs",
+        "crates/creative-library/examples/native_frame_delta_fixture.rs",
+        "tooling/hyperframes/native_dirty_e2e.py",
+        "tooling/hyperframes/verify_dirty_transfer.py",
+        "tooling/hyperframes/test_dirty_transfer.py"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {
       "id": "MW05-E03-04",
       "title": "Cache medido",
       "epic": "E03",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "tooling/hyperframes/native_dirty_e2e.py",
+        "crates/creative-library/src/dirty.rs",
+        "tooling/hyperframes/verify_dirty_transfer.py",
+        "tooling/hyperframes/test_dirty_transfer.py"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {

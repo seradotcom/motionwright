@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 32 **PARTIAL code
+The isolated branch inventory currently records 34 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 31 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 29 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -359,3 +359,68 @@ A first-party, source-hashed baseline comparison protocol is now available in `t
 ## Immutable Launchwright content handoff candidate (E14-04)
 
 The existing project `HandoffBinding` can now be used by `tooling/launchwright-handoff/export_handoff.py` to package the exact authored Project snapshot and final media master byte-for-byte. It requires an exact project revision, master SHA, source-bound ProductionPlan approval, verified rights/claims and no publication request. The ZIP records the candidate source identity and leaves Launchwright import/publish, final decode and reviewer authentication to their independent authorities. CI runs synthetic-only tests, not a live Launchwright transfer. See `V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md`.
+
+
+## Dirty-frame invalidation and measurable transfer vs actual render work
+
+`crates/creative-library/src/dirty.rs` provides a conservative **source-only**
+proposal under `MW05-E03-03`. It compares before and after fully validated
+native HTML documents, retaining exact source SHA, rational opacity HOLD
+bounds and stable node identity. Global source/camera/asset/canvas/order
+changes dirty every frame; interpolated opacity, unknown temporal semantics
+and visible edits cannot be incorrectly marked reusable. Only a rigorously
+invisible zero-opacity node (including inherited parent opacity) or a pure
+metadata lock/name change may suggest pixel reuse, and only in the
+**original native HTML visual** profile. All observation readback, sound
+samples and media encodes are marked not reusable, even when a frame's
+source-level pixel proposal appears unchanged. Studio presents proposed
+ranges as unverified; a user must render and inspect again.
+
+`tooling/hyperframes/native_dirty_e2e.py` provides a disposable CI oracle:
+render 90 before + 90 after **real native browser frames**, compare all
+reusable frame SHA-256s, reconstruct all 90 after frames by copying old PNGs
+for the provably invisible source interval, and compare the reconstructed
+sequence/FFV1 decode against the full-after result. It separately measures
+source comparison, actual frame-render time, FFV1 encode time and a smaller
+SHA-verified dirty-PNG transfer ZIP. This **does not claim saved render,
+compilation, encoding or transfer work beyond actual measured PNG bytes**.
+The production runtime still renders all frames on this acceptance fixture.
+Spring/lookbehind, shutter, transitions and audio-tail dependency-aware
+incremental recomposition remain release blockers for the broader E03
+requirement. This distinction is enforced by fields stating
+`actual_native_frames_avoided: 0` and
+`rendered_pixel_equivalence_verified: false` in any preflight proposal.
+
+
+### Independent dirty-transfer receiver
+
+The CI-equivalent patch ZIP now has a companion explicit
+`transfer-source.json` with old/new source digests, ordered dirty and
+reused intervals, and every expected native PNG SHA-256. The independent
+`tooling/hyperframes/verify_dirty_transfer.py` refuses symlinked caches,
+out-of-order/overlapping intervals, forged receipts, unknown executable ZIP
+entries, altered owner sources and reused-frame hash drift. It materializes
+one new complete 90-frame output only after checking the actual bytes from
+the old source cache **and** the actual dirty PNGs received in the patch
+archive; it never reads the new full-after input during reconstruction.
+The full-after actual Chromium PNG and FFV1 are separate validation oracles.
+Transfer savings account for the receipt bytes as well as the patch ZIP,
+whereas native render frames avoided remain **zero** on this fixture.
+No production file-transfer scheduler, audio-aware dependency cache or
+human-approved release is implied.
+
+### Source-bound measured acceptance (2026-10-10)
+
+GitHub Actions run `38037146221`, exact SHA
+`ca4a089ea8aebdbe3a6f7c8fdf3620c095d95268`, verified 90/90
+received PNG SHA-256s and a full-after FFV1 decode equivalence, using a
+purely independent receiver operating on old cached frames plus new
+dirty-frame ZIP bytes. Full-after transfer was **786,172 bytes**; the
+60-frame patch was 545,662 bytes, and patch **plus** separate receipt
+was 552,786 bytes. The verified net transfer reduction was **233,386
+bytes** (29.7% for this deliberately simple synthetic scene). The
+receiver does not claim to have saved source readback, encoding, audio
+or Chromium work: the acceptance rendered 180 frames in full, so actual
+rendered frames avoided were **0**. E03-03 and E03-04 remain **PARTIAL**,
+not release-accepted; this result proves custody and candidate visibility
+windows, not a finished incremental production scheduler.

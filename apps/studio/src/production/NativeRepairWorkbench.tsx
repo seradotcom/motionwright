@@ -107,7 +107,9 @@ export default function NativeRepairWorkbench({
     </div>
     {candidate&&<div className="native-difference"><div><strong>Uncommitted native repair proposal</strong>
       <p>{candidate.proposal.changed_properties.join(', ')}</p>
-      <p>Frames {candidate.proposal.dirty_first_frame}–{candidate.proposal.dirty_end_frame_exclusive} require new verification.</p>
+      <p>Candidate dirty intervals: {candidate.proposal.source_frame_invalidation.dirty_intervals.map(
+        range=>`[${range.start}, ${range.end_exclusive})`).join(', ')||'none (metadata/hidden pixel edits only)'}</p>
+      <p>{candidate.proposal.source_frame_invalidation.reusable_frame_count} frames have a conservative source-only reuse suggestion. No renderer pixel oracle has checked them; frames actually avoided: {candidate.proposal.source_frame_invalidation.actual_native_frames_avoided}. Readback, audio and encoder work are not cached.</p>
       <p>Source {sourceSha.slice(0,12)} → {candidate.proposal.proposed_source_sha256.slice(0,12)} …</p>
       <p>Human creative approval remains necessary; no pixel equivalence is claimed.</p>
     </div></div>}
