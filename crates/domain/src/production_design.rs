@@ -15,6 +15,9 @@ pub struct ProductionDesign {
     pub capsules: Vec<NativeCapsule>,
     #[serde(default)]
     pub patches: Vec<CreativePatchRecord>,
+    /// One project-owned, revisioned ledger; never a second provider backend.
+    #[serde(default, skip_serializing_if = "PaidGenerationLedger::is_empty")]
+    pub paid_generation: PaidGenerationLedger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

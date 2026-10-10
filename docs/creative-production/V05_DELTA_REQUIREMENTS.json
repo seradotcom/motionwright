@@ -3,7 +3,7 @@
   "source": "Motionwright v0.5 SRS delta, 64 requirements in 16 epics",
   "branch_scope": "isolated v0.5 creative expansion, not a full 208-requirement legacy reconciliation",
   "baseline_acceptance": "NOT_RECONCILED_IN_THIS_BRANCH",
-  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate. A source-only distillation trial has been added for E05-04; full experiment, owner admission and independent creative approval are still NOT_VERIFIED. E09-04 now has a fail-closed source-bound paired-study protocol and validator; real blinded direct-engine baseline, canonical Host parity and human preference remain NOT_RUN. E14-04 now provides an immutable, SHA-256 verified Motionwright project/master packaging contract; live Launchwright import, rights review and distribution remain NOT_VERIFIED. E03-03/E03-04 now have a conservative source-proposed dirty frame partition and same-source native direct-browser full-frame oracle with measured transfer-byte differences. Actual avoided renders, future editing effect propagation, springs/shutter/audio tails, and production incremental rendering remain NOT_VERIFIED. E08-02 now has a read-only digest-bound snapshot of the canonical Project.audio active measured voice, segment timing/alignment and cues; replacement proposes exact caption/cut/B-roll/mix invalidations. Owner-authenticated take locking, actual resynthesis and source-to-render corrections remain NOT_VERIFIED.",
+  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate. A source-only distillation trial has been added for E05-04; full experiment, owner admission and independent creative approval are still NOT_VERIFIED. E09-04 now has a fail-closed source-bound paired-study protocol and validator; real blinded direct-engine baseline, canonical Host parity and human preference remain NOT_RUN. E14-04 now provides an immutable, SHA-256 verified Motionwright project/master packaging contract; live Launchwright import, rights review and distribution remain NOT_VERIFIED. E03-03/E03-04 now have a conservative source-proposed dirty frame partition and same-source native direct-browser full-frame oracle with measured transfer-byte differences. Actual avoided renders, future editing effect propagation, springs/shutter/audio tails, and production incremental rendering remain NOT_VERIFIED. E08-02 now has a read-only digest-bound snapshot of the canonical Project.audio active measured voice, segment timing/alignment and cues; replacement proposes exact caption/cut/B-roll/mix invalidations. Owner-authenticated take locking, actual resynthesis and source-to-render corrections remain NOT_VERIFIED. E12-01..E12-04 now have one project-revisioned, SQLite-backed paid-generation bookkeeping journal and strict original unknown-outcome/pilot/consent contracts; no provider was called, outcome, billing, authorization and consent have NOT been independently authenticated.",
   "requirements": [
     {
       "id": "MW05-E00-01",
@@ -531,36 +531,56 @@
       "id": "MW05-E12-01",
       "title": "Contrato de generación",
       "epic": "E12",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {
       "id": "MW05-E12-02",
       "title": "Pilot antes de lote",
       "epic": "E12",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {
       "id": "MW05-E12-03",
       "title": "Outcome desconocido",
       "epic": "E12",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {
       "id": "MW05-E12-04",
       "title": "Identidad y consentimiento",
       "epic": "E12",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {
