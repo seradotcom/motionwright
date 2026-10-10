@@ -255,7 +255,8 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check
           cargo test --locked -p motionwright-creative-library --test frame_invalidation
-          cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
+          cargo test --locked -p motionwright-hyperframes-driver --bin motionwright-hyperframes-runner
+          cargo clippy --locked -p motionwright-creative-library -p motionwright-hyperframes-driver --all-targets -- -D warnings
           cargo build --locked -p motionwright-hyperframes-driver --bin motionwright-hyperframes-runner
           cargo build --locked -p motionwright-creative-library --example native_frame_delta_fixture
           python3 -m py_compile tooling/hyperframes/native_dirty_e2e.py tooling/hyperframes/verify_dirty_transfer.py
@@ -269,7 +270,7 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install --with-deps chromium
           PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
-      - name: Compare 180 native frames, full FFV1 and exact dirty PNG transfer
+      - name: Render 90 old, 90 full-after oracle and only 60 new window frames; compare exact PNG, FFV1 and transferred cache
         run: |
           set -euo pipefail
           /usr/bin/python3 tooling/hyperframes/native_dirty_e2e.py

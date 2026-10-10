@@ -6,8 +6,10 @@ import {createRequire} from 'node:module';
 import {classifyPinnedBrowserProbe,detectNativeSandboxMode,detectHostSandboxProof,detectHostUidMapShape,detectUidProofParts} from './sandbox_policy.mjs';
 import {spawnSync} from 'node:child_process';
 
-const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha,sealedBrowser] = process.argv.slice(2);
-if(process.argv.length!==8 || ![runtimeRoot,workRoot,outputRoot,assetRoot,sealedBrowser].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
+const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha,sealedBrowser,rawFirst,rawEnd] = process.argv.slice(2);
+const windowMode = process.argv.length===10;
+if(![8,10].includes(process.argv.length) || ![runtimeRoot,workRoot,outputRoot,assetRoot,sealedBrowser].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
+if(windowMode && (!/^(0|[1-9][0-9]{0,3})$/.test(rawFirst) || !/^[1-9][0-9]{0,3}$/.test(rawEnd)))throw new Error('Capture window requires bounded canonical nonnegative frame indices');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
 const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_missing_icu','browser_binary_probe_missing_sidecar','browser_binary_probe_missing_shared_library','browser_binary_probe_namespace_denied','browser_binary_probe_permission_denied','browser_binary_probe_process_limit','browser_binary_probe_signal','browser_binary_probe_timeout','browser_binary_probe_sigsegv','browser_binary_probe_sigabrt','browser_binary_probe_sigtrap','browser_binary_probe_sigsys','browser_binary_probe_sigkill','browser_binary_probe_sigbus','browser_binary_probe_sigother','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected','host_proof_missing_rootless','host_proof_missing_nnp','host_proof_missing_caps','host_proof_missing_confined','host_proof_missing_restrictEnabled','uid_shape_missing','uid_shape_multiple_ranges','uid_shape_malformed','uid_shape_namespace_root_not_zero','uid_shape_single_uid_host_zero','uid_shape_single_uid_host_nonzero','uid_shape_host_zero_large_range','uid_shape_host_nonzero_large_range','uid_proof_missing_oneRow','uid_proof_missing_canonicalShape','uid_proof_missing_nonrootHost','uid_proof_missing_oneUidOnly','uid_proof_missing_processUidPresent','uid_proof_missing_processUidMatches']);
@@ -30,6 +32,9 @@ if(hash(planBytes)!==expectedPlanSha)throw new Error('Native plan changed after 
 const plan=JSON.parse(planBytes),doc=plan.document,c=doc.canvas;
 phase('plan');
 if(doc.version!==1 || doc.nodes.length>256 || c.frames<1 || c.frames>3600 || c.width*c.height>8294400)throw new Error('Unadmitted capture dimensions or document version');
+const firstFrame=windowMode?Number(rawFirst):0,endFrame=windowMode?Number(rawEnd):c.frames;
+if(!Number.isInteger(firstFrame) || !Number.isInteger(endFrame) || firstFrame<0 || firstFrame>=endFrame || endFrame>c.frames)throw new Error('Capture window escapes the exact source timeline');
+const capturedFrameCount=endFrame-firstFrame;
 const receiptBytes=readBounded(runtimeRoot,'runtime.json',1024*1024),receipt=JSON.parse(receiptBytes);
 if(receipt.schema!==1 || receipt.hyperframes!=='0.8.143' || receipt.gsap!=='3.15.0' || receipt.playwright!=='1.55.1')throw new Error('Native runtime receipt is incompatible');
 if(hash(receiptBytes)!==plan.runtime_receipt_sha256)throw new Error('Native runtime identity changed after source admission');
@@ -187,7 +192,7 @@ try {
   const duration=await page.evaluate(()=>window.__player.getDuration());
   if(Math.abs(duration-c.frames*c.rate.den/c.rate.num)>1e-7)throw new Error('HyperFrames timeline duration differs from the exact output contract');
   const captured=[];let bytesWritten=0;
-  for(let frame=0;frame<c.frames;frame++) {
+  for(let frame=firstFrame;frame<endFrame;frame++) {
     if(Date.now()>deadline)throw new Error('Native capture deadline exceeded');
     const time=frame*c.rate.den/c.rate.num;
     const state=await page.evaluate(async({time,frame,videoSources})=>{
@@ -216,12 +221,22 @@ try {
   }
   phase('frames');
   fs.fsyncSync(observationFd);
-  const result={schema:'motionwright.hyperframes-native-frames/1',project_id:plan.project_id,generation:plan.generation,revision:plan.revision,scene_id:plan.scene_id,
-    width:c.width,height:c.height,rate:c.rate,frame_count:c.frames,alpha:c.background===null,color:'srgb',source_sha256:hash(source),plan_sha256:expectedPlanSha,
+  const result={schema:windowMode?'motionwright.hyperframes-native-frame-window/1':'motionwright.hyperframes-native-frames/1',project_id:plan.project_id,generation:plan.generation,revision:plan.revision,scene_id:plan.scene_id,
+    width:c.width,height:c.height,rate:c.rate,frame_count:capturedFrameCount,alpha:c.background===null,color:'srgb',source_sha256:hash(source),plan_sha256:expectedPlanSha,
     hyperframes:'0.8.143',gsap:'3.15.0',playwright:'1.55.1',browser:browser.version(),runtime_receipt_sha256:hash(receiptBytes),authoring_sha256:hash(author),font_faces:fontFaces,
-    observation:{method:'native-dom-css-font-face-and-frame-time-readback/1',units:'CSS pixels/degrees/opacity/rational seconds',coverage:'all_frames',frames:c.frames,
+    observation:{method:'native-dom-css-font-face-and-frame-time-readback/1',units:'CSS pixels/degrees/opacity/rational seconds',coverage:windowMode?'selected_window':'all_frames',frames:capturedFrameCount,
       relative_path:'observations.ndjson',sha256:hash(fs.readFileSync(observationsPath)),limitations:['DOM boxes do not prove pixel visibility after overlap.','Technical readback is not independent aesthetic approval.','Video sampling uses native decoded media time, not a codec-independent bit-identical source frame guarantee.']},
     frames:captured,external_requests:0,sandbox_mode:sandboxMode,creative_approval:'required'};
+  if(windowMode){
+    result.timeline_total_frames=c.frames;
+    result.selected_window={start:firstFrame,end_exclusive:endFrame};
+    result.complete_master=false;
+    result.actual_native_frames_rendered=capturedFrameCount;
+    result.native_frames_reused=0;
+    result.owner_cache_authority='NOT_GRANTED';
+    result.observation.limitations.push('Window receipt is NOT a full-timeline readback or a substitute for a complete source/master acceptance.');
+  }
   fs.writeFileSync(path.join(outputRoot,'frames.json'),JSON.stringify(result,null,2)+'\n',{flag:'wx'});
-  console.log(JSON.stringify({frames:captured.length,source_sha256:result.source_sha256,alpha:result.alpha}));
+  console.log(JSON.stringify({frames:captured.length,source_sha256:result.source_sha256,alpha:result.alpha,
+    selected_window:windowMode?result.selected_window:null,complete_master:!windowMode}));
 } finally {fs.closeSync(observationFd);await browser.close();}

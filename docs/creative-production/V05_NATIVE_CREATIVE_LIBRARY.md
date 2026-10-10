@@ -424,3 +424,35 @@ or Chromium work: the acceptance rendered 180 frames in full, so actual
 rendered frames avoided were **0**. E03-03 and E03-04 remain **PARTIAL**,
 not release-accepted; this result proves custody and candidate visibility
 windows, not a finished incremental production scheduler.
+
+
+## Source-window native execution prototype (real frames omitted)
+
+The existing first-party `motionwright-hyperframes-runner` has an additional
+**direct native** `render-window` subcommand with fixed typed
+`--first-frame` and `--end-frame-exclusive` integer arguments. This does
+not add a second HTML renderer, arbitrary source executor, caching backend or
+new Semwright Host manifest grant. The pinned runtime, browser signature,
+source SHA, project/generation/revision, PNG hash and owner-supplied roots are
+the same as for `render`. A range outside the exact source timeline is
+refused **before any renderer launch**. The renderer genuinely seeks/screenshots
+only frames in the requested range, and writes a distinct
+`motionwright.hyperframes-native-frame-window/1` receipt with
+`coverage=selected_window`, absolute frame indices and independent
+window time readback. It has **no FFV1 master output**, no outside-range
+observations and cannot claim source cache permission.
+
+The disposable CI acceptance renders 90 first-source frames and all 90
+changed-source frames as the independent native oracle, **plus** the bounded
+60-frame changed-source window. The 30 previously sourced PNGs are
+reassembled with the 60 actually rendered window PNGs by the same strict
+independent receiver described above. Both the complete 90-frame PNG list
+and decoded FFV1 must be identical to the independent full-after source.
+The partial capture can truthfully report 30 native screenshot/evaluation
+calls *omitted relative to a full after render*. The **combined acceptance
+test still renders 240 frames**, so it cannot claim 30 net saved frames or
+a robust production time advantage from this test. Encoding, media
+decoding, sound, motion blur, transitions and owner-granted cache lifetime
+are separate unresolved concerns. Only a future canonical service/Host
+adapter with authenticated cache grants could elevate this prototype to
+production incremental rendering.
