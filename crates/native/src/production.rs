@@ -794,6 +794,73 @@ fn retryable_motion_status_error(error: &Error) -> bool {
     error.code == ErrorCode::Timeout
 }
 
+/// The pinned Semwright Motion Canvas driver exposes a *closed* typed
+/// RenderFailureClass in render.status. The adjacent error text is deliberately
+/// not propagated: renderer diagnostics may contain private local paths,
+/// stdout, user media names or other untrusted information.
+/// Only exact allowlisted static labels are safe to retain for CI and operators.
+fn motion_failure_class(data: &Value) -> &'static str {
+    const KNOWN: &[&str] = &[
+        "arguments",
+        "font_evidence",
+        "project_stage",
+        "vite_build",
+        "frame_export",
+        "browser_launch",
+        "page_load",
+        "render_wait",
+        "render_wait_timeout",
+        "renderer_state_frame_clock",
+        "renderer_state_authoring_protocol",
+        "renderer_log_authoring_protocol",
+        "renderer_state_playback_protocol",
+        "renderer_log_playback_protocol",
+        "renderer_log_exporter_missing",
+        "renderer_log_async_property",
+        "renderer_state_webgl_unavailable",
+        "renderer_log_webgl_unavailable",
+        "renderer_state_model_invariant",
+        "renderer_log_model_invariant",
+        "renderer_state_authoring_model",
+        "renderer_log_authoring_model",
+        "renderer_state_invalid_scene",
+        "renderer_log_invalid_scene",
+        "renderer_state_range_error",
+        "renderer_log_range_error",
+        "renderer_state_type_error",
+        "renderer_log_type_error",
+        "renderer_state_semwright_native",
+        "renderer_state_semwright_exporter",
+        "renderer_state_motion_core",
+        "renderer_state_motion_2d",
+        "renderer_state_before_first_frame",
+        "renderer_state_after_first_frame",
+        "renderer_state_error",
+        "renderer_log_error",
+        "render_result_aborted",
+        "render_result_error",
+        "render_result_unknown",
+        "render_nonzero",
+        "runtime_module_load",
+        "runtime_syntax",
+        "runtime_permission",
+        "runtime_oom",
+        "runtime_killed",
+        "runtime_cpu_limit",
+        "runtime_file_size_limit",
+        "runtime_signal",
+        "observation",
+        "finalize",
+        "startup",
+    ];
+    let reported = data.get("failure_class").and_then(Value::as_str);
+    KNOWN
+        .iter()
+        .copied()
+        .find(|name| Some(*name) == reported)
+        .unwrap_or("unclassified")
+}
+
 fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<String> {
     value
         .pointer(pointer)
@@ -1011,7 +1078,14 @@ impl ProductionCoordinator {
                 match data.get("state").and_then(Value::as_str) {
                     Some("succeeded") => break data,
                     Some("failed") => {
-                        return Err(backend("Motion Canvas render reported failure"));
+                        // A bounded category and the segment number identify
+                        // the failed native lane without leaking provider error
+                        // messages or raw receipts to UI/CI.
+                        return Err(backend(format!(
+                            "Motion Canvas segment {} render failed (category: {})",
+                            index + 1,
+                            motion_failure_class(&data),
+                        )));
                     }
                     Some("cancelled") => {
                         return Err(Error::new(
@@ -2158,6 +2232,40 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             )
             .unwrap()
             .project
+    }
+
+    #[test]
+    fn motion_failure_category_is_allowlisted_and_never_exposes_raw_driver_errors() {
+        assert_eq!(
+            motion_failure_class(&json!({
+                "state": "failed",
+                "failure_class": "renderer_state_frame_clock",
+                "error": "/home/customer/private/secret-still-is-not-exposed",
+            })),
+            "renderer_state_frame_clock",
+        );
+        assert_eq!(
+            motion_failure_class(&json!({
+                "state": "failed",
+                "failure_class": "../../customer-secrets",
+                "error": "/home/customer/private/secret-still-is-not-exposed",
+            })),
+            "unclassified",
+        );
+        assert_eq!(
+            motion_failure_class(&json!({
+                "state": "failed",
+                "error": "runtime_tool returned /tmp/owner-private",
+            })),
+            "unclassified",
+        );
+        assert_eq!(
+            motion_failure_class(&json!({
+                "state": "failed",
+                "failure_class": "runtime_oom",
+            })),
+            "runtime_oom",
+        );
     }
 
     #[test]

@@ -29,6 +29,10 @@ This method returns **`MltVerifiedVideoTimeline`** with the actual owner-root FF
 
 The shared MLT provider retains a bounded number of in-memory edit projects and output files are created with no-overwrite semantics. A failure during a multi-step assembly can leave a temporary provider project or partial owner output; retained receipts and native authority must be reconciled rather than blindly retrying an uncertain mutation.
 
+## Native render failure triage
+
+The real two-segment CI uncovered a separate upstream Motion Canvas `render.status = failed` after correcting the original three-profile fixture. Motionwright now retains only the **finite, typed Semwright `failure_class`** and the 1-based segment number in its error, never the raw driver `error` field, temporary owner paths, source media names or private JSON receipts. An unrecognized or missing class is reported as `unclassified`, not guessed. That bounded evidence distinguishes a rendering problem from downstream MLT semantic editing and preserves the requirement for a complete native E2E. The source-bound FFV1 video and an H.264/AAC master remain **unverified** until the actual test passes.
+
 ## Verification status
 
 Rust unit/contract tests validate bounded native project references, nonadvancing or stale provider revisions, unique created entity refs, required timeline entity lookup cardinality, and fail-closed metadata. The source plan is covered by separate bounded recipe tests and the existing Semwright single-segment `frames.encode`/AV E2E lanes remain active.
