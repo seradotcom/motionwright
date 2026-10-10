@@ -174,6 +174,49 @@ def manifests(paths: dict[str, Path]) -> tuple[list[Path], list[tuple[str, Path,
     }
 
 
+def save_bounded_native_failure_reason(output_root: Path) -> None:
+    """Never publish arbitrary driver stacks, paths or exception messages."""
+    records = []
+    for path in sorted(output_root.rglob("native-failure-receipt.json"))[:4]:
+        try:
+            if path.stat().st_size > 65536 or path.stat().st_size == 0:
+                continue
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                continue
+            stack = str(value.get("local_stack_only", "")).lower()
+            # Only finite codes, never the untrusted message or pathname.
+            causes = {
+                "enoent": ("enoent" in stack or "no such file or directory" in stack),
+                "missing_module": "cannot find module" in stack,
+                "resource_digest": "font resource digest binding changed" in stack,
+                "resource_pin": "font resource binding changed" in stack,
+                "dependency_lock": "dependency lock binding changed" in stack,
+                "missing_font": "pinned font" in stack and (
+                    "no woff2" in stack or "file exceeds" in stack),
+                "project_root": "invalid project" in stack or "project root" in stack,
+                "browser_executable": "firefox executable" in stack,
+                "permission": "eacces" in stack or "permission denied" in stack,
+            }
+            matched = [name for name, found in causes.items() if found]
+            records.append({
+                "error_class": value.get("error_class") if value.get("error_class") in {
+                    "font_evidence", "project_stage", "vite_build", "frame_export",
+                    "browser_launch", "render_nonzero", "observation"
+                } else "unclassified",
+                "exception_name": value.get("exception_name") if value.get("exception_name") in {
+                    "Error", "TypeError", "RangeError", "SyntaxError", "AggregateError"
+                } else "OtherError",
+                "reason_codes": matched[:4] if matched else ["unclassified"],
+            })
+        except (OSError, ValueError, UnicodeError, TypeError):
+            continue
+    render.write_private_json(
+        EVIDENCE / "bounded-native-failure-reasons.json",
+        {"schema": "motionwright-cross-app-failure-reasons/1", "observations": records},
+    )
+
+
 def main() -> None:
     require_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
@@ -265,10 +308,14 @@ def main() -> None:
                 model = blender.parse_glb(glb)
                 shutil.copyfile(glb, EVIDENCE / "reused-blender.glb")
 
-                resumed = render.run_json([
-                    str(EXAMPLE), "resume", str(database), str(connection),
-                    str(EVIDENCE / "resume.json"),
-                ], env=env, timeout=440)
+                try:
+                    resumed = render.run_json([
+                        str(EXAMPLE), "resume", str(database), str(connection),
+                        str(EVIDENCE / "resume.json"),
+                    ], env=env, timeout=440)
+                except (AssertionError, subprocess.TimeoutExpired):
+                    save_bounded_native_failure_reason(paths["output"])
+                    raise
                 complete = json.loads((EVIDENCE / "resume.json").read_text())
                 if resumed["phase"] != "resume":
                     raise AssertionError("resumed Motionwright process did not finish")
