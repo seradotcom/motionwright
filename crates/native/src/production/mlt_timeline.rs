@@ -136,21 +136,26 @@ fn only_reference(value: &Value, expected_name: &str) -> NativeResult<String> {
 /// must prove the exact frame count before product acceptance.
 ///
 /// All diagnostics are fixed strings, never provider messages or local paths.
-fn verify_lossless_render_result(
-    result: &Value,
-    revision: &str,
-    path: &str,
-    expected_frames: u64,
-    expected_width: u32,
-    expected_height: u32,
+struct LosslessExpected<'a> {
+    job: &'a str,
+    revision: &'a str,
+    path: &'a str,
+    frames: u64,
+    width: u32,
+    height: u32,
     fps_num: u32,
     fps_den: u32,
+}
+
+fn verify_lossless_render_result(
+    result: &Value,
+    expected: &LosslessExpected<'_>,
 ) -> NativeResult<Option<u64>> {
     if result.get("state").and_then(Value::as_str) != Some("succeeded")
-        || result.get("project_revision").and_then(Value::as_str) != Some(revision)
+        || result.get("project_revision").and_then(Value::as_str) != Some(expected.revision)
         || result.get("profile").and_then(Value::as_str) != Some("lossless")
-        || result.get("output").and_then(Value::as_str) != Some(path)
-        || result.get("job").and_then(Value::as_str).is_none()
+        || result.get("output").and_then(Value::as_str) != Some(expected.path)
+        || result.get("job").and_then(Value::as_str) != Some(expected.job)
         || !result.get("error").is_some_and(Value::is_null)
         || result
             .get("cancellation_requested")
@@ -162,7 +167,7 @@ fn verify_lossless_render_result(
         ));
     }
     if result.pointer("/artifact/root").and_then(Value::as_str) != Some("output")
-        || result.pointer("/artifact/path").and_then(Value::as_str) != Some(path)
+        || result.pointer("/artifact/path").and_then(Value::as_str) != Some(expected.path)
         || !result
             .pointer("/artifact/sha256")
             .and_then(Value::as_str)
@@ -178,9 +183,9 @@ fn verify_lossless_render_result(
     }
     if result.pointer("/media/video").and_then(Value::as_bool) != Some(true)
         || result.pointer("/media/audio").and_then(Value::as_bool) != Some(true)
-        || result.pointer("/media/width").and_then(Value::as_u64) != Some(u64::from(expected_width))
+        || result.pointer("/media/width").and_then(Value::as_u64) != Some(u64::from(expected.width))
         || result.pointer("/media/height").and_then(Value::as_u64)
-            != Some(u64::from(expected_height))
+            != Some(u64::from(expected.height))
     {
         return Err(backend(
             "MLT lossless video and required PCM transport audio profile differ",
@@ -209,7 +214,7 @@ fn verify_lossless_render_result(
         let number = frames_value
             .as_u64()
             .ok_or_else(|| backend("MLT lossless frame observation is malformed"))?;
-        if number != expected_frames {
+        if number != expected.frames {
             return Err(backend(
                 "MLT lossless observed native frame count differs from source",
             ));
@@ -226,13 +231,16 @@ fn verify_lossless_render_result(
         .and_then(Value::as_u64)
         .filter(|value| *value > 0)
         .ok_or_else(|| backend("MLT lossless result has no positive media timebase"))?;
-    if fps_num == 0 || fps_den == 0 || expected_frames == 0 {
+    if expected.fps_num == 0 || expected.fps_den == 0 || expected.frames == 0 {
         return Err(backend("MLT lossless expected clock is malformed"));
     }
-    let measured = u128::from(duration_num) * u128::from(fps_num);
-    let expected = u128::from(expected_frames) * u128::from(fps_den) * u128::from(duration_den);
-    let one_frame = u128::from(fps_den) * u128::from(duration_den);
-    if measured.abs_diff(expected) > one_frame {
+    let measured = u128::from(duration_num) * u128::from(expected.fps_num);
+    let exact = u128::from(expected.frames)
+        .checked_mul(u128::from(expected.fps_den))
+        .and_then(|frames| frames.checked_mul(u128::from(duration_den)))
+        .ok_or_else(|| backend("MLT lossless media duration product overflow"))?;
+    let one_frame = u128::from(expected.fps_den) * u128::from(duration_den);
+    if measured.abs_diff(exact) > one_frame {
         return Err(backend(
             "MLT lossless duration is inconsistent with its source frame clock",
         ));
@@ -633,13 +641,16 @@ impl ProductionCoordinator {
         let result = response_data(&result)?;
         let native_frame_count_observed = verify_lossless_render_result(
             result,
-            &session.revision,
-            &recipe.lossless_sequence_path,
-            recipe.total_frames,
-            recipe.provider_profile.width,
-            recipe.provider_profile.height,
-            recipe.provider_profile.fps_num,
-            recipe.provider_profile.fps_den,
+            &LosslessExpected {
+                job: &job_ref,
+                revision: &session.revision,
+                path: &recipe.lossless_sequence_path,
+                frames: recipe.total_frames,
+                width: recipe.provider_profile.width,
+                height: recipe.provider_profile.height,
+                fps_num: recipe.provider_profile.fps_num,
+                fps_den: recipe.provider_profile.fps_den,
+            },
         )?;
         let artifact_sha256 = required_string(
             result,
@@ -758,7 +769,19 @@ mod tests {
                 "video":true,"audio":true,"codecs":["ffv1","pcm_s16le"]}
         });
         let verify = |receipt: &Value| {
-            verify_lossless_render_result(receipt, &revision, path, 33, 1280, 720, 30, 1)
+            verify_lossless_render_result(
+                receipt,
+                &LosslessExpected {
+                    job: "render:owner-job",
+                    revision: &revision,
+                    path,
+                    frames: 33,
+                    width: 1280,
+                    height: 720,
+                    fps_num: 30,
+                    fps_den: 1,
+                },
+            )
         };
         assert_eq!(
             verify(&result).unwrap(),
