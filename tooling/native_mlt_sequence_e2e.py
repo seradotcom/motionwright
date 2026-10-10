@@ -145,8 +145,10 @@ def main() -> None:
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
         seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if (seeded["width"], seeded["height"]) != (1280, 720) or seeded["scene_count"] != 33:
-            raise AssertionError(f"unexpected master profile: {seeded}")
+        if ((seeded["width"], seeded["height"]) != (1280, 720)
+            or seeded["scene_count"] != 33
+            or seeded["deliverable_count"] != 3):
+            raise AssertionError(f"unexpected real default profiles or source scenes: {seeded}")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"

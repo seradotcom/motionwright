@@ -68,7 +68,14 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return Err("Native multi-segment test DB must start empty".into());
     }
     let mut project = service.create_project("Source-bound two-segment actual MLT E2E")?;
-    let mut profile = project.deliverables[0].clone();
+    // Projects start with three legitimate aspect profiles. Keep all of them;
+    // mutate the existing master instead of silently changing the fixture model.
+    let mut profile = project
+        .deliverables
+        .iter()
+        .find(|candidate| candidate.name == "Master 16:9")
+        .ok_or("Default master deliverable is missing")?
+        .clone();
     profile.width = 1280;
     profile.height = 720;
     // One frame per second allows exact canonical Film 32+1 partition
@@ -108,7 +115,11 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             )?
             .project;
     }
-    let profile = &project.deliverables[0];
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|candidate| candidate.name == "Master 16:9")
+        .ok_or("Master deliverable was lost after source seeding")?;
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -117,6 +128,8 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             "width":profile.width,"height":profile.height,
             "fps_num":profile.frame_rate.num,"fps_den":profile.frame_rate.den,
             "scene_count":project.scenes.len(),
+            "deliverable_count":project.deliverables.len(),
+            "master_profile_id":profile.id,
         }))?
     );
     Ok(())
@@ -132,10 +145,18 @@ async fn assemble(
         return Err("Expected one application-owned source project".into());
     }
     let project = projects.into_iter().next().ok_or("project absent")?;
-    if project.scenes.len() != 33 || project.deliverables.len() != 1 {
-        return Err("Native test project was altered".into());
+    if project.scenes.len() != 33 || project.deliverables.len() != 3 {
+        return Err(format!(
+            "Native test project shape changed: expected 33 scenes and three default deliverables; found {} scenes and {} deliverables",
+            project.scenes.len(),
+            project.deliverables.len(),
+        ).into());
     }
-    let profile = &project.deliverables[0];
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|candidate| candidate.name == "Master 16:9")
+        .ok_or("Native test master profile was removed")?;
     if (
         profile.width,
         profile.height,
