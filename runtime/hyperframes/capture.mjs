@@ -3,14 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
-import {classifyPinnedBrowserProbe,detectNativeSandboxMode} from './sandbox_policy.mjs';
+import {classifyPinnedBrowserProbe,detectNativeSandboxMode,detectHostSandboxProof} from './sandbox_policy.mjs';
 import {spawnSync} from 'node:child_process';
 
 const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha,sealedBrowser] = process.argv.slice(2);
 if(process.argv.length!==8 || ![runtimeRoot,workRoot,outputRoot,assetRoot,sealedBrowser].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
-const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_missing_icu','browser_binary_probe_missing_sidecar','browser_binary_probe_missing_shared_library','browser_binary_probe_namespace_denied','browser_binary_probe_permission_denied','browser_binary_probe_process_limit','browser_binary_probe_signal','browser_binary_probe_timeout','browser_binary_probe_sigsegv','browser_binary_probe_sigabrt','browser_binary_probe_sigtrap','browser_binary_probe_sigsys','browser_binary_probe_sigkill','browser_binary_probe_sigbus','browser_binary_probe_sigother','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected']);
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_missing_icu','browser_binary_probe_missing_sidecar','browser_binary_probe_missing_shared_library','browser_binary_probe_namespace_denied','browser_binary_probe_permission_denied','browser_binary_probe_process_limit','browser_binary_probe_signal','browser_binary_probe_timeout','browser_binary_probe_sigsegv','browser_binary_probe_sigabrt','browser_binary_probe_sigtrap','browser_binary_probe_sigsys','browser_binary_probe_sigkill','browser_binary_probe_sigbus','browser_binary_probe_sigother','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected','host_proof_missing_rootless','host_proof_missing_nnp','host_proof_missing_caps','host_proof_missing_confined','host_proof_missing_restrictEnabled']);
 function phase(name){
   if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
   fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
@@ -99,6 +99,11 @@ if(!executable.isFile() || (executable.mode&0o111)===0){
 // namespace BEFORE any child process. An owner-verified outer bwrap is already
 // protected by AppArmor, no network and the Host's own executable allowlist.
 const sandboxMode=detectNativeSandboxMode();
+const hostProof=detectHostSandboxProof();
+const authorizedFlags=['rootless','nnp','caps','confined','restrictEnabled'];
+for(const flag of authorizedFlags){
+  if(hostProof[flag]!==true) phase('host_proof_missing_'+flag);
+}
 phase(sandboxMode==='semwright-bwrap-outer'?'outer_host_bwrap_verified':'chromium_userns_selected');
 const versionArgs=sandboxMode==='semwright-bwrap-outer'
   ? ['--version','--no-sandbox'] : ['--version'];

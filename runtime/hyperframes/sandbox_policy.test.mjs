@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classifyHostSandbox, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
+import {classifyHostSandbox, inspectHostSandboxProof, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
 const baseline={
   uidMap:'         0       1001          1\n',
   status:'Name:\tnode\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n',
@@ -20,6 +20,21 @@ test('only a verified rootless, enforced no-new-privileges Host grants the outer
   ]){
     assert.equal(classifyHostSandbox({...baseline,...change}),'chromium-userns',JSON.stringify(change));
   }
+});
+test('Host proof retains exact five independent true/false safety inputs',()=>{
+ const confirmed=inspectHostSandboxProof(baseline);
+ assert.deepEqual(confirmed,{rootless:true,nnp:true,caps:true,confined:true,restrictEnabled:true});
+ for(const [name,changed] of [
+   ['rootless',{uidMap:'         0          0 4294967295\n'}],
+   ['nnp',{status:'NoNewPrivs:\t0\nCapEff:\t0000000000000000\n'}],
+   ['caps',{status:'NoNewPrivs:\t1\nCapEff:\t0000000000000001\n'}],
+   ['confined',{apparmor:'unconfined\n'}],
+   ['restrictEnabled',{restrict:'0\n'}]
+ ]){
+   const proof=inspectHostSandboxProof({...baseline,...changed});
+   assert.equal(proof[name],false);
+   assert.ok(Object.values(proof).some(value=>value===false));
+ }
 });
 test('the executing process cannot acquire bwrap authority merely by setting an environment variable',()=>{
   const before=detectNativeSandboxMode();

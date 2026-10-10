@@ -14,25 +14,34 @@ function readBoundedKernelStatus(path) {
     return '';
   }
 }
-export function classifyHostSandbox({uidMap,status,apparmor,restrict}) {
-  if (restrict.trim() !== '1') return 'chromium-userns';
+export function inspectHostSandboxProof({uidMap,status,apparmor,restrict}) {
   const mapLines=uidMap.trim().split(/\n/);
-  // A rootless user namespace maps namespace uid 0 to exactly one non-root
-  // host uid. Normal/full host uid mappings never satisfy this condition.
+  // Require a strict one-UID map to a nonzero host UID, not a host-wide map.
   const rootless=mapLines.length===1 &&
     /^0\s+[1-9][0-9]*\s+1$/.test(mapLines[0].trim().replace(/\s+/g,' '));
   const nnp=/^NoNewPrivs:\s+1$/m.test(status);
   const caps=/^CapEff:\s+0+$/m.test(status);
   const confined=/\bbwrap\b/i.test(apparmor)&&/\(enforce\)\s*$/.test(apparmor.trim());
-  return rootless&&nnp&&caps&&confined?'semwright-bwrap-outer':'chromium-userns';
+  const restrictEnabled=restrict.trim()==='1';
+  return {rootless,nnp,caps,confined,restrictEnabled};
 }
-export function detectNativeSandboxMode() {
-  return classifyHostSandbox({
+export function classifyHostSandbox(observations) {
+  const proof=inspectHostSandboxProof(observations);
+  return Object.values(proof).every(Boolean)?'semwright-bwrap-outer':'chromium-userns';
+}
+function readHostSandboxInput() {
+  return {
     uidMap:readBoundedKernelStatus('/proc/self/uid_map'),
     status:readBoundedKernelStatus('/proc/self/status'),
     apparmor:readBoundedKernelStatus('/proc/self/attr/current'),
     restrict:readBoundedKernelStatus('/proc/sys/kernel/apparmor_restrict_unprivileged_userns')
-  });
+  };
+}
+export function detectHostSandboxProof() {
+  return inspectHostSandboxProof(readHostSandboxInput());
+}
+export function detectNativeSandboxMode() {
+  return classifyHostSandbox(readHostSandboxInput());
 }
 
 
