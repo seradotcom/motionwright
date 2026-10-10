@@ -1,0 +1,75 @@
+name: V05 OTIO real media source interchange
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-otio-real-media']
+    paths:
+      - 'tooling/otio-media/**'
+      - 'crates/domain/examples/otio_real_media_fixture.rs'
+      - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
+      - '.github/workflows/v05-otio-real-media.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-otio-media-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verified-native-rust-otio-and-open-timeline-io:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-otio-real-media-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify existing canonical Rust exporter and new original source fixture
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-domain otio_export_is_linear_and_carries_an_explicit_loss_report
+          cargo clippy --locked -p motionwright-domain --example otio_real_media_fixture -- -D warnings
+          cargo build --locked -p motionwright-domain --example otio_real_media_fixture
+          python3 -m unittest discover -s tooling/otio-media -p 'test_*.py' -v
+          python3 -m py_compile tooling/otio-media/*.py
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+      - name: Install independent OpenTimelineIO receiver and native probe on disposable CI
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          python3 -m pip install --no-deps --only-binary=:all: 'opentimelineio==0.18.1'
+          python3 -c 'import opentimelineio as o; print("OTIO_READER",o.__version__)'
+      - name: Decode actual original MP4 and verify source-bound OTIO import/export
+        run: |
+          set -euo pipefail
+          python3 tooling/otio-media/native_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v05-otio-original-media-NLE-reader-not-product-release-${{ github.sha }}
+          path: verification/otio-real-media/
+          if-no-files-found: warn
+          retention-days: 7
