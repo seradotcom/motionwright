@@ -83,11 +83,12 @@ fn switching_component_family_is_atomic_and_respects_human_copy() {
     let mut project = project();
     let id = Uuid::new_v4();
     insert(&mut project, id, HeroConfig::default());
+    let eyebrow = hero_node_id(id, "eyebrow");
     let body = hero_node_id(id, "body");
     project
         .apply_change(&Change::UpdateCanvasText {
             scene_id: project.scenes[0].id,
-            node_id: body,
+            node_id: eyebrow,
             text: Some("This measured statement is human-authored.".into()),
         })
         .unwrap();
@@ -106,12 +107,19 @@ fn switching_component_family_is_atomic_and_respects_human_copy() {
         project.scenes[0]
             .nodes
             .iter()
-            .find(|node| node.id == body)
+            .find(|node| node.id == eyebrow)
             .unwrap()
             .text
             .as_deref(),
         Some("This measured statement is human-authored.")
     );
+    project
+        .apply_change(&Change::UpdateCanvasText {
+            scene_id: project.scenes[0].id,
+            node_id: body,
+            text: Some("Independent human narrative".into()),
+        })
+        .unwrap();
     let prior = project.clone();
     assert!(
         project

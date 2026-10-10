@@ -56,13 +56,15 @@ describe("first-party creative production",()=>{
   });
   it("switches families without resetting independent human text, rejects overlapping edits",async()=>{
     let project=await seeded();const scene_id=project.scenes[0].id;
+    const eyebrow=await heroNodeId(instance,"eyebrow");
     const body=await heroNodeId(instance,"body");
-    project=await applyChange(project,{type:"update_canvas_text",scene_id,node_id:body,text:"Edited by a human"});
+    project=await applyChange(project,{type:"update_canvas_text",scene_id,node_id:eyebrow,text:"Edited by a human"});
     const before=project.revision;
     project=await applyChange(project,{type:"upsert_product_hero",instance_id:instance,scene_id,config:{...defaultHeroConfig(),layout:"split_explanation",wordmark:"DETAIL"}});
     expect(project.revision).toBe(before+1);
-    expect(project.scenes[0].nodes.find(node=>node.id===body)?.text).toBe("Edited by a human");
+    expect(project.scenes[0].nodes.find(node=>node.id===eyebrow)?.text).toBe("Edited by a human");
     expect(project.scenes[0].nodes.find(node=>node.id===body)?.name).toBe("SplitExplanation / body");
+    project=await applyChange(project,{type:"update_canvas_text",scene_id,node_id:body,text:"An independent human explanation"});
     const prior=structuredClone(project);
     await expect(applyChange(project,{type:"upsert_product_hero",instance_id:instance,scene_id,
       config:{...defaultHeroConfig(),layout:"split_explanation",wordmark:"DETAIL",body:"An incompatible new claim"}})).rejects.toThrow("override conflict");
