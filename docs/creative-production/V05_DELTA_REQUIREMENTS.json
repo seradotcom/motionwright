@@ -3,7 +3,7 @@
   "source": "Motionwright v0.5 SRS delta, 64 requirements in 16 epics",
   "branch_scope": "isolated v0.5 creative expansion, not a full 208-requirement legacy reconciliation",
   "baseline_acceptance": "NOT_RECONCILED_IN_THIS_BRANCH",
-  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate. A source-only distillation trial has been added for E05-04; full experiment, owner admission and independent creative approval are still NOT_VERIFIED. E09-04 now has a fail-closed source-bound paired-study protocol and validator; real blinded direct-engine baseline, canonical Host parity and human preference remain NOT_RUN.",
+  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate. A source-only distillation trial has been added for E05-04; full experiment, owner admission and independent creative approval are still NOT_VERIFIED. E09-04 now has a fail-closed source-bound paired-study protocol and validator; real blinded direct-engine baseline, canonical Host parity and human preference remain NOT_RUN. E14-04 now provides an immutable, SHA-256 verified Motionwright project/master packaging contract; live Launchwright import, rights review and distribution remain NOT_VERIFIED.",
   "requirements": [
     {
       "id": "MW05-E00-01",
@@ -613,9 +613,13 @@
       "id": "MW05-E14-04",
       "title": "Handoff Launchwright",
       "epic": "E14",
-      "implementation_state": "NOT_VERIFIED",
+      "implementation_state": "PARTIAL",
       "release_acceptance": "NOT_CLOSED",
-      "code_evidence": [],
+      "code_evidence": [
+        "tooling/launchwright-handoff/export_handoff.py",
+        "tooling/launchwright-handoff/test_handoff.py",
+        "docs/creative-production/V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md"
+      ],
       "human_review": "NOT_PERFORMED"
     },
     {
