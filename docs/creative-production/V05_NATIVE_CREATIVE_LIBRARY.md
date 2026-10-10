@@ -177,3 +177,28 @@ milestones and categorized browser-start failures. These logs contain no user
 copy, credentials, arbitrary stdout/stderr or external URLs; they help identify
 whether an owner-constrained browser fails at module loading, namespace
 creation or resource limits without relaxing the existing Host sandbox.
+
+## Explicit component-instance overrides
+
+`crates/creative-library/src/instance.rs` provides typed, atomic, nonmutating
+instance-override proposals for copy, brand color, motion character/opt-in,
+procedural seed and authorized media substitution. Each change specifies the
+previous value or asset digest, retains a stable component UUID and checks the
+previous canonical request/source SHA. No override modifies the shared
+first-party recipe definition. A duplicate field or stale edit is refused,
+rather than overwriting later human work. Each proposal explicitly requires
+the existing project source compare-and-swap edit. This is an **authoring
+contract**, not a claim that independent, editable template-to-instance rebase
+has already completed the full production persistence and UX cycle.
+
+## Blender complete native temporal sample
+
+The original Blender 4.x product stage has a separate bounded full-clip
+acceptance implemented by `runtime/blender-stage/render_clip.py`. The
+disposable CI fixture generates 90 real sequential frames from the exact
+previously saved/reopened editable `.blend`, verifies SHA per frame, and
+creates a verified 30 fps H.264 MP4 review copy. It covers one of four camera
+recipes (`arc-reveal`) and **has no audio and no mastered production claims**.
+Other 3D recipes remain sampled previews. A .blend retained at original output
+resolution, its GLB interchange and the source-bound loss report accompany
+the captured example; the MP4 review copy does not replace editable source.

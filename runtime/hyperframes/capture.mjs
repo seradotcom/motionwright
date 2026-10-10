@@ -3,12 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
+import {spawnSync} from 'node:child_process';
 
 const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha] = process.argv.slice(2);
 if(process.argv.length!==7 || ![runtimeRoot,workRoot,outputRoot,assetRoot].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
-const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown']);
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_ok']);
 function phase(name){
   if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
   fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
@@ -77,6 +78,26 @@ const framesDir=path.join(outputRoot,'frames');fs.mkdirSync(framesDir,{recursive
 const observationsPath=path.join(outputRoot,'observations.ndjson');
 const observationFd=fs.openSync(observationsPath,'wx',0o600);let observationBytes=0;
 const diagnostics=[];const refused=[];const deadline=Date.now()+240000;
+// The exact same owner-pinned browser binary is preflighted with --version
+// inside the current Semwright Host confinement. This is not an installation
+// or a relaxation of browser sandboxing. It distinguishes OS exec denial from
+// a later Chromium sandbox/namespace startup failure, without copying stderr.
+const browserBinary=path.join(runtimeRoot,receipt.files.browser.path);
+const executable=fs.statSync(browserBinary);
+if(!executable.isFile() || (executable.mode&0o111)===0){
+  phase('browser_binary_exec_denied');
+  throw new Error('Owner-installed browser binary lacks executable permissions');
+}
+const probe=spawnSync(browserBinary,['--version'],{timeout:8000,stdio:'ignore'});
+if(probe.error?.code==='EACCES'||probe.error?.code==='EPERM'){
+  phase('browser_binary_exec_denied');
+  throw new Error('Host denied execution of the exact owner-pinned browser binary');
+}
+if(probe.error || probe.status!==0){
+  phase('browser_binary_probe_failed');
+  throw new Error('Pinned browser binary cannot run a bounded version probe inside Host');
+}
+phase('browser_binary_probe_ok');
 let browser;
 try{
   browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),
