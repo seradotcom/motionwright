@@ -32,6 +32,42 @@ describe("first-party creative production",()=>{
     expect(landscape[0].id).toBe(await heroNodeId(instance,"eyebrow"));
     await expect(realizeProductHero(instance,{...defaultHeroConfig(),headline:"X".repeat(25)},1080,1920)).rejects.toThrow("wider");
   });
+  it("reflows SplitExplanation with stable IDs and closes unsafe variation cases", async()=>{
+    const original=await realizeProductHero(instance,defaultHeroConfig());
+    const config={...defaultHeroConfig(), layout:"split_explanation" as const,
+      headline:"First, the problem",body:"Then, explain the solution with original copy that can be edited.",wordmark:"DETAIL"};
+    for(const [width,height] of [[1920,1080],[1080,1920],[1080,1080]]){
+      const nodes=await realizeProductHero(instance,config,width,height);
+      expect(nodes.map(node=>node.id)).toEqual(original.map(node=>node.id));
+      expect(nodes).toHaveLength(6);
+      expect(nodes.every(node=>node.name.startsWith("SplitExplanation / "))).toBe(true);
+      nodes.forEach(node=>{
+        expect(node.x).toBeGreaterThanOrEqual(0); expect(node.y).toBeGreaterThanOrEqual(0);
+        expect(node.x+node.width).toBeLessThanOrEqual(width); expect(node.y+node.height).toBeLessThanOrEqual(height);
+      });
+      const rule=nodes.find(node=>node.name.endsWith("rule"))!;
+      expect(width>height?rule.height>rule.width:rule.width>rule.height).toBe(true);
+      expect(nodes.at(-1)!.text).toContain("NOT A CAPTURE");
+    }
+    const legacy=structuredClone(defaultHeroConfig());
+    delete legacy.layout;
+    expect(await realizeProductHero(instance,legacy)).toEqual(original);
+    await expect(realizeProductHero(instance,{...config,layout:"unknown" as never})).rejects.toThrow("Unsupported semantic");
+  });
+  it("switches families without resetting independent human text, rejects overlapping edits",async()=>{
+    let project=await seeded();const scene_id=project.scenes[0].id;
+    const body=await heroNodeId(instance,"body");
+    project=await applyChange(project,{type:"update_canvas_text",scene_id,node_id:body,text:"Edited by a human"});
+    const before=project.revision;
+    project=await applyChange(project,{type:"upsert_product_hero",instance_id:instance,scene_id,config:{...defaultHeroConfig(),layout:"split_explanation",wordmark:"DETAIL"}});
+    expect(project.revision).toBe(before+1);
+    expect(project.scenes[0].nodes.find(node=>node.id===body)?.text).toBe("Edited by a human");
+    expect(project.scenes[0].nodes.find(node=>node.id===body)?.name).toBe("SplitExplanation / body");
+    const prior=structuredClone(project);
+    await expect(applyChange(project,{type:"upsert_product_hero",instance_id:instance,scene_id,
+      config:{...defaultHeroConfig(),layout:"split_explanation",wordmark:"DETAIL",body:"An incompatible new claim"}})).rejects.toThrow("override conflict");
+    expect(project).toEqual(prior);
+  });
   it("samples hold and exact out-cubic entrances without changing old smoothstep semantics",async()=>{
     expect(easedProgress(.25,"ease_out_cubic")).toBe(.578125);
     expect(easedProgress(.25,"ease_in_out")).toBe(.15625);

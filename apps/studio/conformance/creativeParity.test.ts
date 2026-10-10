@@ -13,7 +13,7 @@ const fixture=JSON.parse(readFileSync(path,"utf8")) as {
   three_way_merge:{base:CanvasNode[];current:CanvasNode[];incoming:CanvasNode[];expected:CanvasNode[]};
   plan_digest_cases:Array<{plan:ProductionPlan;content_sha256:string}>;
 };
-if(fixture.schema!=="motionwright.rust-studio-creative-parity/1" || fixture.hero_cases.length!==9 || fixture.plan_digest_cases.length!==3) throw new Error("Unexpected Rust fixture schema or coverage.");
+if(fixture.schema!=="motionwright.rust-studio-creative-parity/1" || fixture.hero_cases.length!==12 || fixture.plan_digest_cases.length!==3) throw new Error("Unexpected Rust fixture schema or coverage.");
 
 describe("current Rust implementation and Studio are the same editorial contract",()=>{
   it.each(fixture.hero_cases)("matches every generated property at $width x $height",async(row)=>{

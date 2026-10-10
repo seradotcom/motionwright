@@ -9,6 +9,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         eyebrow: "CREATIVE SYSTEM / FIELD NOTES".into(), headline: "One project.\nEvery revision.".into(),
         body: "Keep each deliberate change. Build the next version without losing the previous decision.".into(),
         wordmark: "FN".into(), accent: "#D9A46E".into(), ..HeroConfig::default()
+    }, HeroConfig {layout:HeroLayout::SplitExplanation,
+        eyebrow:"TWO PARTS / ONE EXPLANATION".into(),
+        headline:"What changes".into(),body:"Keep each decision editable through every subsequent revision.".into(),
+        wordmark:"WHY".into(),..HeroConfig::default()
     }];
     let mut heroes = vec![];
     for config in &configs {

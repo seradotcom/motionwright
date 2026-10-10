@@ -2,7 +2,10 @@ import type { CreativePatchRecord } from "./creativeUndo";
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
+export type HeroLayout = "product_hero_reveal" | "split_explanation";
 export interface HeroConfig {
+  /** Optional for legacy format-2 projects. Rust defaults absent layouts to ProductHeroReveal. */
+  layout?: HeroLayout;
   eyebrow: string; headline: string; body: string; wordmark: string;
   foreground: string; accent: string; motion: boolean;
 }
@@ -38,6 +41,7 @@ export type ProductionDesignChange = Extract<Change, { type: "upsert_product_her
 
 export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [] });
 export const defaultHeroConfig = (): HeroConfig => ({
+  layout: "product_hero_reveal",
   eyebrow: "MOTIONWRIGHT / CREATIVE PRODUCTION", headline: "Make the work.\nKeep the craft.",
   body: "A composition you can direct, revise and keep editing.", wordmark: "Mw",
   foreground: "#F2F4F3", accent: "#A5C8DF", motion: true,
@@ -48,6 +52,7 @@ function textBudget(value: string, max: number, label: string) {
   if (!value.trim() || new TextEncoder().encode(value).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid " + label);
 }
 export function validateHero(config: HeroConfig) {
+  if (config.layout !== undefined && config.layout !== "product_hero_reveal" && config.layout !== "split_explanation") throw new Error("Unsupported semantic component layout.");
   for (const [key, max] of [["eyebrow", 48], ["headline", 64], ["body", 150], ["wordmark", 8]] as const) {
     if (!config[key].trim() || Array.from(config[key]).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(config[key])) throw new Error("Hero " + key + " exceeds the layout budget or contains control characters.");
   }
@@ -93,24 +98,27 @@ function entryKeys(node: CanvasNode, start: number, end: number, offset: number,
 export async function realizeProductHero(id: string, config: HeroConfig, w = 1920, h = 1080): Promise<CanvasNode[]> {
   validateHero(config);
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 320 || h < 320 || w > 7680 || h > 7680) throw new Error("Hero output dimensions are out of bounds.");
-  const portrait = h > w, square = h === w, scale = Math.min(w,h) / 1080, left = w * .09;
-  const [headlineY, bodyY, markX, markY, markW, markH] = portrait ? [h*.15,h*.39,w*.16,h*.56,w*.68,h*.26]
+  const portrait = h > w, square = h === w, split = config.layout === "split_explanation", scale = Math.min(w,h) / 1080, left = w * .09;
+  const [headlineY, bodyY, markX, markY, markW, markH] = split && portrait ? [h*.20,h*.67,left,h*.565,w*.60,h*.045]
+    : split && square ? [h*.17,h*.65,left,h*.55,w*.65,h*.07]
+    : split ? [h*.32,h*.41,w*.57,h*.275,w*.34,h*.09]
+    : portrait ? [h*.15,h*.39,w*.16,h*.56,w*.68,h*.26]
     : square ? [h*.16,h*.43,w*.51,h*.60,w*.38,h*.25] : [h*.28,h*.62,w*.64,h*.26,w*.27,h*.40];
-  const headline = wrapCopy(config.headline, portrait ? 19 : square ? 22 : 20, 3);
-  const body = wrapCopy(config.body, portrait ? 33 : square ? 38 : 40, 4);
-  const textWidth = portrait || square ? w*.82 : w*.49;
+  const headline = wrapCopy(config.headline, split && portrait ? 23 : split && square ? 22 : split ? 17 : portrait ? 19 : square ? 22 : 20, 3);
+  const body = wrapCopy(config.body, split && portrait ? 39 : split && square ? 35 : split ? 29 : portrait ? 33 : square ? 38 : 40, 4);
+  const textWidth = split && !portrait && !square ? w*.37 : portrait || square ? w*.82 : w*.49;
   const entries: Array<[string, string, number, number, number, number, number, number, number, number, number, number]> = [
     ["eyebrow",config.eyebrow,left,h*.085,w*.80,40*scale,23*scale,500,0,500,14*scale,0],
-    ["headline",headline,left,headlineY,textWidth,portrait?h*.22:h*.30,(square?68:82)*scale,600,120,1060,54*scale,0],
-    ["body",body,left,bodyY,textWidth,portrait?h*.13:h*.17,30*scale,400,460,1260,24*scale,0],
-    ["wordmark",config.wordmark,markX,markY,markW,markH,(portrait?246:square?186:276)*scale,600,160,1460,86*scale,-5],
-    ["rule","",left,h*.87,portrait?w*.18:w*.09,3*scale,0,400,600,1360,10*scale,0],
-    ["disclosure","GRAPHIC STUDY / NOT A PRODUCT CAPTURE",left,h*.905,w*.82,28*scale,17*scale,400,740,1500,10*scale,0],
+    ["headline",headline,left,headlineY,textWidth,(split&&portrait?h*.18:split&&square?h*.24:split?h*.35:portrait?h*.22:h*.30),(split&&portrait?74:split&&square?64:split?66:square?68:82)*scale,600,120,1060,54*scale,0],
+    ["body",body,split&&!portrait&&!square?w*.57:left,bodyY,split&&!portrait&&!square?w*.35:textWidth,(split&&portrait?h*.14:split&&square?h*.20:split?h*.31:portrait?h*.13:h*.17),(split&&portrait?31:split&&square?29:split?38:30)*scale,400,460,1260,24*scale,0],
+    ["wordmark",config.wordmark,markX,markY,markW,markH,(split&&portrait?54:split&&square?47:split?50:portrait?246:square?186:276)*scale,600,160,1460,(split?26:86)*scale,split?0:-5],
+    ["rule","",split&&!portrait&&!square?w*.50:left,split&&portrait?h*.50:split&&square?h*.49:split?h*.25:h*.87,split&&!portrait&&!square?3*scale:split?w*.82:portrait?w*.18:w*.09,split&&!portrait&&!square?h*.50:3*scale,0,400,600,1360,10*scale,0],
+    ["disclosure",split?"SPLIT EXPLANATION / GRAPHIC STUDY · NOT A CAPTURE":"GRAPHIC STUDY / NOT A PRODUCT CAPTURE",left,h*.905,w*.82,28*scale,17*scale,400,740,1500,10*scale,0],
   ];
   return Promise.all(entries.map(async ([role,text,x,y,width,height,fontSize,weight,start,end,offset,rotation], index) => {
     const isText = role !== "rule";
     const node: CanvasNode = {
-      id: await heroNodeId(id,role), name: "ProductHeroReveal / " + role,
+      id: await heroNodeId(id,role), name: (split ? "SplitExplanation" : "ProductHeroReveal") + " / " + role,
       kind: isText ? "text" : "rectangle", parent_id: null, x,y,width,height,rotation_deg:0,opacity:1,
       text: isText ? text : null, coordinate_space:"project_pixels",z_index:10+index,
       style: { fill: role === "wordmark" || role === "rule" ? config.accent : config.foreground,
