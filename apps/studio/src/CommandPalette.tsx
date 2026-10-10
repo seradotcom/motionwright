@@ -38,7 +38,13 @@ export default function CommandPalette({ commands, onClose }: Props) {
   const dialogRef = useRef<HTMLElement>(null);
   const labelId = useId();
   const listId = useId();
-  const filtered = useMemo(() => filterPaletteCommands(commands, query), [commands, query]);
+  const matches = useMemo(() => filterPaletteCommands(commands, query), [commands, query]);
+  // Keyboard selection must follow the same visual group order as the listbox.
+  // Preserve relevance-ranked results *within* each group, not across groups.
+  const filtered = useMemo(
+    () => GROUPS.flatMap((group) => matches.filter((command) => command.group === group)),
+    [matches],
+  );
   const currentIndex = Math.min(selectedIndex, Math.max(filtered.length - 1, 0));
   const activeCommand = filtered[currentIndex];
   const optionId = (id: string) => listId + "-" + id;

@@ -80,3 +80,17 @@ test("palette view actions can toggle light theme without a content edit", async
   await expect(page.locator("html")).toHaveAttribute("data-theme", previous === "dark" ? "light" : "dark");
   await expect(page.locator(".revision-chip")).toHaveText(revision);
 });
+
+test("keyboard selection follows visible grouped results rather than hidden search-score order", async ({ page }) => {
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  const search = page.getByRole("combobox", { name: "Search editor commands" });
+  await search.fill("view");
+  const options = page.getByRole("dialog").getByRole("option");
+  expect(await options.count()).toBeGreaterThan(2);
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+  await search.press("ArrowDown");
+  await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
+  await search.press("ArrowUp");
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+});
