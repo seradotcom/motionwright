@@ -20,6 +20,7 @@ import tomllib
 from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
+from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -361,6 +362,12 @@ def main() -> None:
             stderr=log_stream,
             start_new_session=True,
         )
+        # CI-only, passive process / memory sampling while the real pinned
+        # providers run. Never reads argv/env/secrets and never retries jobs.
+        lifecycle = ProviderLifecycleSampler(
+            daemon, EVIDENCE / "native-provider-lifecycle.json", interval=2.0
+        )
+        lifecycle.start()
 
         try:
             wait_for_socket(daemon, socket, daemon_log)
@@ -554,15 +561,36 @@ def main() -> None:
                 },
             )
         finally:
-            if daemon.poll() is None:
-                pid = daemon.pid
-                daemon.terminate()
+            # A malformed optional diagnostic must never mask the original
+            # native failure or prevent cleanup of the pinned Driver Host.
+            try:
+                diagnostic = EVIDENCE / "motionwright-render-diagnostic.json"
+                if diagnostic.is_file() and 0 < diagnostic.stat().st_size <= 2 * 1024 * 1024:
+                    try:
+                        incident = json.loads(diagnostic.read_text(encoding="utf-8"))
+                        report = summarize_render_receipts(incident.get("receipts"))
+                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", report)
+                    except (OSError, ValueError, TypeError, UnicodeError) as error:
+                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", {
+                            "schema": "motionwright-ci-render-status-reconciliation/1",
+                            "render_outcome": "not_proven",
+                            "diagnostic_parse_error_class": type(error).__name__,
+                        })
+                # Finish *before* intentional owner shutdown so teardown is
+                # not confused with an unexpected process failure.
+                lifecycle.stop()
+            finally:
                 try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pid, signal.SIGKILL)
-                    daemon.wait(timeout=5)
-            log_stream.close()
+                    if daemon.poll() is None:
+                        pid = daemon.pid
+                        daemon.terminate()
+                        try:
+                            daemon.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(pid, signal.SIGKILL)
+                            daemon.wait(timeout=5)
+                finally:
+                    log_stream.close()
 
     print(
         json.dumps(
