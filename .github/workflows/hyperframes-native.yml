@@ -258,7 +258,8 @@ jobs:
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
           cargo build --locked -p motionwright-hyperframes-driver --bin motionwright-hyperframes-runner
           cargo build --locked -p motionwright-creative-library --example native_frame_delta_fixture
-          python3 -m py_compile tooling/hyperframes/native_dirty_e2e.py
+          python3 -m py_compile tooling/hyperframes/native_dirty_e2e.py tooling/hyperframes/verify_dirty_transfer.py
+          python3 tooling/hyperframes/test_dirty_transfer.py -v
       - name: Install exact disposable native renderer, not a new host backend
         run: |
           set -euo pipefail

@@ -390,3 +390,21 @@ incremental recomposition remain release blockers for the broader E03
 requirement. This distinction is enforced by fields stating
 `actual_native_frames_avoided: 0` and
 `rendered_pixel_equivalence_verified: false` in any preflight proposal.
+
+
+### Independent dirty-transfer receiver
+
+The CI-equivalent patch ZIP now has a companion explicit
+`transfer-source.json` with old/new source digests, ordered dirty and
+reused intervals, and every expected native PNG SHA-256. The independent
+`tooling/hyperframes/verify_dirty_transfer.py` refuses symlinked caches,
+out-of-order/overlapping intervals, forged receipts, unknown executable ZIP
+entries, altered owner sources and reused-frame hash drift. It materializes
+one new complete 90-frame output only after checking the actual bytes from
+the old source cache **and** the actual dirty PNGs received in the patch
+archive; it never reads the new full-after input during reconstruction.
+The full-after actual Chromium PNG and FFV1 are separate validation oracles.
+Transfer savings account for the receipt bytes as well as the patch ZIP,
+whereas native render frames avoided remain **zero** on this fixture.
+No production file-transfer scheduler, audio-aware dependency cache or
+human-approved release is implied.

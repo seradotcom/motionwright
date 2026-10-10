@@ -157,7 +157,9 @@
         "crates/creative-library/src/dirty.rs",
         "crates/creative-library/tests/frame_invalidation.rs",
         "crates/creative-library/examples/native_frame_delta_fixture.rs",
-        "tooling/hyperframes/native_dirty_e2e.py"
+        "tooling/hyperframes/native_dirty_e2e.py",
+        "tooling/hyperframes/verify_dirty_transfer.py",
+        "tooling/hyperframes/test_dirty_transfer.py"
       ],
       "human_review": "NOT_PERFORMED"
     },
@@ -169,7 +171,9 @@
       "release_acceptance": "NOT_CLOSED",
       "code_evidence": [
         "tooling/hyperframes/native_dirty_e2e.py",
-        "crates/creative-library/src/dirty.rs"
+        "crates/creative-library/src/dirty.rs",
+        "tooling/hyperframes/verify_dirty_transfer.py",
+        "tooling/hyperframes/test_dirty_transfer.py"
       ],
       "human_review": "NOT_PERFORMED"
     },

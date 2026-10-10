@@ -19,6 +19,7 @@ from uuid import UUID
 import zipfile
 
 from PIL import Image,ImageDraw
+from verify_dirty_transfer import rebuild
 
 ROOT=Path(__file__).resolve().parents[2]
 RUNTIME=ROOT/'runtime/hyperframes'
@@ -121,17 +122,12 @@ def main()->None:
             require(before['frames'][frame]['sha256']==after['frames'][frame]['sha256'],
                     f'Native full-render oracle disproves source reuse for frame {frame}')
         source_validation_ns=perf_counter_ns()-verify_start
-        reconstructed=root/'rebuilt';reconstructed.mkdir()
-        for index in range(FRAME_COUNT):
-            chosen=before_dir if index in reusable else after_dir
-            name=f'frame-{index:06}.png'
-            shutil.copyfile(chosen/'frames'/name,reconstructed/name)
-            require(sha_file(reconstructed/name)==after['frames'][index]['sha256'],
-                    f'Reconstructed frame {index} differs from full-after native screenshot')
         zip_manifest={
             'schema':'motionwright.native-dirty-png-transfer/1',
             'before_source_sha256':before['source_sha256'],
             'after_source_sha256':after['source_sha256'],
+            'total_frames':FRAME_COUNT,
+            'reusable_intervals':draft['reusable_intervals'],
             'reusable_frame_receipts':[before['frames'][i]['sha256'] for i in range(30)],
             'dirty_frame_receipts':[after['frames'][i]['sha256'] for i in range(30,90)],
             'dirty_intervals':draft['dirty_intervals'],
@@ -143,14 +139,24 @@ def main()->None:
         full_zip=root/'full-after.zip';patch_zip=output/'dirty-60frames.zip'
         full_bytes=make_frame_zip(full_zip,after_dir/'frames',list(range(FRAME_COUNT)),after)
         patch_bytes=make_frame_zip(patch_zip,after_dir/'frames',sorted(dirty),after)
-        # Actually reconstruct a consumer's source-bound frame output with only
-        # the transmitted dirty PNGs and its intact previously validated cache.
-        with zipfile.ZipFile(patch_zip) as received:
-            require(len(received.namelist())==60,'Transfer unexpectedly carries more than changed PNGs')
-            for frame in dirty:
-                require(digest(received.read(f'frames/frame-{frame:06}.png'))==
-                        after['frames'][frame]['sha256'],'Transferred patch changed source bytes')
-        require(patch_bytes<full_bytes,'Dirty frame transfer did not measurably reduce PNG bytes')
+        # Actual receiver path, independently verifying EVERY original cache
+        # receipt and every transmitted new PNG without reading the after
+        # full-render source directory. A forged/stale cache fails closed.
+        receipt_file=output/'transfer-source.json'
+        receipt_file.write_text(json.dumps(zip_manifest,indent=2)+'\n')
+        reconstructed=root/'rebuilt'
+        receiver=rebuild(patch_zip,receipt_file,before_dir/'frames',reconstructed)
+        require(receiver['receipts_verified']=='ALL_FRAME_SHA256'
+                and receiver['frames']==FRAME_COUNT
+                and receiver['reused']==30 and receiver['transferred']==60,
+                'Independent receiver did not reconstruct precisely the intended timeline')
+        for index in range(FRAME_COUNT):
+            name=f'frame-{index:06}.png'
+            require(sha_file(reconstructed/name)==after['frames'][index]['sha256'],
+                    f'Independent receiver frame {index} differs from full-after native screenshot')
+        actual_bundle_bytes=patch_bytes+receipt_file.stat().st_size
+        require(actual_bundle_bytes<full_bytes,
+                'Dirty transfer plus its source receipt did not measurably reduce bytes')
         input_mkv=after_dir/'mezzanine.mkv'
         encoded=root/'rebuilt.mkv'
         encode_start=perf_counter_ns()
@@ -194,7 +200,9 @@ def main()->None:
             'source_readback_reused':False,
             'actual_transfer_full_zip_bytes':full_bytes,
             'actual_transfer_dirty_zip_bytes':patch_bytes,
-            'actual_transfer_reduction_bytes':full_bytes-patch_bytes,
+            'actual_transfer_dirty_bundle_bytes':actual_bundle_bytes,
+            'actual_transfer_reduction_bytes':full_bytes-actual_bundle_bytes,
+            'independent_patch_receiver':'PASS_SHA256_FOR_ALL_90_FRAMES',
             'validation_measured_ns':source_validation_ns,
             'native_before_render_measured_ns':render_before_ns,
             'native_after_full_render_measured_ns':render_after_ns,
@@ -204,12 +212,12 @@ def main()->None:
             'creative_approval':'NOT_REVIEWED'
         }
         (output/'result.json').write_text(json.dumps(measurements,indent=2)+'\n')
-        (output/'transfer-source.json').write_text(json.dumps(zip_manifest,indent=2)+'\n')
+
         print(json.dumps({
             'source_bound_native_delta':'PASS',
             'frames_oracle_verified':FRAME_COUNT,
             'reuse_png_candidates':30,
             'actual_native_render_frames_avoided':0,
-            'transfer_bytes_saved':full_bytes-patch_bytes
+            'transfer_bytes_saved':full_bytes-actual_bundle_bytes
         }))
 if __name__=='__main__':main()
