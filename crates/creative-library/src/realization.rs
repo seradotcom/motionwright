@@ -227,6 +227,44 @@ impl<'a> Compositor<'a> {
             },
         ))
     }
+    /// Some recipes have optional micro-labels, but the hero's value
+    /// proposition and evidence classification must be genuinely readable.
+    /// Preserve the exact authored copy; CSS pre-wrap handles word wrapping
+    /// without changing or fabricating source text.
+    fn require_readable_copy(&mut self, index: usize, minimum_px: f64) -> Result<()> {
+        let node = self
+            .nodes
+            .get_mut(index)
+            .ok_or_else(|| CraftError("The authored text node is absent".into()))?;
+        let Content::Text {
+            runs,
+            size,
+            line_height,
+            ..
+        } = &mut node.content
+        else {
+            return Err(CraftError(
+                "Only original editable text can be resized".into(),
+            ));
+        };
+        check(
+            minimum_px.is_finite() && (11.0..=72.0).contains(&minimum_px),
+            "Readable hero typography has an invalid role minimum",
+        )?;
+        *size = minimum_px;
+        *line_height = 1.12;
+        let chars: usize = runs.iter().map(|run| run.text.chars().count()).sum();
+        let approximate_width = (node.pose.width / (minimum_px * 0.62)).floor().max(1.0) as usize;
+        let estimated_lines = chars.div_ceil(approximate_width);
+        let max_lines = (node.pose.height / (minimum_px * *line_height))
+            .floor()
+            .max(0.0) as usize;
+        check(
+            estimated_lines <= max_lines,
+            "ProductHeroReveal copy cannot fit legibly. Shorten the copy or increase the layout area; do not shrink it to microtype.",
+        )?;
+        Ok(())
+    }
     fn path(
         &mut self,
         role: &str,
@@ -668,9 +706,9 @@ pub fn realize_html(
                 }
             }
             let (tx, ty, tw, th) = if compact {
-                (0.075, 0.345, 0.83, 0.087)
+                (0.075, 0.330, 0.83, 0.130)
             } else {
-                (0.075, 0.600, 0.405, 0.125)
+                (0.075, 0.530, 0.405, 0.270)
             };
             let explanation = c.headline(
                 "hero-explanation",
@@ -682,6 +720,7 @@ pub fn realize_html(
                 true,
                 ColorRole::MutedText,
             )?;
+            c.require_readable_copy(explanation, brand.minimum_body_size)?;
             if req.motion {
                 let start = (req.output.frames / 6).max(1);
                 let end = (req.output.frames / 2).max(start + 1);
@@ -698,16 +737,17 @@ pub fn realize_html(
                 (0.075, 0.85, 0.425)
             };
             c.rule("hero-reveal-rule", fx, fy, fw, ColorRole::Accent);
-            c.headline(
+            let disclosure = c.headline(
                 "hero-evidence-classification",
                 fx,
                 fy + 0.025,
                 fw,
-                0.072,
+                if compact { 0.065 } else { 0.105 },
                 &req.copy.disclosure,
                 true,
                 ColorRole::MutedText,
             )?;
+            c.require_readable_copy(disclosure, 13.0)?;
         }
         RecipeId::ScreenFocus => {
             let asset = c.source()?;

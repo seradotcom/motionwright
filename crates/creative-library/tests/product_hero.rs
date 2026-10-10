@@ -118,3 +118,79 @@ fn brand_claim_rules_reject_a_prohibited_hero_without_changing_source() {
         .is_err()
     );
 }
+
+#[test]
+fn product_hero_keeps_authored_copy_and_protects_legibility_at_all_three_ratios() {
+    let brand = BrandProfile::neutral(Uuid::from_u128(51));
+    let taste = TasteProfile::editorial(Uuid::from_u128(52));
+    for (w, h) in [(640, 360), (360, 640), (640, 640)] {
+        for locale in [Locale::En, Locale::Es, Locale::De] {
+            let authored = request(w, h, locale);
+            let doc = library::realize_html(&authored, &brand, &taste).unwrap();
+            let body = doc
+                .nodes
+                .iter()
+                .find(|node| node.name == "hero explanation")
+                .unwrap();
+            let disclosure = doc
+                .nodes
+                .iter()
+                .find(|node| node.name == "hero evidence classification")
+                .unwrap();
+            let stage = doc
+                .nodes
+                .iter()
+                .find(|node| node.name == "hero product panel")
+                .unwrap();
+            let native::Content::Text { runs, size, .. } = &body.content else {
+                panic!("Hero body must remain editable")
+            };
+            assert_eq!(
+                runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+                authored.copy.body
+            );
+            assert!(
+                *size >= brand.minimum_body_size,
+                "Body microtype at {w}x{h} {locale:?}"
+            );
+            let native::Content::Text { runs, size, .. } = &disclosure.content else {
+                panic!("Rights caveat must be editable text")
+            };
+            assert_eq!(
+                runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+                authored.copy.disclosure
+            );
+            assert!(
+                *size >= 13.0,
+                "Evidence caveat microtype at {w}x{h} {locale:?}"
+            );
+            assert!(disclosure.pose.y + disclosure.pose.height <= f64::from(h));
+            if h > w {
+                assert!(
+                    body.pose.y + body.pose.height < stage.pose.y,
+                    "Portrait value statement must not intrude into the native stage"
+                );
+            } else {
+                assert!(
+                    body.pose.x + body.pose.width < stage.pose.x,
+                    "Landscape value statement must not overlap original stage geometry"
+                );
+            }
+            native::validate_document(&doc).unwrap();
+        }
+    }
+}
+
+#[test]
+fn impossible_long_copy_is_rejected_not_shrunk_to_unreadable_type() {
+    let brand = BrandProfile::neutral(Uuid::from_u128(51));
+    let taste = TasteProfile::editorial(Uuid::from_u128(52));
+    let mut req = request(640, 360, Locale::En);
+    req.copy.body =
+        "An author-written explanation must remain readable to its actual audience. ".repeat(7);
+    assert!(req.copy.body.len() < 800);
+    let issue = library::realize_html(&req, &brand, &taste)
+        .unwrap_err()
+        .to_string();
+    assert!(issue.contains("cannot fit legibly"), "{issue}");
+}

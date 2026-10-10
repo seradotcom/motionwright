@@ -104,10 +104,27 @@ def main()->None:
         daemon_log=open(result_root/'broker-diagnostic.log','wb')
         daemon=subprocess.Popen([str(BINS['daemon']),'--config',str(config_file),'--socket',str(socket)],env=env,stdin=subprocess.DEVNULL,stdout=daemon_log,stderr=subprocess.STDOUT,start_new_session=True)
         try:
-            deadline=time.monotonic()+20
+            startup=time.monotonic()
+            # The protocol-v8 Host now seals a 304 MB Chromium dependency at
+            # provider startup. Its hash+private file-copy work is synchronous,
+            # so the old 20s synthetic fixture deadline was a false negative
+            # on loaded GitHub-hosted runners. This is a CI-only bounded wait,
+            # not a production timeout change or a dropped readiness check.
+            deadline=startup+150
             while not socket.exists():
-                if daemon.poll() is not None:raise AssertionError('Broker exited before exposing its owned socket')
-                if time.monotonic()>deadline:raise AssertionError('Broker socket startup deadline exceeded')
+                status=daemon.poll()
+                if status is not None:
+                    write(result_root/'broker-startup-diagnostics.json',{
+                        'stage':'provider_owner_seal','daemon_exited':True,
+                        'elapsed_seconds':round(time.monotonic()-startup,1),'socket_present':False
+                    })
+                    raise AssertionError('Broker exited before exposing its owned socket')
+                if time.monotonic()>deadline:
+                    write(result_root/'broker-startup-diagnostics.json',{
+                        'stage':'provider_owner_seal','daemon_exited':False,
+                        'elapsed_seconds':round(time.monotonic()-startup,1),'socket_present':False
+                    })
+                    raise AssertionError('Broker socket startup exceeded its bounded 150s CI deadline')
                 time.sleep(.05)
             cli=[str(BINS['cli']),'--socket',str(socket),'--session-file',str(session),'--json']
             offset=0;revisions=set();capabilities=[]
