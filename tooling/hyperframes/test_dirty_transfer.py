@@ -55,6 +55,18 @@ class TransferTests(unittest.TestCase):
         self.save()
         with self.assertRaises(TransferRejected):self.verify()
         self.assertFalse(self.output.exists())
+    def test_source_only_receipt_cannot_forge_renderer_or_audio_savings(self):
+        for attribute,value in [
+            ('metadata_reused',True),('native_frames_not_rendered',30),
+            ('encoder_stage_avoided',True),('source_only_visual_not_audio',False)
+        ]:
+            previous=self.doc[attribute]
+            self.doc[attribute]=value
+            self.save()
+            with self.assertRaisesRegex(TransferRejected,'cannot claim to bypass'):
+                self.verify()
+            self.assertFalse(self.output.exists())
+            self.doc[attribute]=previous
     def test_unknown_manifest_authority_is_rejected(self):
         self.doc['auto_publish']=True;self.save()
         with self.assertRaisesRegex(TransferRejected,'schema'):

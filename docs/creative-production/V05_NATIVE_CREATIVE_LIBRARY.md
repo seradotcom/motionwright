@@ -408,3 +408,19 @@ Transfer savings account for the receipt bytes as well as the patch ZIP,
 whereas native render frames avoided remain **zero** on this fixture.
 No production file-transfer scheduler, audio-aware dependency cache or
 human-approved release is implied.
+
+### Source-bound measured acceptance (2026-10-10)
+
+GitHub Actions run `38037146221`, exact SHA
+`ca4a089ea8aebdbe3a6f7c8fdf3620c095d95268`, verified 90/90
+received PNG SHA-256s and a full-after FFV1 decode equivalence, using a
+purely independent receiver operating on old cached frames plus new
+dirty-frame ZIP bytes. Full-after transfer was **786,172 bytes**; the
+60-frame patch was 545,662 bytes, and patch **plus** separate receipt
+was 552,786 bytes. The verified net transfer reduction was **233,386
+bytes** (29.7% for this deliberately simple synthetic scene). The
+receiver does not claim to have saved source readback, encoding, audio
+or Chromium work: the acceptance rendered 180 frames in full, so actual
+rendered frames avoided were **0**. E03-03 and E03-04 remain **PARTIAL**,
+not release-accepted; this result proves custody and candidate visibility
+windows, not a finished incremental production scheduler.

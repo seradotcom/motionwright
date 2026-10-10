@@ -53,6 +53,9 @@ def rebuild(transfer:Path,receipt:Path,cache:Path,destination:Path)->dict:
     admit(all(isinstance(doc.get(k),str)and HEX.fullmatch(doc[k])for k in
               ('before_source_sha256','after_source_sha256')),
           "Source transfer revision digest missing")
+    admit(doc['metadata_reused'] is False and type(doc['native_frames_not_rendered']) is int and doc['native_frames_not_rendered']==0
+          and doc['encoder_stage_avoided'] is False and doc['source_only_visual_not_audio'] is True,
+          "Source-only transfer cannot claim to bypass renderer, readback, codec, or audio work")
     n=doc['total_frames']
     admit(type(n)is int and 1<=n<=MAX_FRAMES,"Source transfer frame count outside budget")
     cached=intervals_mask(doc['reusable_intervals'],n,'Cached')
@@ -67,7 +70,7 @@ def rebuild(transfer:Path,receipt:Path,cache:Path,destination:Path)->dict:
     admit(all(isinstance(s,str)and HEX.fullmatch(s)for s in old_hashes+new_hashes),
           "Source receipts contain malformed hashes")
     admit(cache.is_dir()and not cache.is_symlink()and
-          destination.parent.is_dir()and not destination.exists(),
+          destination.parent.is_dir()and not destination.parent.is_symlink()and not destination.exists(),
           "Old cache/new output roots must be real and output cannot be overwritten")
     admit(transfer.is_file()and not transfer.is_symlink()
           and transfer.stat().st_size<=n*MAX_PNG+1024*1024,
