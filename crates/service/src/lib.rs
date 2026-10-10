@@ -1,7 +1,10 @@
 mod audio;
 mod jobs;
 mod models;
-pub use audio::{AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, WAVEFORM_FRAMES_PER_PEAK, WaveformPage};
+pub use audio::{
+    AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
+    WaveformPage,
+};
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
@@ -217,6 +220,60 @@ impl StudioService {
 
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> StorageResult<BlobDescriptor> {
         self.store.lock().ingest_blob_file(source)
+    }
+
+    /// Read ONLY an already imported/verified exact project audio asset and
+    /// decode short-form stereo PCM without resampling, web execution or
+    /// opening an arbitrary renderer-supplied filename.
+    pub fn decoded_stem_for_original_mix(
+        &self,
+        project_id: Uuid,
+        expected_revision: u64,
+        asset_id: Uuid,
+    ) -> StorageResult<OriginalMixDecodedPcm> {
+        let (path, digest) = {
+            let store = self.store.lock();
+            let project = store.load_project(project_id)?;
+            if project.revision != expected_revision {
+                return Err(invalid_import(
+                    "Original mix belongs to a stale project revision",
+                ));
+            }
+            let asset = project
+                .assets
+                .iter()
+                .find(|item| item.id == asset_id)
+                .ok_or_else(|| invalid_import("Selected original mix source asset is absent"))?;
+            if !matches!(
+                asset.media_type.as_str(),
+                "audio/wav" | "audio/x-wav" | "audio/wave"
+            ) {
+                return Err(invalid_import(
+                    "Audition needs a previously imported original WAV, not an executable/stream/unknown codec",
+                ));
+            }
+            let digest = asset
+                .content_sha256
+                .as_ref()
+                .ok_or_else(|| invalid_import("Original mix WAV has no immutable source SHA-256"))?
+                .clone();
+            let path = store.verified_blob_path(&digest)?;
+            (path, digest)
+        };
+        let decoded = audio::decode_original_mix_pcm(&path, &digest)?;
+        // A concurrent editor cannot replace or remove this source while
+        // the bounded audio decoder runs; no stale mixes escape the service.
+        let latest = self.project(project_id)?;
+        if latest.revision != expected_revision
+            || !latest.assets.iter().any(|entry| {
+                entry.id == asset_id && entry.content_sha256.as_deref() == Some(digest.as_str())
+            })
+        {
+            return Err(invalid_import(
+                "Original audio was changed or removed during source decode",
+            ));
+        }
+        Ok(decoded)
     }
 
     pub fn put_derived_cache_file(
