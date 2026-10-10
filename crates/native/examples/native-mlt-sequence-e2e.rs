@@ -79,8 +79,9 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     profile.width = 1280;
     profile.height = 720;
     // Keep the pinned Motion Canvas browser at its proven native 30 fps.
-    // Each of the 33 semantic scenes is one *exact* 1/30-second frame:
-    // the 32 + 1 segment boundary stays exercised without 990 rendered PNGs.
+    // Diagnostic: each of the 33 semantic scenes spans exactly THREE frames
+    // at the pinned native 30fps. This tests whether a one-frame scene makes
+    // Motion Canvas stop after two observed exports. Total: 32*3 + 1*3 = 99.
     profile.frame_rate = RationalTime::new(30, 1)?;
     project = service
         .apply(
@@ -111,7 +112,7 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 &format!("native-multisegment-frame-duration-{number:02}"),
                 &Change::SetSceneDuration {
                     scene_id,
-                    duration: RationalTime::new(1, 30)?,
+                    duration: RationalTime::new(3, 30)?,
                 },
             )?
             .project;
@@ -181,8 +182,8 @@ async fn assemble(
     // Reopened SQLite must preserve exact one-frame timing across scenes.
     // The earlier 1 fps fixture failed at native observation before MLT.
     for (index, scene) in project.scenes.iter().enumerate() {
-        let start = RationalTime::new(index as i64, 30)?;
-        if scene.start != start || scene.duration != RationalTime::new(1, 30)? {
+        let start = RationalTime::new((index * 3) as i64, 30)?;
+        if scene.start != start || scene.duration != RationalTime::new(3, 30)? {
             return Err("Native two-segment fixture lost its exact 30 fps timebase".into());
         }
     }
@@ -215,10 +216,10 @@ async fn assemble(
         )
         .await?;
     if render.segments.len() != 2
-        || render.segments[0].frame_count != 32
-        || render.segments[1].frame_count != 1
+        || render.segments[0].frame_count != 96
+        || render.segments[1].frame_count != 3
     {
-        return Err("Actual native Film did not produce expected 32+1 partition".into());
+        return Err("Actual native Film did not produce expected 96+3 frame partition".into());
     }
     let evidence = coordinator
         .assemble_native_mlt_video_timeline(
@@ -230,7 +231,7 @@ async fn assemble(
             &render,
         )
         .await?;
-    if evidence.frame_count != 33
+    if evidence.frame_count != 99
         || evidence.source.verified_video_segments.len() != 2
         || evidence.evidence_scope != "actual-native-mlt-ffv1-video-only-no-audio-master"
     {

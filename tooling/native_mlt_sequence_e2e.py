@@ -2,7 +2,7 @@
 """Exact-SHA source-bound two-segment Motion Canvas / MLT FFV1 video E2E.
 
 CI only. Provisions a 33-scene application-owned project and pinned Semwright
-Broker/Driver Host, renders 32+1 real Motion Canvas segments, and assembles
+Broker/Driver Host, renders 96+3 real Motion Canvas frames, and assembles
 video-only Matroska FFV1 through the semantic MLT timeline, not an AAC master.
 """
 from __future__ import annotations
@@ -472,19 +472,19 @@ def main() -> None:
                 raise
             if result.get("native_mlt_multisegment_e2e") != "PASS":
                 raise AssertionError("Real source-bound MLT timeline was not successful: " + repr(result))
-            if result.get("frame_count") != 33 or result.get("segment_count") != 2:
-                raise AssertionError("Native timeline lost the 32+1 source partition")
+            if result.get("frame_count") != 99 or result.get("segment_count") != 2:
+                raise AssertionError("Native timeline lost the 96+3 source partition")
             if result.get("evidence_scope") != "actual-native-mlt-ffv1-video-only-no-audio-master":
                 raise AssertionError("MLT result falsely claimed final H.264/AAC master")
 
             evidence_path = EVIDENCE / "native-multisegment-timeline-evidence.json"
             evidence = json.loads(evidence_path.read_text())
-            if evidence.get("source", {}).get("total_frames") != 33:
+            if evidence.get("source", {}).get("total_frames") != 99:
                 raise AssertionError("Real FFV1 intermediate frame total was altered")
             records = evidence.get("source", {}).get("verified_video_segments", [])
-            if len(records) != 2 or [item["frame_count"] for item in records] != [32, 1]:
+            if len(records) != 2 or [item["frame_count"] for item in records] != [96, 3]:
                 raise AssertionError("Real native source FFV1s are not the exact two source segments")
-            if [item["output_start_frame"] for item in records] != [0, 32]:
+            if [item["output_start_frame"] for item in records] != [0, 96]:
                 raise AssertionError("Native output clip start frames were not preserved")
             for record in records:
                 artifact = paths["output"] / record["artifact_path"]
@@ -515,7 +515,7 @@ def main() -> None:
             if (video.get("codec_name") != "ffv1"
                 or (video.get("width"), video.get("height")) != (1280, 720)
                 or video.get("r_frame_rate") != "30/1"
-                or video.get("nb_read_frames") != "33"):
+                or video.get("nb_read_frames") != "99"):
                 raise AssertionError("Native actual MLT video codec/frame provenance failed: " + repr(video))
 
             shutil.copyfile(video_path, EVIDENCE / "native-two-segment-video.mkv")
@@ -532,8 +532,8 @@ def main() -> None:
                     "mlt_runner_sha256": digest(mlt_runner),
                     "melt_sha256": digest(melt),
                     "ffprobe_sha256": digest(ffprobe),
-                    "rendered_source_frames": [32, 1],
-                    "assembled_video_frames": 33,
+                    "rendered_source_frames": [96, 3],
+                    "assembled_video_frames": 99,
                     "assembled_video_codec": "ffv1",
                     "assembled_video_has_audio": False,
                     "video_bytes": video_path.stat().st_size,
