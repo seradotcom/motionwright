@@ -6,7 +6,9 @@
   background: rgba(3, 5, 8, 0.76);
 }
 .command-palette-panel {
-  width: min(620px, 100%); max-height: calc(100dvh - 52px);
+  width: min(620px, 100%);
+  height: min(680px, calc(100dvh - clamp(28px, 11vh, 108px) - 16px));
+  min-height: 0;
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--surface-1); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--panel-radius);
@@ -43,7 +45,7 @@
   font: 11px ui-monospace, Menlo, monospace;
 }
 .command-palette-results {
-  min-height: 160px; overflow-y: auto; overscroll-behavior: contain;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   padding: 8px 8px 12px; scrollbar-gutter: stable;
 }
 .command-palette-group-label {
@@ -83,7 +85,7 @@
 .command-palette-empty strong { color: var(--text); font-size: 14px; }
 .command-palette-empty span { font-size: 12px; }
 .command-palette-footer {
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
   gap: 10px; padding: 11px 16px; border-top: 1px solid var(--border);
 }
 .command-palette-hint { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
@@ -91,7 +93,7 @@
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 9px; font-size: 12px;
 }
-.command-palette-guide { overflow-y: auto; padding: 8px 20px 16px; }
+.command-palette-guide { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 20px 16px; }
 .command-palette-guide > p {
   max-width: 500px; color: var(--muted); font-size: 12px; line-height: 1.65;
 }
@@ -111,7 +113,7 @@
 .quick-command-trigger:hover { color: var(--text); }
 @media (max-width: 700px) {
   .command-palette-scrim { padding: 12px 8px; }
-  .command-palette-panel { max-height: calc(100dvh - 24px); }
+  .command-palette-panel { height: min(680px, calc(100dvh - 24px)); }
   .command-palette-count, .quick-command-trigger .quick-command-label { display: none; }
   .quick-command-trigger kbd { margin-left: 0; }
   .command-palette-header { padding: 14px; }

@@ -94,3 +94,20 @@ test("keyboard selection follows visible grouped results rather than hidden sear
   await search.press("ArrowUp");
   await expect(options.first()).toHaveAttribute("aria-selected", "true");
 });
+
+test("palette footer and help stay reachable at desktop and compact viewport heights", async ({ page }) => {
+  for (const viewport of [{ width: 1440, height: 940 }, { width: 390, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    await page.keyboard.press("Control+k");
+    const dialog = page.getByRole("dialog", { name: "Command palette" });
+    const guide = dialog.getByRole("button", { name: "Keyboard shortcuts" });
+    await expect(guide).toBeInViewport();
+    const rect = await dialog.boundingBox();
+    expect(rect).not.toBeNull();
+    expect(rect!.y + rect!.height).toBeLessThanOrEqual(viewport.height + 0.5);
+    await guide.click();
+    await expect(dialog.getByLabel("Keyboard shortcut reference")).toContainText("Esc");
+    await page.keyboard.press("Escape");
+  }
+});
