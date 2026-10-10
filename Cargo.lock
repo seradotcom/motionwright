@@ -2112,6 +2112,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "hex",
+ "motionwright-domain",
  "motionwright-hyperframes-profile",
  "serde",
  "serde_json",

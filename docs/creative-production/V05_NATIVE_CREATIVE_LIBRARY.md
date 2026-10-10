@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 34 **PARTIAL code
+The isolated branch inventory currently records 35 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 29 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -456,3 +456,29 @@ decoding, sound, motion blur, transitions and owner-granted cache lifetime
 are separate unresolved concerns. Only a future canonical service/Host
 adapter with authenticated cache grants could elevate this prototype to
 production incremental rendering.
+
+
+## Narration source replacement and dependency impact (E08-02, partial)
+
+`crates/creative-library/src/narration.rs` works exclusively with the
+**existing** `Project.audio` domain, not a parallel transcript or clock.
+It inspects the project's active measured voice track, exact SHA-256-linked
+audio asset, stored text-aligned `TranscriptSegment`s and associated
+`AudioCue`s. The resulting source snapshot contains the immutable
+project ID/generation/revision and an exact digest of the current voice,
+words and cues; its owner/authentication and media-decode claims remain
+`false`. Manual or sufficiently confident measured timing evidence can
+be identified; unknown or low-confidence ASR produces the explicit
+`REQUIRES_MANUAL_TIMING_REVIEW` classification, never an approved
+transcription.
+
+Given a *subsequent persisted project revision*, the source comparison
+rejects stale/cross-project lock references, forged source bytes and
+unrelated changes, then reports altered segment/cue IDs and rational
+time spans. Captions must regenerate and undergo human review, cuts/B-roll
+must be re-evaluated, and a replaced measured voice asset requires new
+mix measurements. **No rendering, timeline mutation or automatic
+owner lock is performed**: a real locked take must still be authenticated
+through the canonical project service and edited by a separately accepted
+new revision. This is the source/impact half of E08-02, not the
+end-to-end accepted narrative lock or an ASR truth engine.
