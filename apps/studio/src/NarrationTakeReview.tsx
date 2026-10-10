@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import {BookOpenCheck,GitCompareArrows,LockKeyhole} from 'lucide-react';
 import type {Project,RationalTime,Change} from './types';
-import type {NarrationSourceSnapshot,NarrationReplacementImpact} from './narrationReviewTypes';
+import type {NarrationSourceSnapshot,NarrationReplacementImpact,NarrationTimelineReview} from './narrationReviewTypes';
 import {nativeNarrationReplacementImpact,nativeNarrationSourceSnapshot} from './api';
 
 const reason=(value:unknown)=>value instanceof Error?value.message:String(value);
@@ -21,6 +21,7 @@ export default function NarrationTakeReview({
 }){
   const [baseline,setBaseline]=useState<NarrationSourceSnapshot|null>(null);
   const [impact,setImpact]=useState<NarrationReplacementImpact|null>(null);
+  const [timelineReview,setTimelineReview]=useState<NarrationTimelineReview|null>(null);
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
   const [recordableSha,setRecordableSha]=useState<string|null>(null);
   const [recordedReviewer,setRecordedReviewer]=useState('');
@@ -29,12 +30,12 @@ export default function NarrationTakeReview({
   const locked=project.production_design?.narration_take_lock??null;
   // A cross-project source must never migrate into another owner's take review.
   useEffect(()=>{
-    setBaseline(null);setImpact(null);setError(null);setRecordableSha(null);
+    setBaseline(null);setImpact(null);setTimelineReview(null);setError(null);setRecordableSha(null);
     setRecordedReviewer('');setRecordedReason('');setConfirmed(false);
   },[project.id,project.generation]);
-  useEffect(()=>{setImpact(null);setError(null);setRecordableSha(null);setConfirmed(false);},[project.revision]);
+  useEffect(()=>{setImpact(null);setTimelineReview(null);setError(null);setRecordableSha(null);setConfirmed(false);},[project.revision]);
   const capture=async()=>{
-    setBusy(true);setError(null);setImpact(null);
+    setBusy(true);setError(null);setImpact(null);setTimelineReview(null);
     try{
       const result=await nativeNarrationSourceSnapshot(project);
       if(result.source.project_id!==project.id||
@@ -52,7 +53,7 @@ export default function NarrationTakeReview({
   };
   const compare=async()=>{
     if(!baseline)return;
-    setBusy(true);setError(null);setImpact(null);
+    setBusy(true);setError(null);setImpact(null);setTimelineReview(null);
     try{
       const next=await nativeNarrationReplacementImpact(project,baseline);
       if(next.impact.previous_source_sha256!==baseline.exact_content_sha256||
@@ -60,6 +61,15 @@ export default function NarrationTakeReview({
          next.applied||next.source_locked||next.media_or_captions_rendered){
         throw new Error('Narration impact preview attempted to claim unexpected edit or approval authority.');
       }
+      if(next.timeline_review.project_id!==project.id||
+         next.timeline_review.generation!==project.generation||
+         next.timeline_review.current_revision!==project.revision||
+         next.timeline_review.exact_source_sha256!==next.impact.candidate_source_sha256||
+         next.timeline_review.project_mutated||next.timeline_review.media_rendered||
+         next.timeline_review.human_approved){
+        throw new Error('Narration placement review belongs to another source or falsely claims execution/approval.');
+      }
+      setTimelineReview(next.timeline_review);
       setImpact(next.impact);
     }catch(failure){setError(reason(failure));}finally{setBusy(false);}
   };
@@ -144,6 +154,16 @@ export default function NarrationTakeReview({
       </li>)}</ul>
       <p>{impact.caption_timing_invalidation.replaceAll('_',' ')}. {impact.cuts_broll_invalidation.replaceAll('_',' ')}.</p>
       <p>{impact.sound_mix_invalidation.replaceAll('_',' ')}. Scene dependency validation: not run.</p>
+      {timelineReview&&<div className="audio-narration-source-evidence" aria-label="Narration source dependency map">
+        <strong>Source-bound dependency review · no edits applied</strong>
+        <p>Local transcript overlaps: {timelineReview.locally_overlapping_scene_ids.length?
+            timelineReview.locally_overlapping_scene_ids.map(id=>
+              project.scenes.find(scene=>scene.id===id)?.name??id.slice(0,8)).join(', '):
+            'none demonstrated'}</p>
+        <p>All {timelineReview.scene_ids_requiring_cut_review.length} scenes require a cut review; all {timelineReview.scene_ids_requiring_broll_review.length} require a B-roll continuity review because indirect temporal effects remain unknown.</p>
+        <p>{timelineReview.deliverable_ids_requiring_caption_review.length} caption-enabled delivery profiles require fresh review.</p>
+        <p>Changes to transitions, captions, B-roll, audio and encoder output have not been executed. Review the full project before publication.</p>
+      </div>}
       <p>No replacement was committed here. Original words and cues remain available for human comparison; publication and approval are still separate decisions.</p>
     </section>}
   </details>;

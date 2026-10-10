@@ -30,9 +30,20 @@ export interface NarrationReplacementImpact {
  origin_locked_source_unchanged:true;candidate_committed:false;
  human_owner_approved:false;
 }
+export interface NarrationTimelineReview {
+ schema:'motionwright.narration-timeline-dependency-preview/1';
+ project_id:string;generation:string;source_revision:number;current_revision:number;
+ exact_source_sha256:string;locally_overlapping_scene_ids:string[];
+ scene_ids_requiring_cut_review:string[];scene_ids_requiring_broll_review:string[];
+ deliverable_ids_requiring_caption_review:string[];source_scene_count:number;
+ dependency_scope:'CONSERVATIVE_WHOLE_PROJECT_CUT_BROLL_REVIEW';
+ impact_reason:string;original_content_preserved:true;project_mutated:false;
+ media_rendered:false;audio_regenerated:false;human_approved:false;
+}
 export interface NarrationReplacementResponse {
  schema:'motionwright.narration-impact-preview/1';
  impact:NarrationReplacementImpact;
+ timeline_review:NarrationTimelineReview;
  applied:false;source_locked:false;owner_approval:'REQUIRED';
  media_or_captions_rendered:false;
 }

@@ -210,3 +210,91 @@ fn no_unknown_json_fields_may_smuggle_owner_approval() {
             .is_err()
     );
 }
+
+#[test]
+fn mapped_scene_intersection_marks_caption_profiles_and_conservatively_all_downstream_cuts() {
+    let mut original = project();
+    original
+        .apply_change(&motionwright_domain::Change::AddScene {
+            name: "Original narration opening".into(),
+            objective: "Measured first sentence".into(),
+            duration_seconds: 3,
+        })
+        .unwrap();
+    original
+        .apply_change(&motionwright_domain::Change::AddScene {
+            name: "Original supporting material".into(),
+            objective: "Second beat".into(),
+            duration_seconds: 3,
+        })
+        .unwrap();
+    original.deliverables[0].captions = true;
+    for profile in original.deliverables.iter_mut().skip(1) {
+        profile.captions = false;
+    }
+    original.validate().unwrap();
+    let before = narration_source_snapshot(&original).unwrap();
+    let unchanged = original.clone();
+    let mut next = original.clone();
+    next.revision += 1;
+    next.audio.transcript[0].text =
+        "Original sentence updated in the same measured time window".into();
+    let mapped = motionwright_creative_library::assess_narration_timeline_dependents(
+        &before,
+        &before.exact_content_sha256,
+        &next,
+    )
+    .unwrap();
+    assert_eq!(mapped.source_scene_count, 2);
+    assert_eq!(
+        mapped.locally_overlapping_scene_ids,
+        vec![original.scenes[0].id]
+    );
+    assert_eq!(mapped.scene_ids_requiring_cut_review.len(), 2);
+    assert_eq!(mapped.scene_ids_requiring_broll_review.len(), 2);
+    assert_eq!(
+        mapped.deliverable_ids_requiring_caption_review,
+        vec![original.deliverables[0].id]
+    );
+    assert_eq!(
+        mapped.dependency_scope,
+        "CONSERVATIVE_WHOLE_PROJECT_CUT_BROLL_REVIEW"
+    );
+    assert!(!mapped.project_mutated && !mapped.media_rendered && !mapped.human_approved);
+    assert_eq!(
+        original, unchanged,
+        "Assessment must not mutate original human-authored project"
+    );
+}
+#[test]
+fn scene_mapping_rejects_stale_source_digest_and_change_to_unrelated_project() {
+    let mut first = project();
+    first
+        .apply_change(&motionwright_domain::Change::AddScene {
+            name: "Local scene".into(),
+            objective: "Narration test".into(),
+            duration_seconds: 3,
+        })
+        .unwrap();
+    let baseline = narration_source_snapshot(&first).unwrap();
+    let mut later = first.clone();
+    later.revision += 1;
+    later.audio.transcript[0].text = "New words".into();
+    assert!(
+        motionwright_creative_library::assess_narration_timeline_dependents(
+            &baseline,
+            &"cd".repeat(32),
+            &later
+        )
+        .is_err()
+    );
+    later.generation = Uuid::from_u128(900);
+    assert!(
+        motionwright_creative_library::assess_narration_timeline_dependents(
+            &baseline,
+            &baseline.exact_content_sha256,
+            &later
+        )
+        .is_err()
+    );
+}

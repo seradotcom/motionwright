@@ -309,3 +309,97 @@ pub fn propose_narration_replacement(
         human_owner_approved: false,
     })
 }
+
+/// Conservative source-linked placement review on the EXISTING shared scene
+/// timeline. Actual captions, cuts and B-roll are not recomposed here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NarrationTimelineReview {
+    pub schema: String,
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub source_revision: u64,
+    pub current_revision: u64,
+    pub exact_source_sha256: String,
+    /// Scene intervals provably intersect changed original transcript times.
+    pub locally_overlapping_scene_ids: Vec<Uuid>,
+    /// Cut/B-roll dependencies may reach outside the visible edited words.
+    /// Until transition/camera/shutter dependencies are modeled, review every
+    /// scene rather than under-invalidating an unknown downstream effect.
+    pub scene_ids_requiring_cut_review: Vec<Uuid>,
+    pub scene_ids_requiring_broll_review: Vec<Uuid>,
+    pub deliverable_ids_requiring_caption_review: Vec<Uuid>,
+    pub source_scene_count: usize,
+    pub dependency_scope: String,
+    pub impact_reason: String,
+    pub original_content_preserved: bool,
+    pub project_mutated: bool,
+    pub media_rendered: bool,
+    pub audio_regenerated: bool,
+    pub human_approved: bool,
+}
+pub fn assess_narration_timeline_dependents(
+    previous: &NarrationSourceSnapshot,
+    expected_source_sha256: &str,
+    next: &Project,
+) -> Result<NarrationTimelineReview> {
+    next.validate().map_err(|e| CraftError(e.to_string()))?;
+    let source = propose_narration_replacement(previous, expected_source_sha256, next)?;
+    check(
+        source.next_project_revision == next.revision
+            && source.previous_source_sha256 == expected_source_sha256,
+        "Narration impact belongs to a different project source revision",
+    )?;
+    check(
+        next.scenes.len() <= 256 && next.deliverables.len() <= 64,
+        "Narration placement preview exceeds bounded project size",
+    )?;
+    let global = source.voice_media_replaced
+        || !source.changed_cue_ids.is_empty()
+        || source.affected_spans.is_empty();
+    let mut local = BTreeSet::new();
+    for scene in &next.scenes {
+        let end = scene.start.checked_add(scene.duration).map_err(|e| {
+            CraftError(format!(
+                "Scene time cannot be mapped to measured narration: {e}"
+            ))
+        })?;
+        for span in &source.affected_spans {
+            if span.start < end && span.end > scene.start {
+                local.insert(scene.id);
+            }
+        }
+    }
+    // No inferred temporal dependency is silently treated as nonexistent.
+    let all = next.scenes.iter().map(|scene| scene.id).collect::<Vec<_>>();
+    let deliverables = next
+        .deliverables
+        .iter()
+        .filter(|profile| profile.captions || profile.burn_in_captions)
+        .map(|profile| profile.id)
+        .collect::<Vec<_>>();
+    Ok(NarrationTimelineReview {
+        schema: "motionwright.narration-timeline-dependency-preview/1".into(),
+        project_id: next.id,
+        generation: next.generation,
+        source_revision: previous.revision,
+        current_revision: next.revision,
+        exact_source_sha256: source.candidate_source_sha256,
+        locally_overlapping_scene_ids: local.into_iter().collect(),
+        scene_ids_requiring_cut_review: all.clone(),
+        scene_ids_requiring_broll_review: all,
+        deliverable_ids_requiring_caption_review: deliverables,
+        source_scene_count: next.scenes.len(),
+        dependency_scope: "CONSERVATIVE_WHOLE_PROJECT_CUT_BROLL_REVIEW".into(),
+        impact_reason: if global {
+            "Measured voice or cues changed; all editorial transitions require review".into()
+        } else {
+            "Local transcript spans identified; indirect transitions/B-roll dependencies remain unknown".into()
+        },
+        original_content_preserved: true,
+        project_mutated: false,
+        media_rendered: false,
+        audio_regenerated: false,
+        human_approved: false,
+    })
+}

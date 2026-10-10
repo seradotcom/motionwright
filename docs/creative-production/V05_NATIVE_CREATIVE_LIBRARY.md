@@ -567,3 +567,24 @@ A static-rendered Studio regression test checks that protected-source
 fields are disabled and the independent mix controls stay enabled;
 neither the test nor the lock claims an authenticated owner identity,
 external legal signature, artistic quality or publication clearance.
+
+### Conservative narration-to-scene review map
+
+The existing `NarrationReplacementImpact` now has an additional typed,
+source-bound `NarrationTimelineReview`. It takes the previously retained
+original voice snapshot and a newer persisted Project, rechecks exact
+project/generation/revision/source SHA, then maps changed rational
+transcript spans against the **existing** shared scene starts and
+durations, without introducing an audio/video scheduler or independently
+estimating voice timing. Studio displays intersecting original scene names
+and the delivery profile IDs that actually request captions.
+
+Because cuts and B-roll can be affected by lookbehind, camera motion,
+transitions, hold changes and global pacing, the review set for those two
+categories is conservatively **all authored scenes**, not only a convenient
+local clip. The local intersections help a human editor start navigating,
+but are never a complete pruning certificate. The report states
+`CONSERVATIVE_WHOLE_PROJECT_CUT_BROLL_REVIEW`, zero mutated project data,
+zero regenerated audio/rendered output and no human approval.
+Exact native timeline reflow, recutting/re-rendering, listening checks
+and a whole-film quality pass remain separate acceptance gates for E08-02.

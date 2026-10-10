@@ -823,13 +823,20 @@ pub async fn native_narration_replacement_impact(
     )?;
     let original = request.original;
     let source_sha = request.expected_original_sha256;
-    let candidate = tauri::async_runtime::spawn_blocking(move || {
-        motionwright_creative_library::propose_narration_replacement(
+    let (candidate, timeline_review) = tauri::async_runtime::spawn_blocking(move || {
+        let impact = motionwright_creative_library::propose_narration_replacement(
             &original,
             &source_sha,
             &project,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        let review = motionwright_creative_library::assess_narration_timeline_dependents(
+            &original,
+            &source_sha,
+            &project,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok::<_, String>((impact, review))
     })
     .await
     .map_err(|_| "Narration source comparison is unavailable.".to_string())??;
@@ -842,6 +849,7 @@ pub async fn native_narration_replacement_impact(
     Ok(json!({
         "schema":"motionwright.narration-impact-preview/1",
         "impact":candidate,
+        "timeline_review":timeline_review,
         "applied":false,"source_locked":false,
         "owner_approval":"REQUIRED",
         "media_or_captions_rendered":false
