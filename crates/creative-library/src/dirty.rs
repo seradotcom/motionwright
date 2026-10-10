@@ -41,13 +41,13 @@ fn intervals(mask: &[bool], kind: bool) -> Vec<FrameInterval> {
     for (index, value) in mask.iter().copied().enumerate() {
         if value == kind && begin.is_none() {
             begin = Some(index as u32);
-        } else if value != kind {
-            if let Some(start) = begin.take() {
-                out.push(FrameInterval {
-                    start,
-                    end_exclusive: index as u32,
-                });
-            }
+        } else if value != kind
+            && let Some(start) = begin.take()
+        {
+            out.push(FrameInterval {
+                start,
+                end_exclusive: index as u32,
+            });
         }
     }
     if let Some(start) = begin {
@@ -135,8 +135,7 @@ pub fn propose_native_frame_invalidation(
     let after_sha = native::source_digest(after).map_err(|e| CraftError(e.to_string()))?;
     let n = after.canvas.frames;
     let mut dirty = vec![true; n as usize];
-    let reason;
-    if before.canvas != after.canvas
+    let reason = if before.canvas != after.canvas
         || before.camera != after.camera
         || before.assets != after.assets
         || before.nodes.len() != after.nodes.len()
@@ -148,7 +147,7 @@ pub fn propose_native_frame_invalidation(
     {
         // A changed camera, source-media digest, hierarchy, composition
         // order or dimension can have cross-scene/per-frame consequences.
-        reason = "global_camera_asset_canvas_or_graph_dependency";
+        "global_camera_asset_canvas_or_graph_dependency"
     } else {
         dirty.fill(false);
         let prev = before
@@ -176,14 +175,14 @@ pub fn propose_native_frame_invalidation(
                 }
             }
         }
-        reason = if visual_changes == 0 {
+        if visual_changes == 0 {
             "metadata_or_human_locks_only_pixels_unchanged_unverified"
         } else if dirty.iter().any(|dirty| !*dirty) {
             "source_proved_zero_opacity_hold_frames_require_full_after_oracle"
         } else {
             "conservative_all_frames_for_visible_or_unverified_dependencies"
-        };
-    }
+        }
+    };
     let dirty_count = dirty.iter().filter(|d| **d).count() as u32;
     Ok(NativeFrameInvalidation {
         schema: "motionwright.native-source-invalidation/1".into(),
