@@ -1822,3 +1822,21 @@ export async function creativeDistillationExperiment(
       source_examples:sources,variations}
   });
 }
+
+export async function nativeNarrationSourceSnapshot(
+  project:Project
+):Promise<import('./narrationReviewTypes').NarrationSourceResponse>{
+  if(!isTauri())throw new Error('Narration source inspection requires the canonical local desktop service.');
+  return invoke('native_narration_take_snapshot',{request:nativeScope(project)});
+}
+export async function nativeNarrationReplacementImpact(
+  project:Project,original:import('./narrationReviewTypes').NarrationSourceSnapshot
+):Promise<import('./narrationReviewTypes').NarrationReplacementResponse>{
+  if(!isTauri())throw new Error('Narration impact comparison requires the canonical local desktop service.');
+  if(original.project_id!==project.id||original.generation!==project.generation||
+     original.revision>=project.revision||!/^[a-f0-9]{64}$/.test(original.exact_content_sha256))
+    throw new Error('Narration baseline is stale, malformed, or belongs to another project.');
+  return invoke('native_narration_replacement_impact',{request:{
+    ...nativeScope(project),original,expected_original_sha256:original.exact_content_sha256
+  }});
+}

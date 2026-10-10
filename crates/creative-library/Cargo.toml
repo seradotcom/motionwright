@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+motionwright-domain = { path = "../domain" }
 motionwright-hyperframes-profile = { path = "../hyperframes-profile" }
 serde.workspace = true
 serde_json.workspace = true
