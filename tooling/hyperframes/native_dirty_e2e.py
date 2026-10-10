@@ -114,6 +114,66 @@ def main()->None:
             stages[label]=(dest,manifest,rendering_ns)
         before_dir,before,render_before_ns=stages['before']
         after_dir,after,render_after_ns=stages['after']
+        # Execute the same *original* admitted HyperFrames capture engine, not
+        # a Python pillow/FFmpeg facsimile. This bounded command is a separate
+        # direct-renderer window job; it intentionally cannot produce a master.
+        after_source=fixture['after'];window_job='hf-'+UUID(int=3).hex
+        winwork=work/window_job;winoutput=results/window_job
+        winwork.mkdir();winoutput.mkdir()
+        plan=after_source['plan_json'].encode()
+        html=after_source['source_html'].encode()
+        (winwork/'plan.json').write_bytes(plan)
+        (winwork/'index.html').write_bytes(html)
+        window_args=[
+            str(RUNNER),'render-window','--runtime-root',str(RUNTIME),
+            '--node-sealed',str(Path(shutil.which('node')).resolve()),
+            '--ffmpeg-sealed',str(Path(shutil.which('ffmpeg')).resolve()),
+            '--chromium-sealed',str(binary),
+            '--work-root',str(work),'--output-root',str(results),
+            '--assets-root',str(assets),
+            '--job',window_job,'--plan-sha256',digest(plan),
+            '--source-sha256',after_source['source_sha256'],
+            '--first-frame','30','--end-frame-exclusive','90'
+        ]
+        window_start=perf_counter_ns()
+        run(window_args,300)
+        actual_window_render_ns=perf_counter_ns()-window_start
+        window=json.loads((winoutput/'frames.json').read_text())
+        window_result=json.loads((winoutput/'result.json').read_text())
+        window_rows=(winoutput/'observations.ndjson').read_text().splitlines()
+        require(window['schema']=='motionwright.hyperframes-native-frame-window/1'
+            and window_result['schema']=='motionwright.hyperframes-native-frame-window-result/1',
+            'Partial rendering falsely described itself as a mastered video')
+        require(window['timeline_total_frames']==FRAME_COUNT
+            and window['frame_count']==60
+            and window['selected_window']=={'start':30,'end_exclusive':90}
+            and window['observation']['coverage']=='selected_window'
+            and window_result['complete_master'] is False
+            and window_result['mezzanine'] is None
+            and not (winoutput/'mezzanine.mkv').exists(),
+            'Window render tried to claim a complete timeline/encoded master')
+        require(len(window['frames'])==len(window_rows)==60
+            and [entry['frame'] for entry in window['frames']]==list(range(30,90))
+            and all(json.loads(row)['frame'] in range(30,90) for row in window_rows),
+            'Partial renderer did not actually skip the first thirty native frame observations')
+        require(not any((winoutput/'frames'/f'frame-{i:06}.png').exists()for i in range(30)),
+            'Skipped native PNG frames were unexpectedly rendered')
+        require(all(sha_file(winoutput/'frames'/f'frame-{frame:06}.png')==
+              after['frames'][frame]['sha256']for frame in range(30,90)),
+              'Partial native capture diverges from the identical full-after source')
+        # No owner cache permission/claim may emerge from a bounded frame
+        # render request. Cache custody is a separately validated receiver.
+        require(window_result['native_frames_rendered']==60
+                and window_result['native_frames_reused']==0
+                and window_result['owner_cache_authority']=='NOT_GRANTED',
+                'Partial renderer attempted to claim unauthorized cache reuse')
+        # Negative interval controls must fail before executing a renderer.
+        for first,last in [('90','90'),('91','92'),('0','3601')]:
+            forbidden=list(window_args)
+            forbidden[-3]=first;forbidden[-1]=last
+            completed=subprocess.run(forbidden,capture_output=True,timeout=45,check=False)
+            require(completed.returncode!=0 and b'Frame window' in completed.stderr,
+                'Invalid/noncanonical source frame interval was not rejected at the contract gate')
         reusable=set(range(0,30));dirty=set(range(30,90))
         require(len(reusable|dirty)==FRAME_COUNT and not reusable&dirty,
                 'Source frame partition was not exhaustive/disjoint')
@@ -138,7 +198,7 @@ def main()->None:
         }
         full_zip=root/'full-after.zip';patch_zip=output/'dirty-60frames.zip'
         full_bytes=make_frame_zip(full_zip,after_dir/'frames',list(range(FRAME_COUNT)),after)
-        patch_bytes=make_frame_zip(patch_zip,after_dir/'frames',sorted(dirty),after)
+        patch_bytes=make_frame_zip(patch_zip,winoutput/'frames',sorted(dirty),after)
         # Actual receiver path, independently verifying EVERY original cache
         # receipt and every transmitted new PNG without reading the after
         # full-render source directory. A forged/stale cache fails closed.
@@ -193,7 +253,10 @@ def main()->None:
             'decoded_FFV1_full_vs_patch':'PASS',
             'dirty_intervals':draft['dirty_intervals'],
             'reused_intervals':draft['reusable_intervals'],
-            'rendered_native_frames_in_actual_test':180,
+            'rendered_native_frames_in_actual_test':240,
+            'native_rendered_after_window_only':60,
+            'native_rendered_full_after_oracle':90,
+            'actually_skipped_native_frames_in_partial_after_run':30,
             'actually_avoided_native_render_frames':0,
             'actually_avoided_codec_frames':0,
             'frame_receipts_equivalent':True,
@@ -207,7 +270,11 @@ def main()->None:
             'native_before_render_measured_ns':render_before_ns,
             'native_after_full_render_measured_ns':render_after_ns,
             'reconstructed_ffv1_encoding_measured_ns':encode_ns,
+            'native_after_window_render_measured_ns':actual_window_render_ns,
             'inferred_render_speedup':'NOT_MEASURED_OR_CLAIMED',
+            'render_window_source_digest':window['source_sha256'],
+            'render_window_master_status':'NOT_PRODUCED',
+            'window_observation_readback_frames':60,
             'audio_spring_shutter_and_transition_independence':'NOT_VERIFIED',
             'creative_approval':'NOT_REVIEWED'
         }
@@ -217,7 +284,8 @@ def main()->None:
             'source_bound_native_delta':'PASS',
             'frames_oracle_verified':FRAME_COUNT,
             'reuse_png_candidates':30,
-            'actual_native_render_frames_avoided':0,
+            'after_frames_actually_skipped_in_partial_render':30,
+            'actual_native_render_frames_avoided_over_three_acceptance_runs':0,
             'transfer_bytes_saved':full_bytes-actual_bundle_bytes
         }))
 if __name__=='__main__':main()

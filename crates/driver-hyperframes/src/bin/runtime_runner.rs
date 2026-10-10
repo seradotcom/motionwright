@@ -30,6 +30,7 @@ struct Args {
     job: String,
     plan_sha: String,
     source_sha: String,
+    frame_window: Option<(u32, u32)>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,9 +80,12 @@ struct Artifact {
     media_type: &'static str,
 }
 fn parse(raw: &[String]) -> Result<Args> {
-    if raw.first().map(String::as_str) != Some("render") || raw.len() != 21 {
+    let window_mode = raw.first().map(String::as_str) == Some("render-window");
+    if !(raw.first().map(String::as_str) == Some("render") && raw.len() == 21
+        || window_mode && raw.len() == 25)
+    {
         return Err(invalid(
-            "Runner requires the exact bounded render argument set",
+            "Runner requires the exact bounded render or render-window argument set",
         ));
     }
     let mut values = BTreeMap::new();
@@ -97,6 +101,8 @@ fn parse(raw: &[String]) -> Result<Args> {
             "--job",
             "--plan-sha256",
             "--source-sha256",
+            "--first-frame",
+            "--end-frame-exclusive",
         ]
         .contains(&pair[0].as_str())
             || values.insert(pair[0].clone(), pair[1].clone()).is_some()
@@ -117,6 +123,33 @@ fn parse(raw: &[String]) -> Result<Args> {
     if !hex_digest(&plan_sha) || !hex_digest(&source_sha) {
         return Err(invalid("Expected digests are malformed"));
     }
+    let frame_window = if window_mode {
+        let first_raw = get("--first-frame")?;
+        let end_raw = get("--end-frame-exclusive")?;
+        let first = first_raw
+            .parse::<u32>()
+            .map_err(|_| invalid("Invalid frame window start"))?;
+        let end = end_raw
+            .parse::<u32>()
+            .map_err(|_| invalid("Invalid frame window end"))?;
+        if first.to_string() != first_raw
+            || end.to_string() != end_raw
+            || first >= end
+            || end > motionwright_hyperframes_profile::MAX_FRAMES
+        {
+            return Err(invalid(
+                "Frame window must be a canonical bounded nonempty half-open interval",
+            ));
+        }
+        Some((first, end))
+    } else {
+        if values.len() != 10 {
+            return Err(invalid(
+                "Full render cannot accept ungranted frame window options",
+            ));
+        }
+        None
+    };
     Ok(Args {
         runtime: PathBuf::from(get("--runtime-root")?),
         node: PathBuf::from(get("--node-sealed")?),
@@ -128,6 +161,7 @@ fn parse(raw: &[String]) -> Result<Args> {
         job,
         plan_sha,
         source_sha,
+        frame_window,
     })
 }
 fn executable(path: &Path) -> Result<()> {
@@ -287,6 +321,14 @@ fn render(args: Args) -> Result<()> {
         ));
     }
     validate_plan(&plan).map_err(|e| invalid(e.to_string()))?;
+    let (first_frame, end_frame) = args
+        .frame_window
+        .unwrap_or((0, plan.document.canvas.frames));
+    if end_frame > plan.document.canvas.frames {
+        return Err(invalid(
+            "Frame window cannot exceed admitted native source timeline",
+        ));
+    }
     phase(&work, "document")?;
     let html = compile_html(&plan.document).map_err(|e| invalid(e.to_string()))?;
     if sha(html.as_bytes()) != args.source_sha {
@@ -312,6 +354,11 @@ fn render(args: Args) -> Result<()> {
         .arg(&assets)
         .arg(&args.plan_sha)
         .arg(&args.chromium);
+    if args.frame_window.is_some() {
+        capture
+            .arg(first_frame.to_string())
+            .arg(end_frame.to_string());
+    }
     child_environment(&mut capture, &runtime, &work)?;
     phase(&work, "launcher")?;
     let status = capture.status()?;
@@ -333,24 +380,49 @@ fn render(args: Args) -> Result<()> {
             "Native capture did not attest to its exact confinement profile",
         ));
     }
-    if manifest["schema"] != "motionwright.hyperframes-native-frames/1"
+    let window = args.frame_window.is_some();
+    let captured_count = end_frame - first_frame;
+    let schema = if window {
+        "motionwright.hyperframes-native-frame-window/1"
+    } else {
+        "motionwright.hyperframes-native-frames/1"
+    };
+    if manifest["schema"] != schema
         || manifest["source_sha256"] != args.source_sha
         || manifest["plan_sha256"] != args.plan_sha
-        || manifest["frame_count"] != c.frames
+        || manifest["frame_count"] != captured_count
         || manifest["width"] != c.width
         || manifest["height"] != c.height
     {
         return Err(invalid(
-            "Capture receipt differs from the admitted document",
+            "Capture receipt differs from the admitted document or window",
         ));
+    }
+    if window {
+        if manifest["timeline_total_frames"] != c.frames
+            || manifest["selected_window"] != json!({"start":first_frame,"end_exclusive":end_frame})
+            || manifest["observation"]["coverage"] != "selected_window"
+            || manifest["observation"]["frames"] != captured_count
+        {
+            return Err(invalid(
+                "Partial renderer attempted to claim a complete native observation",
+            ));
+        }
+    } else if manifest["observation"]["coverage"] != "all_frames"
+        || manifest["observation"]["frames"] != c.frames
+    {
+        return Err(invalid("Full native frame evidence is incomplete"));
     }
     let frames = manifest["frames"]
         .as_array()
         .ok_or_else(|| invalid("Capture omitted frames"))?;
-    if frames.len() != c.frames as usize {
-        return Err(invalid("Capture frame set is incomplete"));
+    if frames.len() != captured_count as usize {
+        return Err(invalid("Capture frame selection is incomplete"));
     }
-    for (index, frame) in frames.iter().enumerate() {
+    for (offset, frame) in frames.iter().enumerate() {
+        let index = usize::try_from(first_frame)
+            .map_err(|_| invalid("Native frame index outside bounded platform"))?
+            + offset;
         let name = format!("frames/frame-{index:06}.png");
         if frame["frame"] != index || frame["relative_path"] != name {
             return Err(invalid("Capture frame identity/order mismatch"));
@@ -359,6 +431,48 @@ fn render(args: Args) -> Result<()> {
         if frame["sha256"] != file_sha(&path, 32 * 1024 * 1024)? || frame["bytes"] != bytes {
             return Err(invalid("Capture frame bytes changed"));
         }
+    }
+    if window {
+        // Frame-window mode produces only current-source PNGs and readback for
+        // precisely [first,end). It NEVER emits a complete video, cache-hit
+        // claim, reused observations, an approved source or an encoder result.
+        write_new(&output.join("source.html"), html.as_bytes())?;
+        write_new(&output.join("source.json"), &plan_bytes)?;
+        let result = json!({
+            "schema":"motionwright.hyperframes-native-frame-window-result/1",
+            "project_id":plan.project_id,"generation":plan.generation,
+            "revision":plan.revision,"scene_id":plan.scene_id,
+            "source_sha256":args.source_sha,"plan_sha256":args.plan_sha,
+            "frame_count":captured_count,"timeline_total_frames":c.frames,
+            "selected_window":{"start":first_frame,"end_exclusive":end_frame},
+            "rate":c.rate,"width":c.width,"height":c.height,
+            "alpha":c.background.is_none(),"color":"srgb",
+            "frames":artifact(&output,"frames.json","application/json",4*1024*1024)?,
+            "mezzanine":serde_json::Value::Null,
+            "source":artifact(&output,"source.html","text/html",3*1024*1024)?,
+            "document":artifact(&output,"source.json","application/json",2*1024*1024)?,
+            "observations":artifact(&output,"observations.ndjson","application/x-ndjson",64*1024*1024)?,
+            "runtime_receipt_sha256":sha(&read(&runtime,"runtime.json",1024*1024)?),
+            "sandbox_mode":manifest["sandbox_mode"],
+            "native_frames_rendered":captured_count,
+            "native_frames_reused":0,
+            "complete_master":false,
+            "owner_cache_authority":"NOT_GRANTED",
+            "creative_approval":"required"
+        });
+        write_new(
+            &output.join("result.json"),
+            &serde_json::to_vec_pretty(&result)?,
+        )?;
+        phase(&work, "finished")?;
+        println!(
+            "{}",
+            json!({
+                "job":args.job,"selected_window":{"start":first_frame,"end_exclusive":end_frame},
+                "native_frames_rendered":captured_count,"source_sha256":args.source_sha
+            })
+        );
+        return Ok(());
     }
     let mut encode = Command::new(&args.ffmpeg);
     encode
@@ -572,5 +686,86 @@ mod tests {
         assert!(CAPTURE.contains("window.__player.renderSeek"));
         assert!(AUTHOR.contains("textContent=run.text"));
         assert!(!AUTHOR.contains("innerHTML"));
+    }
+}
+
+#[cfg(test)]
+mod bounded_window_tests {
+    use super::*;
+    fn base(mode: &str) -> Vec<String> {
+        let mut options = vec!["render".to_owned()];
+        for (name, value) in [
+            ("--runtime-root", "/runtime"),
+            ("--node-sealed", "/node"),
+            ("--ffmpeg-sealed", "/ffmpeg"),
+            ("--chromium-sealed", "/chromium"),
+            ("--work-root", "/work"),
+            ("--output-root", "/output"),
+            ("--assets-root", "/assets"),
+            ("--job", "hf-0123456789abcdef0123456789abcdef"),
+            (
+                "--plan-sha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "--source-sha256",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        ] {
+            options.push(name.into());
+            options.push(value.into());
+        }
+        if mode == "render-window" {
+            options[0] = "render-window".into();
+            options.push("--first-frame".into());
+            options.push("30".into());
+            options.push("--end-frame-exclusive".into());
+            options.push("90".into());
+        }
+        options
+    }
+    #[test]
+    fn full_and_partial_invocations_are_different_exact_commands() {
+        assert_eq!(parse(&base("render")).unwrap().frame_window, None);
+        assert_eq!(
+            parse(&base("render-window")).unwrap().frame_window,
+            Some((30, 90))
+        );
+        let mut malformed = base("render-window");
+        malformed[0] = "render".into();
+        assert!(parse(&malformed).is_err());
+        let mut malformed = base("render");
+        malformed[0] = "render-window".into();
+        assert!(parse(&malformed).is_err());
+    }
+    #[test]
+    fn invalid_or_noncanonical_window_boundaries_are_rejected() {
+        for (first, end) in [
+            ("90", "90"),
+            ("90", "30"),
+            ("0", "3601"),
+            ("00", "90"),
+            ("-1", "90"),
+            ("0", "0"),
+            ("NaN", "90"),
+            ("30", "090"),
+        ] {
+            let mut raw = base("render-window");
+            raw[22] = first.into();
+            raw[24] = end.into();
+            assert!(
+                parse(&raw).is_err(),
+                "Unexpected accepted window {first}..{end}"
+            );
+        }
+    }
+    #[test]
+    fn no_unknown_flags_or_duplicate_authority_are_admitted() {
+        let mut raw = base("render-window");
+        raw[21] = "--script".into();
+        assert!(parse(&raw).is_err());
+        let mut raw = base("render-window");
+        raw[23] = "--first-frame".into();
+        assert!(parse(&raw).is_err());
     }
 }
