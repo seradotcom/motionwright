@@ -142,19 +142,44 @@ fn exact_approved_narration_is_persistent_and_cannot_be_changed_silently() {
     let unchanged = service.project(p.id).unwrap();
     assert_eq!(unchanged.revision, p.revision);
     assert_eq!(unchanged.audio.transcript, p.audio.transcript);
-    let mut mix = p.audio.mix.clone();
-    mix.music_gain_db = -7.0;
-    p = apply(
-        &service,
-        &p,
-        "approved:edit-original-mix",
-        Change::SetMixIntent { mix: mix.clone() },
-    );
-    assert_eq!(p.audio.mix, mix);
-    assert_eq!(
-        p.production_design.narration_take_lock,
-        unchanged.production_design.narration_take_lock
-    );
+    let protected_source = unchanged.production_design.narration_take_lock.clone();
+    let locked_revision = unchanged.revision;
+    for iteration in 0..10_u64 {
+        let before = p.clone();
+        let mut mix = p.audio.mix.clone();
+        mix.music_gain_db = -7.0 + (iteration as f32 * 0.25);
+        p = apply(
+            &service,
+            &p,
+            &format!("approved:non-destructive-mix-{iteration}"),
+            Change::SetMixIntent { mix: mix.clone() },
+        );
+        assert_eq!(p.revision, before.revision + 1);
+        assert_eq!(p.audio.mix, mix);
+        assert_eq!(p.production_design.narration_take_lock, protected_source);
+        let from_disk = StudioService::open(&db).unwrap().project(p.id).unwrap();
+        assert_eq!(from_disk.revision, p.revision);
+        assert_eq!(
+            from_disk.production_design.narration_take_lock,
+            protected_source
+        );
+        from_disk.validate().unwrap();
+        // A second client holding an older project stamp cannot use its edit
+        // to replace the source or remove a human-recorded content decision.
+        let mut changed = before.audio.transcript[0].clone();
+        changed.text = format!("Stale agent rewrite {iteration}");
+        assert!(
+            service
+                .apply(
+                    p.id,
+                    &before.stamp(),
+                    &format!("approved:stale-voice-{iteration}"),
+                    &Change::UpsertTranscriptSegment { segment: changed }
+                )
+                .is_err()
+        );
+    }
+    assert_eq!(p.revision, locked_revision + 10);
     // An older writer cannot unprotect a newer committed project revision.
     assert!(
         service
