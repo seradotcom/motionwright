@@ -1,5 +1,5 @@
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
-import { isPaletteShortcut } from "./commandPalette";
+import { isPaletteShortcut } from "./editorCommandSearch";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import {
   Activity,

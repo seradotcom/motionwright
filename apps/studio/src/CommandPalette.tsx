@@ -2,7 +2,7 @@ import { Keyboard, Search, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { filterPaletteCommands, type PaletteSearchItem } from "./commandPalette";
+import { filterPaletteCommands, type PaletteSearchItem } from "./editorCommandSearch";
 import "./command-palette.css";
 
 export interface EditorCommand extends PaletteSearchItem {

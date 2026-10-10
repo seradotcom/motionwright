@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterPaletteCommands, isPaletteShortcut, type PaletteSearchItem } from "./commandPalette";
+import { filterPaletteCommands, isPaletteShortcut, type PaletteSearchItem } from "./editorCommandSearch";
 
 const commands: PaletteSearchItem[] = [
   { id: "brief", label: "Go to Brief", group: "Navigate", description: "Project context" },
