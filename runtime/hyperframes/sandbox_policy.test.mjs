@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classifyHostSandbox, inspectHostSandboxProof, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
+import {classifyHostSandbox, inspectHostSandboxProof, mapShape, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
 const baseline={
   uidMap:'         0       1001          1\n',
   status:'Name:\tnode\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n',
@@ -20,6 +20,22 @@ test('only a verified rootless, enforced no-new-privileges Host grants the outer
   ]){
     assert.equal(classifyHostSandbox({...baseline,...change}),'chromium-userns',JSON.stringify(change));
   }
+});
+test('UID map classifier reports shape, never numeric host IDs',()=>{
+ const cases=[
+  ['         0       1001          1\n','single_uid_host_nonzero'],
+  ['         0          0          1\n','single_uid_host_zero'],
+  ['         0          0 4294967295\n','host_zero_large_range'],
+  ['         0       1001      65536\n','host_nonzero_large_range'],
+  ['', 'missing'],
+  ['not valid','malformed'],
+  ['0 1001 1\n1 1002 1\n','multiple_ranges'],
+  ['1 1001 1','namespace_root_not_zero']
+ ];
+ for(const [raw,expected]of cases){
+  assert.equal(mapShape(raw),expected);
+  assert.ok(!mapShape(raw).includes('1001'));
+ }
 });
 test('Host proof retains exact five independent true/false safety inputs',()=>{
  const confirmed=inspectHostSandboxProof(baseline);

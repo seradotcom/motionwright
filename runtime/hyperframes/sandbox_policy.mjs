@@ -37,6 +37,22 @@ function readHostSandboxInput() {
     restrict:readBoundedKernelStatus('/proc/sys/kernel/apparmor_restrict_unprivileged_userns')
   };
 }
+export function mapShape(uidMap){
+  const rows=uidMap.trim().split(/\n/).filter(Boolean);
+  if(!rows.length)return 'missing';
+  if(rows.length!==1)return 'multiple_ranges';
+  const match=/^\s*([0-9]+)\s+([0-9]+)\s+([0-9]+)\s*$/.exec(rows[0]);
+  if(!match)return 'malformed';
+  const [,inside,outside,count]=match.map(String);
+  if(inside!=='0')return 'namespace_root_not_zero';
+  if(outside==='0' && count==='1')return 'single_uid_host_zero';
+  if(outside!=='0' && count==='1')return 'single_uid_host_nonzero';
+  if(outside==='0')return 'host_zero_large_range';
+  return 'host_nonzero_large_range';
+}
+export function detectHostUidMapShape(){
+  return mapShape(readBoundedKernelStatus('/proc/self/uid_map'));
+}
 export function detectHostSandboxProof() {
   return inspectHostSandboxProof(readHostSandboxInput());
 }
