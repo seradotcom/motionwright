@@ -763,3 +763,81 @@ pub async fn creative_distillation_source_experiment(
       "owner_review":"required","authority":"read_only_source_experiment"}),
     )
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NarrationTakeScope {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NarrationSourceComparisonRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    original: motionwright_creative_library::NarrationSourceSnapshot,
+    expected_original_sha256: String,
+}
+/// Snapshot the measured source voice/cues of the exact canonical project
+/// revision, without claiming an authenticated human lock or media decode.
+#[tauri::command]
+pub async fn native_narration_take_snapshot(
+    state: State<'_, AppState>,
+    request: NarrationTakeScope,
+) -> Result<Value, String> {
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let evidence = motionwright_creative_library::narration_source_snapshot(&project)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "schema":"motionwright.narration-source-preview/1",
+        "source":evidence,"project_revision":project.revision,
+        "read_only":true,"lock_authenticated":false,
+        "media_decoded":false,"creative_approval":"REQUIRES_HUMAN_REVIEW"
+    }))
+}
+/// Compare a previously returned exact source snapshot to a newer persisted
+/// revision. Never accepts a source-provided execution or approval flag.
+#[tauri::command]
+pub async fn native_narration_replacement_impact(
+    state: State<'_, AppState>,
+    request: NarrationSourceComparisonRequest,
+) -> Result<Value, String> {
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let original = request.original;
+    let source_sha = request.expected_original_sha256;
+    let candidate = tauri::async_runtime::spawn_blocking(move || {
+        motionwright_creative_library::propose_narration_replacement(
+            &original,
+            &source_sha,
+            &project,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Narration source comparison is unavailable.".to_string())??;
+    current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    Ok(json!({
+        "schema":"motionwright.narration-impact-preview/1",
+        "impact":candidate,
+        "applied":false,"source_locked":false,
+        "owner_approval":"REQUIRED",
+        "media_or_captions_rendered":false
+    }))
+}

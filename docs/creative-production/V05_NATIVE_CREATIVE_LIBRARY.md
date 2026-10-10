@@ -482,3 +482,22 @@ owner lock is performed**: a real locked take must still be authenticated
 through the canonical project service and edited by a separately accepted
 new revision. This is the source/impact half of E08-02, not the
 end-to-end accepted narrative lock or an ASR truth engine.
+
+
+### Desktop audio narration preflight
+
+The existing `AudioWorkspace` now surfaces `NarrationTakeReview`, a
+**read-only** source comparison. It can snapshot the *measured active take*
+from the exact current project revision and, after a separately committed
+editorial change, compare it with the newer exact revision. Every request
+is checked through the canonical StudioService scope and the older
+SHA-256-bound source snapshot; work runs on a bounded desktop worker
+and the service re-checks revision before returning the impact.
+The browser demo refuses to invent original measured voice.
+The response identifies changed segment IDs, cue IDs, rational time
+spans and necessary caption/cut/B-roll/mix reviews; it never mutates
+the project, processes a new voice provider or claims actual owner
+authentication. The baseline is ephemeral UI state to avoid quietly
+persisting a purported owner-signed take. A true owner-approved
+persistent narration lock and mix/caption reflow must still be
+implemented as a separate canonical change operation.

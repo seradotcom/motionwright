@@ -369,7 +369,11 @@
       "release_acceptance": "NOT_CLOSED",
       "code_evidence": [
         "crates/creative-library/src/narration.rs",
-        "crates/creative-library/tests/narration_lock.rs"
+        "crates/creative-library/tests/narration_lock.rs",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/NarrationTakeReview.tsx",
+        "apps/studio/src/narrationReviewTypes.ts",
+        "apps/studio/src/narrationReviewBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },

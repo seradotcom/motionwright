@@ -22,6 +22,7 @@ import type {
 } from "./types";
 import { rationalSeconds } from "./types";
 import { waveformPage as loadWaveformPage } from "./api";
+import NarrationTakeReview from "./NarrationTakeReview";
 
 type Commit = (change: Change) => Promise<void>;
 
@@ -376,6 +377,8 @@ export default function AudioWorkspace({
       </div>
       {!desktopMode && <div className="audio-truth-line"><CircleDashed size={14} /> Desktop runtime required for measured file import.</div>}
       {importError && <div className="portable-message error" role="alert"><strong>Voice import blocked.</strong><span>{importError}</span></div>}
+
+      <NarrationTakeReview project={project} desktopMode={desktopMode}/>
 
       <div className="audio-main-grid">
         <aside className="voice-take-ledger" aria-label="Voice takes">
