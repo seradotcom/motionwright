@@ -44,10 +44,14 @@ The verifier requires the exact v1 schema, canonical UUIDs and source rate, a bo
 
 A successful check prints `"status": "sha256-content-verified"`, `"signed_authenticity": false` and `"human_acceptance": false`. If an independent trusted hash was supplied, `"trusted_anchor_matched": true` also appears.
 
+## Verify directly in Motionwright desktop
+
+The **Deliver → Verify a delivered MP4** panel can check an existing local MP4/JSON pair without the original project or an active producer session. It uses a read-only native Rust streaming verifier and can optionally check an independently trusted SHA-256. This is distinct from the CLI verifier above, which remains the portable dependency-free option. See [in-app verification contract](local-mp4-integrity-review.md).
+
 ## Security and product boundaries
 
 - A locally verified checksum does not prove H.264/AAC decoding, visual frame fidelity, proper audio mix, SRT/subtitle synchronization, accessibility or that the native renderer truly made the content. These require the separate pinned-runtime and human acceptance gates.
 - An unsigned JSON descriptor is **self-declared metadata**. Checking source UUIDs or the pinned SDK SHA is a syntactic/provenance-consistency check, **not** a cryptographic publisher identity check.
-- No new Tauri filesystem plugin, general write endpoint, network upload, generic shell command, arbitrary source selection or bypass of `DeliverLocal` was introduced.
+- Export still introduces no general filesystem plugin, generic write endpoint, network upload, shell command, arbitrary **master source** selection or bypass of `DeliverLocal`. The new separate read-only verifier accepts only a user-selected local receipt and its explicitly paired MP4; it cannot change the project or authorize delivery.
 - If the manifest is disabled, the original MP4-only create-new export behavior and `MasterExportReceipt` remain available, with its existing SHA-256 and project revision.
 - Desktop Rust regressions test actual source-bound output bytes, manifest fields without private paths, no overwrite, sidecar collision, integrity mismatch and Unix private permissions. Lightweight Python tests reject tampered/swapped media, directory traversal, malformed schemas, symlinks, bad UUID/rate/counts, and unverifiable content. Browser tests verify that the new flag is optional and the UI does not supply an arbitrary receipt or hash. The tests **do not** mark any of the 60 independent product acceptance cases PASS.

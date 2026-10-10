@@ -409,6 +409,18 @@ export interface AvSyncSpec {
   cues: AvSyncCue[];
 }
 
+export interface PortableMediaVerification {
+  status: "sha256-content-verified";
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  /** String preserves the exact u64 revision without JavaScript rounding. */
+  source_revision: string;
+  signed_authenticity: false;
+  human_acceptance: false;
+  trusted_anchor_matched: boolean;
+}
+
 export interface MasterExportReceipt {
   destination: string;
   size_bytes: number;

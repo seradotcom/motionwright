@@ -1,9 +1,13 @@
 mod av_delivery;
 mod av_master;
 mod effect_grants;
+mod media_integrity;
 
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
+};
+use media_integrity::{
+    PortableMediaVerification, VerifyPortableMediaRequest, verify_portable_media,
 };
 mod native_preview;
 
@@ -1137,6 +1141,17 @@ async fn export_native_av_master(
     Ok(receipt)
 }
 
+/// Verify a user-selected local MP4 and its unsigned portable JSON receipt.
+/// Pure read-only content comparison: this grants no delivery or publisher authority.
+#[tauri::command]
+async fn verify_local_media_integrity(
+    request: VerifyPortableMediaRequest,
+) -> Result<PortableMediaVerification, String> {
+    tauri::async_runtime::spawn_blocking(move || verify_portable_media(request))
+        .await
+        .map_err(|_| "Portable media verification task failed.".to_string())?
+}
+
 /// Read a completed, owner-verified native AV master, bounded to 16 MiB.
 #[tauri::command]
 async fn review_native_av_master(
@@ -1766,6 +1781,7 @@ fn main() {
             render_motion_canvas,
             assemble_av_master,
             export_native_av_master,
+            verify_local_media_integrity,
             review_native_av_master,
             preview_native_frame,
             import_asset_file,
