@@ -19,7 +19,16 @@ fn sha(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 fn time(num: i64, den: i64) -> domain::RationalTime {
-    domain::RationalTime { num, den }
+    assert!(num >= 0 && den > 0);
+    let (mut a, mut b) = (num, den);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let divisor = a;
+    domain::RationalTime {
+        num: num / divisor,
+        den: den / divisor,
+    }
 }
 fn original_input(file: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let path = Path::new(file);
