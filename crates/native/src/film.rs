@@ -1019,6 +1019,50 @@ fn build_segment(
         });
     }
 
+    // Semwright's native authoring runtime can time many source-bound shots
+    // within one Motion Canvas scene: each shot root is shown only over its
+    // exact rational start/end interval. Mapping *every* tiny editorial scene
+    // into a separate Motion Canvas scene made the native scene-playback
+    // transition path discard frames (issue #81; real 2/32 and 85/96 evidence).
+    // Keep every editorial shot/beat and its original per-scene timing span;
+    // only group contiguous native scene transitions behind one run envelope.
+    // This is not flattening into pixels or changing the measured frame count.
+    let sequences = if sequences.len() > 1 {
+        if spans.len() >= MAX_TEMPORAL_SPANS {
+            return Err(unsupported(
+                "A multi-scene native Film requires one more bounded run span",
+            ));
+        }
+        let run_span = format!("runspan-{segment_index}");
+        spans.push(TemporalSpan {
+            id: run_span.clone(),
+            minimum: duration,
+            preferred: duration,
+            maximum: duration,
+            anchor: StartAnchor::Absolute {
+                time: RationalTime::ZERO,
+            },
+            preference_priority: 0,
+        });
+        let mut ordered_beats = Vec::new();
+        for sequence in sequences {
+            // Retain each source scene span as a real constrained interval.
+            constraints.push(TemporalConstraint::Contains {
+                id: format!("run-contains-{}", sequence.id),
+                parent: run_span.clone(),
+                child: sequence.span_id,
+            });
+            ordered_beats.extend(sequence.beats);
+        }
+        vec![Sequence {
+            id: format!("mw-run-{segment_index}"),
+            span_id: run_span,
+            beats: ordered_beats,
+        }]
+    } else {
+        sequences
+    };
+
     let film = Film {
         version: AUTHORING_VERSION,
         id: format!("mw-{}-{segment_index}", project.id.simple()),
@@ -1217,7 +1261,23 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].scene_ids.len(), 2);
         assert_eq!(segments[0].frame_count, 90);
-        assert_eq!(segments[0].film.sequences.len(), 2);
+        assert_eq!(segments[0].film.sequences.len(), 1);
+        assert_eq!(segments[0].film.sequences[0].beats.len(), 2);
+        let realized = realize(&segments[0].film).unwrap();
+        assert_eq!(realized.scenes.len(), 1);
+        assert_eq!(realized.scenes[0].shots.len(), 2);
+        for (source, beat) in project
+            .scenes
+            .iter()
+            .zip(&segments[0].film.sequences[0].beats)
+        {
+            let interval = realized.schedule.interval(&beat.shots[0].span_id).unwrap();
+            assert_eq!(interval.start, source.start);
+            assert_eq!(
+                interval.end,
+                source.start.checked_add(source.duration).unwrap()
+            );
+        }
         assert_eq!(
             segments[0].film.editorial.font.family,
             MOTION_CANVAS_FONT_FAMILY
@@ -1246,6 +1306,68 @@ mod tests {
         assert!(realize(&segments[0].film).is_ok());
     }
 
+    #[test]
+    fn thirty_three_one_frame_editorial_scenes_keep_exact_native_shot_intervals() {
+        // Reproduces issue #81 without starting a browser or turning a failed
+        // provider receipt into PASS. The heavy CI still must prove the PNG
+        // observations and the exact native 32+1 MLT output.
+        let mut project = Project::new("Exact-frame multi-shot Film").unwrap();
+        for index in 0..33 {
+            project
+                .apply_change(&Change::AddScene {
+                    name: format!("Frame {index:02}"),
+                    objective: "Preserve the authored scene cut".into(),
+                    duration_seconds: 1,
+                })
+                .unwrap();
+            let scene_id = project.scenes.last().unwrap().id;
+            project
+                .apply_change(&Change::SetSceneDuration {
+                    scene_id,
+                    duration: RationalTime::new(1, 30).unwrap(),
+                })
+                .unwrap();
+            project
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: node("shape", None),
+                })
+                .unwrap();
+        }
+        let options = fixture_options(&project);
+        let profile = project
+            .deliverables
+            .iter()
+            .find(|item| item.name == "Master 16:9")
+            .unwrap();
+        let segments = build_motion_canvas_segments(&project, profile.id, &options).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].scene_ids.len(), 32);
+        assert_eq!(segments[1].scene_ids.len(), 1);
+        assert_eq!(segments[0].frame_count, 32);
+        assert_eq!(segments[1].frame_count, 1);
+        for (segment, first_scene) in [(&segments[0], 0usize), (&segments[1], 32)] {
+            // A single managed Motion Canvas Scene owns each native render.
+            // Individual authored shots remain separate and exact.
+            assert_eq!(segment.film.sequences.len(), 1);
+            let sequence = &segment.film.sequences[0];
+            assert_eq!(sequence.beats.len(), segment.scene_ids.len());
+            let realized = realize(&segment.film).unwrap();
+            assert_eq!(realized.scenes.len(), 1);
+            assert_eq!(realized.scenes[0].shots.len(), segment.scene_ids.len());
+            for (offset, beat) in sequence.beats.iter().enumerate() {
+                let original = &project.scenes[first_scene + offset];
+                let interval = realized.schedule.interval(&beat.shots[0].span_id).unwrap();
+                let expected_start = RationalTime::new(offset as i64, 30).unwrap();
+                let expected_end = RationalTime::new(offset as i64 + 1, 30).unwrap();
+                assert_eq!(interval.start, expected_start);
+                assert_eq!(interval.end, expected_end);
+                assert_eq!(segment.scene_ids[offset], original.id);
+                assert_eq!(interval.duration().unwrap(), original.duration);
+            }
+        }
+    }
+
     fn fixture_options(project: &Project) -> FilmBuildOptions {
         FilmBuildOptions {
             frame_rate: Rate::new(30, 1).unwrap(),
@@ -1264,7 +1386,7 @@ mod tests {
     }
 
     fn fixed_position(segment: &MotionCanvasSegment, scene_index: usize) -> Point {
-        let subject = &segment.film.sequences[scene_index].beats[0].shots[0].subjects[0];
+        let subject = &segment.film.sequences[0].beats[scene_index].shots[0].subjects[0];
         match &subject.layout {
             SpatialIntent::Fixed { position, .. } => *position,
             other => panic!("Expected fixed Film subject after static camera pan: {other:?}"),
