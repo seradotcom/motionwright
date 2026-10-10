@@ -239,9 +239,12 @@ fn mapped_scene_intersection_marks_caption_profiles_and_conservatively_all_downs
     next.revision += 1;
     next.audio.transcript[0].text =
         "Original sentence updated in the same measured time window".into();
-    let mapped =
-        craft::assess_narration_timeline_dependents(&before, &before.exact_content_sha256, &next)
-            .unwrap();
+    let mapped = motionwright_creative_library::assess_narration_timeline_dependents(
+        &before,
+        &before.exact_content_sha256,
+        &next,
+    )
+    .unwrap();
     assert_eq!(mapped.source_scene_count, 2);
     assert_eq!(
         mapped.locally_overlapping_scene_ids,
@@ -278,11 +281,16 @@ fn scene_mapping_rejects_stale_source_digest_and_change_to_unrelated_project() {
     later.revision += 1;
     later.audio.transcript[0].text = "New words".into();
     assert!(
-        craft::assess_narration_timeline_dependents(&baseline, &"cd".repeat(32), &later).is_err()
+        motionwright_creative_library::assess_narration_timeline_dependents(
+            &baseline,
+            &"cd".repeat(32),
+            &later
+        )
+        .is_err()
     );
     later.generation = Uuid::from_u128(900);
     assert!(
-        craft::assess_narration_timeline_dependents(
+        motionwright_creative_library::assess_narration_timeline_dependents(
             &baseline,
             &baseline.exact_content_sha256,
             &later
