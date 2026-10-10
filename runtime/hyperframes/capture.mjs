@@ -95,7 +95,14 @@ if(!executable.isFile() || (executable.mode&0o111)===0){
 // Probe stdout/stderr is ephemeral inside this exact synthetic CI invocation.
 // Only one fixed error CLASS crosses into journal/phase evidence; never persist
 // browser stderr (it may include absolute machine paths or user content).
-const probe=spawnSync(browserBinary,['--version'],{
+// Determine whether Chromium's internal sandbox can create another
+// namespace BEFORE any child process. An owner-verified outer bwrap is already
+// protected by AppArmor, no network and the Host's own executable allowlist.
+const sandboxMode=detectNativeSandboxMode();
+phase(sandboxMode==='semwright-bwrap-outer'?'outer_host_bwrap_verified':'chromium_userns_selected');
+const versionArgs=sandboxMode==='semwright-bwrap-outer'
+  ? ['--version','--no-sandbox'] : ['--version'];
+const probe=spawnSync(browserBinary,versionArgs,{
   timeout:30000,encoding:'utf8',maxBuffer:16384,
   stdio:['ignore','pipe','pipe']
 });
@@ -109,12 +116,9 @@ if(probe.error || probe.status!==0){
   throw new Error('Owner-pinned browser executable could not complete bounded version probe: '+failure);
 }
 phase('browser_binary_probe_ok');
-// This is a security boundary, not a performance fallback: the strictly
-// confined Semwright Host already owns the namespace and denies nested
-// user namespaces. Only a verified rootless AppArmor-enforced Host may
-// select the outer sandbox; all other execution retains Chromium's userns.
-const sandboxMode=detectNativeSandboxMode();
-phase(sandboxMode==='semwright-bwrap-outer'?'outer_host_bwrap_verified':'chromium_userns_selected');
+// The runtime mode above is decided from kernel-visible Host evidence,
+// never from user input or environment opt-in. The direct renderer retains
+// Chromium's own user namespace sandbox.
 let browser;
 try{
   browser=await chromium.launch({executablePath:sealedBrowser,
