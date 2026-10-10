@@ -57,3 +57,33 @@ are labeled *SYNTHETIC / NOT MASTERED* in the CI artifact.
 
 Evidence: `https://github.com/seradotcom/motionwright/actions/runs/38074769955`;
 download artifact `v05-original-voice-music-sfx-NOT_MASTERED-cb8b5ea177087553e87ffef796948d74a89818c9`.
+
+
+## Canonical Studio local source auditioner (candidate, not release)
+
+`AudioWorkspace → Original voice/music/SFX` now permits a user to choose
+an existing 48-kHz DeliveryProfile, the current active measured voice and
+**two different, previously imported original WAV assets** for music and
+SFX. The user must explicitly attest that those source materials may be
+used for *local audition only*; this is an in-chat/local attestation, not
+independent licensing verification or publication approval.
+
+The desktop command `native_original_mix_audition` resolves each source
+through `StudioService::decoded_stem_for_original_mix` and its existing
+content-addressed Storage. It does **not** accept arbitrary audio
+filenames, model-specified URLs, source programs or new filesystem grants.
+The immutable source file's SHA-256 is rechecked against the project
+asset and its decoded 48-kHz stereo s16le PCM is separately hashed.
+A source cannot silently resample, change channels, exceed 15 seconds or
+switch projects/revisions. The source domain is checked again after the
+bounded worker finishes, before sending the local WAV playback bytes.
+
+The editor uses a temporary in-memory WAV object URL that is revoked
+on revision change/unmount. There is no automatic addition to the
+timeline, no media publishing, no fabricated LUFS/true-peak measurements
+from the preview, no automatic limiter or editing of the voice take,
+and no speech-language translation. Users must still listen and run
+independent true-peak/R128 measurements for each real deliverable.
+The independent CI fixture uses original synthetic tones, and an
+actual human speech/operator project audition and independent
+release acceptance remain **NOT VERIFIED**.

@@ -1776,6 +1776,7 @@ fn main() {
             creative_native::creative_distillation_source_experiment,
             creative_native::native_narration_take_snapshot,
             creative_native::native_narration_replacement_impact,
+            creative_native::native_original_mix_audition,
             creative_native::native_localized_repair_preflight,
             assemble_av_master,
             export_native_av_master,

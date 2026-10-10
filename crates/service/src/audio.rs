@@ -567,3 +567,185 @@ mod tests {
         assert!(matches!(error, StorageError::InvalidDerivedCache(_)));
     }
 }
+
+/// Exact short-form PCM source bytes for first-party original MixPlan.
+/// Read only after Storage verified a project-owned, content-addressed blob.
+/// Does not resample, infer speech, normalize, or publish a rendered file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalMixDecodedPcm {
+    pub original_asset_sha256: String,
+    pub decoded_pcm_sha256: String,
+    pub sample_frames: u64,
+    pub interleaved_s16le: Vec<u8>,
+}
+pub fn decode_original_mix_pcm(
+    owner_path: &Path,
+    original_asset_sha256: &str,
+) -> Result<OriginalMixDecodedPcm> {
+    let file = std::fs::symlink_metadata(owner_path)?;
+    if !file.is_file()
+        || file.file_type().is_symlink()
+        || !(44..=8 * 1024 * 1024).contains(&file.len())
+    {
+        return Err(invalid(
+            "Original mix source must be a bounded immutable audio file",
+        ));
+    }
+    let (mut format, mut decoder, track_id) = open_audio(owner_path)?;
+    let mut raw = Vec::new();
+    let mut count = 0_u64;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(SymphoniaError::ResetRequired) => {
+                return Err(invalid(
+                    "Mixed audio track cannot change source format mid-decode",
+                ));
+            }
+            Err(err) => {
+                return Err(invalid(format!(
+                    "Original mix decode packet invalid: {err}"
+                )));
+            }
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let decoded = decoder
+            .decode(&packet)
+            .map_err(|err| invalid(format!("Original mix audio decode failed: {err}")))?;
+        if decoded.spec().rate() != 48000 || decoded.spec().channels().count() != 2 {
+            return Err(invalid(
+                "Original mix accepts only measured 48-kHz stereo audio: explicit resampling is a separate owner decision",
+            ));
+        }
+        let mut values = vec![0_f32; decoded.samples_interleaved()];
+        decoded.copy_to_slice_interleaved(&mut values);
+        if values.len() % 2 != 0 {
+            return Err(invalid("Original mix decoded an incomplete stereo frame"));
+        }
+        count = count
+            .checked_add((values.len() / 2) as u64)
+            .ok_or_else(|| invalid("Original mix sample count overflow"))?;
+        if count > 48_000 * 15 {
+            return Err(invalid(
+                "Original mixed source exceeds the 15-second bounded audition budget",
+            ));
+        }
+        for value in values {
+            if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
+                return Err(invalid(
+                    "Original mixed source has nonfinite or invalid audio sample",
+                ));
+            }
+            let quantized = (value * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            raw.extend_from_slice(&quantized.to_le_bytes());
+        }
+    }
+    if count < 48_000 || raw.len() != count as usize * 4 {
+        return Err(invalid(
+            "Original mix requires one to fifteen seconds of complete stereo samples",
+        ));
+    }
+    // Verify bytes again after decode. A file that changed between the
+    // initial Storage digest grant and the final decode is never admitted.
+    let mut reader = File::open(owner_path)?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut block = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut block)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > 8 * 1024 * 1024 {
+            return Err(invalid("Original source mutated beyond decode budget"));
+        }
+        hasher.update(&block[..read]);
+    }
+    if total != file.len() || hex::encode(hasher.finalize()) != original_asset_sha256 {
+        return Err(invalid(
+            "Original source asset fingerprint changed during PCM decode",
+        ));
+    }
+    Ok(OriginalMixDecodedPcm {
+        original_asset_sha256: original_asset_sha256.into(),
+        decoded_pcm_sha256: hex::encode(Sha256::digest(&raw)),
+        sample_frames: count,
+        interleaved_s16le: raw,
+    })
+}
+
+#[cfg(test)]
+mod original_mix_source_tests {
+    use super::*;
+    fn wav(rate: u32, channels: u16, frames: usize) -> (Vec<u8>, Vec<u8>) {
+        let mut source = Vec::new();
+        for sample in 0..frames {
+            let value = if sample % 2 == 0 { 4500_i16 } else { -4500_i16 };
+            for _ in 0..channels {
+                source.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let bytes = source.len() as u32;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+        wav.extend_from_slice(&(channels * 2).to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&bytes.to_le_bytes());
+        wav.extend_from_slice(&source);
+        (wav, source)
+    }
+    #[test]
+    fn imported_original_wav_and_its_pcm_keep_distinct_checked_sha256() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("original-voice.wav");
+        let (wav, source) = wav(48000, 2, 48000);
+        std::fs::write(&file, &wav).unwrap();
+        let container_sha = hex::encode(Sha256::digest(&wav));
+        let parsed = decode_original_mix_pcm(&file, &container_sha).unwrap();
+        assert_eq!(parsed.sample_frames, 48000);
+        assert_eq!(parsed.interleaved_s16le, source);
+        assert_eq!(parsed.original_asset_sha256, container_sha);
+        assert_eq!(
+            parsed.decoded_pcm_sha256,
+            hex::encode(Sha256::digest(&source))
+        );
+        assert_ne!(parsed.original_asset_sha256, parsed.decoded_pcm_sha256);
+    }
+    #[test]
+    fn stale_sha_or_unsupported_rate_and_channels_never_pass_pcm_decoder() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("invalid.wav");
+        let (wav, _) = wav(48000, 2, 48000);
+        std::fs::write(&file, &wav).unwrap();
+        assert!(decode_original_mix_pcm(&file, &"ab".repeat(32)).is_err());
+        let (audio, _) = wav(44100, 2, 44100);
+        std::fs::write(&file, &audio).unwrap();
+        assert!(decode_original_mix_pcm(&file, &hex::encode(Sha256::digest(&audio))).is_err());
+        let (audio, _) = wav(48000, 1, 48000);
+        std::fs::write(&file, &audio).unwrap();
+        assert!(decode_original_mix_pcm(&file, &hex::encode(Sha256::digest(&audio))).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_owner_audio_is_not_a_source_grant() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("voice.wav");
+        let linked = temp.path().join("shortcut.wav");
+        let (wav, _) = wav(48000, 2, 48000);
+        std::fs::write(&original, &wav).unwrap();
+        std::os::unix::fs::symlink(&original, &linked).unwrap();
+        assert!(decode_original_mix_pcm(&linked, &hex::encode(Sha256::digest(&wav))).is_err());
+    }
+}

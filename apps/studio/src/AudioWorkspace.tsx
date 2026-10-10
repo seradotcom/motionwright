@@ -23,6 +23,7 @@ import type {
 import { rationalSeconds } from "./types";
 import { waveformPage as loadWaveformPage } from "./api";
 import NarrationTakeReview from "./NarrationTakeReview";
+import NativeOriginalMixReview from "./NativeOriginalMixReview";
 
 type Commit = (change: Change) => Promise<void>;
 
@@ -379,6 +380,7 @@ export default function AudioWorkspace({
       {importError && <div className="portable-message error" role="alert"><strong>Voice import blocked.</strong><span>{importError}</span></div>}
 
       <NarrationTakeReview project={project} desktopMode={desktopMode}/>
+      <NativeOriginalMixReview project={project} desktopMode={desktopMode}/>
 
       <div className="audio-main-grid">
         <aside className="voice-take-ledger" aria-label="Voice takes">

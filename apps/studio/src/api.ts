@@ -1840,3 +1840,34 @@ export async function nativeNarrationReplacementImpact(
     ...nativeScope(project),original,expected_original_sha256:original.exact_content_sha256
   }});
 }
+
+export async function nativeOriginalMixAudition(
+  project:Project,options:import('./nativeMixTypes').OriginalMixPreviewOptions
+):Promise<Uint8Array>{
+  if(!isTauri())throw new Error('Original multi-bus WAV playback requires the verified desktop domain service.');
+  if(!options.owner_attests_preview_rights||
+      ![options.music_asset_id,options.sfx_asset_id].every(assetId=>
+        project.assets.some(asset=>asset.id===assetId&&asset.media_type.startsWith('audio/')&&
+          /^[a-f0-9]{64}$/.test(asset.content_sha256??'')))||
+      options.music_asset_id===options.sfx_asset_id||
+      !project.deliverables.some(profile=>profile.id===options.deliverable_profile_id)||
+      ![options.sfx_gain_db,options.duck_attenuation_db].every(Number.isFinite)||
+      options.sfx_gain_db< -80||options.sfx_gain_db>12||
+      options.duck_attenuation_db<0||options.duck_attenuation_db>30||
+      ![options.duck_attack_samples,options.duck_release_samples].every(value=>
+        Number.isInteger(value)&&value>=1&&value<=48000)){
+    throw new Error('Original mixing needs explicitly selected source-bound assets, an approved local-preview attestation and bounded sample gains.');
+  }
+  const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request:{
+    ...nativeScope(project),...options
+  }});
+  const bytes=result instanceof Uint8Array?result:
+    result instanceof ArrayBuffer?new Uint8Array(result):
+    Array.isArray(result)?Uint8Array.from(result):null;
+  if(!bytes||bytes.byteLength<44||bytes.byteLength>3*1024*1024||
+     bytes[0]!==82||bytes[1]!==73||bytes[2]!==70||bytes[3]!==70||
+     bytes[8]!==87||bytes[9]!==65||bytes[10]!==86||bytes[11]!==69){
+    throw new Error('Native source mixer did not return a bounded original RIFF/WAVE audition.');
+  }
+  return bytes;
+}
