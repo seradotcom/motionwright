@@ -78,14 +78,15 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .clone();
     profile.width = 1280;
     profile.height = 720;
-    // One frame per second allows exact canonical Film 32+1 partition
-    // with 33 *actual* PNGs, avoiding costly 990-frame video renders.
-    profile.frame_rate = RationalTime::new(1, 1)?;
+    // Keep the pinned Motion Canvas browser at its proven native 30 fps.
+    // Each of the 33 semantic scenes is one *exact* 1/30-second frame:
+    // the 32 + 1 segment boundary stays exercised without 990 rendered PNGs.
+    profile.frame_rate = RationalTime::new(30, 1)?;
     project = service
         .apply(
             project.id,
             &RevisionStamp::from(&project),
-            "native-multisegment-720p-1fps-profile",
+            "native-multisegment-720p-30fps-profile",
             &Change::UpsertDeliverable { profile },
         )?
         .project;
@@ -103,6 +104,17 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             )?
             .project;
         let scene_id = project.scenes.last().ok_or("new scene was missing")?.id;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                &format!("native-multisegment-frame-duration-{number:02}"),
+                &Change::SetSceneDuration {
+                    scene_id,
+                    duration: RationalTime::new(1, 30)?,
+                },
+            )?
+            .project;
         project = service
             .apply(
                 project.id,
@@ -162,9 +174,17 @@ async fn assemble(
         profile.height,
         profile.frame_rate.num,
         profile.frame_rate.den,
-    ) != (1280, 720, 1, 1)
+    ) != (1280, 720, 30, 1)
     {
         return Err("Native multi-segment project profile changed".into());
+    }
+    // Reopened SQLite must preserve exact one-frame timing across scenes.
+    // The earlier 1 fps fixture failed at native observation before MLT.
+    for (index, scene) in project.scenes.iter().enumerate() {
+        let start = RationalTime::new(index as i64, 30)?;
+        if scene.start != start || scene.duration != RationalTime::new(1, 30)? {
+            return Err("Native two-segment fixture lost its exact 30 fps timebase".into());
+        }
     }
     let connection = ProductionConnection::load(connection_path)?;
     if connection.resource != project.resource_key() {
@@ -172,7 +192,7 @@ async fn assemble(
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let options = FilmBuildOptions {
-        frame_rate: Rate::new(1, 1)?,
+        frame_rate: Rate::new(30, 1)?,
         font_family: "Instrument Sans Variable".into(),
         mono_font_family: "IBM Plex Mono".into(),
         scene_intents: project

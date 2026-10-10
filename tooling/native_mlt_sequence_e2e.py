@@ -149,6 +149,7 @@ def main() -> None:
         database = paths["motionwright-data"] / "motionwright.sqlite3"
         seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
         if ((seeded["width"], seeded["height"]) != (1280, 720)
+            or (seeded["fps_num"], seeded["fps_den"]) != (30, 1)
             or seeded["scene_count"] != 33
             or seeded["deliverable_count"] != 3):
             raise AssertionError(f"unexpected real default profiles or source scenes: {seeded}")
@@ -513,7 +514,7 @@ def main() -> None:
             video = videos[0]
             if (video.get("codec_name") != "ffv1"
                 or (video.get("width"), video.get("height")) != (1280, 720)
-                or video.get("r_frame_rate") != "1/1"
+                or video.get("r_frame_rate") != "30/1"
                 or video.get("nb_read_frames") != "33"):
                 raise AssertionError("Native actual MLT video codec/frame provenance failed: " + repr(video))
 
