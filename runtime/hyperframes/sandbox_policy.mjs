@@ -17,8 +17,15 @@ function readBoundedKernelStatus(path) {
 export function inspectHostSandboxProof({uidMap,status,apparmor,restrict}) {
   const mapLines=uidMap.trim().split(/\n/);
   // Require a strict one-UID map to a nonzero host UID, not a host-wide map.
-  const rootless=mapLines.length===1 &&
-    /^0\s+[1-9][0-9]*\s+1$/.test(mapLines[0].trim().replace(/\s+/g,' '));
+  const mapping=mapLines.length===1
+    ? /^([0-9]+)\s+([0-9]+)\s+([0-9]+)$/.exec(mapLines[0].trim().replace(/\s+/g,' '))
+    : null;
+  // Bwrap may retain an unprivileged UID inside its one-UID namespace.
+  // Require exactly one non-root mapped host UID, and prove that it maps
+  // the effective UID of this actual process. Never infer from an env flag.
+  const effective=/^Uid:\s+[0-9]+\s+([0-9]+)\s+[0-9]+\s+[0-9]+$/m.exec(status)?.[1];
+  const rootless=!!mapping && mapping[2]!=='0' && mapping[3]==='1'
+    && effective!==undefined && mapping[1]===effective;
   const nnp=/^NoNewPrivs:\s+1$/m.test(status);
   const caps=/^CapEff:\s+0+$/m.test(status);
   const confined=/\bbwrap\b/i.test(apparmor)&&/\(enforce\)\s*$/.test(apparmor.trim());

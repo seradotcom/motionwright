@@ -3,12 +3,19 @@ import assert from 'node:assert/strict';
 import {classifyHostSandbox, inspectHostSandboxProof, mapShape, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
 const baseline={
   uidMap:'         0       1001          1\n',
-  status:'Name:\tnode\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n',
+  status:'Name:\tnode\nUid:\t0\t0\t0\t0\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n',
   apparmor:'bwrap//&unpriv_bwrap (enforce)\n',
   restrict:'1\n'
 };
 test('only a verified rootless, enforced no-new-privileges Host grants the outer bwrap launch profile',()=>{
   assert.equal(classifyHostSandbox(baseline),'semwright-bwrap-outer');
+  const nonzeroInside={...baseline,uidMap:'1001 1001 1\n',
+    status:baseline.status.replace('Uid:\t0\t0\t0\t0','Uid:\t1001\t1001\t1001\t1001')};
+  assert.equal(classifyHostSandbox(nonzeroInside),'semwright-bwrap-outer',
+    'One mapped unprivileged UID remains valid even if namespace uid is nonzero');
+  assert.equal(classifyHostSandbox({...nonzeroInside,uidMap:'1001 0 1\n'}),'chromium-userns');
+  assert.equal(classifyHostSandbox({...nonzeroInside,status:baseline.status}),'chromium-userns');
+  assert.equal(classifyHostSandbox({...nonzeroInside,uidMap:'1001 1001 65536\n'}),'chromium-userns');
   for(const change of [
     {restrict:'0'}, {uidMap:'         0          0 4294967295\n'},
     {uidMap:'         0       1001 4294967295\n'},
