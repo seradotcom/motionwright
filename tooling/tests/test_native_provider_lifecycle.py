@@ -42,6 +42,15 @@ class ProviderDiagnosticTests(unittest.TestCase):
                 folder = proc / str(pid)
                 folder.mkdir()
                 (folder / "status").write_text(status(name, parent), encoding="ascii")
+                leader = folder / "task" / str(pid)
+                leader.mkdir(parents=True)
+                leader_children = {120: "140", 140: "155"}.get(pid, "")
+                (leader / "children").write_text(leader_children, encoding="ascii")
+            # A multi-threaded daemon may launch a child from a worker TID.
+            # Sampling only /proc/<pid>/task/<pid>/children misses that job.
+            worker = proc / "100" / "task" / "101"
+            worker.mkdir()
+            (worker / "children").write_text("120", encoding="ascii")
             observed = mod.tree_snapshot(100, proc)
             self.assertTrue(observed["root_observed"])
             self.assertFalse(observed["truncated"])
