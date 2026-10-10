@@ -841,3 +841,123 @@ pub async fn native_narration_replacement_impact(
         "media_or_captions_rendered":false
     }))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreativeDirectionScope {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreativeDirectionStudyCommand {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    request: motionwright_creative_library::CreativeDirectionStudyRequest,
+}
+/// Read the exact canonical project fingerprint for a non-mutating concept
+/// comparison. A JS object digest is not substituted for the Rust/serde digest.
+#[tauri::command]
+pub async fn creative_direction_source_state(
+    state: State<'_, AppState>,
+    request: CreativeDirectionScope,
+) -> Result<Value, String> {
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let source_sha256 = motionwright_creative_library::direction_project_digest(&project)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+      "schema":"motionwright.creative-direction-source-state/1",
+      "project_id":project.id,"generation":project.generation,"revision":project.revision,
+      "project_sha256":source_sha256,"read_only":true
+    }))
+}
+/// Concepts, rights/reference annotations and shot claims are checked
+/// against the same revisioned Project/Brief/Asset ledger used by Studio.
+/// The response never chooses an alternative or records plan approval.
+#[tauri::command]
+pub async fn creative_direction_study(
+    state: State<'_, AppState>,
+    input: CreativeDirectionStudyCommand,
+) -> Result<Value, String> {
+    let project = current(&state, input.project_id, input.generation, input.revision)?;
+    if input.request.project_id != project.id
+        || input.request.generation != project.generation
+        || input.request.revision != project.revision
+    {
+        return Err(
+            "Creative direction source proposal does not match the selected project revision."
+                .into(),
+        );
+    }
+    let (project_id, generation, revision) = (input.project_id, input.generation, input.revision);
+    let request = input.request;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        motionwright_creative_library::analyze_creative_directions(&project, &request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Creative reference study could not be completed.".to_string())??;
+    current(&state, project_id, generation, revision)?;
+    Ok(json!({
+      "schema":"motionwright.creative-direction-trial/1",
+      "report":result,
+      "project_modified":false,
+      "source_media_opened":false,
+      "concept_selected":false,
+      "content_approval":"REQUIRES_OWNER_SELECTION",
+      "native_pixels_rendered":false
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedDirectionPlanCommand {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    selected_concept_id: Uuid,
+    request: motionwright_creative_library::CreativeDirectionStudyRequest,
+}
+/// Authoritative source-level plan proposal. A JS-computed concept score or
+/// manually forged status cannot become a claim-bearing StudioService edit.
+/// The actual project write remains the user's separate revisioned CAS.
+#[tauri::command]
+pub async fn creative_direction_plan_preflight(
+    state: State<'_, AppState>,
+    input: SelectedDirectionPlanCommand,
+) -> Result<Value, String> {
+    let project = current(&state, input.project_id, input.generation, input.revision)?;
+    if input.request.project_id != project.id
+        || input.request.generation != project.generation
+        || input.request.revision != project.revision
+    {
+        return Err("Selected concept belongs to another project revision.".into());
+    }
+    let (id, generation, revision) = (input.project_id, input.generation, input.revision);
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        motionwright_creative_library::propose_selected_direction_plan(
+            &project,
+            &input.request,
+            input.selected_concept_id,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Source-checked selected concept could not be prepared.".to_string())??;
+    current(&state, id, generation, revision)?;
+    Ok(json!({
+        "schema":"motionwright.source-checked-production-plan/1",
+        "plan":plan,"project_id":id,"generation":generation,"revision":revision,
+        "approval":serde_json::Value::Null,
+        "renderer_executed":false,"project_committed":false,
+        "independent_claim_review":"REQUIRED",
+        "owner_release_approval":"NOT_GRANTED"
+    }))
+}

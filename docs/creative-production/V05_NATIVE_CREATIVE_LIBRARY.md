@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 39 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 24 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -501,3 +501,103 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+## Creative alternatives, owner-annotated references and versioned narrative evidence (E02)
+
+`crates/creative-library/src/directions.rs` begins E02-02/E02-03/E02-04 as
+a **pure read-only study** of the canonical current Project, Brief,
+Scenes, Assets and source revisions. It requires two to four distinct
+original concept candidates (different **metaphor, narrative structure,
+and rhythm**, not merely color treatments). Every concept cites an
+owner-declared imported image/video reference with an exact SHA-256 and
+source revision; hierarchy, framing, transitions, rhythm and the
+originality/non-copying constraints must be stated individually. The
+function validates these annotations against the project ledger but
+does not open/review image bytes or authenticate the claimed rights.
+
+Each planned shot links an actual scene, referenced brief claims,
+and either clearly labeled graphic illustration or explicitly
+owner-attested real/media source. The claim ledger distinguishes
+`illustration_is_not_evidence`, `unsourced_product_claim`,
+`unsupported_claim_source`, `source_bound_needs_human_verification`,
+and `stale_product_revision`. An asset and its claim must refer to
+the **same requested source build/version** before they are even
+eligible for human fact-checking; a new product version invalidates
+the old candidate status. Source hash validation covers the *entire*
+Project snapshot, so an altered scene, asset, brief or lock fails closed.
+
+The report does **not** choose a winner, infer user preferences, approve
+claims or rights, execute software, render anything, install a plugin or
+commit a ProductionPlan. Its source proposals are a foundation for a
+later user-selected, persisted ProductionPlan through the existing
+StudioService CAS. Real reference pixel analysis, independently licensed
+sources, storyboard comprehension tests, manual creative selection and
+native rendered acceptance are still separate **NOT_RUN** gates.
+
+
+### Studio direction comparison and consent boundary
+
+The desktop `creative_direction_source_state` obtains the exact canonical
+Rust/serde SHA-256 of the current Project; the read-only
+`creative_direction_study` command validates every submitted concept and
+reference against that same project/generation/revision, rechecks CAS
+after bounded computation, and returns a non-mutating comparison.
+`CreativeDirectionWorkbench` in the Creative Library provides two to
+four editable concept structures, a declared current product version,
+original imported media references, explicitly entered visual
+observations, the owner's rights-use checkbox and individual brief claim
+bindings. A real-capture label requires a claim and the matching
+referenced asset. A different product version marks old claims stale
+without quietly upgrading their truth value.
+
+There is intentionally **no** selector that acts as an owner-approved
+concept, automatic `SetProductionPlan` invocation, renderer grant or
+rights verification. A browser demo cannot invent source digests or
+claim a concept was analyzed. The corresponding code-only UI and Rust
+gates are source-contract tests; independently observed reference
+pixels, competing conceptual frame renders and human concept decisions
+remain outstanding before E02 acceptance.
+
+
+The selective CI gates are keyed by `selected_gate` in their concurrency
+identifier; simultaneous Studio and Rust checks on the **same branch** must
+not cancel one another. As before, running `selected_gate=full` still
+does not bypass any independent release, owner or security review.
+
+
+### Explicit selected concept → unapproved canonical ProductionPlan (E02-01)
+
+After a **human clicks** one particular concept, Studio can create a
+`ProductionPlan` draft through the existing
+`Change::SetProductionPlan` / StudioService revision CAS. It is never
+done by opening a comparison or by receiving a model completion. The
+client defensively cross-checks the exact project ID/generation/revision,
+source SHA, chosen concept identity, and every source-backed claim against
+the current Project Brief, imported Asset ID/SHA and declared product
+version before saving. A stale claim, generic footage pretending to prove
+product behavior, illustration with claims or unfamiliar source blocks
+that plan's creation. For an existing ProductionPlan, replacing it
+requires a separate acknowledgment; the new plan explicitly sets
+`approval: null`, retaining independent native renderer, rights and
+human creative quality review. The main ProductionDesignWorkspace remains
+the persisted owner interface; no parallel plan storage/scheduler was added.
+`directionPlan.test.ts` asserts this opt-in, non-laundering behavior.
+
+
+### Server-authoritative concept selection before StudioService CAS
+
+An explicit click to select a reviewed direction now invokes the desktop
+`creative_direction_plan_preflight`. Rust re-runs the full source/project
+comparison on the *current* Project and validates that every selected
+claim references the same SHA-pinned media, product build and narrative
+shot. The candidate is converted to the **canonical**
+`ProductionPlan`, validated against `Project.scenes`,
+`Project.assets`, `Brief`, and `Project.audio`, and returned with
+`approval: null`, no renderer execution and no project write.
+Only the existing separate `set_production_plan` user action writes
+the new candidate through StudioService revision CAS. The browser's
+original review remains advisory; a forged/stale JS report cannot bypass
+the Rust source gate, and generic licensed footage cannot become proof of
+product behavior. Neither the standalone concept report nor the plan
+preflight verifies asset legal rights or independent product truth.

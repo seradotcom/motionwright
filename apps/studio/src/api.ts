@@ -1840,3 +1840,36 @@ export async function nativeNarrationReplacementImpact(
     ...nativeScope(project),original,expected_original_sha256:original.exact_content_sha256
   }});
 }
+
+export async function creativeDirectionSourceState(
+  project:Project
+):Promise<import('./production/directionTypes').CreativeDirectionSourceState>{
+  if(!isTauri())throw new Error('Creative direction provenance requires the canonical desktop service.');
+  return invoke('creative_direction_source_state',{request:nativeScope(project)});
+}
+export async function creativeDirectionStudy(
+  project:Project,request:import('./production/directionTypes').CreativeDirectionStudyRequest
+):Promise<import('./production/directionTypes').CreativeDirectionStudyResponse>{
+  if(!isTauri())throw new Error('A browser demo cannot certify creative references or choose a concept.');
+  if(request.project_id!==project.id||request.generation!==project.generation||
+    request.revision!==project.revision||
+    !/^[a-f0-9]{64}$/.test(request.project_sha256)||
+    request.alternatives.length<2||request.alternatives.length>4||
+    request.references.length<1||request.references.length>16){
+    throw new Error('Creative study must match the exact current project and contain two to four source-bound directions.');
+  }
+  return invoke('creative_direction_study',{input:{...nativeScope(project),request}});
+}
+
+export async function creativeDirectionPlanPreflight(
+ project:Project,request:import('./production/directionTypes').CreativeDirectionStudyRequest,
+ selectedConceptId:string
+):Promise<import('./production/directionTypes').SelectedDirectionPlanPreflight>{
+ if(!isTauri())throw new Error('A browser preview cannot assert an owner-reviewed production plan.');
+ if(request.project_id!==project.id||request.generation!==project.generation||
+    request.revision!==project.revision||!/^[a-f0-9]{64}$/.test(request.project_sha256))
+   throw new Error('The selected creative direction belongs to a stale/foreign Project.');
+ return invoke('creative_direction_plan_preflight',{input:{
+   ...nativeScope(project),request,selected_concept_id:selectedConceptId
+ }});
+}
