@@ -1,0 +1,83 @@
+name: V05 attach-first original source observation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-attach-first']
+    paths:
+      - 'crates/creative-library/src/attached.rs'
+      - 'crates/creative-library/tests/attached_source.rs'
+      - 'crates/creative-library/examples/attached_source_probe.rs'
+      - 'tooling/blender-stage/attached_source_e2e.py'
+      - 'apps/desktop/src-tauri/src/creative_native.rs'
+      - 'apps/studio/src/AttachedSourceWorkbench.tsx'
+      - '.github/workflows/v05-attach-first.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attached-source-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  original-source-inspection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: first-party-attached-glb-1.98.1
+          cache-on-failure: true
+      - name: Verify original source preservation and negative paths
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-creative-library --test attached_source
+          cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+
+  native-blender-attachment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: original-GLB-attachment-evidence-1.98.1
+          cache-on-failure: true
+      - name: Original typed Blender source and inspector build
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-creative-library --example native_catalog_fixture --example attached_source_probe
+          python3 -m py_compile tooling/blender-stage/attached_source_e2e.py runtime/blender-stage/fixed_render.py
+      - name: Generate and inspect actual native Blender GLB inside disposable CI
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends blender python3-numpy python3-pil libegl1 libgbm1 libgles2 libgl1-mesa-dri xvfb xauth
+          LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x1024x24" /usr/bin/python3 tooling/blender-stage/attached_source_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: first-party-glb-attach-observation-${{ github.sha }}
+          path: verification/attached-native-glb/
+          if-no-files-found: warn
+          retention-days: 7

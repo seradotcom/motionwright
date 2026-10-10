@@ -176,3 +176,23 @@
 .production-expanded-study footer { display: flex; align-items: center; gap: 20px; padding: 16px 20px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); flex-shrink: 0; }
 .production-expanded-study footer input { flex: 1; accent-color: var(--accent); min-width: 90px; }
 @media (max-width: 800px) { .production-expanded-study { width: calc(100vw - 16px); height: calc(100vh - 16px); } .production-expanded-study footer > span:last-child { display: none; } }
+
+/* Native source attach review: sober material inventory, not a renderer PASS. */
+.attached-source-review {border-top:1px solid var(--border-soft);margin-top:14px;padding-top:13px;display:grid;gap:12px;min-width:0;}
+.attached-source-review > summary {cursor:pointer;font-size:11px;font-weight:550;display:flex;align-items:center;gap:8px;}
+.attached-source-review > button {justify-self:start;}
+.attached-source-review > p {font-size:11px;line-height:1.6;}
+.attached-source-results {display:grid;gap:13px;min-width:0;padding-top:10px;}
+.attached-source-results .mono {font-size:9px;overflow-wrap:anywhere;color:var(--muted);}
+.attached-source-heading {display:flex;align-items:center;flex-wrap:wrap;gap:9px;font-size:12px;}
+.attached-source-heading small {font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;}
+.attached-source-results table {width:100%;border-collapse:collapse;font-size:10px;text-align:left;}
+.attached-source-results th,.attached-source-results td {border-bottom:1px solid var(--border-soft);padding:10px;vertical-align:top;}
+.attached-source-results th {color:var(--muted);font-weight:500;}
+.attached-source-results td p {color:var(--muted);line-height:1.5;margin:4px 0 0;}
+.attached-source-results td:first-child {font-family:var(--font-mono);overflow-wrap:anywhere;}
+.attached-source-results details {font-size:10px;border-top:1px solid var(--border-soft);padding-top:10px;}
+.attached-source-results details > summary {cursor:pointer;font-weight:550;}
+.attached-source-results ul {padding-left:20px;line-height:1.8;color:var(--muted);}
+.attached-source-results li {overflow-wrap:anywhere;}
+.attached-source-results details p {line-height:1.6;color:var(--muted);overflow-wrap:anywhere;}

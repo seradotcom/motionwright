@@ -1840,3 +1840,19 @@ export async function nativeNarrationReplacementImpact(
     ...nativeScope(project),original,expected_original_sha256:original.exact_content_sha256
   }});
 }
+
+export async function nativeAttachedSourceInspection(
+  project:Project,capsuleId:string
+):Promise<import('./attachedSourceTypes').AttachedInspectionResponse>{
+  if(!isTauri())throw new Error("Native source inspection requires the connected desktop service; the browser demo cannot read actual imported asset bytes.");
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(capsuleId))
+    throw new Error("A current project-owned capsule identity is required.");
+  const capsule=project.production_design?.capsules.find(value=>value.id===capsuleId);
+  if(!capsule || !project.assets.some(asset=>
+    asset.id===capsule.source_asset_id&&asset.content_sha256===capsule.source_sha256)){
+    throw new Error("The attached source does not belong to the current project.");
+  }
+  return invoke("native_attached_source_inspection",{request:{
+    ...nativeScope(project),capsule_id:capsuleId
+  }});
+}

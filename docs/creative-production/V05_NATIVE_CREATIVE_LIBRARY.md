@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 36 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 27 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64

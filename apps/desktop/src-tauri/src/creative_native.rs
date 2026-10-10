@@ -841,3 +841,72 @@ pub async fn native_narration_replacement_impact(
         "media_or_captions_rendered":false
     }))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAttachmentInspectionRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    capsule_id: Uuid,
+}
+/// Read-only attach-first inspection of an existing, content-addressed asset.
+/// The existing StudioService is the authority; no import, project write,
+/// executable plugin, renderer or user-selected arbitrary path is accepted.
+#[tauri::command]
+pub async fn native_attached_source_inspection(
+    state: State<'_, AppState>,
+    request: NativeAttachmentInspectionRequest,
+) -> Result<Value, String> {
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let capsule = project
+        .production_design
+        .capsules
+        .iter()
+        .find(|capsule| capsule.id == request.capsule_id)
+        .ok_or_else(|| {
+            "The exact native source capsule is not attached to this project.".to_string()
+        })?
+        .clone();
+    let asset = project
+        .assets
+        .iter()
+        .find(|asset| asset.id == capsule.source_asset_id)
+        .ok_or_else(|| "The native source asset is absent from the current project.".to_string())?
+        .clone();
+    if asset.content_sha256.as_deref() != Some(capsule.source_sha256.as_str()) {
+        return Err("Native source capsule does not match the current asset fingerprint.".into());
+    }
+    let service = state.service.clone();
+    let report=tauri::async_runtime::spawn_blocking(move ||{
+        let blob=service.store().lock()
+            .read_blob(&capsule.source_sha256,
+                motionwright_creative_library::MAX_ATTACHED_INSPECTION_BYTES as u64)
+            .map_err(|_|"The original source is absent, corrupt or exceeds the bounded 32 MiB inspection budget. Its attached project record is unchanged.".to_string())?;
+        motionwright_creative_library::inspect_attached_native_source(&capsule,&asset,&blob)
+            .map_err(|error|error.to_string())
+    }).await.map_err(|_|"Native source inspection was interrupted; no project edit was made.".to_string())??;
+    // Another client's CAS commit cannot turn an old source observation into
+    // current project truth after the bounded blob read.
+    current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    Ok(json!({
+        "schema":"motionwright.native-attachment-inspection/1",
+        "observation":report,
+        "project_revision":request.revision,
+        "owner_source_bytes_exported":false,
+        "project_changed":false,
+        "operation":"read_only_attach_first",
+        "owner_runtime_granted":false,
+        "source_semantically_imported":false
+    }))
+}
