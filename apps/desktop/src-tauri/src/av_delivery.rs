@@ -29,6 +29,8 @@ pub struct MasterExportRequest {
     pub effect_grant: Uuid,
     pub export_token: Uuid,
     pub destination: String,
+    #[serde(default)]
+    pub include_integrity_manifest: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +50,8 @@ pub struct MasterExportReceipt {
     pub revision: u64,
     pub deliverable_id: Uuid,
     pub source_current: bool,
+    /// Optional portable local SHA-256 evidence sidecar. No signature implied.
+    pub integrity_manifest_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +61,9 @@ struct DeliveryHandle {
     generation: Uuid,
     revision: u64,
     deliverable_id: Uuid,
+    frame_rate_num: u32,
+    frame_rate_den: u32,
+    frame_count: u64,
     owner_root: PathBuf,
     relative_path: String,
     sha256: String,
@@ -81,6 +88,8 @@ impl NativeMasterDeliveryRegistry {
         if master.master.get("profile")?.as_str()? != "h264-aac-mp4"
             || master.frame_count == 0
             || master.frame_count > 36_000
+            || master.frame_rate.num == 0
+            || master.frame_rate.den == 0
         {
             return None;
         }
@@ -98,6 +107,9 @@ impl NativeMasterDeliveryRegistry {
             generation: master.generation,
             revision: master.revision,
             deliverable_id: master.deliverable_id,
+            frame_rate_num: master.frame_rate.num,
+            frame_rate_den: master.frame_rate.den,
+            frame_count: master.frame_count,
             owner_root: owner_root.to_path_buf(),
             relative_path: relative_path.to_owned(),
             sha256: sha256.to_owned(),
@@ -140,6 +152,11 @@ impl NativeMasterDeliveryRegistry {
             sha256: entry.sha256,
             revision: entry.revision,
             deliverable_id: entry.deliverable_id,
+            project_id: entry.project_id,
+            generation: entry.generation,
+            frame_rate_num: entry.frame_rate_num,
+            frame_rate_den: entry.frame_rate_den,
+            frame_count: entry.frame_count,
         })
     }
 }
@@ -150,6 +167,11 @@ pub struct DeliverySource {
     sha256: String,
     revision: u64,
     deliverable_id: Uuid,
+    project_id: Uuid,
+    generation: Uuid,
+    frame_rate_num: u32,
+    frame_rate_den: u32,
+    frame_count: u64,
 }
 
 fn validated_destination(value: &str) -> Result<PathBuf, String> {
@@ -198,6 +220,119 @@ fn validated_destination(value: &str) -> Result<PathBuf, String> {
 }
 
 impl DeliverySource {
+    /// Optional portable integrity metadata is written only after the exact
+    /// destination MP4 has been exported and independently SHA-256 verified.
+    /// An owner-scoped export grant authorizes the media destination and its
+    /// deterministic sibling proof; the WebView cannot inject origin hashes.
+    ///
+    /// This is an unsigned content-integrity descriptor, NOT an authenticity
+    /// signature or proof that someone reviewed the media.
+    pub fn copy_with_integrity(
+        &self,
+        destination: &str,
+        include_integrity_manifest: bool,
+        native_sdk_revision: &str,
+    ) -> Result<MasterExportReceipt, String> {
+        if !include_integrity_manifest {
+            return self.copy_to(destination);
+        }
+        if native_sdk_revision.len() != 40
+            || !native_sdk_revision
+                .bytes()
+                .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+        {
+            return Err("Pinned Semwright Native SDK source revision is malformed.".into());
+        }
+        let target = validated_destination(destination)?;
+        let name = target
+            .file_name()
+            .and_then(|part| part.to_str())
+            .ok_or("Exported MP4 file name is not UTF-8.")?;
+        let proof_name = format!("{name}.motionwright-integrity.json");
+        if proof_name.len() > 255 {
+            return Err(
+                "MP4 file name is too long to create a portable verification receipt.".into(),
+            );
+        }
+        let proof_path = target.with_file_name(proof_name);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        // Reserve the sibling manifest without overwriting an existing
+        // receipt. This happens *before* MP4 creation so a collision cannot
+        // result in a new video with no accompanying requested evidence.
+        let mut proof = options.open(&proof_path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "Verification receipt destination already exists; existing files are never overwritten."
+                    .to_string()
+            } else {
+                "The verification receipt could not be created safely.".to_string()
+            }
+        })?;
+        let transfer = self.copy_to(destination);
+        let receipt = match transfer {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                drop(proof);
+                let _ = fs::remove_file(&proof_path);
+                return Err(error);
+            }
+        };
+        let body = serde_json::json!({
+            "schema": "motionwright-media-integrity-v1",
+            "scope": "sha256-content-consistency-not-signed-attestation",
+            "media": {
+                "filename": name,
+                "size_bytes": receipt.size_bytes,
+                "sha256": receipt.sha256,
+            },
+            "origin": {
+                "project_id": self.project_id,
+                "generation": self.generation,
+                "revision": self.revision,
+                "deliverable_id": self.deliverable_id,
+                "native_profile": "h264-aac-mp4",
+                "frame_count": self.frame_count,
+                "frame_rate": { "num": self.frame_rate_num, "den": self.frame_rate_den },
+                "semwright_native_sdk_revision": native_sdk_revision,
+            }
+        });
+        let write_result = (|| -> Result<(), String> {
+            let bytes = serde_json::to_vec_pretty(&body)
+                .map_err(|_| "Unable to serialize the portable MP4 verification receipt.")?;
+            if bytes.len() > 12 * 1024 {
+                return Err("Portable MP4 verification receipt exceeds its bounded size.".into());
+            }
+            proof
+                .write_all(&bytes)
+                .map_err(|_| "Portable MP4 verification receipt write failed.")?;
+            proof
+                .write_all(b"\n")
+                .map_err(|_| "Portable MP4 verification receipt newline write failed.")?;
+            proof
+                .sync_all()
+                .map_err(|_| "Portable MP4 verification receipt sync failed.")?;
+            Ok(())
+        })();
+        drop(proof);
+        if let Err(error) = write_result {
+            // A successfully verified media export is never destroyed to
+            // conceal a sidecar failure; remove only the incomplete sibling.
+            let _ = fs::remove_file(&proof_path);
+            return Err(format!(
+                "MP4 was exported and verified, but its optional verification receipt failed: {error}. The MP4 was preserved; check its destination."
+            ));
+        }
+        Ok(MasterExportReceipt {
+            integrity_manifest_path: Some(proof_path.to_string_lossy().to_string()),
+            ..receipt
+        })
+    }
+
     /// Review a *small* completed native master without exporting to a user
     /// path. One immutable session token selects the backend-only source;
     /// bytes are SHA-256 checked before binary IPC can expose them.
@@ -307,6 +442,7 @@ impl DeliverySource {
             revision: self.revision,
             deliverable_id: self.deliverable_id,
             source_current: true,
+            integrity_manifest_path: None,
         })
     }
 }
@@ -368,6 +504,129 @@ mod tests {
                 0
             );
         }
+    }
+
+    const SDK_SOURCE_FIXTURE: &str = "8fa191250ae68274182570c65f067f7a60f85625";
+
+    #[test]
+    fn optional_portable_integrity_proof_binds_exact_exported_media_and_revision() {
+        let owner = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let project = project();
+        let bytes = b"\0\0\0\x18ftypisom\0\0\0\0video-bytes";
+        fs::write(owner.path().join("signed-master.mp4"), bytes).unwrap();
+        let registry = NativeMasterDeliveryRegistry::default();
+        let token = registry
+            .register(owner.path(), &artifact_for(&project, bytes))
+            .unwrap();
+        let source = registry.resolve(&project, token).unwrap();
+
+        let name = destination.path().join("real-output.mp4");
+        let receipt = source
+            .copy_with_integrity(name.to_str().unwrap(), true, SDK_SOURCE_FIXTURE)
+            .unwrap();
+        assert_eq!(receipt.size_bytes, bytes.len() as u64);
+        assert_eq!(fs::read(&name).unwrap(), bytes);
+        assert_eq!(receipt.sha256, hex::encode(Sha256::digest(bytes)));
+        let proof = PathBuf::from(receipt.integrity_manifest_path.clone().unwrap());
+        assert_eq!(
+            proof.file_name().unwrap().to_str().unwrap(),
+            "real-output.mp4.motionwright-integrity.json"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(&proof).unwrap()).unwrap();
+        assert_eq!(json["schema"], "motionwright-media-integrity-v1");
+        assert_eq!(
+            json["scope"],
+            "sha256-content-consistency-not-signed-attestation"
+        );
+        assert_eq!(json["media"]["filename"], "real-output.mp4");
+        assert_eq!(json["media"]["sha256"], receipt.sha256);
+        assert_eq!(json["media"]["size_bytes"], receipt.size_bytes);
+        assert_eq!(json["origin"]["project_id"], project.id.to_string());
+        assert_eq!(json["origin"]["generation"], project.generation.to_string());
+        assert_eq!(
+            json["origin"]["deliverable_id"],
+            project.deliverables[0].id.to_string()
+        );
+        assert_eq!(json["origin"]["revision"], project.revision);
+        assert_eq!(json["origin"]["native_profile"], "h264-aac-mp4");
+        assert_eq!(json["origin"]["frame_count"], 60);
+        assert_eq!(json["origin"]["frame_rate"], json!({"num":30,"den":1}));
+        assert_eq!(
+            json["origin"]["semwright_native_sdk_revision"],
+            SDK_SOURCE_FIXTURE
+        );
+        assert!(!json.to_string().contains(owner.path().to_str().unwrap()));
+        assert!(
+            !json
+                .to_string()
+                .contains(destination.path().to_str().unwrap())
+        );
+        assert!(
+            source
+                .copy_with_integrity(name.to_str().unwrap(), true, SDK_SOURCE_FIXTURE,)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(&proof).unwrap(),
+            serde_json::to_vec_pretty(&json)
+                .unwrap()
+                .into_iter()
+                .chain(std::iter::once(b'\n'))
+                .collect::<Vec<_>>()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&proof).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn integrity_sidecar_collision_or_tampered_master_never_overwrites_user_files() {
+        let owner = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let project = project();
+        let bytes = b"\0\0\0\x18ftypisom\0\0\0\0video-bytes";
+        fs::write(owner.path().join("signed-master.mp4"), bytes).unwrap();
+        let registry = NativeMasterDeliveryRegistry::default();
+        let token = registry
+            .register(owner.path(), &artifact_for(&project, bytes))
+            .unwrap();
+        let source = registry.resolve(&project, token).unwrap();
+        let target = destination.path().join("final.mp4");
+        let sidecar = destination
+            .path()
+            .join("final.mp4.motionwright-integrity.json");
+        fs::write(&sidecar, b"previously issued receipt").unwrap();
+        assert!(
+            source
+                .copy_with_integrity(target.to_str().unwrap(), true, SDK_SOURCE_FIXTURE,)
+                .unwrap_err()
+                .contains("already exists")
+        );
+        assert!(!target.exists());
+        assert_eq!(fs::read(&sidecar).unwrap(), b"previously issued receipt");
+        fs::remove_file(&sidecar).unwrap();
+
+        fs::write(owner.path().join("signed-master.mp4"), b"tampered").unwrap();
+        assert!(
+            source
+                .copy_with_integrity(target.to_str().unwrap(), true, SDK_SOURCE_FIXTURE,)
+                .is_err()
+        );
+        assert!(!target.exists());
+        assert!(!sidecar.exists());
+        assert!(
+            source
+                .copy_with_integrity(target.to_str().unwrap(), true, "not-a-real-commit",)
+                .is_err()
+        );
+        assert!(!target.exists());
+        assert!(!sidecar.exists());
     }
 
     #[test]

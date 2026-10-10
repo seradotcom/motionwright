@@ -111,6 +111,25 @@ export interface Asset {
   content_sha256: string | null; source_revision: string | null;
 }
 
+/** SHA-256 state of an existing content-addressed local file, never Project Graph admission. */
+export type AssetIntegrityStatus = "verified" | "missing" | "corrupt" | "unsafe" |
+  "unreadable" | "not_content_addressed" | "deferred_by_budget";
+export interface AssetIntegrityRecord {
+  asset_id: string;
+  status: AssetIntegrityStatus;
+  size_bytes: number | null;
+}
+export interface AssetIntegrityPage {
+  project_id: string;
+  generation: string;
+  revision: number;
+  total_assets: number;
+  items: AssetIntegrityRecord[];
+  next: number | null;
+  complete: boolean;
+  checked_bytes: number;
+}
+
 export type ExtensionKind =
   | "remotion-renderer"
   | "manim-gl-renderer"
@@ -393,6 +412,26 @@ export interface MotionCanvasRenderEvidence {
   preview?: NativePreviewGrant[];
 }
 
+/** Read-only, session-authorized native multi-segment manifest/Film check.
+ * It is not a completed MLT render and intentionally contains no paths.
+ */
+export interface MultiSegmentReadinessReport {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  verdict: "source_manifest_ready";
+  mlt_profile: "h264-1080p" | "h264-720p";
+  total_frames: number;
+  segments: Array<{
+    segment_id: string;
+    scene_ids: string[];
+    start_frame: number;
+    frame_count: number;
+  }>;
+  evidence_scope: "manifest-digest-verified-not-composited-mp4";
+}
+
 export interface MltAudioArtifact {
   relative_path: string;
   sha256: string;
@@ -411,6 +450,18 @@ export interface AvSyncSpec {
   cues: AvSyncCue[];
 }
 
+export interface PortableMediaVerification {
+  status: "sha256-content-verified";
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  /** String preserves the exact u64 revision without JavaScript rounding. */
+  source_revision: string;
+  signed_authenticity: false;
+  human_acceptance: false;
+  trusted_anchor_matched: boolean;
+}
+
 export interface MasterExportReceipt {
   destination: string;
   size_bytes: number;
@@ -418,6 +469,8 @@ export interface MasterExportReceipt {
   revision: number;
   deliverable_id: string;
   source_current: boolean;
+  /** Optional unsigned local integrity descriptor, not an authenticity signature. */
+  integrity_manifest_path?: string | null;
 }
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */

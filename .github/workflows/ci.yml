@@ -31,6 +31,10 @@ jobs:
           python3 -m unittest discover -s tooling/tests -p 'test_creative_status_policy.py' -v
       - name: Exercise independent acceptance evidence intake guardrails
         run: python3 -m unittest discover -s tooling/tests -p 'test_acceptance_session.py' -v
+      - name: Reject silent, swapped or static decoded native AV fixtures
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_media_probe.py' -v
+      - name: Verify portable MP4 integrity checker trust boundaries
+        run: python3 -m unittest discover -s tooling/tests -p 'test_verify_delivered_media.py' -v
 
   rust-core:
     needs: source-policy
@@ -130,3 +134,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check desktop shell
         run: cargo check -p motionwright-desktop
+      - name: Exercise read-only native portable MP4 verifier
+        run: cargo test -p motionwright-desktop --bin motionwright-desktop media_integrity::tests -- --nocapture

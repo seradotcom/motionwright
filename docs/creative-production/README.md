@@ -17,7 +17,7 @@ Use a desktop build from this branch's successful Candidate Packages workflow, n
 The ProductHero native evidence artifact contains one folder per aspect:
 
 - `hero.motionwright/manifest.json`: an actual portable project bundle, not a loose scene mock. In **Deliver → Inspect and import**, select the absolute path of the `hero.motionwright` directory, inspect it, then import the verified bundle.
-- `motionwright-master.mp4`: a real six-second H.264/AAC master produced through Semwright's Motion Canvas and MLT providers. Its audio is deliberately silent transport-test audio, **not sound design**.
+- `motionwright-master.mp4`: a real six-second H.264/AAC master produced through Semwright's Motion Canvas and MLT providers. Its audio is deterministic **synthetic 440/660 Hz stereo test tones** for decoded H.264/AAC transport verification, **not sound design**.
 - `native-contact-sheet.png`, sampled PNGs, onion and difference images, native layout inspection, and immutable source/evidence manifests. These are generated from native renderer frames, never substituted with the editorial SVG preview.
 
 Import preserves internal scene/component identities and authored values while creating a fresh project generation. Existing native render readback tokens are not included in the portable bundle. Generate a new preview before using native inspection in the restored desktop project. Import refuses an already-existing project ID rather than overwriting it.

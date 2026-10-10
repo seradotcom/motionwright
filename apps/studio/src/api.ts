@@ -4,6 +4,7 @@ import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
 import type {
+  AssetIntegrityPage,
   Bootstrap,
   BranchState,
   CanvasKeyframe,
@@ -19,8 +20,10 @@ import type {
   MotionCanvasFilmOptions,
   MotionCanvasRenderEvidence,
   MotionCanvasProjectionPreflight,
+  MultiSegmentReadinessReport,
   MltAvMasterEvidence,
   MasterExportReceipt,
+  PortableMediaVerification,
   OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
@@ -507,6 +510,32 @@ export async function workflowAction(
   });
 }
 
+/** Audit only already-imported project-bound blobs on demand. The WebView
+ * passes no arbitrary file paths and receives no owner filesystem paths.
+ */
+export async function assetIntegrityPage(
+  project: Project,
+  offset: number | null = null,
+  limit = 8,
+): Promise<AssetIntegrityPage> {
+  if (!isTauri()) throw new Error("Local asset integrity requires the desktop runtime.");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16) {
+    throw new Error("Asset integrity page size must be between 1 and 16.");
+  }
+  if (offset !== null && (!Number.isSafeInteger(offset) || offset < 1 || offset % limit !== 0)) {
+    throw new Error("Invalid asset integrity continuation cursor.");
+  }
+  return invoke<AssetIntegrityPage>("asset_integrity_page", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      offset,
+      limit,
+    },
+  });
+}
+
 export async function productionJobs(
   project: Project,
   limit = 32,
@@ -589,6 +618,29 @@ export async function renderMotionCanvas(
   });
 }
 
+/** Check manifest-source readiness of a multi-segment native cut.
+ * Backend resolves original render options, evidence and root from the
+ * opaque owner-issued token; no caller-provided file paths or hashes.
+ */
+export async function preflightMultiSegmentReadiness(
+  project: Project,
+  deliverableId: string,
+  previewToken: string,
+): Promise<MultiSegmentReadinessReport> {
+  if (!isTauri()) {
+    throw new Error("Native multi-segment readiness requires the desktop runtime.");
+  }
+  return invoke<MultiSegmentReadinessReport>("preflight_multi_segment_mlt_readiness", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      deliverable_id: deliverableId,
+      preview_token: previewToken,
+    },
+  });
+}
+
 // Most-recent-first keyset read, bounded to the same max 256 events as storage.
 export async function projectHistoryRecent(
   project: Project,
@@ -649,6 +701,7 @@ export async function exportVerifiedNativeMaster(
   project: Project,
   exportToken: string,
   destination: string,
+  includeIntegrityManifest = false,
 ): Promise<MasterExportReceipt> {
   if (!isTauri()) {
     throw new Error("Verified native MP4 delivery requires the desktop runtime.");
@@ -664,7 +717,28 @@ export async function exportVerifiedNativeMaster(
       effect_grant: grant.token,
       export_token: exportToken,
       destination: absolutePath,
+      include_integrity_manifest: includeIntegrityManifest,
     },
+  });
+}
+
+/** Compare an explicitly supplied local MP4 against its portable unsigned
+ * receipt in the desktop backend. No effect grant or creative mutation occurs.
+ * The optional SHA-256 anchor must originate outside the receipt itself.
+ */
+export async function verifyPortableMediaReceipt(
+  manifestPath: string,
+  trustedSha256?: string,
+): Promise<PortableMediaVerification> {
+  if (!isTauri()) throw new Error("Portable MP4 verification requires the desktop runtime.");
+  const path = manifestPath.trim();
+  if (!path) throw new Error("Choose the absolute path of a portable MP4 receipt.");
+  const anchor = trustedSha256?.trim() || null;
+  if (anchor !== null && !/^[0-9a-f]{64}$/.test(anchor)) {
+    throw new Error("Independent trusted SHA-256 must be 64 lowercase hexadecimal characters.");
+  }
+  return invoke<PortableMediaVerification>("verify_local_media_integrity", {
+    request: { manifest_path: path, trusted_sha256: anchor },
   });
 }
 
