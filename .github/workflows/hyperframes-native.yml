@@ -3,7 +3,7 @@ name: HyperFrames native profile
 on:
   workflow_dispatch:
   push:
-    branches: ['ci/v05-hyperframes-native']
+    branches: ['ci/v05-hyperframes-native', 'ci/v05-creative-closure-oct09']
   pull_request:
     paths:
       - 'crates/hyperframes-profile/**'
