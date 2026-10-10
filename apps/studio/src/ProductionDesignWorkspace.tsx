@@ -1,5 +1,6 @@
 import NativeCreativeEditor from "./production/NativeCreativeEditor";
 import CreativeLibraryWorkspace from "./production/CreativeLibraryWorkspace";
+import PaidGenerationWorkspace from "./PaidGenerationWorkspace";
 import ExpandedStudy from "./ExpandedStudy";
 import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
 import { useEffect, useMemo, useState } from "react";
@@ -164,13 +165,13 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
 }
 
 export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
-  const [tab,setTab]=useState<"component"|"plan"|"sources"|"patch"|"inspection"|"native"|"library">("component");
+  const [tab,setTab]=useState<"component"|"plan"|"sources"|"patch"|"inspection"|"native"|"library"|"generation">("component");
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);
   return <section className="production-workspace" aria-label="Creative production workstation">
     <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} · {design.capsules.length} native source{design.capsules.length===1?"":"s"} · revision {props.project.revision}</p></div>
       <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>props.onSelectScene(e.target.value)}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
-    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["plan","Production plan"],["sources","Native sources"],["native","Native editor"],["library","Creative library"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>setTab(key)}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="native"?<NativeCreativeEditor {...props}/>:tab==="library"?<CreativeLibraryWorkspace {...props} onOpenNative={()=>setTab("native")}/>:tab==="inspection"?<NativeInspectionWorkbench {...props}/>:<CreativePatchWorkbench {...props}/>}
+    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["plan","Production plan"],["sources","Native sources"],["native","Native editor"],["library","Creative library"],["generation","Paid generation"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>setTab(key)}>{label}</button>)}</nav>
+    {tab==="component"?<HeroWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="native"?<NativeCreativeEditor {...props}/>:tab==="library"?<CreativeLibraryWorkspace {...props} onOpenNative={()=>setTab("native")}/>:tab==="inspection"?<NativeInspectionWorkbench {...props}/>:tab==="generation"?<PaidGenerationWorkspace project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:<CreativePatchWorkbench {...props}/>}
   </section>;
 }

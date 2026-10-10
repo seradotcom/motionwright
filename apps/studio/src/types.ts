@@ -1,4 +1,5 @@
 import type { CreativeWorkspaceEdit } from "./production/nativeTypes";
+import type { PaidGenerationEdit } from "./paidGenerationTypes";
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
@@ -506,6 +507,7 @@ export interface Project {
 }
 
 export type Change =
+  | { type: "edit_paid_generation"; edit: PaidGenerationEdit }
   | { type: "edit_creative_workspace"; edit: CreativeWorkspaceEdit }
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }

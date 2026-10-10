@@ -537,7 +537,11 @@
         "crates/domain/src/paid_generation.rs",
         "crates/domain/tests/paid_generation_ledger.rs",
         "crates/service/tests/paid_generation_persistence.rs",
-        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/src/paidGenerationTypes.ts",
+        "apps/studio/src/paidGenerationBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },
@@ -551,7 +555,11 @@
         "crates/domain/src/paid_generation.rs",
         "crates/domain/tests/paid_generation_ledger.rs",
         "crates/service/tests/paid_generation_persistence.rs",
-        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/src/paidGenerationTypes.ts",
+        "apps/studio/src/paidGenerationBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },
@@ -565,7 +573,11 @@
         "crates/domain/src/paid_generation.rs",
         "crates/domain/tests/paid_generation_ledger.rs",
         "crates/service/tests/paid_generation_persistence.rs",
-        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/src/paidGenerationTypes.ts",
+        "apps/studio/src/paidGenerationBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },
@@ -579,7 +591,11 @@
         "crates/domain/src/paid_generation.rs",
         "crates/domain/tests/paid_generation_ledger.rs",
         "crates/service/tests/paid_generation_persistence.rs",
-        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md"
+        "docs/creative-production/V05_PAID_GENERATION_UNKNOWN_OUTCOME.md",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/src/paidGenerationTypes.ts",
+        "apps/studio/src/paidGenerationBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },

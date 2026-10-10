@@ -98,3 +98,35 @@ E12 and advertise paid generations as available.
 This feature is **not** a payment method, subscription, provider recommendation
 or automatic task retry. Reserve/declared spends are editorial bookkeeping,
 not invoices, charges, or an authorization to spend customer money.
+
+
+## Desktop-only paid job intent panel
+
+The Production workspace includes a `Paid generation` tab. It uses
+`native_paid_generation_preflight` to validate an owner-authored,
+source-digest-bound synthetic pilot request and produce a normalized
+`Change::EditPaidGeneration`, with `committed:false` and
+`provider_called:false`. A separate **explicit Save** action uses the
+existing StudioService revision CAS to persist that draft.
+
+For an existing Draft, `native_paid_generation_reserve_preflight` returns
+one expected-history-bound `Reserve` event. Committing it records
+**bookkeeping only**; it neither executes the provider nor charges any
+payment account. The direct journal view lists declared provider and
+model/version, immutable attempt SHA, reporting state, exact 6-decimal USD
+micro-unit budgets, unknown outcome and the query-existing-task-only hint.
+It deliberately cannot submit provider calls, approve a pilot, impersonate
+a person, or pretend the browser demo has real balances.
+
+The Tauri command is read-only until the user commits the normalized
+domain change. It refuses stale project revision and generation. The
+browser-only Vitest guard rejects every paid-generation observation,
+preflight and reservation call in the absence of the local native service.
+Recorded provider capability receipts, policy digests and task IDs remain
+**unverified declarations**, not verified provider integrations or
+ownership/consent authentication.
+
+A later feature must provide a trusted provider adapter with end-to-end
+exact idempotent dispatch, cancellation, authenticated provider-state
+reconciliation, explicit owner spending/consent policy, asset download
+and quarantine/admission before any paid generation can be enabled.

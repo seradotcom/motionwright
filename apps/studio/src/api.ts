@@ -1840,3 +1840,26 @@ export async function nativeNarrationReplacementImpact(
     ...nativeScope(project),original,expected_original_sha256:original.exact_content_sha256
   }});
 }
+
+export async function nativePaidGenerationPreflight(
+  project:Project,specification:import('./paidGenerationTypes').PaidGenerationSpec
+):Promise<import('./paidGenerationTypes').PaidGenerationDraftPreview>{
+  if(!isTauri())throw new Error('Paid provider intents require the canonical local StudioService; browser demos cannot reserve or charge.');
+  return invoke('native_paid_generation_preflight',{request:{
+    ...nativeScope(project),specification
+  }});
+}
+export async function nativePaidGenerationReservePreflight(
+  project:Project,jobId:string
+):Promise<import('./paidGenerationTypes').PaidGenerationReservationPreview>{
+  if(!isTauri())throw new Error('A paid reservation record requires the canonical desktop project revision.');
+  return invoke('native_paid_generation_reserve_preflight',{request:{
+    ...nativeScope(project),job_id:jobId
+  }});
+}
+export async function nativePaidGenerationJournal(
+  project:Project
+):Promise<import('./paidGenerationTypes').PaidGenerationJournalObservation>{
+  if(!isTauri())throw new Error('Paid task status is not simulated in a browser demo.');
+  return invoke('native_paid_generation_journal',{request:nativeScope(project)});
+}
