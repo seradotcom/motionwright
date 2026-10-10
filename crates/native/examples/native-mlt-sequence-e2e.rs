@@ -266,6 +266,7 @@ async fn assemble(
     if connection.resource != project.resource_key() {
         return Err("Semwright owner connection belongs to a foreign resource".into());
     }
+    eprintln!("mlt-e2e-stage: source-loaded");
     let final_master_mode = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("final-mp4");
     let staged_audio = if final_master_mode {
         let track_id = profile
@@ -298,6 +299,7 @@ async fn assemble(
     } else {
         None
     };
+    eprintln!("mlt-e2e-stage: audio-staged");
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let options = FilmBuildOptions {
         frame_rate: Rate::new(30, 1)?,
@@ -313,6 +315,7 @@ async fn assemble(
             })
             .collect(),
     };
+    eprintln!("mlt-e2e-stage: motion-render-start");
     let render = coordinator
         .render_motion_canvas_segments(
             project.id,
@@ -322,6 +325,7 @@ async fn assemble(
             &options,
         )
         .await?;
+    eprintln!("mlt-e2e-stage: motion-render-complete");
     if render.segments.len() != 2
         || render.segments[0].frame_count != 32
         || render.segments[1].frame_count != 1
@@ -332,6 +336,7 @@ async fn assemble(
         std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref(),
         Ok("video-only" | "final-mp4")
     );
+    eprintln!("mlt-e2e-stage: semantic-mlt-start");
     let evidence = if video_only {
         coordinator
             .assemble_native_mlt_video_only_timeline(
@@ -355,6 +360,7 @@ async fn assemble(
             )
             .await?
     };
+    eprintln!("mlt-e2e-stage: semantic-mlt-complete");
     let profile_expected = if video_only {
         "lossless-video-only"
     } else {
@@ -390,6 +396,7 @@ async fn assemble(
     if !fs::metadata(evidence_path)?.is_file() {
         return Err("Native MLT evidence was not saved".into());
     }
+    eprintln!("mlt-e2e-stage: final-mux-start");
     let av_master = if let Some(audio) = staged_audio.as_ref() {
         let evidence = coordinator
             .assemble_native_mlt_multisegment_av_master(
