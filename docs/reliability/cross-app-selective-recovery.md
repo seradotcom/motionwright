@@ -13,21 +13,22 @@
 
 ## Real native demonstration
 
-The exact-source GitHub Actions lane [`native-cross-app-recovery.yml`](../../.github/workflows/native-cross-app-recovery.yml) builds the real **Blender 4.5.14 LTS** and **Motion Canvas 3.17.2** providers with the pinned Semwright Native SDK revision from `SOURCE_LOCK.json`. It uses one ephemeral Semwright daemon, Broker/Driver Host and shared owner-mounted output root, and three *separate* Motionwright processes:
+The exact-source GitHub Actions lane [`native-cross-app-recovery.yml`](../../.github/workflows/native-cross-app-recovery.yml) builds the real **Blender 4.5.14 LTS** and **Motion Canvas 3.17.2** providers with the pinned Semwright Native SDK revision from `SOURCE_LOCK.json`. It uses one ephemeral Semwright daemon, Broker/Driver Host and shared owner-mounted output root, and four *separate* Motionwright processes:
 
 1. `seed`: create a persisted creative project containing one Blender scene and one Motion Canvas scene.
 2. `stop`: dispatch and verify native Blender GLB via the Broker; write a completed immutable receipt and intentionally terminate the application **before Motion Canvas dispatch**.
-3. `resume`: reopen SQLite in a new process; prove the Blender GLB hash is unchanged and **zero** Blender driver commands were executed again; render 60 real Motion Canvas frames.
-4. `repeat`: reopen SQLite in another process; verify the entire Motion Canvas manifest and all 60 PNG hashes again and reuse both valid stages without redispatch.
+3. `fail`: temporarily make the pinned Firefox executable unavailable **only on the disposable CI runner**; invoke the *actual Semwright Motion Canvas renderer*, require a typed terminal `failed` status (`font_evidence`) and a durable retryable checkpoint, and verify zero Blender reexecution. Restore and SHA-256-verify the exact browser bytes. No fake driver responses are used.
+4. `resume`: reopen SQLite in a new process, retain the Blender GLB and **zero** Blender driver redispatches; retry native Motion Canvas as attempt 2 and render 60 verified frames.
+5. `repeat`: reopen SQLite in another process; verify the entire Motion Canvas manifest and all 60 PNG hashes again and reuse both valid stages without redispatch.
 
-The acceptance script `tooling/native_cross_app_recovery_e2e.py` publishes `stop.json`, `resume.json`, `repeat.json`, `result.json`, the original reused `reused-blender.glb`, a native Motion Canvas manifest, review PNG frames, and exact source revisions in a GitHub Actions artifact. It also generates
+The acceptance script `tooling/native_cross_app_recovery_e2e.py` publishes `stop.json`, `failure.json`, `resume.json`, `repeat.json`, `result.json`, the original reused `reused-blender.glb`, a native Motion Canvas manifest, review PNG frames, and exact source revisions in a GitHub Actions artifact. It also generates
 `recovery-demo.html`, a completely offline and evidence-bound visual
-walkthrough of the three process phases with a real native frame and links
+walkthrough of the four process phases with a real native frame and links
 to the original GLB and frame manifest, with the limits displayed directly. A workflow file is **not evidence of PASS** until its job succeeds at that exact commit. CLI phases live in `crates/native/examples/native-cross-app-recovery-e2e.rs`.
 
-**Important limitation:** The controlled `stop` deliberately interrupts *between* native applications; it **does not simulate a failure within the Motion Canvas renderer**. The Rust recovery tests also cover a confirmed Motion Canvas failure followed by attempt 2 after SQLite reopen, but that specific failure test is scripted rather than a real native-render-failure E2E. Do not advertise the latter as validated until an independent native failure-injection case passes.
+**Important limitation:** The `stop` deliberately interrupts *between* native applications. The `fail` stage deliberately makes the pinned Firefox executable unavailable on an ephemeral runner, causing the **real Semwright Motion Canvas native render job** to reach a known terminal failure. The later attempt uses restored byte-identical Firefox. This proves known-outcome *environmental* render failure and retry, not an unmodified production-renderer crash, unknown-outcome replay, or full human creative recovery. It is accepted only after the exact-SHA real CI run passes; the scripted Rust tests remain an additional, separate layer of evidence.
 
-**Other explicit limitations:** the GLB remains its own editable Blender contribution, *not* composited into Motion Canvas frames; no finished audio/video master or real-time UI animation is claimed. This does not yet prove generic dependency invalidation over arbitrary creative apps, cross-machine state migration, or repairing a lost provider generation. A real MC terminal failure, full cross-app native readback, and human usability acceptance remain independent gates.
+**Other explicit limitations:** the GLB remains its own editable Blender contribution, *not* composited into Motion Canvas frames; no finished audio/video master or real-time UI animation is claimed. This does not yet prove generic dependency invalidation over arbitrary creative apps, cross-machine state migration, or repairing a lost provider generation. Full cross-app editable composition, arbitrary renderer failure recovery, and human usability acceptance remain independent gates.
 
 ## Local correctness gates
 
@@ -55,5 +56,5 @@ No `curl | bash` shortcuts or fake driver responses are used in the **native acc
 | Fast semantic recovery | All deterministic Rust tests PASS |
 | Native Blender export | Exact pinned Blender/Driver Host, validated GLB |
 | Cross-app restart without duplicate work | Three separate processes, zero Blender redispatch, complete 60-frame Motion Canvas readback |
-| Confirmed native renderer failure then resume | A real terminal MC failed state followed by a verified successful native retry — **not yet proven** |
+| Confirmed native *environmental* renderer failure then resume | Typed native `failed` after CI-only Firefox unavailability, byte-identical browser restoration and successful retry — requires exact-SHA green E2E |
 | Finished editable multi-renderer video | Native composition/assembly plus creative and human review — **not covered** |

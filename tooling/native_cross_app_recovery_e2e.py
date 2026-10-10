@@ -217,6 +217,33 @@ def save_bounded_native_failure_reason(output_root: Path) -> None:
     )
 
 
+def pinned_firefox_executable(env: dict[str, str]) -> Path:
+    """Resolve only the Firefox binary installed inside our pinned runtime.
+
+    Never rename an arbitrary system browser, even on the ephemeral CI host.
+    """
+    if env.get("PLAYWRIGHT_BROWSERS_PATH") != "0":
+        raise AssertionError("native renderer requires its local pinned browser registry")
+    result = subprocess.run(
+        [
+            shutil.which("node") or "node", "--input-type=module", "-e",
+            "import {firefox} from 'playwright'; console.log(firefox.executablePath());",
+        ],
+        cwd=RUNTIME, env=env, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, check=True, timeout=25,
+    )
+    raw = Path(result.stdout.strip())
+    # A browser already missing here means test preconditions are broken, not
+    # a valid example of a new terminal rendering failure.
+    if not raw.is_absolute() or not raw.is_file() or raw.is_symlink():
+        raise AssertionError("pinned native Firefox binary is not an ordinary file")
+    browser = raw.resolve(strict=True)
+    runtime_root = RUNTIME.resolve(strict=True)
+    if not browser.is_relative_to(runtime_root) or browser.suffix == ".motionwright-fault":
+        raise AssertionError("native fault injection cannot target outside the runtime bundle")
+    return browser
+
+
 def main() -> None:
     require_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
@@ -308,6 +335,47 @@ def main() -> None:
                 model = blender.parse_glb(glb)
                 shutil.copyfile(glb, EVIDENCE / "reused-blender.glb")
 
+                # Real terminal failure, NOT a scripted provider response:
+                # the Semwright Motion Canvas renderer gets as far as its
+                # pinned-browser executable check, fails natively, and must
+                # durably record a confirmed retryable result. We restore the
+                # byte-identical browser before making a fresh app process retry.
+                browser = pinned_firefox_executable(env)
+                browser_sha = render.digest(browser)
+                disabled = browser.with_name(browser.name + ".motionwright-fault")
+                if disabled.exists():
+                    raise AssertionError("fault injection target already exists")
+                browser.rename(disabled)
+                try:
+                    native_failure = render.run_json([
+                        str(EXAMPLE), "fail", str(database), str(connection),
+                        str(EVIDENCE / "failure.json"),
+                    ], env=env, timeout=440)
+                finally:
+                    if not disabled.is_file() or browser.exists():
+                        raise AssertionError("pinned native Firefox restore invariant failed")
+                    disabled.rename(browser)
+                if render.digest(browser) != browser_sha:
+                    raise AssertionError("native Firefox bytes changed during failure injection")
+                recorded_failure = json.loads((EVIDENCE / "failure.json").read_text())
+                if (native_failure.get("native_cross_app_recovery_e2e")
+                        != "EXPECTED_NATIVE_FAILURE"
+                        or recorded_failure.get("native_failure_class") != "font_evidence"
+                        or recorded_failure.get("native_status") != "failed"
+                        or recorded_failure.get("motion_canvas_attempt") != 1
+                        or recorded_failure.get("outcome_known") is not True
+                        or recorded_failure.get("retryable") is not True
+                        or recorded_failure.get("blender_reexecution_count") != 0):
+                    raise AssertionError("real native failed state did not produce a safe checkpoint")
+                save_bounded_native_failure_reason(paths["output"])
+                classified = json.loads(
+                    (EVIDENCE / "bounded-native-failure-reasons.json").read_text()
+                )
+                if not any(x.get("error_class") == "font_evidence"
+                           and "enoent" in x.get("reason_codes", [])
+                           for x in classified["observations"]):
+                    raise AssertionError("real native failure receipt did not confirm the pinned browser interruption")
+
                 try:
                     resumed = render.run_json([
                         str(EXAMPLE), "resume", str(database), str(connection),
@@ -349,7 +417,7 @@ def main() -> None:
                 if repeated["phase"] != "repeat" or repeat["recovery"]["motion_canvas"] != "reused":
                     raise AssertionError("verified native Motion Canvas did not reuse after restart")
                 if repeat["blender_reexecution_count"] != 0:
-                    raise AssertionError("Blender reran on the third process")
+                    raise AssertionError("Blender reran on the final process")
                 for source, name in [
                     (frames[0], "first-frame.png"),
                     (frames[30], "middle-frame.png"),
@@ -361,8 +429,11 @@ def main() -> None:
                     "native_cross_app_recovery_e2e": "PASS",
                     "source_motionwright": SHA, "source_semwright": PIN,
                     "blender_version": "4.5.14 LTS",
-                    "failure_model": "controlled stop before Motion Canvas dispatch; terminal renderer failure covered only by scripted recovery tests",
-                    "app_processes": 3,
+                    "failure_model": "real native terminal render failure from CI-only missing Firefox executable; restored byte-identical pinned browser before retry",
+                    "native_motion_canvas_failed_attempts": 1,
+                    "native_motion_canvas_successful_attempts": 1,
+                    "browser_original_sha256": browser_sha,
+                    "app_processes": 4,
                     "blender_native_driver_reexecutions": 0,
                     "blender_glb_sha256": bp["sha256"],
                     "blender_scene_meshes": len(model["meshes"]),

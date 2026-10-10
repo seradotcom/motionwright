@@ -3,7 +3,7 @@
 
 Never generates successful stages: this creates a readable presentation ONLY
 after the exact-SHA native acceptance script wrote and independently checked
-its three real phase receipts and artifacts.
+its four real phase receipts and artifacts.
 """
 from __future__ import annotations
 
@@ -15,10 +15,20 @@ from pathlib import Path
 def make_report(evidence: Path) -> Path:
     result = json.loads((evidence / "result.json").read_text())
     stop = json.loads((evidence / "stop.json").read_text())
+    failure = json.loads((evidence / "failure.json").read_text())
     resume = json.loads((evidence / "resume.json").read_text())
     repeat = json.loads((evidence / "repeat.json").read_text())
     if (result.get("native_cross_app_recovery_e2e") != "PASS"
             or stop.get("blender") != "executed"
+            or failure.get("native_failure_class") != "font_evidence"
+            or failure.get("native_status") != "failed"
+            or failure.get("outcome_known") is not True
+            or failure.get("retryable") is not True
+            or failure.get("motion_canvas_attempt") != 1
+            or failure.get("blender_reexecution_count") != 0
+            or result.get("app_processes") != 4
+            or result.get("native_motion_canvas_failed_attempts") != 1
+            or result.get("native_motion_canvas_successful_attempts") != 1
             or resume.get("recovery", {}).get("blender") != "reused"
             or resume.get("recovery", {}).get("motion_canvas") != "executed"
             or repeat.get("recovery", {}).get("blender") != "reused"
@@ -66,7 +76,7 @@ def make_report(evidence: Path) -> Path:
     .eyebrow {{ color:var(--mint);font-weight:700;text-transform:uppercase;
       letter-spacing:.16em;font-size:11px;margin:44px 0 14px }}
     h2 {{ font-size:clamp(24px,4vw,38px);letter-spacing:-.04em;margin:0 0 22px }}
-    .phases {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px }}
+    .phases {{ display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px }}
     .phase {{ background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:24px;min-height:252px }}
     .phase .index {{ color:var(--muted);font-size:12px }}
     .phase h3 {{ margin:10px 0 15px;font-size:23px;letter-spacing:-.03em }}
@@ -74,6 +84,7 @@ def make_report(evidence: Path) -> Path:
       border-top:1px solid var(--stroke);padding:10px 0;font-size:14px }}
     .stage span:last-child {{ color:var(--mint);font-weight:650;white-space:nowrap }}
     .stage span.wait {{ color:var(--muted) }}
+    .stage span.failed {{ color:#ecad9b }}
     .evidence {{ border:1px solid var(--stroke);background:var(--card);
       border-radius:14px;overflow:hidden;display:grid;grid-template-columns:1.3fr 1fr }}
     .evidence img {{ display:block;width:100%;height:auto;aspect-ratio:16/9;object-fit:contain;background:#080a0f }}
@@ -107,11 +118,11 @@ def make_report(evidence: Path) -> Path:
   </header>
   <h1>Recovery.<br><span class="accent">Not repetition.</span></h1>
   <p class="sub">One persisted creative project, two actual application drivers,
-    three independent Motionwright processes. Blender produces a real GLB once;
-    Motion Canvas continues without restarting valid work.</p>
+    four independent Motionwright processes. A real native rendering attempt
+    fails, then resumes successfully. Blender's valid GLB is never rebuilt.</p>
   <section class="metrics" aria-label="Measured execution">
     <div class="metric"><strong>0</strong><label>Blender native redispatches on resume</label></div>
-    <div class="metric"><strong>3</strong><label>Separate Motionwright processes</label></div>
+    <div class="metric"><strong>4</strong><label>Separate Motionwright processes</label></div>
     <div class="metric"><strong>{frame_count}</strong><label>Motion Canvas native frames independently verified</label></div>
   </section>
   <p class="eyebrow">Receipt timeline</p>
@@ -126,17 +137,26 @@ def make_report(evidence: Path) -> Path:
     </article>
     <article class="phase">
       <div class="index">02 &nbsp; / &nbsp; Second process</div>
-      <h3>Resume</h3>
+      <h3>Native failure</h3>
       <div class="stage"><span>Blender GLB</span><span>Reused ✓</span></div>
-      <div class="stage"><span>Motion Canvas</span><span>Executed ✓</span></div>
-      <p>A fresh process reopens receipts, verifies Blender's exact GLB and renders native frames.</p>
+      <div class="stage"><span>Motion Canvas</span><span class="failed">Failed (known)</span></div>
+      <p>Native renderer cannot find its temporarily disabled pinned Firefox binary.
+      The typed failure is durably recorded as retryable.</p>
     </article>
     <article class="phase">
       <div class="index">03 &nbsp; / &nbsp; Third process</div>
-      <h3>Repeat</h3>
+      <h3>Resume</h3>
+      <div class="stage"><span>Blender GLB</span><span>Reused ✓</span></div>
+      <div class="stage"><span>Motion Canvas</span><span>Executed ✓</span></div>
+      <p>The original browser is restored byte-for-byte. A new process retries
+      only Motion Canvas and renders 60 real frames.</p>
+    </article>
+    <article class="phase">
+      <div class="index">04 &nbsp; / &nbsp; Fourth process</div>
+      <h3>Reuse again</h3>
       <div class="stage"><span>Blender GLB</span><span>Reused ✓</span></div>
       <div class="stage"><span>Motion Canvas</span><span>Reused ✓</span></div>
-      <p>Every recorded Motion Canvas PNG digest is rechecked; no expensive stages rerun.</p>
+      <p>All frame digests are checked again; neither expensive stage is repeated.</p>
     </article>
   </section>
   <p class="eyebrow">Native media readback</p>
@@ -163,12 +183,13 @@ def make_report(evidence: Path) -> Path:
     <div class="digest"><small>Motion Canvas artifact manifest SHA-256</small><code>{manifest}</code></div>
   </section>
   <div class="warning"><b>What this proves — and what it does not.</b><br>
-    This run deliberately interrupts the process <em>between</em> Blender and Motion Canvas.
-    It proves persisted native cross-app reuse after restart. It is
-    <strong>not</strong> a real Motion Canvas renderer crash/failure test;
-    the terminal-failure retry currently has separate controlled Rust tests.
-    The GLB and Motion Canvas frames are two separate verified contributions,
-    not a composited finished video.</div>
+    The native render fails in a controlled CI fault injection: its pinned Firefox
+    executable is temporarily unavailable. Semwright reports a real, terminal,
+    typed driver failure; the original binary is restored with the same SHA-256
+    before retry. This proves retry of a known native <em>environmental</em>
+    render failure, <strong>not</strong> arbitrary renderer crashes, unknown-outcome
+    replay, or universal dependency scheduling. Blender GLB and Motion Canvas
+    frames remain separate verified contributions, not a composited final video.</div>
   <footer>Generated from complete real native E2E evidence. No hosted scripts, remote assets, or simulated stage status.</footer>
 </main>
 </body>

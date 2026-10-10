@@ -1,8 +1,9 @@
 //! Native acceptance/demo: Blender checkpoint -> process exit -> Motion Canvas
 //! resume. Uses real Semwright Driver Host when supplied an owner connection.
-//! The explicit "stop" phase interrupts BEFORE Motion Canvas dispatch; it does
-//! NOT pretend to be a failed renderer. Terminal failure retry is tested in the
-//! receipt-backed recovery tests and requires a real failure in live acceptance.
+//! The "stop" phase interrupts BETWEEN applications; the "fail" phase invokes
+//! the real native renderer with a deliberately unavailable CI-only browser,
+//! requires a typed terminal native failure and a durable retryable checkpoint.
+//! "resume" runs with the restored browser and MUST NOT rerun native Blender.
 use motionwright_domain::{
     BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
 };
@@ -13,6 +14,7 @@ use motionwright_native::{
 use motionwright_service::StudioService;
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
+use semwright_native_sdk::ErrorCode;
 use serde_json::json;
 use std::{
     collections::BTreeSet,
@@ -24,7 +26,7 @@ use uuid::Uuid;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-cross-app-recovery-e2e <seed DATABASE | stop DATABASE CONNECTION EVIDENCE_JSON | resume DATABASE CONNECTION EVIDENCE_JSON | repeat DATABASE CONNECTION EVIDENCE_JSON>"
+        "usage: native-cross-app-recovery-e2e <seed DATABASE | stop DATABASE CONNECTION EVIDENCE_JSON | fail DATABASE CONNECTION EVIDENCE_JSON | resume DATABASE CONNECTION EVIDENCE_JSON | repeat DATABASE CONNECTION EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -264,6 +266,65 @@ async fn phase(
             "blender":disposition, "blender_proof":proof,
             "project":project.resource_key(), "revision":project.revision,
         })
+    } else if phase == "fail" {
+        let failed = coordinator
+            .recover_blender_motion(
+                project.id,
+                &expected,
+                "reddit-demo",
+                blender.id,
+                deliverable.id,
+                &options,
+            )
+            .await;
+        match failed {
+            Err(error)
+                if error.outcome_known
+                    && error.code == ErrorCode::BackendFailed
+                    && error.message
+                        == "Motion Canvas segment 1 render failed (category: font_evidence)" =>
+            {
+                let after = coordinator.receipts(project.id, 256)?;
+                let blender_calls_after = after
+                    .iter()
+                    .filter(|r| r.command.starts_with("driver.blender.") && r.stage == "completed")
+                    .count();
+                if blender_calls_after != blender_calls_before {
+                    return Err("native failure reexecuted Blender commands".into());
+                }
+                let failed_stage = after.iter().find(|r| {
+                    r.command == "motionwright.recovery.motion-canvas"
+                        && r.stage == "failed_known"
+                        && r.payload.get("retryable").and_then(|v| v.as_bool()) == Some(true)
+                        && r.payload.get("attempt").and_then(|v| v.as_u64()) == Some(1)
+                });
+                if failed_stage.is_none() {
+                    return Err("real native failure was not durably marked retryable".into());
+                }
+                json!({
+                    "phase":"fail",
+                    "expected_native_failure": true,
+                    "native_failure_class":"font_evidence",
+                    "native_status":"failed",
+                    "outcome_known":true,
+                    "retryable":true,
+                    "motion_canvas_attempt":1,
+                    "blender_reexecution_count":blender_calls_after - blender_calls_before,
+                    "project":project.resource_key()
+                })
+            }
+            Ok(_) => {
+                return Err(
+                    "native renderer unexpectedly succeeded during failure injection".into(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "native failure was not a known terminal font_evidence result: {error:?}"
+                )
+                .into());
+            }
+        }
     } else {
         let result = coordinator
             .recover_blender_motion(
@@ -306,7 +367,9 @@ async fn phase(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "native_cross_app_recovery_e2e":"PASS", "phase":phase,
+            "native_cross_app_recovery_e2e":
+                if phase == "fail" { "EXPECTED_NATIVE_FAILURE" } else { "PASS" },
+            "phase":phase,
             "blender_reexecution_count":report.get("blender_reexecution_count"),
             "evidence":evidence_path,
         }))?
@@ -328,7 +391,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return seed(&database);
     }
-    if !matches!(command.as_str(), "stop" | "resume" | "repeat") {
+    if !matches!(command.as_str(), "stop" | "fail" | "resume" | "repeat") {
         usage();
     }
     let connection = arg(&mut args);

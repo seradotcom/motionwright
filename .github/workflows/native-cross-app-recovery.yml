@@ -33,6 +33,7 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
   SEMWRIGHT_TEST_BLENDER_ROOT: /usr/local/blender-4.5.14-linux-x64
 
@@ -100,6 +101,7 @@ jobs:
           npm ci --ignore-scripts
           npx --no-install playwright install --with-deps firefox
           npm run probe
+          node --input-type=module -e "import { firefox } from 'playwright'; import { existsSync } from 'node:fs'; const p=firefox.executablePath(); if (!existsSync(p)) process.exit(2); console.log('Pinned Firefox bundle present');"
 
       - name: Provision ephemeral Semwright driver sandbox
         run: |
@@ -136,6 +138,8 @@ jobs:
         run: |
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/result.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/stop.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/failure.json"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/bounded-native-failure-reasons.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/resume.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/repeat.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/reused-blender.glb"
@@ -150,12 +154,26 @@ jobs:
           p = Path("verification/native-cross-app-recovery") / os.environ["GITHUB_SHA"]
           result = json.loads((p / "result.json").read_text())
           stop = json.loads((p / "stop.json").read_text())
+          failure = json.loads((p / "failure.json").read_text())
+          bounded = json.loads((p / "bounded-native-failure-reasons.json").read_text())
           resume = json.loads((p / "resume.json").read_text())
           repeat = json.loads((p / "repeat.json").read_text())
           sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()
           assert result["native_cross_app_recovery_e2e"] == "PASS"
           assert result["source_motionwright"] == os.environ["GITHUB_SHA"]
-          assert result["app_processes"] == 3
+          assert result["app_processes"] == 4
+          assert result["native_motion_canvas_failed_attempts"] == 1
+          assert result["native_motion_canvas_successful_attempts"] == 1
+          assert len(result["browser_original_sha256"]) == 64
+          assert failure["native_failure_class"] == "font_evidence"
+          assert failure["native_status"] == "failed"
+          assert failure["outcome_known"] is True
+          assert failure["retryable"] is True
+          assert failure["motion_canvas_attempt"] == 1
+          assert failure["blender_reexecution_count"] == 0
+          assert any(x.get("error_class") == "font_evidence"
+                     and "enoent" in x.get("reason_codes", [])
+                     for x in bounded["observations"])
           assert result["blender_native_driver_reexecutions"] == 0
           assert resume["recovery"]["blender"] == "reused"
           assert repeat["recovery"]["blender"] == "reused"
