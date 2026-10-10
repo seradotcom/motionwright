@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// Read-only CI admission probe for pinned Playwright executables.
-// Never executes, changes permissions, strips or installs a binary.
+// Disposable-CI diagnostic for pinned Playwright executables and resources.
+// Does not install, grant execution, disable namespaces, alter host policies,
+// or persist runtime stderr; the fixture may execute --version in isolated CI.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
+import os from 'node:os';
+import {spawnSync} from 'node:child_process';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../runtime/hyperframes');
 // Playwright's .executablePath() otherwise defaults to ambient ~/.cache even
@@ -41,6 +44,33 @@ function readCandidate(kind,p){
     inside_owner_selected_runtime:true};
 }
 const rows=candidateFiles.map(([kind,file])=>readCandidate(kind,file));
+const headless=path.join(root,receipt.files.browser.path),directory=path.dirname(headless);
+const neighbors=fs.readdirSync(directory,{withFileTypes:true}).filter(x=>x.isFile())
+  .map(x=>{
+    const original=path.join(directory,x.name),stat=fs.lstatSync(original);
+    if(!/^[a-zA-Z0-9_.-]{1,90}$/.test(x.name)||stat.size>64*1024*1024||stat.isSymbolicLink())
+      return {name:x.name,sidecar_admissible:false};
+    return {name:x.name,bytes:stat.size,sha256:crypto.createHash('sha256').update(fs.readFileSync(original)).digest('hex'),
+      executable:(stat.mode&0o111)!==0,sidecar_admissible:stat.size<=32*1024*1024};
+  });
+const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'mw-browser-sidecar-comparison-'));
+let versionChecks;
+try {
+  const copied=path.join(isolated,'headless_shell');
+  fs.copyFileSync(headless,copied,fs.constants.COPYFILE_EXCL);
+  fs.chmodSync(copied,0o500);
+  const diagnostic=file=>{
+    const res=spawnSync(file,['--version'],{timeout:18000,maxBuffer:8*1024,
+      env:{HOME:isolated,LANG:'C.UTF-8',LC_ALL:'C.UTF-8',TZ:'UTC'},
+      stdio:['ignore','pipe','pipe'],encoding:'utf8'});
+    return {success:res.status===0,exit_code:res.status,signal:res.signal,
+      timeout:res.error?.code==='ETIMEDOUT',stderr_class:
+        /icu|icudtl/i.test(res.stderr??'')?'icu':
+        /\.pak|resources/i.test(res.stderr??'')?'resource_bundle':'unclassified'};
+  };
+  versionChecks={pinned_directory:diagnostic(headless),executable_alone:diagnostic(copied)};
+}finally{fs.rmSync(isolated,{recursive:true,force:true});}
+
 if(rows[1].sha256!==receipt.files.browser.sha256 || rows[1].bytes!==receipt.files.browser.bytes)
   throw new Error('Pinned headless shell changed after installation');
 const report={
@@ -48,6 +78,8 @@ const report={
   profile:'hyperframes-core-chromium-png-v2',
   sealed_host_executable_limit_bytes:limit,
   candidates:rows,
+  pinned_headless_directory_sidecars:neighbors,
+  isolated_version_probe:versionChecks,
   authority:'read_only_verification_not_permission_to_execute',
   core_mutation:'none',
   policy_change:'none'

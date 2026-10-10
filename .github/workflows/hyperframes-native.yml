@@ -13,6 +13,7 @@ on:
           - broker
           - creative-library
           - creative-design
+          - browser-inspection
   push:
     branches: ['ci/v05-hyperframes-native', 'ci/v05-native-fidelity-continuation']
   pull_request:
@@ -61,7 +62,7 @@ jobs:
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
 
   sealed-browser-admission:
-    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full'
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'browser-inspection'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
