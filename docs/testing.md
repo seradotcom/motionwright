@@ -78,6 +78,10 @@ The pinned Film adapter now projects per-scene static camera center shifts throu
 
 A deterministic, owner-only MLT timeline recipe maps each preflight segment to an exact half-open clip interval, stable SHA-256-derived FFV1 output name and pinned landscape profile. Rust tests verify source/scene/job uniqueness, gap-free frame accounting and no generated media claims. The internal production coordinator revalidates the native source preflight before invoking the pinned Semwright MLT frames encoder per segment, verifies video-only FFV1 codec/size/FPS and checks actual artifact bytes. These are separate verified intermediates, **not** a completed multisegment MP4; see [MLT preparation](mlt-multi-segment-preparation.md).
 
+## Bounded multisegment audio/video source readiness
+
+A separate Rust native preflight checks that verified per-segment FFV1 files and the exact saved 48kHz stereo WAV from the app-owned CAS belong to one project/profile/creative revision. It rehashes actual source files within strict byte ceilings, checks the entire WAV RIFF chunk index, actual 48 kHz stereo PCM/float header and sample-frame count, rejects changed/missing/stale media and unimplemented mix/burn-in claims, and aligns the voice duration to the exact rational output FPS within one 48kHz sample. Tests use synthetic FFV1 file bytes and a real test WAV, so no actual MLT mux or decoded AV success is inferred. See [multisegment audio readiness](mlt-multisegment-audio-readiness.md).
+
 ## Multi-segment native MLT source conformance
 
 Rust tests compile 33 authored Motion Canvas scenes into canonical 32+1 native Film segments and check an exact, manifest-SHA-verified 990-frame MLT assembly preflight. They reject stale project revisions, duplicated job references, segment reordering, altered native verdicts, tampered manifest bytes, missing source segments, mixed-renderer cuts and unsupported portrait-only MLT output. **This is read-only source preparation, not a rendered multi-segment master.** See [multi-segment MLT source preflight](multi-segment-preflight.md).

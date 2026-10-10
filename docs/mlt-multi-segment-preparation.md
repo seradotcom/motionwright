@@ -22,7 +22,7 @@ The receipt `MltPreparedMezzanines` returns the exact segment index, output star
 
 `real-source-ffv1-segments-not-composited`
 
-**That is not an H.264/AAC master**. The stage does not yet create a Semwright semantic MLT project, import these FFV1 sources as assets, insert the clips onto a real video track, run the MLT sequence renderer, combine the validated 48kHz stereo WAV or publish a final MP4. These operations require a separate authorized end-to-end MLT job, deterministic revision-bound reference updates, actual media inspection and a real multi-segment E2E before the desktop may claim completed output.
+**That is not an H.264/AAC master**. A separate [read-only multisegment voice/audio gate](mlt-multisegment-audio-readiness.md) now validates the exact project-bound imported WAV, all prepared FFV1 source hashes, profile and sample-precision total duration, still without muxing. The FFV1 preparation stage itself does not create a Semwright semantic MLT project, insert clips onto a real track, render the sequence, combine the verified WAV or publish a final MP4. These operations require a separate authorized end-to-end MLT job, deterministic revision-bound reference updates, actual media inspection and a real multi-segment E2E before the desktop may claim completed output.
 
 ## Verification
 
