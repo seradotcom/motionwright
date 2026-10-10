@@ -78,7 +78,7 @@ def main()->None:
         stages={}
         for label,offset in (('before',1),('after',2)):
             row=fixture[label]
-            job='hf-delta-'+UUID(int=offset).hex
+            job='hf-'+UUID(int=offset).hex
             jobdir=work/job;dest=results/job;jobdir.mkdir();dest.mkdir()
             plan=row['plan_json'].encode()
             source=row['source_html'].encode()
