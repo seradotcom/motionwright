@@ -30,6 +30,16 @@ MW_BIN = ROOT / "target" / "debug" / "examples" / "native-mlt-sequence-e2e"
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
+MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
+if MODE not in {"pcm", "video-only"}:
+    raise SystemExit("Only closed native MLT smoke modes are accepted")
+VIDEO_ONLY = MODE == "video-only"
+PROFILE = "lossless-video-only" if VIDEO_ONLY else "lossless"
+EXPECTED_SCOPE = (
+    "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+    if VIDEO_ONLY else "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
+)
+VIDEO_FILE = "native-two-segment-video-only.mkv" if VIDEO_ONLY else "native-two-segment-lossless.mkv"
 
 
 def digest(path: Path) -> str:
@@ -474,7 +484,7 @@ def main() -> None:
                 raise AssertionError("Real source-bound MLT timeline was not successful: " + repr(result))
             if result.get("frame_count") != 33 or result.get("segment_count") != 2:
                 raise AssertionError("Native timeline lost the 32+1 source partition")
-            if result.get("evidence_scope") != "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master":
+            if result.get("evidence_scope") != EXPECTED_SCOPE or result.get("native_render_profile") != PROFILE:
                 raise AssertionError("MLT result falsely claimed final H.264/AAC master")
 
             evidence_path = EVIDENCE / "native-multisegment-timeline-evidence.json"
@@ -482,6 +492,12 @@ def main() -> None:
             if (evidence.get("provider_project_cleanup") != "not_requested_requires_foreground_broker_consent"
                 or result.get("provider_project_cleanup") != "not_requested_requires_foreground_broker_consent"):
                 raise AssertionError("Native MLT receipt did not disclose pending foreground-only cleanup")
+            if evidence.get("evidence_scope") != EXPECTED_SCOPE or evidence.get("native_render_profile") != PROFILE:
+                raise AssertionError("MLT output identity and exact closed profile diverged")
+            if evidence.get("transport_pcm_audio") is VIDEO_ONLY:
+                raise AssertionError("Native MLT claimed wrong audio presence")
+            if VIDEO_ONLY and evidence.get("native_frame_count_observed") != 33:
+                raise AssertionError("New native video-only profile lacks actual decoded frame count")
             if evidence.get("source", {}).get("total_frames") != 33:
                 raise AssertionError("Real FFV1 intermediate frame total was altered")
             records = evidence.get("source", {}).get("verified_video_segments", [])
@@ -512,13 +528,12 @@ def main() -> None:
             streams = json.loads(meta_result.stdout)["streams"]
             videos = [item for item in streams if item.get("codec_type") == "video"]
             audios = [item for item in streams if item.get("codec_type") == "audio"]
-            if len(videos) != 1 or len(audios) != 1:
-                raise AssertionError("Native MLT lossless intermediary requires exact FFV1 and PCM streams")
-            audio = audios[0]
-            if audio.get("codec_name") != "pcm_s16le":
-                raise AssertionError("Native MLT transport audio is not expected PCM s16le")
-            if result.get("transport_pcm_audio") is not True or evidence.get("transport_pcm_audio") is not True:
-                raise AssertionError("Lossless receipt denied its actual mandatory PCM transport audio")
+            if len(videos) != 1 or len(audios) != (0 if VIDEO_ONLY else 1):
+                raise AssertionError("MLT native render audio presence differs from exact closed profile")
+            if not VIDEO_ONLY and audios[0].get("codec_name") != "pcm_s16le":
+                raise AssertionError("Native MLT PCM transport audio differs")
+            if result.get("transport_pcm_audio") is VIDEO_ONLY:
+                raise AssertionError("MLT result contradicted source-bound profile")
             if evidence.get("native_frame_count_observed") not in (None, 33):
                 raise AssertionError("MLT native frame count observation contradicted source")
             video = videos[0]
@@ -528,7 +543,7 @@ def main() -> None:
                 or video.get("nb_read_frames") != "33"):
                 raise AssertionError("Native actual MLT video codec/frame provenance failed: " + repr(video))
 
-            shutil.copyfile(video_path, EVIDENCE / "native-two-segment-lossless.mkv")
+            shutil.copyfile(video_path, EVIDENCE / VIDEO_FILE)
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -544,10 +559,13 @@ def main() -> None:
                     "ffprobe_sha256": digest(ffprobe),
                     "rendered_source_frames": [32, 1],
                     "assembled_video_frames": 33,
+                    "mode": MODE,
+                    "evidence_scope": EXPECTED_SCOPE,
+                    "native_render_profile": PROFILE,
                     "provider_project_cleanup": evidence["provider_project_cleanup"],
                     "assembled_video_codec": "ffv1",
-                    "assembled_video_has_audio": True,
-                    "transport_audio_codec": "pcm_s16le",
+                    "assembled_video_has_audio": not VIDEO_ONLY,
+                    "transport_audio_codec": None if VIDEO_ONLY else "pcm_s16le",
                     "video_bytes": video_path.stat().st_size,
                     "video_sha256": digest(video_path),
                 },

@@ -220,25 +220,50 @@ async fn assemble(
     {
         return Err("Actual native Film did not produce expected 32+1 partition".into());
     }
-    let evidence = coordinator
-        .assemble_native_mlt_video_timeline(
-            project.id,
-            &RevisionStamp::from(&project),
-            "real-mlt-timeline-33",
-            profile.id,
-            &options,
-            &render,
-        )
-        .await?;
+    let video_only = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("video-only");
+    let evidence = if video_only {
+        coordinator
+            .assemble_native_mlt_video_only_timeline(
+                project.id,
+                &RevisionStamp::from(&project),
+                "real-mlt-video-only-33",
+                profile.id,
+                &options,
+                &render,
+            )
+            .await?
+    } else {
+        coordinator
+            .assemble_native_mlt_video_timeline(
+                project.id,
+                &RevisionStamp::from(&project),
+                "real-mlt-timeline-33",
+                profile.id,
+                &options,
+                &render,
+            )
+            .await?
+    };
+    let profile_expected = if video_only {
+        "lossless-video-only"
+    } else {
+        "lossless"
+    };
+    let scope_expected = if video_only {
+        "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+    } else {
+        "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
+    };
     if evidence.frame_count != 33
-        || !evidence.transport_pcm_audio
+        || evidence.transport_pcm_audio == video_only
+        || evidence.native_render_profile != profile_expected
         || evidence.provider_project_cleanup != "not_requested_requires_foreground_broker_consent"
+        || (video_only && evidence.native_frame_count_observed != Some(33))
         || evidence
             .native_frame_count_observed
             .is_some_and(|observed| observed != 33)
         || evidence.source.verified_video_segments.len() != 2
-        || evidence.evidence_scope
-            != "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
+        || evidence.evidence_scope != scope_expected
     {
         return Err(
             "Native MLT timeline did not return the two-segment lossless intermediary".into(),
@@ -265,6 +290,7 @@ async fn assemble(
             "artifact_sha256":evidence.artifact_sha256,
             "artifact_bytes":evidence.artifact_bytes,
             "transport_pcm_audio":evidence.transport_pcm_audio,
+            "native_render_profile":evidence.native_render_profile,
             "provider_project_cleanup":evidence.provider_project_cleanup,
             "native_frame_count_observed":evidence.native_frame_count_observed,
             "evidence_scope":evidence.evidence_scope,
