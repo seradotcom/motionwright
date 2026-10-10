@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 36 **PARTIAL code
+The isolated branch inventory currently records 37 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 27 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 26 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -526,3 +526,21 @@ generates a real H.264 test video and opens the portable OTIO through
 the independent OpenTimelineIO Python reader, with real ffprobe
 readback. This is *not yet* a Kdenlive/Shotcut visual round-trip or
 a human approved editorial cut; see `V05_OTIO_MEDIA_INTERCHANGE.md`.
+
+
+## Independently admitted technical observations (E13-04; owner trial only)
+
+A new `tooling/observer-admission/` offline gate accepts only one admitted
+first-party PNG dimension method (`png_dimensions_v1`). Exact verifier
+source bytes, declared method/version/units/coverage/limitations and an
+owner's active/revoked policy are separately Ed25519-signed; a distinct
+observer key signs one source-bound producer result. The actual original PNG
+bytes are independently decoded and checked by the gate. A separately
+owner-provisioned **current policy head** outside the evidence bundle pins
+its generation and exact canonical signed policy envelope so that a
+previously signed, now-revoked policy cannot be replayed. Revoked evidence
+is retained as a historical signed record but is no longer accepted as
+a *new* gate result. Owner authentication, production key custody and
+Semwright Platform/Native SDK integration are still **NOT VERIFIED**.
+This experiment cannot execute imported verifier source, install a driver,
+approve art or authorize publication. See `V05_OBSERVER_ADMISSION.md`.
