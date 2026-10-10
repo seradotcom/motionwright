@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 36 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 27 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -501,3 +501,8 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+## Two independent owner-local clients (E10-03, partial)
+
+The existing Native SDK capability catalog and versioned project observations can be accessed by independently launched, compact one-shot local CLI clients in `crates/native/examples/local_agent_actor.rs`. Preview reads are source-only and owner-local writes must explicitly opt in to `StudioService::apply` CAS, with one project SQLite store and no shared chat. The disposable CI `tooling/agent-local/two_clients_e2e.py` must prove three independent revisions, stale-page rejection, cross-generation refusal, and SDK capability discovery. This is **not** a remote Host grant, network server, generic plugin runner or completed external-agent E10-03 acceptance. See `V05_EXTERNAL_AGENT_LOCAL_CLIENTS.md`.
