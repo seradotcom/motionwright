@@ -242,3 +242,26 @@ fn schema_cannot_grant_owner_preference_or_source_execution() {
     forged["alternatives"][0]["preferred_by_user"] = serde_json::json!(true);
     assert!(serde_json::from_value::<CreativeDirectionStudyRequest>(forged).is_err());
 }
+
+#[test]
+fn licensed_generic_footage_cannot_be_promoted_to_a_real_software_action() {
+    let p = project();
+    let mut request = request(&p);
+    let shot = &mut request.alternatives[1].shot_studies[0];
+    shot.evidence_kind = CreativeEvidenceKind::LicensedFootage;
+    shot.evidence_asset_id = Some(id(5));
+    request.alternatives[1].reference_ids = vec![id(100)];
+    let result = analyze_creative_directions(&p, &request).unwrap();
+    assert_eq!(
+        result.candidate_reviews[1].claim_reviews[0].status,
+        ClaimReviewStatus::UnsupportedClaimSource
+    );
+    assert!(!result.candidate_reviews[1].claim_reviews[0].verified_product_behavior);
+}
+#[test]
+fn real_capture_kind_without_an_explicit_brief_claim_is_not_an_evidence_plan() {
+    let p = project();
+    let mut request = request(&p);
+    request.alternatives[0].shot_studies[0].claim_ids.clear();
+    assert!(analyze_creative_directions(&p, &request).is_err());
+}

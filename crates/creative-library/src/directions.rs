@@ -154,6 +154,9 @@ fn review_claim(
         (CreativeEvidenceKind::GraphicIllustration, _) => {
             ClaimReviewStatus::IllustrationIsNotEvidence
         }
+        // Licensed generic footage is visual material, not proof of the
+        // behavior or version of somebody else's software.
+        (CreativeEvidenceKind::LicensedFootage, _) => ClaimReviewStatus::UnsupportedClaimSource,
         (_, None) => ClaimReviewStatus::UnsourcedProductClaim,
         (_, Some(claim)) => match &claim.source {
             None => ClaimReviewStatus::UnsourcedProductClaim,

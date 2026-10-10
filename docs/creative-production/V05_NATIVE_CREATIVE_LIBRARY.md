@@ -558,3 +558,9 @@ claim a concept was analyzed. The corresponding code-only UI and Rust
 gates are source-contract tests; independently observed reference
 pixels, competing conceptual frame renders and human concept decisions
 remain outstanding before E02 acceptance.
+
+
+The selective CI gates are keyed by `selected_gate` in their concurrency
+identifier; simultaneous Studio and Rust checks on the **same branch** must
+not cancel one another. As before, running `selected_gate=full` still
+does not bypass any independent release, owner or security review.
