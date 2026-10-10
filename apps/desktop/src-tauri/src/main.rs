@@ -19,6 +19,7 @@ use motionwright_domain::{
     otio_interchange,
 };
 use motionwright_native::{
+    assembly::preflight_multi_segment_mlt,
     build_application,
     film::{FilmBuildOptions, build_motion_canvas_segments},
     production::{
@@ -163,6 +164,37 @@ struct FilmPreflightRequest {
     revision: u64,
     deliverable_id: Uuid,
     options: FilmBuildOptions,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MultiSegmentReadinessRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Uuid,
+    preview_token: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+struct MultiSegmentReadinessSegment {
+    segment_id: String,
+    scene_ids: Vec<Uuid>,
+    start_frame: u64,
+    frame_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct MultiSegmentReadinessResponse {
+    project_resource: String,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Uuid,
+    verdict: &'static str,
+    mlt_profile: String,
+    total_frames: u64,
+    segments: Vec<MultiSegmentReadinessSegment>,
+    evidence_scope: String,
 }
 
 /// No caller path, arbitrary render evidence or claimed audio SHA is accepted:
@@ -1019,12 +1051,74 @@ async fn render_motion_canvas(
         })?;
     let registry = state.preview.clone();
     let for_grants = evidence.clone();
+    let source_options = request.options.clone();
     let preview = tauri::async_runtime::spawn_blocking(move || {
-        registry.register(&output_root, &owner_resource, &for_grants)
+        registry.register_with_options(&output_root, &owner_resource, &for_grants, &source_options)
     })
     .await
     .unwrap_or_default();
     Ok(NativePreviewRenderResponse { evidence, preview })
+}
+
+/// Source- and manifest-bound native MLT assembly readiness, without job
+/// dispatch or any WebView access to the trusted output-root paths.
+#[tauri::command]
+async fn preflight_multi_segment_mlt_readiness(
+    state: State<'_, AppState>,
+    request: MultiSegmentReadinessRequest,
+) -> Result<MultiSegmentReadinessResponse, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Multi-segment source belongs to a stale creative revision.".into());
+    }
+    let (evidence, options, root) = state.preview.multi_segment_source(
+        &project,
+        request.preview_token,
+        request.deliverable_id,
+    )?;
+    let project_id = project.id;
+    let source_generation = project.generation;
+    let source_revision = project.revision;
+    let preflight = tauri::async_runtime::spawn_blocking(move || {
+        preflight_multi_segment_mlt(&project, request.deliverable_id, &options, &evidence, &root)
+            .map_err(|error| {
+                format!(
+                    "Native multi-segment source preflight rejected the cut: {}",
+                    error.message.chars().take(440).collect::<String>()
+                )
+            })
+    })
+    .await
+    .map_err(|_| "Native multi-segment preflight failed to complete.".to_owned())??;
+    let current = state.service.project(project_id).map_err(sanitized)?;
+    if current.generation != source_generation || current.revision != source_revision {
+        return Err("Creative revision changed during source preflight; retry.".into());
+    }
+    // Manifest paths, job refs, digests, and the private owner output root
+    // never appear in the WebView; it receives only a semantic checklist.
+    Ok(MultiSegmentReadinessResponse {
+        project_resource: preflight.project_resource,
+        generation: preflight.generation,
+        revision: preflight.revision,
+        deliverable_id: preflight.deliverable_id,
+        verdict: "source_manifest_ready",
+        mlt_profile: preflight.mlt_profile,
+        total_frames: preflight.total_frames,
+        segments: preflight
+            .segments
+            .into_iter()
+            .map(|segment| MultiSegmentReadinessSegment {
+                segment_id: segment.segment_id,
+                scene_ids: segment.scene_ids,
+                start_frame: segment.output_start_frame,
+                frame_count: segment.frame_count,
+            })
+            .collect(),
+        evidence_scope: preflight.evidence_scope,
+    })
 }
 
 /// Exact bytes of one verified PNG from the current project revision. No
@@ -1830,6 +1924,7 @@ fn main() {
             production_jobs_history,
             motion_canvas_preflight,
             render_motion_canvas,
+            preflight_multi_segment_mlt_readiness,
             assemble_av_master,
             export_native_av_master,
             verify_local_media_integrity,

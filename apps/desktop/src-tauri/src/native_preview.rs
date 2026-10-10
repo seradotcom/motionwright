@@ -1,4 +1,5 @@
 use motionwright_domain::Project;
+use motionwright_native::film::FilmBuildOptions;
 use motionwright_native::production::{
     MotionCanvasRenderEvidence, read_verified_production_artifact,
 };
@@ -81,6 +82,9 @@ struct GrantEntry {
     /// This canonical response was recorded after the authorized Semwright
     /// render and verification, not deserialized from a WebView request.
     source_evidence: MotionCanvasRenderEvidence,
+    /// Explicit Film options captured during the authorized native render;
+    /// never inferred from current WebView controls or a request payload.
+    source_options: Option<FilmBuildOptions>,
 }
 
 #[derive(Default)]
@@ -183,13 +187,38 @@ fn segment_artifact(
 }
 
 impl NativePreviewRegistry {
-    /// Registration is possible only after the real, verified Semwright
-    /// render operation has returned its authoritative segment evidence.
+    /// Legacy manifest-only registration is exclusively for adversarial unit
+    /// tests. Production must require source-bound FilmBuildOptions via
+    /// register_with_options; otherwise readiness may be misattributed.
+    #[cfg(test)]
     pub fn register(
         &self,
         output_root: &Path,
         owner_resource: &str,
         evidence: &MotionCanvasRenderEvidence,
+    ) -> Vec<NativeFrameGrant> {
+        self.register_internal(output_root, owner_resource, evidence, None)
+    }
+
+    /// Only the actual production boundary can attach authoring provenance.
+    /// Old synthetic/standalone test registrations cannot claim readiness for
+    /// multi-segment assembly without that bound source intent.
+    pub fn register_with_options(
+        &self,
+        output_root: &Path,
+        owner_resource: &str,
+        evidence: &MotionCanvasRenderEvidence,
+        options: &FilmBuildOptions,
+    ) -> Vec<NativeFrameGrant> {
+        self.register_internal(output_root, owner_resource, evidence, Some(options.clone()))
+    }
+
+    fn register_internal(
+        &self,
+        output_root: &Path,
+        owner_resource: &str,
+        evidence: &MotionCanvasRenderEvidence,
+        options: Option<FilmBuildOptions>,
     ) -> Vec<NativeFrameGrant> {
         if evidence.project_resource != owner_resource {
             return Vec::new();
@@ -224,6 +253,7 @@ impl NativePreviewRegistry {
                 output_root: output_root.to_path_buf(),
                 frames: Arc::new(frames),
                 source_evidence: evidence.clone(),
+                source_options: options.clone(),
             };
             if let Ok(mut entries) = self.inner.grants.lock() {
                 if entries.len() >= MAX_GRANTS {
@@ -272,6 +302,52 @@ impl NativePreviewRegistry {
             return Err("Native master source belongs to another project revision or requires an unsupported multi-segment assembly.".into());
         }
         Ok(entry.source_evidence)
+    }
+
+    /// All source/intent/paths are taken from the owner-issued registry entry.
+    /// WebView only provides an opaque token and expected project/profile.
+    pub fn multi_segment_source(
+        &self,
+        project: &Project,
+        token: Uuid,
+        deliverable_id: Uuid,
+    ) -> Result<(MotionCanvasRenderEvidence, FilmBuildOptions, PathBuf), String> {
+        let entry = self
+            .inner
+            .grants
+            .lock()
+            .map_err(|_| "Native preview registry is unavailable.")?
+            .iter()
+            .find(|item| item.token == token)
+            .cloned()
+            .ok_or("Native render session was not registered by this desktop.")?;
+        if entry.project_id != project.id
+            || entry.generation != project.generation
+            || entry.revision != project.revision
+            || entry.deliverable_id != deliverable_id
+            || entry.source_evidence.project_resource != project.resource_key()
+            || entry.source_evidence.generation != project.generation
+            || entry.source_evidence.revision != project.revision
+            || entry.source_evidence.deliverable_id != deliverable_id
+            || entry.source_evidence.segments.len() < 2
+            || entry
+                .source_evidence
+                .segments
+                .iter()
+                .filter(|segment| {
+                    segment.artifact.get("directory").and_then(Value::as_str)
+                        == Some(entry.directory.as_str())
+                        && segment.frame_count == entry.frames.len() as u64
+                })
+                .count()
+                != 1
+        {
+            return Err("Native multi-segment source belongs to another creative version, lacks a registered segment or is not multi-segment.".into());
+        }
+        let options = entry.source_options.ok_or(
+            "Original Film authoring options are unavailable for this native render session.",
+        )?;
+        Ok((entry.source_evidence, options, entry.output_root))
     }
 
     /// A grant never accepts caller-provided paths, hashes or media MIME types.
@@ -404,6 +480,74 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn multi_segment_readiness_requires_owner_provenance_and_exact_session_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let project = project();
+        let (_, mut one) = sample(root.path(), &project);
+        let (_, two) = sample(root.path(), &project);
+        let mut second = two.segments[0].clone();
+        second.segment_id = "second-canonical-segment".into();
+        second.job_ref = "second-native-job".into();
+        one.segments.push(second);
+
+        let options: FilmBuildOptions = serde_json::from_value(json!({
+            "frame_rate": {"num": 30, "den": 1},
+            "font_family": "Instrument Sans Variable",
+            "mono_font_family": "IBM Plex Mono",
+            "scene_intents": [{
+                "scene_id": project.scenes[0].id,
+                "role": "mechanism",
+                "archetype": "statement"
+            }]
+        }))
+        .unwrap();
+        // Legacy synthetic/test registration lacks the original explicit
+        // Film options and can never qualify for multi-source readiness.
+        let unsigned = NativePreviewRegistry::default();
+        let unbound = unsigned.register(root.path(), &project.resource_key(), &one);
+        assert_eq!(unbound.len(), 2);
+        assert!(
+            unsigned
+                .multi_segment_source(&project, unbound[0].token, project.deliverables[0].id)
+                .is_err()
+        );
+
+        let trusted = NativePreviewRegistry::default();
+        let issued =
+            trusted.register_with_options(root.path(), &project.resource_key(), &one, &options);
+        assert_eq!(issued.len(), 2);
+        let (source, bound_options, source_root) = trusted
+            .multi_segment_source(&project, issued[0].token, project.deliverables[0].id)
+            .unwrap();
+        assert_eq!(source.segments.len(), 2);
+        assert_eq!(bound_options, options);
+        assert_eq!(source_root, root.path());
+        // The older master path remains strictly single-segment.
+        assert!(
+            trusted
+                .master_source(&project, issued[0].token, project.deliverables[0].id)
+                .is_err()
+        );
+        assert!(
+            trusted
+                .multi_segment_source(&project, Uuid::now_v7(), project.deliverables[0].id)
+                .is_err()
+        );
+        let mut stale = project.clone();
+        stale.revision += 1;
+        assert!(
+            trusted
+                .multi_segment_source(&stale, issued[0].token, stale.deliverables[0].id)
+                .is_err()
+        );
+        assert!(
+            trusted
+                .multi_segment_source(&project, issued[0].token, Uuid::now_v7())
+                .is_err()
+        );
     }
 
     #[test]

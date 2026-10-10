@@ -84,7 +84,7 @@ A separate Rust native preflight checks that verified per-segment FFV1 files and
 
 ## Multi-segment native MLT source conformance
 
-Rust tests compile 33 authored Motion Canvas scenes into canonical 32+1 native Film segments and check an exact, manifest-SHA-verified 990-frame MLT assembly preflight. They reject stale project revisions, duplicated job references, segment reordering, altered native verdicts, tampered manifest bytes, missing source segments, mixed-renderer cuts and unsupported portrait-only MLT output. **This is read-only source preparation, not a rendered multi-segment master.** See [multi-segment MLT source preflight](multi-segment-preflight.md).
+Rust tests compile 33 authored Motion Canvas scenes into canonical 32+1 native Film segments and check an exact, manifest-SHA-verified 990-frame MLT assembly preflight. They reject stale project revisions, duplicated job references, segment reordering, altered native verdicts, tampered manifest bytes, missing source segments, mixed-renderer cuts and unsupported portrait-only MLT output. The desktop includes an opaque-token-bound **read-only readiness** command, with synthetic browser tests verifying exact request identity, no user-provided paths/hashes, and explicit differentiation between manifest preparation and an actual finished MP4. **This is read-only source preparation, not a rendered multi-segment master.** See [multi-segment MLT source preflight](multi-segment-preflight.md).
 
 ## Native Film semantic preflight
 
