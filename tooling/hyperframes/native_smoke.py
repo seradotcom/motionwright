@@ -40,6 +40,7 @@ def main()->None:
             result=json.loads((output/job/'result.json').read_text());manifest=json.loads((output/job/'frames.json').read_text())
             assert manifest['frame_count']==90 and manifest['source_sha256']==entry['source_sha256']
             assert manifest['observation']['coverage']=='all_frames' and manifest['external_requests']==0
+            assert manifest['sandbox_mode']=='chromium-userns', 'Direct native execution must retain Chromium userns confinement'
             observations=[json.loads(line) for line in (output/job/'observations.ndjson').read_text().splitlines()]
             assert len(observations)==90 and all(abs(row['time']-row['observed_time'])<1e-7 for row in observations)
             node_id=str(uuid.UUID(int=20))
@@ -66,7 +67,7 @@ def main()->None:
         # A malformed source digest must not launch a second rendering or overwrite its output.
         bad=list(args);bad[-1]='0'*64
         denied=run(bad,30);assert denied.returncode!=0
-        output_summary={'schema':'motionwright.hyperframes-native-smoke/1','source_sha':head,'native_profile':'hyperframes-core-chromium-png-v1','technical':'PASS',
+        output_summary={'schema':'motionwright.hyperframes-native-smoke/1','source_sha':head,'native_profile':'hyperframes-core-chromium-png-v2','technical':'PASS',
                         'same_worker_repeat_all_frames':'PASS','rgba_alpha':'PASS','ntsc_clock':'PASS','mask_rotation_opacity_blur':'PASS','tampered_source_rejected':True,
                         'creative_approval':'required','results':results}
         (evidence/'result.json').write_text(json.dumps(output_summary,indent=2)+'\n')

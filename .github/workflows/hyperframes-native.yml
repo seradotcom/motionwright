@@ -3,7 +3,7 @@ name: HyperFrames native profile
 on:
   workflow_dispatch:
   push:
-    branches: ['ci/v05-hyperframes-native']
+    branches: ['ci/v05-hyperframes-native', 'ci/v05-native-fidelity-continuation']
   pull_request:
     paths:
       - 'crates/hyperframes-profile/**'
@@ -211,6 +211,7 @@ jobs:
           cargo build --locked -p motionwright-hyperframes-profile --example native_fixture
           node --check runtime/hyperframes/authoring.js
           node --check runtime/hyperframes/capture.mjs
+          node --test runtime/hyperframes/sandbox_policy.test.mjs
       - name: Provision the exact opt-in native runtime on this disposable worker
         run: |
           set -euo pipefail

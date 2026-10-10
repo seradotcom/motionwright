@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
+import {detectNativeSandboxMode} from './sandbox_policy.mjs';
 import {spawnSync} from 'node:child_process';
 
 const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha] = process.argv.slice(2);
 if(process.argv.length!==7 || ![runtimeRoot,workRoot,outputRoot,assetRoot].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
-const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_ok']);
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected']);
 function phase(name){
   if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
   fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
@@ -98,10 +99,16 @@ if(probe.error || probe.status!==0){
   throw new Error('Pinned browser binary cannot run a bounded version probe inside Host');
 }
 phase('browser_binary_probe_ok');
+// This is a security boundary, not a performance fallback: the strictly
+// confined Semwright Host already owns the namespace and denies nested
+// user namespaces. Only a verified rootless AppArmor-enforced Host may
+// select the outer sandbox; all other execution retains Chromium's userns.
+const sandboxMode=detectNativeSandboxMode();
+phase(sandboxMode==='semwright-bwrap-outer'?'outer_host_bwrap_verified':'chromium_userns_selected');
 let browser;
 try{
   browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),
-    headless:true,chromiumSandbox:true,args:['--enable-logging=stderr'],timeout:30000});
+    headless:true,chromiumSandbox:sandboxMode==='chromium-userns',args:['--enable-logging=stderr'],timeout:30000});
 }catch(error){
   // Record only one of five fixed classes. Browser launch diagnostics could
   // include machine paths, source snippets or private argv and must not be
@@ -189,7 +196,7 @@ try {
     hyperframes:'0.8.143',gsap:'3.15.0',playwright:'1.55.1',browser:browser.version(),runtime_receipt_sha256:hash(receiptBytes),authoring_sha256:hash(author),font_faces:fontFaces,
     observation:{method:'native-dom-css-font-face-and-frame-time-readback/1',units:'CSS pixels/degrees/opacity/rational seconds',coverage:'all_frames',frames:c.frames,
       relative_path:'observations.ndjson',sha256:hash(fs.readFileSync(observationsPath)),limitations:['DOM boxes do not prove pixel visibility after overlap.','Technical readback is not independent aesthetic approval.','Video sampling uses native decoded media time, not a codec-independent bit-identical source frame guarantee.']},
-    frames:captured,external_requests:0,creative_approval:'required'};
+    frames:captured,external_requests:0,sandbox_mode:sandboxMode,creative_approval:'required'};
   fs.writeFileSync(path.join(outputRoot,'frames.json'),JSON.stringify(result,null,2)+'\n',{flag:'wx'});
   console.log(JSON.stringify({frames:captured.length,source_sha256:result.source_sha256,alpha:result.alpha}));
 } finally {fs.closeSync(observationFd);await browser.close();}

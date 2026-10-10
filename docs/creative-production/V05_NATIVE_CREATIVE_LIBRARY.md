@@ -202,3 +202,30 @@ recipes (`arc-reveal`) and **has no audio and no mastered production claims**.
 Other 3D recipes remain sampled previews. A .blend retained at original output
 resolution, its GLB interchange and the source-bound loss report accompany
 the captured example; the MP4 review copy does not replace editable source.
+
+## Chromium's sandbox and the canonical Host
+
+The v2 native profile distinguishes two **fail-closed** confinement modes.
+Direct native execution requires the browser's built-in Chromium user-namespace
+sandbox. Inside an already enforced and unprivileged **Semwright Driver Host
+Bubblewrap/AppArmor** environment, Chromium would otherwise try to create a
+second namespace explicitly denied by the strict `bwrap-userns-restrict`
+profile. Only when the process itself has **all** of these independently
+observable properties does the capture runner select the existing outer
+Bubblewrap boundary instead: a one-UID non-root-to-root namespace map,
+`NoNewPrivs: 1`, zero effective capabilities, an enforced AppArmor label
+containing `bwrap`, and the host's unprivileged namespace restriction still
+enabled. No environment variable or project-source argument can opt into this
+mode. The exact choice is retained in the frame manifest and the verified
+runtime result. If any proof is missing, the runner requires the browser's
+own sandbox and fails if it cannot start. The model can never select
+`--no-sandbox` or launch a browser with arbitrary arguments.
+
+This explicitly **does not lower the Semwright Host boundary**: the host
+still mediates sealed tools, read-only runtime/source mounts, a writable
+attempt-specific workspace, a network namespace without external access,
+bounded resources, and its own session/grant authority. This is a limitation
+of nested namespace enforcement, not an automatic fallback to an
+unconfined browser. Human acceptance and an external security review
+remain pending. Do not disable AppArmor or broaden host filesystem/network
+grants to make the test pass.

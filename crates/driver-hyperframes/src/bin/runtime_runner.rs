@@ -16,6 +16,7 @@ use std::{
 
 const AUTHOR: &str = include_str!("../../../../runtime/hyperframes/authoring.js");
 const CAPTURE: &str = include_str!("../../../../runtime/hyperframes/capture.mjs");
+const SANDBOX_POLICY: &str = include_str!("../../../../runtime/hyperframes/sandbox_policy.mjs");
 const MAX_OUTPUT: u64 = 512 * 1024 * 1024;
 #[derive(Debug)]
 struct Args {
@@ -143,7 +144,7 @@ fn validate_runtime(runtime: &Path) -> Result<RuntimeReceipt> {
         || receipt.gsap != "3.15.0"
         || receipt.playwright != "1.55.1"
         || receipt.fontkit != "2.0.4"
-        || receipt.capture_profile != "hyperframes-core-chromium-png-v1"
+        || receipt.capture_profile != "hyperframes-core-chromium-png-v2"
         || receipt.platform != "linux"
         || receipt.architecture != "x64"
         || receipt.files.len() != 5
@@ -281,6 +282,7 @@ fn render(args: Args) -> Result<()> {
     phase(&work, "source")?;
     write_new(&work.join("authoring.js"), AUTHOR.as_bytes())?;
     write_new(&work.join("capture.mjs"), CAPTURE.as_bytes())?;
+    write_new(&work.join("sandbox_policy.mjs"), SANDBOX_POLICY.as_bytes())?;
     let mut capture = Command::new(&args.node);
     capture
         .arg(work.join("capture.mjs"))
@@ -302,6 +304,14 @@ fn render(args: Args) -> Result<()> {
     let manifest_bytes = read(&output, "frames.json", 4 * 1024 * 1024)?;
     let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
     let c = &plan.document.canvas;
+    if !matches!(
+        manifest["sandbox_mode"].as_str(),
+        Some("chromium-userns" | "semwright-bwrap-outer")
+    ) {
+        return Err(invalid(
+            "Native capture did not attest to its exact confinement profile",
+        ));
+    }
     if manifest["schema"] != "motionwright.hyperframes-native-frames/1"
         || manifest["source_sha256"] != args.source_sha
         || manifest["plan_sha256"] != args.plan_sha
@@ -379,7 +389,7 @@ fn render(args: Args) -> Result<()> {
         "source":artifact(&output,"source.html","text/html",3*1024*1024)?,
         "document":artifact(&output,"source.json","application/json",2*1024*1024)?,
         "observations":artifact(&output,"observations.ndjson","application/x-ndjson",64*1024*1024)?,
-        "runtime_receipt_sha256":sha(&read(&runtime,"runtime.json",1024*1024)?),"creative_approval":"required"});
+        "runtime_receipt_sha256":sha(&read(&runtime,"runtime.json",1024*1024)?),"sandbox_mode":manifest["sandbox_mode"],"creative_approval":"required"});
     write_new(
         &output.join("result.json"),
         &serde_json::to_vec_pretty(&result)?,

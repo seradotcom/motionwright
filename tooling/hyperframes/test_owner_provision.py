@@ -21,7 +21,7 @@ class OwnerProvisionTests(unittest.TestCase):
    file=runtime/name;file.write_text(f'{name} synthetic digest material');files[name]={'path':name,'sha256':sha(file),'bytes':file.stat().st_size}
   inventory=runtime/'runtime-files.json';inventory.write_text('{"schema":1,"files":[]}')
   lock=runtime/'package-lock.json';lock.write_text('{"name":"synthetic"}')
-  receipt={'schema':1,'hyperframes':'0.8.143','capture_profile':'hyperframes-core-chromium-png-v1',
+  receipt={'schema':1,'hyperframes':'0.8.143','capture_profile':'hyperframes-core-chromium-png-v2',
      'gsap':'3.15.0','playwright':'1.55.1','fontkit':'2.0.4','platform':'linux','architecture':'x64',
      'npm_lock_sha256':sha(lock),'inventory':{'sha256':sha(inventory)},'files':files}
   (runtime/'runtime.json').write_text(json.dumps(receipt))

@@ -49,8 +49,8 @@ fs.writeFileSync(path.join(root,'runtime-files.json'),inventoryBody,{flag:'wx'})
 const inventory={path:'runtime-files.json',sha256:hash(Buffer.from(inventoryBody)),files:inventoryRows.length,bytes:totalBytes};
 const lock=fs.readFileSync(path.join(root,'package-lock.json'));
 const receipt={schema:1,hyperframes:'0.8.143',gsap:'3.15.0',playwright:'1.55.1',fontkit:'2.0.4',npm_lock_sha256:hash(lock),
-  capture_profile:'hyperframes-core-chromium-png-v1',platform:process.platform,architecture:process.arch,files,inventory,
+  capture_profile:'hyperframes-core-chromium-png-v2',platform:process.platform,architecture:process.arch,files,inventory,
   package_rights:'Owner-installed dependencies retain their own licenses. Installation is not source-code or asset redistribution permission.',
-  sandbox:'Browser sandbox retained. Driver Host separately confines this process and its dependency roots. No external URL inputs.'};
+  sandbox:'Chromium userns sandbox outside Host; inside verified rootless no-new-privileges, capability-free, AppArmor-enforced Semwright bwrap, the outer sandbox replaces nested Chromium userns. No network, imported code or ambient filesystem access.'};
 fs.writeFileSync(path.join(root,'runtime.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
 console.log(JSON.stringify({runtime:'hyperframes-core',version:receipt.hyperframes,lock_sha256:receipt.npm_lock_sha256,receipt_sha256:hash(fs.readFileSync(path.join(root,'runtime.json'))),files}));

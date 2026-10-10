@@ -31,7 +31,7 @@ def make(args:argparse.Namespace)->dict:
   raise ValueError("Owner must explicitly confirm dependency license review and the restricted sandbox policy")
  paths={name:absolute(getattr(args,name),name)for name in ["runtime","driver","runner","node","ffmpeg","work","output","assets"]}
  runtime=paths["runtime"];rfile=absolute(str(runtime/"runtime.json"),"runtime-file");receipt=value(rfile)
- if receipt.get("schema")!=1 or receipt.get("hyperframes")!=VERSION or receipt.get("capture_profile")!="hyperframes-core-chromium-png-v1":
+ if receipt.get("schema")!=1 or receipt.get("hyperframes")!=VERSION or receipt.get("capture_profile")!="hyperframes-core-chromium-png-v2":
   raise ValueError("Installed runtime receipt does not match the supported native profile")
  if receipt.get("gsap")!="3.15.0" or receipt.get("playwright")!="1.55.1" or receipt.get("fontkit")!="2.0.4":
   raise ValueError("Native dependency version differs from the pinned supported profile")

@@ -120,7 +120,7 @@ impl HyperframesDriver {
         let receipt = read(&self.runtime, "runtime.json", 1024 * 1024)
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        json!({"driver":ID,"profile":"hyperframes-core-chromium-png-v1","runtime_version_contract":HYPERFRAMES_VERSION,
+        json!({"driver":ID,"profile":"hyperframes-core-chromium-png-v2","runtime_version_contract":HYPERFRAMES_VERSION,
             "runtime_receipt_present":receipt.is_some(),"runtime_receipt_sha256":read(&self.runtime,"runtime.json",1024*1024).ok().map(|bytes|sha(&bytes)),"configured_hyperframes":receipt.as_ref().and_then(|v|v["hyperframes"].as_str()),
             "network":false,"arbitrary_source_execution":false,"source_preserved":true,"retained_jobs_limit":MAX_RETAINED,
             "host_tools":std::env::var_os("SEMWRIGHT_DRIVER_HOST_TOOLS").is_some(),"admission":"runtime bytes, assets and fonts are reverified during render; this diagnostic does not certify pixels"})

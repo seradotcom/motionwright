@@ -149,6 +149,8 @@ def main()->None:
             if application['hyperframes_canonical']!='PASS' or not proof['same_attempt_replayed']:raise AssertionError('Application did not prove logical-attempt reuse')
             if len(list(work.glob('hf-*')))!=1:raise AssertionError('Reconciliation submitted a duplicate native capture')
             canonical=json.loads((output/native['frames']['relative_path']).read_text())
+            if canonical['sandbox_mode']!='semwright-bwrap-outer':
+                raise AssertionError('Canonical Host must attest to its enforced rootless AppArmor bwrap isolation')
             # Run the same exact source directly, without Motionwright's orchestration layer.
             direct_work=temp/'direct-work';direct_output=temp/'direct-output';direct_work.mkdir();direct_output.mkdir();direct_id='hf-00000000000000000000000000000064';(direct_work/direct_id).mkdir();(direct_output/direct_id).mkdir()
             source=json.loads(source_file.read_text());plan_bytes=source['plan_json'].encode();html=source['source_html'].encode()
