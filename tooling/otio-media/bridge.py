@@ -281,7 +281,32 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
     ]
     if unresolved:
         loss.append(f"{len(unresolved)} scene(s) retain MissingReference because no authorized original media was bound; no placeholder media was invented.")
+    fidelity=[
+        {"property":"scene_order","status":"editable_otio","import_state":"bounded_proposal_only"},
+        {"property":"scene_duration","status":"editable_otio","import_state":"bounded_frame_exact_end_trim_only"},
+        {"property":"source_video_media","status":"verified_external_reference",
+         "import_state":"source_sha_revalidated_no_new_media"},
+        {"property":"media_source_in_point","status":"represented_in_otio",
+         "import_state":"not_supported_native_scene_offset"},
+        {"property":"unbound_scene_media","status":"missing_reference",
+         "import_state":"cannot_invent_media","missing_count":len(unresolved)},
+        {"property":"native_object_geometry_hierarchy_text_masks","status":"source_project_only",
+         "import_state":"not_supported"},
+        {"property":"camera_keyframes_effects_and_procedural_controls","status":"source_project_only",
+         "import_state":"not_supported"},
+        {"property":"source_audio_and_voice_cues","status":"source_project_only",
+         "import_state":"not_roundtripped_as_nle_audio"},
+        {"property":"captions_transcripts_alignment","status":"source_project_only",
+         "import_state":"not_roundtripped"},
+        {"property":"human_locks_creative_reviews_branches","status":"source_project_only",
+         "import_state":"not_roundtripped"},
+        {"property":"runtime_render_authority","status":"not_exported",
+         "import_state":"requires_separate_owner_grant"},
+        {"property":"publication_rights","status":"not_granted",
+         "import_state":"requires_separate_owner_approval"}
+    ]
     original["metadata"]["motionwright"].update({
+        "property_fidelity":fidelity,
         "export_profile":"portable-media-cut-v2",
         "source_project_sha256":project_sha,
         "original_scene_count":len(clips),
@@ -301,6 +326,7 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
         "missing_scene_ids":unresolved,
         "source_media_count":len(media_by_name),
         "loss_report":loss,
+        "property_fidelity":fidelity,
         "author":"owner_reviewed_portable_media_export",
         "owner_review_declared":approval["reviewer"],
         "editable_native_source_retained":True,
@@ -421,6 +447,10 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
            inherited.get("source_project_sha256")==sha and
            inherited.get("export_profile")=="portable-media-cut-v2",
            "Edited OTIO does not belong to this exact original creative revision")
+    insist(isinstance(manifest.get("property_fidelity"),list)
+           and len(manifest["property_fidelity"])==12 and
+           inherited.get("property_fidelity")==manifest["property_fidelity"],
+           "NLE cut removed or rewrote the explicit per-property fidelity/loss declarations")
     all_tracks=edited.get("tracks",{}).get("children",[])
     insist(isinstance(all_tracks,list) and len(all_tracks)==1 and
            all_tracks[0].get("OTIO_SCHEMA")=="Track.1" and
@@ -512,6 +542,7 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
         "media_refs_verified":len(per_scene),
         "missing_references_retained":len(scenes)-len(per_scene),
         "loss_report":losses,
+        "property_fidelity":manifest["property_fidelity"],
         "edit_imported":False,
         "source_media_relinked":False,
         "owner_revision_commit_required":True,

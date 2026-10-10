@@ -34,8 +34,14 @@ OTIO `ExternalReference.1` entries use portable, relative media paths
 The original Motionwright timeline, camera, editable object hierarchy,
 audio, history, locks and approvals are retained **only** in
 `source-project.json` and reported explicitly as non-portable properties,
-not flattened into a false OTIO claim. An importing NLE may require
-relative-source relinking, which is a separate compatibility test.
+not flattened into a false OTIO claim. A structured **12-property fidelity
+report** is present both in the OTIO metadata and in the independent
+`bridge-manifest.json`: scene order/duration, media references/in-points,
+unbound sources, native object semantics, camera/effects, audio, captions,
+locks/reviews, runtime authority and publication rights. NLE import preview
+rejects a cut that silently drops/changes this source loss disclosure.
+An importing NLE may require relative-source relinking, which is a separate
+compatibility test.
 
 Run after obtaining a true native `export_otio` and a current Project JSON
 from the same saved project revision:

@@ -72,6 +72,10 @@ def main()->None:
         first=export_portable(root,request,output/"portable")
         assert first["verified_media_refs"]==2 and first["missing_refs"]==1
         bundle=output/"portable"
+        fidelity=json.loads((bundle/"bridge-manifest.json").read_text())["property_fidelity"]
+        assert len(fidelity)==12
+        assert next(item for item in fidelity if item["property"]=="native_object_geometry_hierarchy_text_masks")["status"]=="source_project_only"
+        assert next(item for item in fidelity if item["property"]=="publication_rights")["status"]=="not_granted"
         parsed=otio.adapters.read_from_file(str(bundle/"timeline.otio"))
         tracks=list(parsed.tracks)
         assert len(tracks)==1

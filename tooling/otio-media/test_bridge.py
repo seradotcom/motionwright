@@ -110,6 +110,11 @@ class PortableOtioTests(unittest.TestCase):
         self.assertEqual(manifest["missing_scene_ids"],[ID(12)])
         self.assertFalse(manifest["nle_import_verified"])
         self.assertTrue(manifest["original_project_unchanged"])
+        assert len(manifest["property_fidelity"])==12
+        losses={item["property"]:item["status"]for item in manifest["property_fidelity"]}
+        self.assertEqual(losses["scene_order"],"editable_otio")
+        self.assertEqual(losses["native_object_geometry_hierarchy_text_masks"],"source_project_only")
+        self.assertEqual(losses["publication_rights"],"not_granted")
 
     def test_unchanged_import_is_read_only_no_edit_claim(self):
         self.export()
@@ -200,6 +205,34 @@ class PortableOtioTests(unittest.TestCase):
         (self.out/"unknown.otio").write_text(json.dumps(edited))
         with self.assertRaisesRegex(BridgeRefused,"unique scene identity"):
             self.preview("unknown.otio")
+
+    def test_tampered_available_range_cannot_fake_source_length(self):
+        self.export()
+        edited=self.read()
+        edited["tracks"]["children"][0]["children"][0]["media_reference"]["available_range"]["duration"]["value"]=900.0
+        (self.out/"oversized-available.otio").write_text(json.dumps(edited))
+        with self.assertRaisesRegex(BridgeRefused,"actual verified media"):
+            self.preview("oversized-available.otio")
+
+    def test_authored_project_serde_time_strings_are_required_in_native_change_plan(self):
+        self.export()
+        edited=self.read()
+        edited["tracks"]["children"][0]["children"][0]["source_range"]["duration"]["value"]=15.0
+        (self.out/"half-time.otio").write_text(json.dumps(edited))
+        impact=self.preview("half-time.otio")
+        self.assertEqual(impact["native_change_proposals"],[
+            {"type":"set_scene_duration","scene_id":ID(10),
+             "duration":{"num":"1","den":"2"}}
+        ])
+        self.assertFalse(impact["edit_imported"])
+
+    def test_nle_cannot_drop_explicit_native_property_losses(self):
+        self.export()
+        edited=self.read()
+        edited["metadata"]["motionwright"]["property_fidelity"]=[]
+        (self.out/"silent-loss.otio").write_text(json.dumps(edited))
+        with self.assertRaisesRegex(BridgeRefused,"per-property fidelity"):
+            self.preview("silent-loss.otio")
 
     def test_symlinked_media_or_duplicate_scene_binding_refuses(self):
         media=self.src/"linked.mp4"
