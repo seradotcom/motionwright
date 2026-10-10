@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 36 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 27 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -501,3 +501,22 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+## Original PCM mix, explicit ducking, and localization technical QC (E08-04)
+
+The same project's active `VoiceTrack`, source-linked
+`TranscriptSegment`s, domain `MixIntent` and existing
+`DeliverableProfile` now feed the bounded `OriginalMixPlan` in
+`crates/creative-library/src/mix.rs`. Voice, music and SFX remain
+independent SHA-bound actual decoded PCM sources. A deterministic
+sidechain attenuation with explicit sample-accurate attack/release ducks
+music only during manually reviewed or high-confidence measured voice
+windows. Source-drift, overlapping windows, unrelated profile/locale,
+unapproved source reassignment and clipped mixes are refused, not
+normalized away. This module never fabricates voice, source rights or
+creative approval. The CI-only original proxy uses synthesised non-speech
+audio in three locale-specific profiles, redecodes the real WAV output,
+independently measures EBU R128/true peak, and retains human-listening
+approval as **NOT_PERFORMED**. See
+`V05_ORIGINAL_MIX_LOCALIZATION.md` for all current limits.
