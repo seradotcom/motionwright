@@ -21,8 +21,10 @@ describe("editor command search", () => {
   });
 
   it("matches accent-insensitive labels and favors exact title prefixes", () => {
+    // A complete query for "review" must not match "preview" in other labels.
     expect(filterPaletteCommands(commands, "review").map((item) => item.id)).toEqual(["review"]);
     expect(filterPaletteCommands(commands, "play").map((item) => item.id)).toEqual(["play"]);
+    expect(filterPaletteCommands(commands, "deliv").map((item) => item.id)).toEqual(["deliver"]);
   });
 
   it("does not enable disabled commands or invent fuzzy matches", () => {

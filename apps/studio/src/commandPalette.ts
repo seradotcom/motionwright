@@ -22,8 +22,11 @@ export function filterPaletteCommands<T extends PaletteSearchItem>(
   if (words.length === 0) return [...commands];
   return commands.map((item, index) => {
     const label = normalize(item.label);
-    const haystack = normalize([item.group, item.label, item.description, item.keywords ?? ""].join(" "));
-    if (!words.every((word) => haystack.includes(word))) return null;
+    // Match word prefixes rather than arbitrary substrings: "review" must
+    // not also surface "preview". Partial commands such as "deliv" still work.
+    const terms = normalize([item.group, item.label, item.description, item.keywords ?? ""].join(" "))
+      .split(/[^a-z0-9]+/).filter(Boolean);
+    if (!words.every((word) => terms.some((term) => term.startsWith(word)))) return null;
     const score = words.reduce(
       (total, word) => total + (label === word ? 8 : label.startsWith(word) ? 5 : label.includes(word) ? 3 : 1),
       0,
