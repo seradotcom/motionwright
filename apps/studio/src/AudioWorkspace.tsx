@@ -378,7 +378,7 @@ export default function AudioWorkspace({
       {!desktopMode && <div className="audio-truth-line"><CircleDashed size={14} /> Desktop runtime required for measured file import.</div>}
       {importError && <div className="portable-message error" role="alert"><strong>Voice import blocked.</strong><span>{importError}</span></div>}
 
-      <NarrationTakeReview project={project} desktopMode={desktopMode}/>
+      <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
 
       <div className="audio-main-grid">
         <aside className="voice-take-ledger" aria-label="Voice takes">

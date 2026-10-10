@@ -377,7 +377,10 @@
         "crates/domain/src/narration_lock.rs",
         "crates/domain/src/production_design.rs",
         "crates/domain/tests/narration_take_lock.rs",
-        "crates/service/tests/approved_narration_cas.rs"
+        "crates/service/tests/approved_narration_cas.rs",
+        "apps/studio/src/narrationTakeApprovalBrowser.test.ts",
+        "apps/studio/src/creativeProduction.ts",
+        "apps/studio/src/api.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },

@@ -223,8 +223,10 @@ fn direct_project_snapshot_cannot_silently_mutate_or_forge_recorded_take() {
 #[test]
 fn missing_original_source_or_uncertain_asr_timing_cannot_be_approved() {
     let mut project = fixture();
+    let previously_valid_approval = approval(&project);
     project.audio.transcript[0].alignment = domain::AlignmentEvidence::Unknown;
-    assert!(project.apply_change(&approval(&project)).is_err());
+    assert!(project.apply_change(&previously_valid_approval).is_err());
+    assert!(domain::measured_narration_content(&project.audio, &project.assets).is_err());
     let mut project = fixture();
     project.assets[0].content_sha256 = Some("bc".repeat(32));
     assert!(domain::measured_narration_content(&project.audio, &project.assets).is_err());

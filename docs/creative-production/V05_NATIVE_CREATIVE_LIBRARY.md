@@ -527,3 +527,22 @@ permission. Those fields are explicitly false in its native record.
 A future verified actor/permission service is necessary before
 claiming a legally authenticated LockedNarration take or E08-02 release.
 Older project-schema writers cannot discard this record silently.
+
+
+### Studio controls for recorded take decisions
+
+The existing Audio Workspace exposes separate **Record and protect this
+source revision** and **Release exact recorded source** actions. Both require
+a deliberate confirmation checkbox, nonempty reviewer label and reason,
+and go through the *existing* desktop `apply_change` native SDK flow,
+including its effect grant and SQLite revision compare-and-swap.
+The record control is available only after a fresh measured-source
+preflight passes the stricter original-voice/word/cue domain fingerprint.
+The human editor can continue adjusting music/mix while a narration
+source is protected, without overwriting its recorded words or cue clocks.
+The browser-only demo explicitly refuses to simulate either action.
+
+A recorded reviewer label and checkbox **are not identity verification,
+legal e-signature, completed mastering, authenticated artistic approval
+or permission to publish**. The real approval identity, audio-media
+listening and final master timing remain separate acceptance gates.

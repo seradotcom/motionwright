@@ -511,6 +511,8 @@ export type Change =
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
+  | { type: "record_narration_take"; expected_source_sha256: string; expected_project_revision: number; reviewer: string; reason: string }
+  | { type: "release_narration_take"; expected_source_sha256: string; reviewer: string; reason: string }
   | { type: "upsert_native_capsule"; capsule: NativeCapsule }
   | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }

@@ -11,6 +11,8 @@ export interface NarrationSourceSnapshot {
 export interface NarrationSourceResponse {
  schema:'motionwright.narration-source-preview/1';
  source:NarrationSourceSnapshot;project_revision:number;
+ recordable_content_sha256:string|null;recordable_source_verified:boolean;
+ recorded_take:import('./creativeProduction').NarrationTakeLock|null;
  read_only:true;lock_authenticated:false;media_decoded:false;
  creative_approval:'REQUIRES_HUMAN_REVIEW';
 }
