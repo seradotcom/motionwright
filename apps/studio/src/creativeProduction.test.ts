@@ -179,13 +179,16 @@ describe("MetricEvidence as a third versioned composition family", () => {
     const eyebrow=await heroNodeId(instance,"eyebrow");
     const body=await heroNodeId(instance,"body");
     p=await applyChange(p,{type:"update_canvas_text",scene_id,node_id:eyebrow,text:"Human-authored source context"});
-    p=await applyChange(p,{type:"upsert_product_hero",instance_id:instance,scene_id,config});
+    // Keep the baseline generated eyebrow while moving to the new family.
+    // Changing the eyebrow *and* preserving a human edit would be a real conflict.
+    const compatibleConfig={...config,eyebrow:defaultHeroConfig().eyebrow};
+    p=await applyChange(p,{type:"upsert_product_hero",instance_id:instance,scene_id,config:compatibleConfig});
     expect(p.scenes[0].nodes.find(n=>n.id===eyebrow)?.text).toBe("Human-authored source context");
     expect(p.scenes[0].nodes.find(n=>n.id===body)?.name).toBe("MetricEvidence / body");
     p=await applyChange(p,{type:"update_canvas_text",scene_id,node_id:body,text:"Human-controlled explanation"});
     const before=structuredClone(p);
     await expect(applyChange(p,{type:"upsert_product_hero",instance_id:instance,scene_id,
-      config:{...config,body:"An incompatible regenerated metric claim"}})).rejects.toThrow("override conflict");
+      config:{...compatibleConfig,body:"An incompatible regenerated metric claim"}})).rejects.toThrow("override conflict");
     expect(p).toEqual(before);
   });
 });
