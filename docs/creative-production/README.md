@@ -14,7 +14,7 @@ The implemented slice includes two first-party, semantic, typographic compositio
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.
 
-The existing ProductHero native evidence artifact contains one folder per aspect. SplitExplanation has its own Rust/Studio semantic and Film-conformance gates, but still requires separate rendered-frame visual review before its design is approved:
+The native evidence workflow is configured to produce separate editable project bundles and six-second H.264/AAC masters for **both** ProductHeroReveal and SplitExplanation across 16:9, 9:16 and 1:1. It must pass at the exact source SHA before these extra split outputs are considered technically verified; even passing these checks does not constitute aesthetic approval or human acceptance. Each successful case produces:
 
 - `hero.motionwright/manifest.json`: an actual portable project bundle, not a loose scene mock. In **Deliver → Inspect and import**, select the absolute path of the `hero.motionwright` directory, inspect it, then import the verified bundle.
 - `motionwright-master.mp4`: a real six-second H.264/AAC master produced through Semwright's Motion Canvas and MLT providers. Its audio is deterministic **synthetic 440/660 Hz stereo test tones** for decoded H.264/AAC transport verification, **not sound design**.
@@ -50,7 +50,7 @@ Native component typography uses fixed non-flow containers and explicit authored
 
 `creative-conformance.yml` runs the current Rust implementation to produce fixtures, then compares Studio's identities, every generated property, three-way merging and plan digests. Checked-in fixtures are not used as an invented oracle.
 
-`product-hero-e2e.yml` builds the exact pinned runtime on remote disposable runners, renders all three aspects, verifies each native frame/AV artifact, inspects actual color occupancy inside the independently realized source regions, and tests the spatial gate against synthetic negative cases. Source generation/revision and both repository SHAs remain explicit. A spatial occupancy check catches relocated or missing shapes/text, but does not prove exact per-glyph equivalence, accessibility, aesthetic quality or sound intelligibility.
+`product-hero-e2e.yml` builds the exact pinned runtime on remote disposable runners, renders three aspects for each of the two authored composition families (six cases), verifies each native frame/AV artifact, inspects actual color occupancy inside the independently realized source regions, and tests the spatial gate against synthetic negative cases. Source generation/revision and both repository SHAs remain explicit. A spatial occupancy check catches relocated or missing shapes/text, but does not prove exact per-glyph equivalence, accessibility, aesthetic quality or sound intelligibility.
 
 A prior native test passed transport and font checks while text was being automatically repositioned. That result was not promoted to visual acceptance. The fixed-container projection and source-region regression gate address that discovered failure; the earlier failure evidence remains in its own immutable CI run.
 
