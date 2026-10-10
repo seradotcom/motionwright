@@ -416,6 +416,8 @@ export interface MasterExportReceipt {
   revision: number;
   deliverable_id: string;
   source_current: boolean;
+  /** Optional unsigned local integrity descriptor, not an authenticity signature. */
+  integrity_manifest_path?: string | null;
 }
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */

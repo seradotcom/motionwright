@@ -644,6 +644,7 @@ export async function exportVerifiedNativeMaster(
   project: Project,
   exportToken: string,
   destination: string,
+  includeIntegrityManifest = false,
 ): Promise<MasterExportReceipt> {
   if (!isTauri()) {
     throw new Error("Verified native MP4 delivery requires the desktop runtime.");
@@ -659,6 +660,7 @@ export async function exportVerifiedNativeMaster(
       effect_grant: grant.token,
       export_token: exportToken,
       destination: absolutePath,
+      include_integrity_manifest: includeIntegrityManifest,
     },
   });
 }

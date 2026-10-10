@@ -123,6 +123,7 @@ export default function DeliveryProfiles({
   const [sidecarPath, setSidecarPath] = useState("");
   const [otioPath, setOtioPath] = useState("");
   const [masterDeliveryPath, setMasterDeliveryPath] = useState("");
+  const [includeMediaIntegrity, setIncludeMediaIntegrity] = useState(false);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
@@ -387,10 +388,14 @@ export default function DeliveryProfiles({
         project,
         currentAv.export_token!,
         masterDeliveryPath.trim(),
+        includeMediaIntegrity,
       );
       onExportEvidence(receipt);
       setMessage("Verified MP4 delivered to " + receipt.destination
-        + " · SHA-256 " + receipt.sha256.slice(0, 16) + "… · source r" + receipt.revision);
+        + " · SHA-256 " + receipt.sha256.slice(0, 16) + "… · source r" + receipt.revision
+        + (receipt.integrity_manifest_path
+          ? " · portable verification receipt written"
+          : ""));
     });
   };
 
@@ -975,6 +980,19 @@ export default function DeliveryProfiles({
                   {busy === "export-master" ? "Verifying…" : "Export verified MP4"}
                 </button>
               </div>
+              <label className="caption-toggle">
+                <input type="checkbox"
+                  aria-label="Write portable MP4 integrity receipt"
+                  checked={includeMediaIntegrity}
+                  disabled={!desktopMode}
+                  onChange={(event) => setIncludeMediaIntegrity(event.target.checked)}
+                />
+                Write portable SHA-256 verification receipt (.json) next to the MP4
+              </label>
+              <div className="delivery-truth-note">
+                <CircleDashed size={14} /> Optional receipt checks file bytes and source revision offline.
+                It is unsigned: it does not prove publisher identity, codec quality or human approval.
+              </div>
               {!currentAv?.export_token && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real owner-authorized MLT AV master in this desktop session first. No arbitrary master paths are accepted.
@@ -990,6 +1008,9 @@ export default function DeliveryProfiles({
                   <div><span>Destination</span><strong className="mono">{currentExport.destination}</strong></div>
                   <div><span>Bytes copied</span><strong>{currentExport.size_bytes}</strong></div>
                   <div><span>SHA-256</span><strong className="mono">{currentExport.sha256.slice(0, 16)}…</strong></div>
+                  {currentExport.integrity_manifest_path && (
+                    <div><span>Integrity JSON</span><strong className="mono">{currentExport.integrity_manifest_path}</strong></div>
+                  )}
                   <div><span>Status</span><strong>{currentExport.source_current
                     && currentExport.revision === project.revision ? "VERIFIED · CURRENT" : "VERIFIED · HISTORICAL"}</strong></div>
                 </div>
