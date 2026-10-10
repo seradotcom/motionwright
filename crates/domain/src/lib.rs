@@ -1051,6 +1051,22 @@ impl Project {
         if self.schema_version != PROJECT_SCHEMA_VERSION {
             return Err(DomainError::Invalid("unsupported project schema".into()));
         }
+        // Checkout/merge restore a complete branch workspace, including AudioState
+        // and ProductionDesign. Never let an agent bypass recorded voice protection
+        // by replacing the active workspace with an older unprotected branch.
+        // The owner must explicitly release the current source in its own CAS
+        // revision before switching or merging a different creative workspace.
+        if self.production_design.narration_take_lock.is_some()
+            && matches!(
+                change,
+                Change::CheckoutBranch { .. } | Change::MergeBranch { .. }
+            )
+        {
+            return Err(DomainError::Locked(
+                "recorded narration source: explicitly release before branch checkout or merge"
+                    .into(),
+            ));
+        }
         match change {
             Change::EditCreativeWorkspace { edit } => self.edit_creative_workspace(edit)?,
             Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,

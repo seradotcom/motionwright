@@ -286,3 +286,57 @@ fn unknown_fields_cannot_forge_authenticated_content_acceptance() {
     value["owner_e_signature_authenticated"] = serde_json::json!(true);
     assert!(serde_json::from_value::<NarrationTakeLock>(value).is_err());
 }
+
+#[test]
+fn branch_checkout_or_merge_cannot_revert_a_recorded_voice_decision_without_explicit_release() {
+    let mut p = fixture();
+    p.apply_change(&Change::CreateBranch {
+        name: "alternative".into(),
+    })
+    .unwrap();
+    let secondary = p
+        .branches
+        .iter()
+        .find(|item| item.name == "alternative")
+        .unwrap()
+        .id;
+    p.apply_change(&approval(&p)).unwrap();
+    let approved = p.clone();
+    assert!(matches!(
+        p.apply_change(&Change::CheckoutBranch {
+            branch_id: secondary
+        }),
+        Err(domain::DomainError::Locked(_))
+    ));
+    assert_eq!(
+        p, approved,
+        "Branch checkout may not silently restore an unapproved voice snapshot"
+    );
+    assert!(matches!(
+        p.apply_change(&Change::MergeBranch {
+            source_branch_id: secondary
+        }),
+        Err(domain::DomainError::Locked(_))
+    ));
+    assert_eq!(
+        p, approved,
+        "Branch merge may not discard the recorded take"
+    );
+    let lock = p
+        .production_design
+        .narration_take_lock
+        .as_ref()
+        .unwrap()
+        .clone();
+    p.apply_change(&Change::ReleaseNarrationTake {
+        expected_source_sha256: lock.source_content_sha256,
+        reviewer: "Recorded editor".into(),
+        reason: "I deliberately release the recorded take before switching source branches".into(),
+    })
+    .unwrap();
+    p.apply_change(&Change::CheckoutBranch {
+        branch_id: secondary,
+    })
+    .unwrap();
+    p.validate().unwrap();
+}
