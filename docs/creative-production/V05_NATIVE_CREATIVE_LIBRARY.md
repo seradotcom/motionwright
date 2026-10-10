@@ -534,3 +534,27 @@ later user-selected, persisted ProductionPlan through the existing
 StudioService CAS. Real reference pixel analysis, independently licensed
 sources, storyboard comprehension tests, manual creative selection and
 native rendered acceptance are still separate **NOT_RUN** gates.
+
+
+### Studio direction comparison and consent boundary
+
+The desktop `creative_direction_source_state` obtains the exact canonical
+Rust/serde SHA-256 of the current Project; the read-only
+`creative_direction_study` command validates every submitted concept and
+reference against that same project/generation/revision, rechecks CAS
+after bounded computation, and returns a non-mutating comparison.
+`CreativeDirectionWorkbench` in the Creative Library provides two to
+four editable concept structures, a declared current product version,
+original imported media references, explicitly entered visual
+observations, the owner's rights-use checkbox and individual brief claim
+bindings. A real-capture label requires a claim and the matching
+referenced asset. A different product version marks old claims stale
+without quietly upgrading their truth value.
+
+There is intentionally **no** selector that acts as an owner-approved
+concept, automatic `SetProductionPlan` invocation, renderer grant or
+rights verification. A browser demo cannot invent source digests or
+claim a concept was analyzed. The corresponding code-only UI and Rust
+gates are source-contract tests; independently observed reference
+pixels, competing conceptual frame renders and human concept decisions
+remain outstanding before E02 acceptance.

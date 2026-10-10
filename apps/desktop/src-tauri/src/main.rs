@@ -1770,6 +1770,8 @@ fn main() {
             creative_native::recover_hyperframes_preview,
             creative_native::hyperframes_runtime_probe,
             creative_native::creative_component_proposal,
+            creative_native::creative_direction_source_state,
+            creative_native::creative_direction_study,
             creative_native::creative_component_catalog,
             creative_native::creative_data_normalize,
             creative_native::creative_sound_audition,

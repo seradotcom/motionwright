@@ -108,7 +108,10 @@
       "release_acceptance": "NOT_CLOSED",
       "code_evidence": [
         "crates/creative-library/src/directions.rs",
-        "crates/creative-library/tests/directions.rs"
+        "crates/creative-library/tests/directions.rs",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/production/CreativeDirectionWorkbench.tsx",
+        "apps/studio/src/production/directionBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },
@@ -120,7 +123,10 @@
       "release_acceptance": "NOT_CLOSED",
       "code_evidence": [
         "crates/creative-library/src/directions.rs",
-        "crates/creative-library/tests/directions.rs"
+        "crates/creative-library/tests/directions.rs",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/production/CreativeDirectionWorkbench.tsx",
+        "apps/studio/src/production/directionBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },
@@ -132,7 +138,10 @@
       "release_acceptance": "NOT_CLOSED",
       "code_evidence": [
         "crates/creative-library/src/directions.rs",
-        "crates/creative-library/tests/directions.rs"
+        "crates/creative-library/tests/directions.rs",
+        "apps/desktop/src-tauri/src/creative_native.rs",
+        "apps/studio/src/production/CreativeDirectionWorkbench.tsx",
+        "apps/studio/src/production/directionBrowser.test.ts"
       ],
       "human_review": "NOT_PERFORMED"
     },

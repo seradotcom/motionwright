@@ -135,7 +135,7 @@ pub fn direction_project_digest(project: &Project) -> Result<String> {
     // Includes brief, narrative, source assets, scenes, revisions and locks.
     canonical_digest(project)
 }
-fn media<'a>(project: &'a Project, id: Uuid) -> Option<&'a motionwright_domain::Asset> {
+fn media(project: &Project, id: Uuid) -> Option<&motionwright_domain::Asset> {
     project.assets.iter().find(|asset| asset.id == id)
 }
 fn review_claim(
@@ -329,6 +329,10 @@ pub fn analyze_creative_directions(
                 }
                 CreativeEvidenceKind::RealProductCapture
                 | CreativeEvidenceKind::LicensedFootage => {
+                    check(
+                        !shot.claim_ids.is_empty(),
+                        "Real evidence classification needs at least one explicit brief claim",
+                    )?;
                     let id = shot.evidence_asset_id.ok_or_else(|| {
                         CraftError("Real capture/footage claim lacks original source asset".into())
                     })?;

@@ -5,6 +5,7 @@ import type {Change,Project,Scene,DeliverableProfile,Asset} from '../types';
 import type {CreativeCatalog,Locale,CopyPack,BrandProfile,TasteProfile,DataSeries,ComponentRequest,CreativeComponentProposal} from './recipeTypes';
 import type {NativeAsset} from './nativeTypes';
 import CreativeDistillationWorkbench from './CreativeDistillationWorkbench';
+import CreativeDirectionWorkbench from './CreativeDirectionWorkbench';
 import './native-editor.css';
 
 const reasons=(error:unknown)=>error instanceof Error?error.message:String(error);
@@ -118,6 +119,7 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
       <span className="production-status">REVISIONED SOURCE · NO IMPLICIT RENDER</span></header>
     {!available&&<div className="production-notice"><strong>Open in Motionwright desktop</strong><p>This browser preview cannot assert native recipe realization or create verified render frames.</p></div>}
     {error&&<p className="production-error" role="alert">{error}</p>}
+    <CreativeDirectionWorkbench project={project} scene={scene} available={available} busy={busy||working}/>
     {catalog&&brand&&taste&&copy&&<div className="native-editor-layout">
       <aside className="native-object-list" aria-label="Art direction kits"><h3>Art direction</h3>
         {catalog.kits.map(item=><button key={item.id} aria-pressed={item.id===kitId} onClick={()=>chooseKit(item.id)}><strong>{emphasis(item.id)}</strong><small>{item.intent}</small></button>)}
