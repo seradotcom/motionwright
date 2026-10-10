@@ -6,12 +6,16 @@ use motionwright_domain::{
 };
 use motionwright_native::{
     film::{FilmBuildOptions, SceneFilmIntent},
-    production::{ProductionConnection, ProductionCoordinator},
+    production::{
+        MltAudioArtifact, MltMultisegmentAvMasterRequest, ProductionConnection,
+        ProductionCoordinator,
+    },
 };
-use motionwright_service::StudioService;
+use motionwright_service::{StudioService, VoiceImportMetadata};
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
@@ -62,6 +66,34 @@ fn node(scene_number: usize) -> CanvasNode {
         keyframes: vec![],
     }
 }
+/// Synthetic source tone used only in GitHub Actions to verify actual mux
+/// clocks; this is not a real voice take or human-approved sound design.
+fn write_synthetic_stereo_wav(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let sample_count = 52_800_u32; // 33 real frames / 30 fps at exactly 48 kHz
+    let pcm_bytes = sample_count * 4;
+    let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
+    output.write_all(b"RIFF")?;
+    output.write_all(&(pcm_bytes + 36).to_le_bytes())?;
+    output.write_all(b"WAVEfmt ")?;
+    output.write_all(&16_u32.to_le_bytes())?;
+    output.write_all(&1_u16.to_le_bytes())?;
+    output.write_all(&2_u16.to_le_bytes())?;
+    output.write_all(&48_000_u32.to_le_bytes())?;
+    output.write_all(&192_000_u32.to_le_bytes())?;
+    output.write_all(&4_u16.to_le_bytes())?;
+    output.write_all(&16_u16.to_le_bytes())?;
+    output.write_all(b"data")?;
+    output.write_all(&pcm_bytes.to_le_bytes())?;
+    for index in 0..sample_count {
+        // A bounded audible deterministic waveform, without sampling drift.
+        let value = (((index % 120) as i16) - 60) * 250;
+        output.write_all(&value.to_le_bytes())?;
+        output.write_all(&value.to_le_bytes())?;
+    }
+    output.sync_all()?;
+    Ok(())
+}
+
 fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(path)?;
     if !service.projects(2)?.is_empty() {
@@ -124,6 +156,50 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     scene_id,
                     node: node(number),
                 },
+            )?
+            .project;
+    }
+    if std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("final-mp4") {
+        let wav = path.with_extension("synthetic-owner-voice.wav");
+        write_synthetic_stereo_wav(&wav)?;
+        project = service
+            .import_voice_file(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-multisegment-measured-voice",
+                &wav,
+                VoiceImportMetadata {
+                    name: "synthetic-owner-voice.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "CI source tone, no creative approval".into(),
+                },
+            )?
+            .project;
+        let track = project
+            .audio
+            .voice_tracks
+            .last()
+            .ok_or("Actual imported WAV did not produce a measured voice track")?;
+        if track.sample_rate_hz != 48_000
+            || track.channels != 2
+            || track.measured_duration != RationalTime::new(11, 10)?
+        {
+            return Err("Native 33-frame test voice lost exact measured duration".into());
+        }
+        let track_id = track.id;
+        let mut profile = project
+            .deliverables
+            .iter()
+            .find(|candidate| candidate.name == "Master 16:9")
+            .ok_or("Master profile lost after voice import")?
+            .clone();
+        profile.voice_track_id = Some(track_id);
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-multisegment-selected-measured-voice",
+                &Change::UpsertDeliverable { profile },
             )?
             .project;
     }
@@ -190,6 +266,38 @@ async fn assemble(
     if connection.resource != project.resource_key() {
         return Err("Semwright owner connection belongs to a foreign resource".into());
     }
+    let final_master_mode = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("final-mp4");
+    let staged_audio = if final_master_mode {
+        let track_id = profile
+            .voice_track_id
+            .ok_or("Final multisegment test lacks an explicitly selected voice take")?;
+        let verified =
+            service.verified_master_voice(project.id, &RevisionStamp::from(&project), track_id)?;
+        if verified.sha256.len() != 64 {
+            return Err("Actual measured voice digest is malformed".into());
+        }
+        let name = format!("mw-ci-source-{}.wav", &verified.sha256[..16]);
+        let bytes = fs::read(&verified.path)?;
+        if bytes.len() as u64 != verified.size_bytes
+            || hex::encode(Sha256::digest(&bytes)) != verified.sha256
+        {
+            return Err("Actual measured voice CAS bytes did not match trusted source".into());
+        }
+        let mut staged = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(connection.output_root.join(&name))?;
+        staged.write_all(&bytes)?;
+        staged.sync_all()?;
+        Some(MltAudioArtifact {
+            relative_path: name,
+            sha256: verified.sha256,
+            sample_rate: 48_000,
+            channels: 2,
+        })
+    } else {
+        None
+    };
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let options = FilmBuildOptions {
         frame_rate: Rate::new(30, 1)?,
@@ -220,7 +328,10 @@ async fn assemble(
     {
         return Err("Actual native Film did not produce expected 32+1 partition".into());
     }
-    let video_only = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("video-only");
+    let video_only = matches!(
+        std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref(),
+        Ok("video-only" | "final-mp4")
+    );
     let evidence = if video_only {
         coordinator
             .assemble_native_mlt_video_only_timeline(
@@ -279,6 +390,41 @@ async fn assemble(
     if !fs::metadata(evidence_path)?.is_file() {
         return Err("Native MLT evidence was not saved".into());
     }
+    let av_master = if let Some(audio) = staged_audio.as_ref() {
+        let evidence = coordinator
+            .assemble_native_mlt_multisegment_av_master(
+                project.id,
+                &RevisionStamp::from(&project),
+                MltMultisegmentAvMasterRequest {
+                    request_id: "real-mlt-multisegment-av-33",
+                    deliverable_id: profile.id,
+                    options: &options,
+                    rendered: &render,
+                    visual: &evidence,
+                    audio,
+                },
+            )
+            .await?;
+        if evidence.frame_count != 33
+            || evidence.measured_voice.audio_pcm_frames != 52_800
+            || evidence.evidence_scope
+                != "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+        {
+            return Err(
+                "Actual native MP4 did not certify the source cut and measured audio".into(),
+            );
+        }
+        let av_path = evidence_path.with_file_name("native-multisegment-av-master-evidence.json");
+        let mut save = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(av_path)?;
+        save.write_all(&serde_json::to_vec_pretty(&evidence)?)?;
+        save.sync_all()?;
+        Some(evidence)
+    } else {
+        None
+    };
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -294,6 +440,17 @@ async fn assemble(
             "provider_project_cleanup":evidence.provider_project_cleanup,
             "native_frame_count_observed":evidence.native_frame_count_observed,
             "evidence_scope":evidence.evidence_scope,
+            "master_artifact_path":av_master.as_ref()
+                .and_then(|e| e.master.pointer("/artifact/path")),
+            "master_artifact_sha256":av_master.as_ref()
+                .and_then(|e| e.master.pointer("/artifact/sha256")),
+            "master_artifact_bytes":av_master.as_ref()
+                .and_then(|e| e.master.pointer("/artifact/bytes")),
+            "master_audio_sha256":av_master.as_ref()
+                .map(|e| &e.measured_voice.audio_sha256),
+            "master_decoded_audio_sha256":av_master.as_ref()
+                .and_then(|e| e.master.pointer("/decoded_audio/sha256")),
+            "master_evidence_scope":av_master.as_ref().map(|e| &e.evidence_scope),
         }))?
     );
     Ok(())

@@ -51,6 +51,39 @@ Downstream mux of measured audio remains separate and must use the native
 `driver.mlt-video.av.mux` capability, with its own source-bound authority,
 verification and end-to-end media checks.
 
+## Native multisegment H.264/AAC with measured source WAV (experimental)
+
+The additional trusted `assemble_native_mlt_multisegment_av_master` route
+accepts only a **previously verified, revision-bound, video-only semantic MLT
+intermediate** plus the exact WAV from Studio's own content-addressed library.
+It re-preflights all 32+1 source clips, original source manifests, project
+revision, deliverable and stereo/Rec.709 export contract. The WAV must be
+bound to the selected deliverable and independently measured 48 kHz stereo,
+with actual RIFF sample count matching the 33-frame rational cut to within
+one sample. Unknown voice gain, loudness normalization or unimplemented
+mixing is refused rather than silently dropped.
+
+The caller must stage the verified CAS WAV into the trusted output root
+using exclusive/create-new semantics (the existing desktop WAV stage helper
+already performs this; no user paths reach the Driver). The coordinator
+then sends the **two separately SHA-verified owner output files** to the
+pinned `driver.mlt-video.av.mux` via the normal Native SDK/Broker/Driver Host,
+and requires an actual H.264/AAC 48 kHz stereo MP4 with correct frame count,
+geometry, output SHA-256 and a separately verified decoded-audio WAV
+receipt. No second backend, local command invocation, arbitrary filter or
+destructive MLT project cleanup is introduced.
+
+The exact-SHA CI matrix adds a third disposable `final-mp4` mode. It
+imports an actual 52,800-sample test tone through Studio as measured WAV,
+binds it to the saved 33-frame profile, renders and assembles the same
+Semwright 32+1 semantic cut, and invokes native AV mux. A separate host-side
+FFprobe checks exactly 33 decoded H.264 frames and one AAC stereo 48 kHz
+stream; hash checks cover the master, edited FFV1 and audited decoded audio.
+This is **technical media verification** of a synthetic test, not a product
+acceptance, approved narration recording or human creative-quality verdict.
+The trusted desktop command and Studio UI entry must be separately reviewed
+before this can be offered as a full user-facing editing workflow.
+
 ## Output and remaining limits
 
 This method returns **`MltVerifiedLosslessTimeline`** with the actual owner-root FFV1 + PCM Matroska SHA-256, source frame count, nullable provider-observed frame count, current creative version, FFV1 source receipts and explicit scope:

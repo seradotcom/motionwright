@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ['pcm', 'video-only']
+        mode: ['pcm', 'video-only', 'final-mp4']
     env:
       MOTIONWRIGHT_MLT_MODE: ${{ matrix.mode }}
     steps:
@@ -189,6 +189,19 @@ jobs:
                              else "native-two-segment-lossless.mkv")
           assert hashlib.sha256(artifact.read_bytes()).hexdigest() == result["video_sha256"]
           assert artifact.stat().st_size == result["video_bytes"]
+          if mode == "final-mp4":
+              assert result["final_master_frames"] == 33
+              assert result["measured_voice_pcm_frames"] == 52800
+              assert result["final_master_video_codec"] == "h264"
+              assert result["final_master_audio_codec"] == "aac"
+              assert result["final_master_audio_rate"] == 48000
+              assert result["final_master_audio_channels"] == 2
+              assert result["final_evidence_scope"] == "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+              master = root / "native-multisegment-master.mp4"
+              assert master.is_file()
+              assert hashlib.sha256(master.read_bytes()).hexdigest() == result["final_master_sha256"]
+              assert master.stat().st_size == result["final_master_bytes"]
+              assert (root / "native-multisegment-av-master-evidence.json").is_file()
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

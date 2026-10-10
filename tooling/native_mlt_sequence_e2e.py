@@ -31,9 +31,10 @@ RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
 MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
-if MODE not in {"pcm", "video-only"}:
+if MODE not in {"pcm", "video-only", "final-mp4"}:
     raise SystemExit("Only closed native MLT smoke modes are accepted")
-VIDEO_ONLY = MODE == "video-only"
+VIDEO_ONLY = MODE in {"video-only", "final-mp4"}
+FINAL_MASTER = MODE == "final-mp4"
 PROFILE = "lossless-video-only" if VIDEO_ONLY else "lossless"
 EXPECTED_SCOPE = (
     "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
@@ -544,6 +545,66 @@ def main() -> None:
                 raise AssertionError("Native actual MLT video codec/frame provenance failed: " + repr(video))
 
             shutil.copyfile(video_path, EVIDENCE / VIDEO_FILE)
+            master_check = {}
+            if FINAL_MASTER:
+                av_receipt = json.loads(
+                    (EVIDENCE / "native-multisegment-av-master-evidence.json").read_text()
+                )
+                if (av_receipt["frame_count"] != 33
+                    or av_receipt["measured_voice"]["audio_pcm_frames"] != 52_800
+                    or av_receipt["evidence_scope"]
+                       != "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"):
+                    raise AssertionError("Native final AV master source/voice provenance differs")
+                relative = result.get("master_artifact_path")
+                if not isinstance(relative, str) or not relative.endswith(".mp4"):
+                    raise AssertionError("Native master has no bounded MP4 output")
+                master = paths["output"] / relative
+                if not master.is_file():
+                    raise AssertionError("Native final AV mux did not publish a real MP4")
+                if (master.stat().st_size != result.get("master_artifact_bytes")
+                    or digest(master) != result.get("master_artifact_sha256")
+                    or digest(master) != av_receipt["master"]["artifact"]["sha256"]):
+                    raise AssertionError("Actual MP4 bytes do not match both native receipts")
+                mux_probe = subprocess.run(
+                    [
+                        str(ffprobe), "-v", "error", "-count_frames",
+                        "-show_entries",
+                        "stream=codec_type,codec_name,nb_read_frames,width,height,r_frame_rate,sample_rate,channels",
+                        "-of", "json", str(master),
+                    ],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=45, check=True,
+                )
+                av_streams = json.loads(mux_probe.stdout)["streams"]
+                if len(av_streams) != 2:
+                    raise AssertionError("Final MP4 must have exactly H264 video and AAC stereo audio")
+                v = [stream for stream in av_streams if stream.get("codec_type") == "video"]
+                a = [stream for stream in av_streams if stream.get("codec_type") == "audio"]
+                if (len(v) != 1 or len(a) != 1 or v[0].get("codec_name") != "h264"
+                    or v[0].get("nb_read_frames") != "33"
+                    or (v[0].get("width"),v[0].get("height")) != (1280,720)
+                    or v[0].get("r_frame_rate") != "30/1"
+                    or a[0].get("codec_name") != "aac"
+                    or a[0].get("sample_rate") != "48000"
+                    or a[0].get("channels") != 2):
+                    raise AssertionError("Independent MP4 decoder did not verify exact AV output")
+                decoded = av_receipt["decoded_audio"]
+                wav_path = paths["output"] / decoded["path"]
+                if not wav_path.is_file() or digest(wav_path) != decoded["sha256"]:
+                    raise AssertionError("MLT native decoded PCM audit is missing or changed")
+                shutil.copyfile(master, EVIDENCE / "native-multisegment-master.mp4")
+                master_check = {
+                    "final_master_frames":33,
+                    "final_master_video_codec":"h264",
+                    "final_master_audio_codec":"aac",
+                    "final_master_audio_rate":48000,
+                    "final_master_audio_channels":2,
+                    "final_master_sha256":digest(master),
+                    "final_master_bytes":master.stat().st_size,
+                    "measured_voice_pcm_frames":52_800,
+                    "decoded_audio_sha256":decoded["sha256"],
+                    "final_evidence_scope":av_receipt["evidence_scope"],
+                }
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -568,6 +629,7 @@ def main() -> None:
                     "transport_audio_codec": None if VIDEO_ONLY else "pcm_s16le",
                     "video_bytes": video_path.stat().st_size,
                     "video_sha256": digest(video_path),
+                    **master_check,
                 },
             )
         finally:
