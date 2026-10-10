@@ -107,9 +107,13 @@ impl PaidGenerationSpec {
             (&self.model_version, "model version"),
         ] {
             bounded(value, 128, label)?;
-            if !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
+            if value.contains("://")
+                || value.contains("//")
+                || value.contains("..")
+                || value.starts_with('/')
+                || !value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
             {
                 return Err(DomainError::Invalid(
                     "paid provider/model/version cannot contain executable commands or URLs".into(),
@@ -665,9 +669,13 @@ pub fn preview_paid_provider_route(
     for entry in catalog {
         for name in [&entry.provider_id, &entry.model_id, &entry.model_version] {
             bounded(name, 128, "declared provider/model")?;
-            if !name
-                .bytes()
-                .all(|v| v.is_ascii_alphanumeric() || b"._:/-".contains(&v))
+            if name.contains("://")
+                || name.contains("//")
+                || name.contains("..")
+                || name.starts_with('/')
+                || !name
+                    .bytes()
+                    .all(|v| v.is_ascii_alphanumeric() || b"._:/-".contains(&v))
             {
                 return Err(DomainError::Invalid(
                     "declared provider contains unadmitted token".into(),
