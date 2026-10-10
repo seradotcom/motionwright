@@ -13,6 +13,10 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
+      - 'tooling/native_provider_lifecycle.py'
+      - 'tooling/tests/test_native_av_media_probe.py'
+      - 'tooling/tests/test_native_provider_lifecycle.py'
       - '.github/workflows/native-av-master-e2e.yml'
 
 permissions:
@@ -133,6 +137,12 @@ jobs:
             motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
             -- --nocapture
 
+      - name: Verify decoded-media acceptance rejects silent, swapped, or static output
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_media_probe.py' -v
+
+      - name: Verify provider lifecycle diagnostics do not record secrets or imply recovery
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
+
       - name: Produce a real application-owned AV master through Broker and Driver Host
         run: |
           set -euo pipefail
@@ -151,6 +161,8 @@ jobs:
           test -s "$root/frame-middle.png"
           test -s "$root/frame-last.png"
           test -s "$root/motionwright-master.mp4"
+          test -s "$root/decoded-media-proof.json"
+          test -s "$root/native-provider-lifecycle.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -164,6 +176,21 @@ jobs:
           assert len(result["master_sha256"]) == 64
           assert result["master_path"].endswith("-master.mp4")
           assert (root / "motionwright-master.mp4").stat().st_size > 0
+          health = json.loads((root / "native-provider-lifecycle.json").read_text())
+          assert health["schema"] == "motionwright-ci-provider-lifecycle/1"
+          assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
+          assert health["sample_count"] >= 1
+          assert health["daemon_exit_before_owner_cleanup"] is None
+          probe = json.loads((root / "decoded-media-proof.json").read_text())
+          assert probe["evidence_scope"] == "actual_decoded_h264_aac_two_second_fixture_only"
+          assert probe["master_sha256"] == result["master_sha256"]
+          assert probe["source_wav_sha256"] == result["audio_sha256"]
+          assert probe["video_frames_decoded"] == 60
+          assert probe["video_movement_decoded"] is True
+          assert probe["stereo_channel_identity"] == "confirmed_distinct_source_tones"
+          assert probe["changed_channel_bytes"] >= 85
+          assert result["decoded_moving_frame_channels"] == probe["changed_channel_bytes"]
+          assert result["decoded_content_check"] == probe["evidence_scope"]
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

@@ -19,6 +19,7 @@ import type {
   MotionCanvasProjectionPreflight,
   MltAvMasterEvidence,
   MasterExportReceipt,
+  PortableMediaVerification,
   OtioExportResult,
   PortableBundleExport,
   PortableBundlePlan,
@@ -671,6 +672,7 @@ export async function exportVerifiedNativeMaster(
   project: Project,
   exportToken: string,
   destination: string,
+  includeIntegrityManifest = false,
 ): Promise<MasterExportReceipt> {
   if (!isTauri()) {
     throw new Error("Verified native MP4 delivery requires the desktop runtime.");
@@ -686,7 +688,28 @@ export async function exportVerifiedNativeMaster(
       effect_grant: grant.token,
       export_token: exportToken,
       destination: absolutePath,
+      include_integrity_manifest: includeIntegrityManifest,
     },
+  });
+}
+
+/** Compare an explicitly supplied local MP4 against its portable unsigned
+ * receipt in the desktop backend. No effect grant or creative mutation occurs.
+ * The optional SHA-256 anchor must originate outside the receipt itself.
+ */
+export async function verifyPortableMediaReceipt(
+  manifestPath: string,
+  trustedSha256?: string,
+): Promise<PortableMediaVerification> {
+  if (!isTauri()) throw new Error("Portable MP4 verification requires the desktop runtime.");
+  const path = manifestPath.trim();
+  if (!path) throw new Error("Choose the absolute path of a portable MP4 receipt.");
+  const anchor = trustedSha256?.trim() || null;
+  if (anchor !== null && !/^[0-9a-f]{64}$/.test(anchor)) {
+    throw new Error("Independent trusted SHA-256 must be 64 lowercase hexadecimal characters.");
+  }
+  return invoke<PortableMediaVerification>("verify_local_media_integrity", {
+    request: { manifest_path: path, trusted_sha256: anchor },
   });
 }
 

@@ -108,6 +108,9 @@ test("desktop AV master is linked only to session-native visual evidence and a m
             revision: mastered.revision,
             deliverable_id: mastered.deliverable_id,
             source_current: true,
+            integrity_manifest_path: request.include_integrity_manifest
+              ? String(request.destination) + ".motionwright-integrity.json"
+              : null,
           };
         }
         if (command === "apply_change") {
@@ -190,12 +193,17 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   const exportAction = delivery.getByRole("button", { name: "Export verified MP4" });
   await expect(exportAction).toBeDisabled();
   await page.getByLabel("Verified MP4 export path").fill("/tmp/motionwright-delivered-master.mp4");
+  const includeIntegrity = page.getByRole("checkbox", { name: "Write portable MP4 integrity receipt" });
+  await expect(includeIntegrity).not.toBeChecked();
+  await includeIntegrity.check();
   await expect(exportAction).toBeEnabled();
   await exportAction.click();
   const exportReceipt = page.getByLabel("Verified MP4 delivery receipt");
   await expect(exportReceipt).toContainText("/tmp/motionwright-delivered-master.mp4");
   await expect(exportReceipt).toContainText("VERIFIED · CURRENT");
   await expect(exportReceipt).toContainText("8192");
+  await expect(exportReceipt).toContainText("motionwright-delivered-master.mp4.motionwright-integrity.json");
+  await expect(delivery).toContainText("It is unsigned");
   const afterExport = await page.evaluate(() => (
     window as unknown as { __SYNTHETIC_AV__: { exports: Array<Record<string, unknown>>; effects: number } }
   ).__SYNTHETIC_AV__);
@@ -207,6 +215,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
     revision: boot.project.revision,
     export_token: "synthetic-export-token",
     destination: "/tmp/motionwright-delivered-master.mp4",
+    include_integrity_manifest: true,
   });
   expect(afterExport.exports[0]).not.toHaveProperty("source");
   expect(afterExport.exports[0]).not.toHaveProperty("sha256");
@@ -278,4 +287,5 @@ test("browser demo never claims native AV master authority", async ({ page }) =>
   await expect(page.getByRole("button", { name: "Assemble native AV master" })).toBeDisabled();
   await expect(page.getByLabel("Native AV master evidence")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Review native MP4" })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: "Write portable MP4 integrity receipt" })).toBeDisabled();
 });

@@ -428,6 +428,18 @@ export interface AvSyncSpec {
   cues: AvSyncCue[];
 }
 
+export interface PortableMediaVerification {
+  status: "sha256-content-verified";
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  /** String preserves the exact u64 revision without JavaScript rounding. */
+  source_revision: string;
+  signed_authenticity: false;
+  human_acceptance: false;
+  trusted_anchor_matched: boolean;
+}
+
 export interface MasterExportReceipt {
   destination: string;
   size_bytes: number;
@@ -435,6 +447,8 @@ export interface MasterExportReceipt {
   revision: number;
   deliverable_id: string;
   source_current: boolean;
+  /** Optional unsigned local integrity descriptor, not an authenticity signature. */
+  integrity_manifest_path?: string | null;
 }
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */
