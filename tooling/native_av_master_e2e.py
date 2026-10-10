@@ -17,8 +17,9 @@ import subprocess
 import tempfile
 import time
 import tomllib
-import wave
 from pathlib import Path
+
+from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -474,11 +475,9 @@ def main() -> None:
 
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
-            with wave.open(str(audio_path), "wb") as stream:
-                stream.setnchannels(2)
-                stream.setsampwidth(2)
-                stream.setframerate(48_000)
-                stream.writeframes(b"\x00\x00\x00\x00" * 96_000)
+            # Distinct non-silent L440Hz/R660Hz tones are an actual decoded
+            # content test. A silent or channel-swapped AAC mux must not PASS.
+            write_two_channel_tone_wav(audio_path)
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
 
@@ -510,6 +509,17 @@ def main() -> None:
                 raise AssertionError("AV master bytes do not match the reported artifact digest")
             shutil.copyfile(master_path, EVIDENCE / "motionwright-master.mp4")
 
+            # The canonical receipts/byte digests above prove source identity.
+            # An independent ffmpeg/ffprobe decode probes content: actual 60
+            # moving H.264 frames and separated non-silent stereo AAC tones.
+            # This uses CI-pinned command dependencies, never a product shell.
+            decoded = probe_native_mp4(master_path, audio_path, ffmpeg, ffprobe)
+            if decoded["master_sha256"] != master_sha256:
+                raise AssertionError("Decoded-media sample came from a different MP4 digest")
+            if decoded["source_wav_sha256"] != audio_sha256:
+                raise AssertionError("Decoded-media probe used a different WAV source")
+            write_private_json(EVIDENCE / "decoded-media-proof.json", decoded)
+
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -531,6 +541,11 @@ def main() -> None:
                     "audio_sha256": audio_sha256,
                     "master_path": master_relative,
                     "master_sha256": master_sha256,
+                    "decoded_content_check": decoded["evidence_scope"],
+                    "decoded_stereo_channel_identity": decoded["stereo_channel_identity"],
+                    "decoded_moving_frame_channels": decoded["changed_channel_bytes"],
+                    "decoded_video_frames": decoded["video_frames_decoded"],
+                    "decoded_pcm_frames": decoded["decoded_pcm_frames"],
                     "review_frames": {
                         "first_sha256": digest(EVIDENCE / "frame-first.png"),
                         "middle_sha256": digest(EVIDENCE / "frame-middle.png"),
