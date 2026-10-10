@@ -94,6 +94,27 @@ This method returns **`MltVerifiedLosslessTimeline`** with the actual owner-root
 
 The shared MLT provider retains a bounded number of in-memory edit projects and output files are created with no-overwrite semantics. **Even successful headless renders can retain an in-memory edit project:** cleanup is explicitly deferred, never falsely reported as complete. Closing through the Broker needs trusted foreground authorization, which is not requested or bypassed by this agent path. In disposable CI, the provider terminates when the runner tears down its own sandbox; this is not equivalent to a product-level cleanup receipt. A failure during multi-step assembly can also leave a temporary project or partial owner output; recorded receipts and native authority must be reconciled before retries.
 
+## Proven native visual asset projection boundary
+
+The first source-bound `final-mp4` real CI uncovered a new InvalidArgument
+before the semantic MLT stage: adding an actual measured voice WAV to the
+Motionwright Project/CAS caused the Film projection to include that
+**unreferenced audio asset** in a Motion Canvas composition plan. Semwright
+correctly rejects unimported assets in its managed visual registry, even
+when the file has a valid SHA-256. Audio has its own separately verified
+`av.mux` source contract; it does not belong in a source-bound visual Film.
+
+Canonical Film now projects digest-bound assets **only for authored Image
+or Video subject references**. The set is deduplicated, bounded to 128,
+looks up exact Project asset identity and verifies its digest before
+including it; unknown or unverified *referenced* assets fail closed.
+Unreferenced WAVs, music and other unrelated CAS imports are not silently
+submitted to the native Motion Canvas managed project. A Rust regression
+compares the exact canonical Film timing/shot projection with and without
+an independently imported, SHA-bound voice asset. This preserves both the
+original video-only render and the legitimate separately measured audio
+workflow rather than suppressing the native policy failure.
+
 ## Native render failure triage
 
 The real two-segment CI uncovered a separate upstream Motion Canvas `render.status = failed` after correcting the original three-profile fixture. The safe renderer receipt identified `observation_count_incomplete` at 1 fps, prior to MLT. The updated fixture uses the 30 fps renderer baseline, 33 exact one-frame scenes, and checks all rational starts/durations after reopening SQLite. The pinned provider classified the first segment as `observation`, so the issue is upstream of semantic MLT assembly. To narrow that phase safely, the CI-only harness parses at most four small, regular, exact-name native failure receipts beneath the disposable owner output root, retaining only allowlisted observation subreasons in `safe-observation-failure.json`. It never publishes the receipt's local stack, arbitrary message, source identity or filesystem paths. Missing, malformed or unsafe receipts remain `unclassified`. Motionwright now retains only the **finite, typed Semwright `failure_class`** and the 1-based segment number in its error, never the raw driver `error` field, temporary owner paths, source media names or private JSON receipts. An unrecognized or missing class is reported as `unclassified`, not guessed. That bounded evidence distinguishes a rendering problem from downstream MLT semantic editing and preserves the requirement for a complete native E2E. The source-bound FFV1 video and an H.264/AAC master remain **unverified** until the actual test passes.
