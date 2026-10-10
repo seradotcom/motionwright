@@ -535,7 +535,8 @@
       "release_acceptance": "NOT_CLOSED",
       "code_evidence": [
         "crates/storage/src/lib.rs",
-        "docs/creative-production/V05_NATIVE_ATTACH_INSPECTION.md"
+        "docs/creative-production/V05_NATIVE_ATTACH_INSPECTION.md",
+        "crates/storage/examples/attached_native_glb_roundtrip.rs"
       ],
       "human_review": "NOT_PERFORMED"
     },

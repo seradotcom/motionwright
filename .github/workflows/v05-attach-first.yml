@@ -68,6 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked -p motionwright-creative-library --example native_catalog_fixture --example attached_source_probe
+          cargo build --locked -p motionwright-storage --example attached_native_glb_roundtrip
           python3 -m py_compile tooling/blender-stage/attached_source_e2e.py runtime/blender-stage/fixed_render.py
       - name: Generate and inspect actual native Blender GLB inside disposable CI
         run: |

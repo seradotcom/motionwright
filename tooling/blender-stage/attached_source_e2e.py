@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 FIXTURE=ROOT/'target/debug/examples/native_catalog_fixture'
 INSPECTOR=ROOT/'target/debug/examples/attached_source_probe'
+PORTABLE=ROOT/'target/debug/examples/attached_native_glb_roundtrip'
 BLENDER=ROOT/'runtime/blender-stage/fixed_render.py'
 
 def digest(path:Path)->str:
@@ -52,11 +53,23 @@ def main()->None:
             or not observation['glb_chunks']
             or not any(p['path']=='nodes' for p in observation['properties'])):
             raise AssertionError('Real Blender GLB structure did not preserve opaque source and observable identity')
+        portable_receipt=destination/'actual-glb-portable-reopen.json'
+        portable_root=Path(temp)/'reopened-native-asset'
+        invoke([str(PORTABLE),str(glb),str(portable_root),str(portable_receipt)],60)
+        restored=json.loads(portable_receipt.read_text())
+        if(restored['schema']!='motionwright.real-glb-portable-source/1'
+           or restored['source_sha256']!=digest(glb)
+           or restored['source_blender_glb_exact_bytes']!='PASS'
+           or restored['portable_original_native_capsule']!='PASS'
+           or not restored['generation_rotated']
+           or restored['publication_approved'] is not False):
+            raise AssertionError('Actual Blender GLB changed while exported and reopened through a fresh canonical Store')
         result={
             'schema':'motionwright.real-blender-source-observation-e2e/1',
             'motionwright_sha':invoke(['git','rev-parse','HEAD'],10).strip(),
             'actual_glb_sha256':digest(glb),
             'original_editable_blend_sha256':digest(blender),
+            'portable_source_restore':'PASS_EXACT_GLB_SHA_AND_ROTATED_GENERATION',
             'typed_observed_properties':len(observation['properties']),
             'exact_glb_chunks':len(observation['glb_chunks']),
             'preserved_used_extensions':observation['used_extensions'],

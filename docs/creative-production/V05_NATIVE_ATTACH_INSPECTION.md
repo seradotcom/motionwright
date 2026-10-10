@@ -91,3 +91,20 @@ plugins, rights verification, human creative review and a native
 round-trip through the source application. The contract and real GLB
 observation improve `MW05-E11-01`, but the requirement remains
 `PARTIAL` and `release_acceptance: NOT_CLOSED`.
+
+
+### Native GLB preservation across an actual fresh Store (CI fixture)
+
+The same *actual Blender-generated* `stage.glb` in the CI inspector is also
+admitted as a source asset into a fresh canonical `Store`, attached to
+an original project scene as a `NativeCapsule` with all semantic
+fidelity dimensions marked `unavailable`, then exported by
+`Store::export_project_bundle`. A **second** distinct `Store`
+inspects and imports that portable bundle. The test checks identical
+GLB source bytes/SHA-256, the original capsule and asset identity,
+rotated project generation, and the absence of restored executable
+extension grants. A compact evidence receipt records only source SHA
+and PASS/NO-AUTHORITY flags; the actual GLB is not redistributed in
+the CI artifact. This tests real original source custody, **not**
+Blender semantic editing, software installation, artistic equivalence,
+rights authorization or publication.
