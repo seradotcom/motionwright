@@ -1002,17 +1002,19 @@ export default function DeliveryProfiles({
               <header>
                 <div>
                   <strong>Native audiovisual master</strong>
-                  <span>Verified Motion Canvas segment + measured source WAV → Semwright MLT → H.264/AAC MP4.</span>
+                  <span>Verified Motion Canvas cut + measured source WAV → Semwright MLT → H.264/AAC MP4.</span>
                 </div>
                 <span className="status-pill status-unknown">OWNER-GRANTED</span>
               </header>
               <div className="delivery-editor-actions">
-                <button className="button button-primary" type="button"
-                  disabled={!masterReady || busy !== null}
-                  onClick={assembleMaster}>
-                  <Play size={14} />
-                  {busy === "master" ? "Mastering…" : "Assemble native AV master"}
-                </button>
+                {(!currentMotion || currentMotion.segments.length <= 1) && (
+                  <button className="button button-primary" type="button"
+                    disabled={!masterReady || busy !== null}
+                    onClick={assembleMaster}>
+                    <Play size={14} />
+                    {busy === "master" ? "Mastering…" : "Assemble native AV master"}
+                  </button>
+                )}
                 {currentMotion && currentMotion.segments.length > 1 && (
                   <button className="button button-primary" type="button"
                     disabled={!multiMasterReady || busy !== null}

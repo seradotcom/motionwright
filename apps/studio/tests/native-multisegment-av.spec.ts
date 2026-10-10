@@ -120,6 +120,7 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
   }
   await page.getByRole("button", { name: "Render native segments" }).click();
   await expect(assemble).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Assemble native AV master" })).toHaveCount(0);
   await expect(assemble).toBeDisabled();
   await page.getByRole("button", { name: "Check native multi-segment sources" }).click();
   await expect(page.getByLabel("Multi-segment source preflight result"))
