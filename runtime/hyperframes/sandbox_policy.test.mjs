@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classifyHostSandbox, inspectHostSandboxProof, mapShape, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
+import {classifyHostSandbox, inspectHostSandboxProof, inspectUidProofParts, mapShape, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
 const baseline={
   uidMap:'         0       1001          1\n',
   status:'Name:\tnode\nUid:\t0\t0\t0\t0\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n',
@@ -91,4 +91,24 @@ test('pinned browser preflight classifies causes without persisting arbitrary di
     assert.ok(/^browser_binary_probe_[a-z_]+$/.test(category));
     assert.ok(!category.includes('private')&&!category.includes('/home/'));
   }
+});
+
+test('outer UID proof diagnostics never depend on or disclose host UID numbers',()=>{
+ const original=inspectUidProofParts(baseline);
+ assert.deepEqual(original,{oneRow:true,canonicalShape:true,nonrootHost:true,
+   oneUidOnly:true,processUidPresent:true,processUidMatches:true});
+ const modifications=[
+  [{uidMap:'0 0 1\n'},'nonrootHost'],
+  [{uidMap:'0 1001 65536\n'},'oneUidOnly'],
+  [{uidMap:'0 1001 1\n1 1002 1\n'},'oneRow'],
+  [{uidMap:'not an integer range'},'canonicalShape'],
+  [{status:baseline.status.replace(/^Uid:.*$/m,'')},'processUidPresent'],
+  [{status:baseline.status.replace('Uid:\t0\t0\t0\t0','Uid:\t1\t1\t1\t1')},'processUidMatches']
+ ];
+ for(const [updated,flag]of modifications){
+  const facts=inspectUidProofParts({...baseline,...updated});
+  assert.equal(facts[flag],false);
+  assert.ok(Object.values(facts).some(v=>v===false));
+  assert.ok(Object.keys(facts).every(name=>!name.includes('1001')));
+ }
 });

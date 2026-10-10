@@ -14,18 +14,31 @@ function readBoundedKernelStatus(path) {
     return '';
   }
 }
-export function inspectHostSandboxProof({uidMap,status,apparmor,restrict}) {
-  const mapLines=uidMap.trim().split(/\n/);
-  // Require a strict one-UID map to a nonzero host UID, not a host-wide map.
-  const mapping=mapLines.length===1
-    ? /^([0-9]+)\s+([0-9]+)\s+([0-9]+)$/.exec(mapLines[0].trim().replace(/\s+/g,' '))
+export function inspectUidProofParts({uidMap,status}) {
+  const lines=uidMap.trim().split(/\n/);
+  const oneRow=lines.length===1 && lines[0].trim().length>0;
+  const mapping=oneRow
+    ? /^([0-9]+)\s+([0-9]+)\s+([0-9]+)$/.exec(lines[0].trim().replace(/\s+/g,' '))
     : null;
-  // Bwrap may retain an unprivileged UID inside its one-UID namespace.
-  // Require exactly one non-root mapped host UID, and prove that it maps
-  // the effective UID of this actual process. Never infer from an env flag.
-  const effective=/^Uid:\s+[0-9]+\s+([0-9]+)\s+[0-9]+\s+[0-9]+$/m.exec(status)?.[1];
-  const rootless=!!mapping && mapping[2]!=='0' && mapping[3]==='1'
-    && effective!==undefined && mapping[1]===effective;
+  const uid=/^Uid:\s+[0-9]+\s+([0-9]+)\s+[0-9]+\s+[0-9]+$/m.exec(status)?.[1];
+  return {
+    oneRow,
+    canonicalShape:!!mapping,
+    nonrootHost:!!mapping&&mapping[2]!=='0',
+    oneUidOnly:!!mapping&&mapping[3]==='1',
+    processUidPresent:uid!==undefined,
+    processUidMatches:!!mapping&&uid!==undefined&&mapping[1]===uid
+  };
+}
+export function detectUidProofParts(){
+  const source=readHostSandboxInput();
+  return inspectUidProofParts(source);
+}
+export function inspectHostSandboxProof({uidMap,status,apparmor,restrict}) {
+  // A few Ubuntu bwrap profiles map a single unprivileged UID with an
+  // interior UID other than zero. This evidence NEVER accepts broad maps.
+  const uidParts=inspectUidProofParts({uidMap,status});
+  const rootless=Object.values(uidParts).every(Boolean);
   const nnp=/^NoNewPrivs:\s+1$/m.test(status);
   const caps=/^CapEff:\s+0+$/m.test(status);
   const confined=/\bbwrap\b/i.test(apparmor)&&/\(enforce\)\s*$/.test(apparmor.trim());
