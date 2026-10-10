@@ -22,6 +22,7 @@ import type {
   MotionCanvasProjectionPreflight,
   MultiSegmentReadinessReport,
   MltAvMasterEvidence,
+  NativeMultisegmentAvMasterEvidence,
   MasterExportReceipt,
   PortableMediaVerification,
   OtioExportResult,
@@ -681,6 +682,35 @@ export async function assembleNativeAvMaster(
   const requestId = crypto.randomUUID();
   const grant = await issueEffectGrant("render_local", project, requestId);
   return invoke<MltAvMasterEvidence>("assemble_av_master", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      request_id: requestId,
+      effect_grant: grant.token,
+      deliverable_id: deliverableId,
+      preview_token: previewToken,
+      voice_track_id: voiceTrackId,
+    },
+  });
+}
+
+/** Assemble a measured-voice MP4 from an already previewed *multi-segment*
+ * source. Only an unguessable preview token and the saved voice/profile enter
+ * IPC; all film options, actual media paths, and hashes stay owner-side.
+ */
+export async function assembleNativeMultisegmentAvMaster(
+  project: Project,
+  deliverableId: string,
+  voiceTrackId: string,
+  previewToken: string,
+): Promise<NativeMultisegmentAvMasterEvidence> {
+  if (!isTauri()) {
+    throw new Error("Native multisegment AV mastering requires the desktop runtime.");
+  }
+  const requestId = crypto.randomUUID();
+  const grant = await issueEffectGrant("render_local", project, requestId);
+  return invoke<NativeMultisegmentAvMasterEvidence>("assemble_multisegment_av_master", {
     request: {
       project_id: project.id,
       generation: project.generation,
