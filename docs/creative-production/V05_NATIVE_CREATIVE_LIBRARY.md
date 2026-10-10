@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 36 **PARTIAL code
+The isolated branch inventory currently records 37 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 27 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 26 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -506,3 +506,8 @@ implemented as a separate canonical change operation.
 ## Two independent owner-local clients (E10-03, partial)
 
 The existing Native SDK capability catalog and versioned project observations can be accessed by independently launched, compact one-shot local CLI clients in `crates/native/examples/local_agent_actor.rs`. Preview reads are source-only and owner-local writes must explicitly opt in to `StudioService::apply` CAS, with one project SQLite store and no shared chat. The disposable CI `tooling/agent-local/two_clients_e2e.py` must prove three independent revisions, stale-page rejection, cross-generation refusal, and SDK capability discovery. This is **not** a remote Host grant, network server, generic plugin runner or completed external-agent E10-03 acceptance. See `V05_EXTERNAL_AGENT_LOCAL_CLIENTS.md`.
+
+
+## Independent fframes upstream experiment (E04-03)
+
+An **opt-in disposable CI only** workload measures the original MIT-licensed fframes Rust/SVG example at a pinned upstream SHA, capturing cold/warm release compilation, process startup, native PNG frame preview and independently probed one-second video render. No third-party renderer is installed in the owner workstation or admitted to Semwright Host/Motionwright source. The hello-world fixture has no audio and headless CI does not exercise interactive Vulkan/Metal preview. True source/asset parity and renderer comparative quality remain NOT_RUN. See `V05_FFRAMES_EXPERIMENT.md`.

@@ -1,0 +1,59 @@
+name: V05 fframes disposable upstream experiment (not admitted)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-fframes-experiment']
+    paths:
+      - 'tooling/fframes-experiment/**'
+      - 'docs/creative-production/**'
+      - '.github/workflows/v05-fframes-experimental.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-fframes-upstream-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  original-source-experimental-render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+      - name: Verify pinned source experiment contract without installing a renderer
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tooling/fframes-experiment -p 'test_*.py' -v
+          python3 -m py_compile tooling/fframes-experiment/*.py
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+      - name: Install FFmpeg/Rust native build dependencies on disposable CI only
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg pkg-config yasm nasm ninja-build libclang-dev clang \
+            libx264-dev libx265-dev libopus-dev libvpx-dev libasound2-dev
+      - name: Measure upstream exact-SHA Rust/SVG fframes cold/warm/preview/render
+        run: |
+          set -euo pipefail
+          python3 tooling/fframes-experiment/measure.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v05-fframes-upstream-NOT_ADMITTED-${{ github.sha }}
+          path: verification/fframes-upstream-experiment/
+          if-no-files-found: warn
+          retention-days: 7
