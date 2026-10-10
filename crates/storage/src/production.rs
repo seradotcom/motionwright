@@ -110,7 +110,8 @@ impl Store {
                    WHERE project_id=?1 AND generation=?2 AND command=?3
                    GROUP BY request_id
                  ) AS recent ON current.receipt_id=recent.latest
-                 WHERE current.stage IN ('dispatching','outcome_unknown')
+                 WHERE (current.stage IN ('dispatching','outcome_unknown')
+                   OR (current.stage='failed_known' AND current.command='motionwright.recovery.blender'))
                    AND current.request_id<>?4
                  LIMIT 1",
                 params![

@@ -519,6 +519,7 @@ impl ProductionCoordinator {
         if let Some((proof, _)) = read_previous::<MotionProof>(self, project, &key)? {
             if proof.evidence.generation != project.generation
                 || proof.evidence.project_resource != project.resource_key()
+                || proof.evidence.revision != project.revision
                 || proof.evidence.deliverable_id != deliverable_id
             {
                 return Err(Error::new(
@@ -659,8 +660,12 @@ impl ProductionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use motionwright_domain::{
+        BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RevisionStamp,
+    };
     use motionwright_storage::Store;
     use semwright_media_time::Rate;
+    use std::collections::BTreeSet;
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -747,6 +752,140 @@ mod tests {
         assert!(
             StageKey::for_input("../bad", "blender", "motionwright.recovery.blender", &same,)
                 .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrelated_scene_edit_preserves_blender_cache_key_but_blender_edit_invalidates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (coordinator, initial, connection) = fixture(&dir);
+        let service = &coordinator.service;
+        let p = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "seed-blender",
+                &Change::AddScene {
+                    name: "Blender".into(),
+                    objective: "Reusable geometry".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let blender = p.scenes[0].id;
+        let p = service
+            .apply(
+                p.id,
+                &RevisionStamp::from(&p),
+                "seed-blender-kind",
+                &Change::SetSceneRenderer {
+                    scene_id: blender,
+                    renderer: motionwright_domain::RendererKind::Blender,
+                },
+            )
+            .unwrap()
+            .project;
+        let node = |name: &str| CanvasNode {
+            id: Uuid::now_v7(),
+            name: name.into(),
+            kind: "rectangle".into(),
+            parent_id: None,
+            x: 160.0,
+            y: 220.0,
+            width: 200.0,
+            height: 110.0,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: None,
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 1,
+            style: NodeStyle {
+                fill: Some("#123456".into()),
+                stroke: None,
+                stroke_width: 0.0,
+                font_family: None,
+                font_size: None,
+                font_weight: None,
+                line_height: None,
+                blend_mode: BlendMode::Normal,
+            },
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+            keyframes: vec![],
+        };
+        let p = service
+            .apply(
+                p.id,
+                &RevisionStamp::from(&p),
+                "seed-blender-geometry",
+                &Change::AddCanvasNode {
+                    scene_id: blender,
+                    node: node("base"),
+                },
+            )
+            .unwrap()
+            .project;
+        let source_key = |project: &Project| {
+            let mut projection = build_blender_contribution(project, blender).unwrap();
+            projection.revision = 0;
+            StageKey::for_input(
+                "demo",
+                "blender",
+                "motionwright.recovery.blender",
+                &stage_input(project, &connection, &projection).unwrap(),
+            )
+            .unwrap()
+        };
+        let original = source_key(&p);
+        let p = service
+            .apply(
+                p.id,
+                &RevisionStamp::from(&p),
+                "seed-motion",
+                &Change::AddScene {
+                    name: "Motion Canvas".into(),
+                    objective: "Downstream".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let motion = p.scenes[1].id;
+        let unrelated = service
+            .apply(
+                p.id,
+                &RevisionStamp::from(&p),
+                "edit-motion-objective",
+                &Change::UpdateSceneObjective {
+                    scene_id: motion,
+                    objective: "Changed downstream state".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert_eq!(
+            original.digest,
+            source_key(&unrelated).digest,
+            "downstream changes must not force another native Blender dispatch"
+        );
+        let changed_blender = service
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "edit-blender-geometry",
+                &Change::AddCanvasNode {
+                    scene_id: blender,
+                    node: node("added"),
+                },
+            )
+            .unwrap()
+            .project;
+        assert_ne!(
+            original.digest,
+            source_key(&changed_blender).digest,
+            "a changed Blender input MUST invalidate the old proof"
         );
     }
 

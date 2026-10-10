@@ -12,6 +12,8 @@ on:
       - 'crates/service/**'
       - 'crates/storage/**'
       - 'tooling/native_cross_app_recovery_e2e.py'
+      - 'tooling/cross_app_demo_report.py'
+      - 'tooling/tests/test_cross_app_demo_report.py'
       - 'tooling/native_blender_e2e.py'
       - 'tooling/native_render_e2e.py'
       - '.github/workflows/native-cross-app-recovery.yml'
@@ -119,6 +121,8 @@ jobs:
           cargo test --locked -p motionwright-native recovery -- --nocapture
           cargo build --locked -p motionwright-native --example native-cross-app-recovery-e2e
           python3 -m py_compile tooling/native_cross_app_recovery_e2e.py
+          python3 -m py_compile tooling/cross_app_demo_report.py
+          python3 -m unittest discover -s tooling/tests -p 'test_cross_app_demo_report.py' -v
 
       - name: Cross-app native resume with immutable artifact evidence
         env:
@@ -135,6 +139,7 @@ jobs:
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/resume.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/repeat.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/reused-blender.glb"
+          test -s "verification/native-cross-app-recovery/$GITHUB_SHA/recovery-demo.html"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/artifact-manifest.json"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/first-frame.png"
           test -s "verification/native-cross-app-recovery/$GITHUB_SHA/middle-frame.png"

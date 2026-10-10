@@ -20,7 +20,10 @@ The exact-source GitHub Actions lane [`native-cross-app-recovery.yml`](../../.gi
 3. `resume`: reopen SQLite in a new process; prove the Blender GLB hash is unchanged and **zero** Blender driver commands were executed again; render 60 real Motion Canvas frames.
 4. `repeat`: reopen SQLite in another process; verify the entire Motion Canvas manifest and all 60 PNG hashes again and reuse both valid stages without redispatch.
 
-The acceptance script `tooling/native_cross_app_recovery_e2e.py` publishes `stop.json`, `resume.json`, `repeat.json`, `result.json`, the original reused `reused-blender.glb`, a native Motion Canvas manifest, review PNG frames, and exact source revisions in a GitHub Actions artifact. A workflow file is **not evidence of PASS** until its job succeeds at that exact commit. CLI phases live in `crates/native/examples/native-cross-app-recovery-e2e.rs`.
+The acceptance script `tooling/native_cross_app_recovery_e2e.py` publishes `stop.json`, `resume.json`, `repeat.json`, `result.json`, the original reused `reused-blender.glb`, a native Motion Canvas manifest, review PNG frames, and exact source revisions in a GitHub Actions artifact. It also generates
+`recovery-demo.html`, a completely offline and evidence-bound visual
+walkthrough of the three process phases with a real native frame and links
+to the original GLB and frame manifest, with the limits displayed directly. A workflow file is **not evidence of PASS** until its job succeeds at that exact commit. CLI phases live in `crates/native/examples/native-cross-app-recovery-e2e.rs`.
 
 **Important limitation:** The controlled `stop` deliberately interrupts *between* native applications; it **does not simulate a failure within the Motion Canvas renderer**. The Rust recovery tests also cover a confirmed Motion Canvas failure followed by attempt 2 after SQLite reopen, but that specific failure test is scripted rather than a real native-render-failure E2E. Do not advertise the latter as validated until an independent native failure-injection case passes.
 

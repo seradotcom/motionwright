@@ -19,6 +19,7 @@ from pathlib import Path
 
 import native_blender_e2e as blender
 import native_render_e2e as render
+from cross_app_demo_report import make_report
 
 ROOT = Path(__file__).resolve().parents[1]
 SW = render.SEMWRIGHT
@@ -323,6 +324,7 @@ def main() -> None:
                     "repeated_motion_canvas": True,
                     "provenance": binaries,
                 })
+                make_report(EVIDENCE)
             finally:
                 if daemon.poll() is None:
                     os.killpg(daemon.pid, signal.SIGTERM)
