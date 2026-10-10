@@ -162,6 +162,8 @@ jobs:
           assert result["assembled_video_has_audio"] is True
           assert result["transport_audio_codec"] == "pcm_s16le"
           assert evidence["transport_pcm_audio"] is True
+          assert evidence["provider_project_cleanup"] == "not_requested_requires_foreground_broker_consent"
+          assert result["provider_project_cleanup"] == evidence["provider_project_cleanup"]
           assert evidence["evidence_scope"] == "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
           assert evidence["frame_count"] == 33
           assert len(evidence["source"]["verified_video_segments"]) == 2
