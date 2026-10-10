@@ -520,6 +520,14 @@ impl StudioService {
         self.store.lock().import_project_bundle(source)
     }
 
+    /// Atomic cross-process application recovery claim, not an execution grant.
+    pub fn claim_recovery_stage(
+        &self,
+        input: ProductionReceiptInput,
+    ) -> StorageResult<ProductionReceipt> {
+        self.store.lock().claim_recovery_stage(input)
+    }
+
     pub fn append_production_receipt(
         &self,
         input: ProductionReceiptInput,
