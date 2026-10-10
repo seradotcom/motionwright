@@ -13,10 +13,13 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
 from pathlib import Path
+
+from mlt_failure_diagnostic import safe_observation_diagnostic
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -442,17 +445,30 @@ def main() -> None:
                 },
             )
 
-            result = run_json(
-                [
-                    str(MW_BIN),
-                    "assemble",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "native-multisegment-timeline-evidence.json"),
-                ],
-                env=env,
-                timeout=1050,
-            )
+            try:
+                result = run_json(
+                    [
+                        str(MW_BIN),
+                        "assemble",
+                        str(database),
+                        str(connection_path),
+                        str(EVIDENCE / "native-multisegment-timeline-evidence.json"),
+                    ],
+                    env=env,
+                    timeout=1050,
+                )
+            except (AssertionError, subprocess.TimeoutExpired):
+                # The pinned renderer's raw failure receipt contains a local
+                # stack and owner paths: NEVER print or upload that receipt.
+                # Persist only a fixed vocabulary derived before the owner's
+                # temporary, private output root is destroyed.
+                safe = safe_observation_diagnostic(paths["output"])
+                try:
+                    write_private_json(EVIDENCE / "safe-observation-failure.json", safe)
+                except OSError:
+                    pass  # Never replace the original native failure.
+                print(json.dumps(safe, sort_keys=True), file=sys.stderr)
+                raise
             if result.get("native_mlt_multisegment_e2e") != "PASS":
                 raise AssertionError("Real source-bound MLT timeline was not successful: " + repr(result))
             if result.get("frame_count") != 33 or result.get("segment_count") != 2:

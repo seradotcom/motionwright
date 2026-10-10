@@ -13,6 +13,8 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_mlt_sequence_e2e.py'
+      - 'tooling/mlt_failure_diagnostic.py'
+      - 'tooling/tests/test_mlt_failure_diagnostic.py'
       - '.github/workflows/native-mlt-sequence-e2e.yml'
 
 permissions:
@@ -130,6 +132,9 @@ jobs:
           set -euo pipefail
           cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
           cargo test --locked -p motionwright-native mlt_timeline -- --nocapture
+
+      - name: Test redacted native observation diagnostics
+        run: python3 -m unittest discover -s tooling/tests -p 'test_mlt_failure_diagnostic.py' -v
 
       - name: Produce a real two-segment video-only MLT timeline through pinned Driver Host
         run: |
