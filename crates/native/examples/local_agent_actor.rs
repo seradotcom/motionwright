@@ -50,7 +50,7 @@ impl LocalEdit {
             Self::SetBrief { .. } => "brief.set",
         }
     }
-    fn to_change(self) -> Change {
+    fn into_change(self) -> Change {
         match self {
             Self::Rename { title } => Change::RenameProject { title },
             Self::AddScene {
@@ -303,7 +303,7 @@ async fn execute(
             let project = service.project(project_id)?;
             check_base(&project, expected_generation, expected_revision)?;
             let mut proposed = project.clone();
-            proposed.apply_change(&edit.to_change())?;
+            proposed.apply_change(&edit.into_change())?;
             proposed.validate()?;
             Ok(json!({"schema":"motionwright.owner-local-edit-preview/1",
                 "status":"READ_ONLY_DOMAIN_VALIDATION",
@@ -344,7 +344,7 @@ async fn execute(
                 project_id,
                 &RevisionStamp::from(&project),
                 &request_id,
-                &edit.to_change(),
+                &edit.into_change(),
             )?;
             Ok(json!({"schema":"motionwright.owner-local-cas-result/1",
                 "status":"APPLIED_BY_CANONICAL_STUDIO_SERVICE",
