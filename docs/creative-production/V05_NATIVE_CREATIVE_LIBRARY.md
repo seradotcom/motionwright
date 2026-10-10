@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 36 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 27 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -501,3 +501,28 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+## Real-media OpenTimelineIO interchange candidate (E11-03)
+
+The existing Rust `otio_interchange` remains the canonical source for a
+conservative linear Timeline. `tooling/otio-media/bridge.py` now extends
+that output **only after independent video byte readback, SHA-256 asset
+ledger agreement, owner/redistribution rights and ffprobe source frame
+checks**. It packages a portable relative `ExternalReference.1` per
+explicitly bound original media scene, while leaving unbound abstract
+scenes as `MissingReference.1` without inventing filler media. The
+original editable Project JSON, per-property loss report and exact
+media bytes remain available together in an immutable ZIP.
+
+An independent bounded import reader recognizes reordered original
+source clips and exact source-rate end trims as proposed
+`MoveScene` / `SetSceneDuration` changes, rejects in-point changes
+that lack native representation, newly invented media, source drift,
+stale project snapshots and arbitrary NLE effects. It **does not**
+commit project revisions or self-authorize imported media. A
+GitHub-hosted native acceptance compiles the existing Rust exporter,
+generates a real H.264 test video and opens the portable OTIO through
+the independent OpenTimelineIO Python reader, with real ffprobe
+readback. This is *not yet* a Kdenlive/Shotcut visual round-trip or
+a human approved editorial cut; see `V05_OTIO_MEDIA_INTERCHANGE.md`.
