@@ -29,8 +29,10 @@ use tokio::{
 use uuid::Uuid;
 
 mod mlt_mezzanine;
+mod mlt_multisegment_av;
 mod mlt_timeline;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
+pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
