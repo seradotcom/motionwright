@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 32 **PARTIAL code
+The isolated branch inventory currently records 34 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 31 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 29 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -359,3 +359,34 @@ A first-party, source-hashed baseline comparison protocol is now available in `t
 ## Immutable Launchwright content handoff candidate (E14-04)
 
 The existing project `HandoffBinding` can now be used by `tooling/launchwright-handoff/export_handoff.py` to package the exact authored Project snapshot and final media master byte-for-byte. It requires an exact project revision, master SHA, source-bound ProductionPlan approval, verified rights/claims and no publication request. The ZIP records the candidate source identity and leaves Launchwright import/publish, final decode and reviewer authentication to their independent authorities. CI runs synthetic-only tests, not a live Launchwright transfer. See `V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md`.
+
+
+## Dirty-frame invalidation and measurable transfer vs actual render work
+
+`crates/creative-library/src/dirty.rs` provides a conservative **source-only**
+proposal under `MW05-E03-03`. It compares before and after fully validated
+native HTML documents, retaining exact source SHA, rational opacity HOLD
+bounds and stable node identity. Global source/camera/asset/canvas/order
+changes dirty every frame; interpolated opacity, unknown temporal semantics
+and visible edits cannot be incorrectly marked reusable. Only a rigorously
+invisible zero-opacity node (including inherited parent opacity) or a pure
+metadata lock/name change may suggest pixel reuse, and only in the
+**original native HTML visual** profile. All observation readback, sound
+samples and media encodes are marked not reusable, even when a frame's
+source-level pixel proposal appears unchanged. Studio presents proposed
+ranges as unverified; a user must render and inspect again.
+
+`tooling/hyperframes/native_dirty_e2e.py` provides a disposable CI oracle:
+render 90 before + 90 after **real native browser frames**, compare all
+reusable frame SHA-256s, reconstruct all 90 after frames by copying old PNGs
+for the provably invisible source interval, and compare the reconstructed
+sequence/FFV1 decode against the full-after result. It separately measures
+source comparison, actual frame-render time, FFV1 encode time and a smaller
+SHA-verified dirty-PNG transfer ZIP. This **does not claim saved render,
+compilation, encoding or transfer work beyond actual measured PNG bytes**.
+The production runtime still renders all frames on this acceptance fixture.
+Spring/lookbehind, shutter, transitions and audio-tail dependency-aware
+incremental recomposition remain release blockers for the broader E03
+requirement. This distinction is enforced by fields stating
+`actual_native_frames_avoided: 0` and
+`rendered_pixel_equivalence_verified: false` in any preflight proposal.

@@ -221,6 +221,7 @@ pub struct NativeRepairProposal {
     pub dirty_first_frame: u32,
     pub dirty_end_frame_exclusive: u32,
     pub dirty_reason: String,
+    pub source_frame_invalidation: NativeFrameInvalidation,
     pub document: HyperframesDocument,
     pub committed: bool,
     pub runtime_executed: bool,
@@ -273,6 +274,15 @@ pub fn propose_native_repair(
         new_sha != sha,
         "A repair cannot claim a source change without altering native bytes",
     )?;
+    let invalidation = propose_native_frame_invalidation(source, &proposal)?;
+    let dirty_start = invalidation
+        .dirty_intervals
+        .first()
+        .map_or(0, |range| range.start);
+    let dirty_end = invalidation
+        .dirty_intervals
+        .last()
+        .map_or(0, |range| range.end_exclusive);
     Ok(NativeRepairProposal {
         schema: "motionwright.native-repair-proposal/1".into(),
         expected_source_sha256: sha,
@@ -280,9 +290,10 @@ pub fn propose_native_repair(
         description: rationale.into(),
         changed_nodes: nodes.into_iter().collect(),
         changed_properties: changed,
-        dirty_first_frame: 0,
-        dirty_end_frame_exclusive: source.canvas.frames,
-        dirty_reason: "conservative_full_scene_until_renderer_temporal_dependency_proof".into(),
+        dirty_first_frame: dirty_start,
+        dirty_end_frame_exclusive: dirty_end,
+        dirty_reason: invalidation.invalidation_reason.clone(),
+        source_frame_invalidation: invalidation,
         document: proposal,
         committed: false,
         runtime_executed: false,
