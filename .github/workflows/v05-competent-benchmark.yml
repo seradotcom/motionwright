@@ -1,0 +1,62 @@
+name: V05 competent direct-renderer benchmark contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-competent-benchmark']
+    paths:
+      - 'tooling/creative-benchmark/**'
+      - 'docs/creative-production/**'
+      - '.github/workflows/v05-competent-benchmark.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-paired-study-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify real baseline fairness contract and negative cases
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tooling/creative-benchmark -p 'test_*.py' -v
+          python3 -m py_compile tooling/creative-benchmark/*.py
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+      - name: Generate source-bound no-results protocol for human reviewers
+        run: |
+          set -euo pipefail
+          python3 tooling/creative-benchmark/make_protocol.py --output-dir verification/creative-benchmark-protocol
+          python3 tooling/creative-benchmark/benchmark_compare.py \
+            verification/creative-benchmark-protocol/study.json \
+            --root verification/creative-benchmark-protocol \
+            --output verification/creative-benchmark-protocol/validated-report.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          base=Path('verification/creative-benchmark-protocol')
+          manifest=json.loads((base/'study.json').read_text())
+          report=json.loads((base/'validated-report.json').read_text())
+          assert report['state']=='NOT_RUN'
+          assert report['publication_approved'] is False
+          assert len(manifest['task']['revision_requests'])==10
+          assert not manifest['arms'] and not manifest['reviews']
+          print('competent-direct-baseline=PROTOCOL_ONLY_NO_RESULTS')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v05-competent-direct-baseline-NOT_RUN-${{ github.sha }}
+          path: verification/creative-benchmark-protocol/
+          if-no-files-found: warn
+          retention-days: 7

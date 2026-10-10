@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 30 **PARTIAL code
+The isolated branch inventory currently records 31 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 33 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 32 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -349,3 +349,8 @@ positive/negative **independent human** vetting, multi-variant rendered
 comparison or published content in `MW05-E05-04`/`MW05-E13-02`.
 It adds a working source-experiment step rather than inflating counts of
 approved creative components.
+
+
+## Competent renderer comparative protocol (E09-04)
+
+A first-party, source-hashed baseline comparison protocol is now available in `tooling/creative-benchmark/`. It validates identical brief, source assets, budget and ten edit requests across Motionwright through canonical Semwright Host and a competent direct HyperFrames/Blender arm. Editable project sources, actual rendered revisions, exact SHA, cost, time, lock outcomes and blind human ratings are tracked without auto-selecting a winner. CI only exercises synthetic contract fixtures and publishes a `NOT_RUN` protocol; all real comparison results remain unverified. See `V05_COMPETENT_DIRECT_BENCHMARK.md`.
