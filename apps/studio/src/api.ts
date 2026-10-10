@@ -767,6 +767,9 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     });
   }
 
+  if(change.type==='record_narration_take'||change.type==='release_narration_take'){
+    throw new Error('Recording or releasing approved narration requires the canonical desktop StudioService revision. Browser demo cannot forge owner approval.');
+  }
   return simulateChange(project, change, requestId, true);
 }
 

@@ -16,6 +16,7 @@ on:
           - studio
           - browser-inspection
           - native-dirty
+          - narration-lock
   push:
     branches: ['ci/v05-hyperframes-native', 'ci/v05-native-fidelity-continuation']
   pull_request:
@@ -29,7 +30,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: hyperframes-profile-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  group: hyperframes-profile-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}-${{ inputs.selected_gate || 'full' }}
   cancel-in-progress: true
 
 env:
@@ -38,6 +39,31 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  narration-persistent-cas:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'narration-lock'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: narration-persistent-domain-service-1.98.1
+          cache-on-failure: true
+      - name: Run exact measured-voice owner lock and SQLite/CAS revisions
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-domain --test narration_take_lock
+          cargo test --locked -p motionwright-service --test approved_narration_cas
+          cargo clippy --locked -p motionwright-domain -p motionwright-service --all-targets -- -D warnings
+          python3 tooling/hyperframes/test_requirement_audit.py
+
   creative-library-contracts:
     if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'creative-library'
     runs-on: ubuntu-24.04

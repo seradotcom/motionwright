@@ -795,9 +795,15 @@ pub async fn native_narration_take_snapshot(
     )?;
     let evidence = motionwright_creative_library::narration_source_snapshot(&project)
         .map_err(|error| error.to_string())?;
+    let recordable =
+        motionwright_domain::measured_narration_content(&project.audio, &project.assets)
+            .map(|(_, _, _, digest)| digest);
     Ok(json!({
         "schema":"motionwright.narration-source-preview/1",
         "source":evidence,"project_revision":project.revision,
+        "recordable_content_sha256":recordable.as_ref().ok(),
+        "recordable_source_verified":recordable.is_ok(),
+        "recorded_take":project.production_design.narration_take_lock,
         "read_only":true,"lock_authenticated":false,
         "media_decoded":false,"creative_approval":"REQUIRES_HUMAN_REVIEW"
     }))

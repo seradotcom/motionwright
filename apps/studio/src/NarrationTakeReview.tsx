@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import {BookOpenCheck,GitCompareArrows,LockKeyhole} from 'lucide-react';
-import type {Project,RationalTime} from './types';
+import type {Project,RationalTime,Change} from './types';
 import type {NarrationSourceSnapshot,NarrationReplacementImpact} from './narrationReviewTypes';
 import {nativeNarrationReplacementImpact,nativeNarrationSourceSnapshot} from './api';
 
@@ -15,17 +15,24 @@ const seconds=(value:RationalTime)=>{
 };
 
 export default function NarrationTakeReview({
-  project,desktopMode
+  project,desktopMode,commit
 }:{
-  project:Project;desktopMode:boolean
+  project:Project;desktopMode:boolean;commit:(change:Change)=>Promise<void>
 }){
   const [baseline,setBaseline]=useState<NarrationSourceSnapshot|null>(null);
   const [impact,setImpact]=useState<NarrationReplacementImpact|null>(null);
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
+  const [recordableSha,setRecordableSha]=useState<string|null>(null);
+  const [recordedReviewer,setRecordedReviewer]=useState('');
+  const [recordedReason,setRecordedReason]=useState('');
+  const [confirmed,setConfirmed]=useState(false);
+  const locked=project.production_design?.narration_take_lock??null;
   // A cross-project source must never migrate into another owner's take review.
-  useEffect(()=>{setBaseline(null);setImpact(null);setError(null);},
-    [project.id,project.generation]);
-  useEffect(()=>{setImpact(null);setError(null);},[project.revision]);
+  useEffect(()=>{
+    setBaseline(null);setImpact(null);setError(null);setRecordableSha(null);
+    setRecordedReviewer('');setRecordedReason('');setConfirmed(false);
+  },[project.id,project.generation]);
+  useEffect(()=>{setImpact(null);setError(null);setRecordableSha(null);setConfirmed(false);},[project.revision]);
   const capture=async()=>{
     setBusy(true);setError(null);setImpact(null);
     try{
@@ -37,6 +44,10 @@ export default function NarrationTakeReview({
         throw new Error('Narration source snapshot did not match the selected editorial revision.');
       }
       setBaseline(result.source);
+      setRecordableSha(result.recordable_source_verified?result.recordable_content_sha256:null);
+      if(result.recorded_take?.source_content_sha256 && locked
+        && result.recorded_take.source_content_sha256!==locked.source_content_sha256)
+        throw new Error('Readback of persisted narration approval differs from this project snapshot.');
     }catch(failure){setError(reason(failure));}finally{setBusy(false);}
   };
   const compare=async()=>{
@@ -52,9 +63,30 @@ export default function NarrationTakeReview({
       setImpact(next.impact);
     }catch(failure){setError(reason(failure));}finally{setBusy(false);}
   };
+  const commitNarration=async(kind:'record'|'release')=>{
+    setBusy(true);setError(null);
+    try{
+      if(!desktopMode||!confirmed||recordedReviewer.trim().length<2||!recordedReason.trim())
+        throw new Error('An explicit local editorial review, reviewer label and reason are required.');
+      if(kind==='record'){
+        if(locked||!baseline||!recordableSha||baseline.revision!==project.revision)
+          throw new Error('Review the current eligible measured narration source before recording the decision.');
+        await commit({type:'record_narration_take',expected_source_sha256:recordableSha,
+          expected_project_revision:project.revision,reviewer:recordedReviewer.trim(),
+          reason:recordedReason.trim()});
+      }else{
+        if(!locked)throw new Error('There is no recorded narration decision to release.');
+        await commit({type:'release_narration_take',
+          expected_source_sha256:locked.source_content_sha256,
+          reviewer:recordedReviewer.trim(),reason:recordedReason.trim()});
+      }
+      setRecordableSha(null);setBaseline(null);setConfirmed(false);setRecordedReason('');
+    }catch(failure){setError(reason(failure));}
+    finally{setBusy(false);}
+  };
   return <details className="audio-narration-source-review">
     <summary><LockKeyhole size={15}/> Narration take · source and edit-dependency review</summary>
-    <p className="production-help">Review the measured voice, transcript and cues of the current project. This only records an in-memory comparison baseline — not an authenticated approval, an audio lock, or an exported/decoded master.</p>
+    <p className="production-help">Inspect the measured voice, transcript and cues of the current project. A baseline is only an in-memory comparison; recording source protection requires a separate user-confirmed revision below. Neither action authenticates identity, decodes a master or grants publication rights.</p>
     {!desktopMode&&<p className="production-help">The browser demo cannot invent a measured or approved source take.</p>}
     <div className="audio-row-actions">
       <button type="button" className="button button-secondary"
@@ -68,6 +100,35 @@ export default function NarrationTakeReview({
           baseline.revision>=project.revision}
         onClick={()=>void compare()}><GitCompareArrows size={14}/> Compare newer revision</button>
     </div>
+    {locked&&<section className="audio-narration-source-evidence" aria-label="Recorded and protected narration source">
+      <p><strong>Recorded source content protection</strong> · approved from revision {locked.source_project_revision}</p>
+      <p>Reviewer label: {locked.recorded_reviewer} · {locked.recorded_reason}</p>
+      <p className="mono">Locked source {locked.source_content_sha256.slice(0,16)}…</p>
+      <p>Voice, transcript and source-linked cues are protected from edits until a separate explicit release. The mix remains editable. Reviewer identity is not independently authenticated; media quality and publication remain unapproved.</p>
+    </section>}
+    {desktopMode&&(baseline||locked)&&<section className="audio-narration-source-evidence" aria-label="Record or release source content decision">
+      <p><strong>{locked?'Release recorded source for new editorial changes':'Record current original narration source'}</strong></p>
+      {!locked&&!recordableSha&&<p className="production-help">Cannot record: original voice asset, manual/high-confidence timing or source cues lack complete admissible evidence. Correct the native source, then review again.</p>}
+      <label className="production-field"><span>Reviewer label (recorded, not identity proof)</span>
+        <input value={recordedReviewer} maxLength={200} disabled={busy}
+          onChange={event=>{setRecordedReviewer(event.target.value);setConfirmed(false);}}/>
+      </label>
+      <label className="production-field"><span>{locked?'Why release this source?':'Why preserve these exact voice words and timing?'}</span>
+        <textarea value={recordedReason} rows={2} maxLength={2000} disabled={busy}
+          onChange={event=>{setRecordedReason(event.target.value);setConfirmed(false);}}/>
+      </label>
+      <label className="production-check">
+        <input type="checkbox" checked={confirmed} disabled={busy}
+          onChange={event=>setConfirmed(event.target.checked)}/>
+        I am recording a deliberate editorial source decision. This is not an authenticated signature or permission to publish.
+      </label>
+      <button type="button" className="button button-secondary"
+        disabled={busy||!confirmed||!recordedReviewer.trim()||!recordedReason.trim()||
+          (!locked&&(!recordableSha||!baseline||baseline.revision!==project.revision))}
+        onClick={()=>void commitNarration(locked?'release':'record')}>
+        <LockKeyhole size={14}/> {locked?'Release exact recorded source':'Record and protect this source revision'}
+      </button>
+    </section>}
     {error&&<p className="portable-message error" role="alert">{error}</p>}
     {baseline&&<section className="audio-narration-source-evidence" aria-label="Original narration source snapshot">
       <p><strong>Original source revision {baseline.revision}</strong> · {baseline.voice_track.label}</p>

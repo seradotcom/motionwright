@@ -501,3 +501,69 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+### Persistent source narration decision (SQLite/CAS)
+
+The v0.5 project domain now supports `record_narration_take` and
+`release_narration_take` as **explicit serialized Changes** through
+the existing StudioService and underlying SQLite compare-and-swap
+revision log. The approved *content* identity is a canonical digest
+of the active measured voice asset SHA-256, track metadata, original
+transcript segments (ordered by stable ID), and source-linked cues.
+User-recorded authorship/reason and originating project revision
+remain attached to `ProductionDesign.narration_take_lock`. Unknown
+or weak ASR alignment is rejected when recording a source decision.
+A protected source forbids changes to the voice, active track,
+transcript or linked cue edits unless a separate revision first releases
+the exact SHA, with a recorded new reason. The original `SetMixIntent`
+still permits sound mixing adjustments without rewriting protected
+words. The project is reopened from the real persisted SQLite file in
+tests, which also check stale write rejection and explicit unlocking.
+
+This records a **local user decision**, not identity-authenticated
+e-signature, independently decoded audio, artistic PASS or publication
+permission. Those fields are explicitly false in its native record.
+A future verified actor/permission service is necessary before
+claiming a legally authenticated LockedNarration take or E08-02 release.
+Older project-schema writers cannot discard this record silently.
+
+
+### Studio controls for recorded take decisions
+
+The existing Audio Workspace exposes separate **Record and protect this
+source revision** and **Release exact recorded source** actions. Both require
+a deliberate confirmation checkbox, nonempty reviewer label and reason,
+and go through the *existing* desktop `apply_change` native SDK flow,
+including its effect grant and SQLite revision compare-and-swap.
+The record control is available only after a fresh measured-source
+preflight passes the stricter original-voice/word/cue domain fingerprint.
+The human editor can continue adjusting music/mix while a narration
+source is protected, without overwriting its recorded words or cue clocks.
+The browser-only demo explicitly refuses to simulate either action.
+
+A recorded reviewer label and checkbox **are not identity verification,
+legal e-signature, completed mastering, authenticated artistic approval
+or permission to publish**. The real approval identity, audio-media
+listening and final master timing remain separate acceptance gates.
+
+### Editing controls while a narration decision is recorded
+
+The Audio Workspace now reads the **persisted**
+`production_design.narration_take_lock` rather than relying on an
+ephemeral frontend flag. While locked, the original voice import,
+active-track selector, transcript timing/copy/speaker inputs,
+save/delete and add controls, and source cue labels/times/add/delete
+are disabled, with an accessible explanation directing the editor
+to the separate explicit release action. Seek and measured waveform
+inspection remain available. The music/voice `MixIntent` controls
+also remain editable, because they do not mutate the protected
+original words, source timing, cue identities or measured voice file.
+
+These are UX affordances only. `Project::apply_change`, serialized
+`NarrationTakeLock` validation and the SQLite CAS revision boundary
+remain authoritative even for API clients bypassing the WebView.
+A static-rendered Studio regression test checks that protected-source
+fields are disabled and the independent mix controls stay enabled;
+neither the test nor the lock claims an authenticated owner identity,
+external legal signature, artistic quality or publication clearance.

@@ -28,7 +28,21 @@ export interface NativeCapsule {
   id: string; scene_id: string; source_asset_id: string; source_sha256: string; label: string;
   fidelity: FidelityReport; editable_parameters: string[]; native_editor_hint: string;
 }
-export interface ProductionDesign { workspace?: CreativeWorkspace; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; }
+export interface NarrationTakeLock {
+  voice_track_id:string;voice_asset_id:string;voice_asset_sha256:string;
+  source_content_sha256:string;source_project_revision:number;
+  recorded_reviewer:string;recorded_reason:string;
+  reviewer_identity_authenticated:false;media_bytes_independently_decoded:false;
+  artistic_quality_approved:false;publication_approved:false;
+}
+export interface ProductionDesign {
+  workspace?:CreativeWorkspace;
+  plan:ProductionPlan|null;
+  heroes:ProductHeroInstance[];
+  capsules:NativeCapsule[];
+  patches?:CreativePatchRecord[];
+  narration_take_lock?:NarrationTakeLock|null;
+}
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }

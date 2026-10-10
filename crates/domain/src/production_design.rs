@@ -15,6 +15,10 @@ pub struct ProductionDesign {
     pub capsules: Vec<NativeCapsule>,
     #[serde(default)]
     pub patches: Vec<CreativePatchRecord>,
+    /// Recorded take decision on the existing audio source; never an external
+    /// identity signature or an automatically approved film.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narration_take_lock: Option<NarrationTakeLock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,6 +311,9 @@ impl ProductionDesign {
         audio: &AudioState,
     ) -> Result<()> {
         crate::creative_revisions::validate_creative_patch_records(&self.patches)?;
+        if let Some(locked) = &self.narration_take_lock {
+            locked.validate(audio, assets)?;
+        }
         if self.heroes.len() > 64 || self.capsules.len() > 256 {
             return Err(DomainError::Invalid(
                 "production design collection is too large".into(),

@@ -35,12 +35,13 @@ const secondsLabel = (time: RationalTime) => {
 };
 
 function TranscriptRow({
-  segment, commit, playhead, onSeek,
+  segment, commit, playhead, onSeek, sourceProtected,
 }: {
   segment: TranscriptSegment;
   commit: Commit;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
+  sourceProtected: boolean;
 }) {
   const [text, setText] = useState(segment.text);
   const [speaker, setSpeaker] = useState(segment.speaker ?? "");
@@ -60,12 +61,12 @@ function TranscriptRow({
   return (
     <div className={"audio-transcript-row" + (isCurrent ? " playback-current" : "")} aria-current={isCurrent ? "true" : undefined}>
       <div className="audio-time-pair">
-        <input aria-label={"Start " + segment.id} value={start} inputMode="decimal" onChange={(event) => setStart(event.target.value)} />
+        <input aria-label={"Start " + segment.id} value={start} inputMode="decimal" disabled={sourceProtected} onChange={(event) => setStart(event.target.value)} />
         <span>→</span>
-        <input aria-label={"End " + segment.id} value={end} inputMode="decimal" onChange={(event) => setEnd(event.target.value)} />
+        <input aria-label={"End " + segment.id} value={end} inputMode="decimal" disabled={sourceProtected} onChange={(event) => setEnd(event.target.value)} />
       </div>
-      <input aria-label={"Speaker " + segment.id} value={speaker} maxLength={256} placeholder="Speaker" onChange={(event) => setSpeaker(event.target.value)} />
-      <textarea aria-label={"Transcript " + segment.id} value={text} maxLength={8000} onChange={(event) => setText(event.target.value)} />
+      <input aria-label={"Speaker " + segment.id} value={speaker} maxLength={256} placeholder="Speaker" disabled={sourceProtected} onChange={(event) => setSpeaker(event.target.value)} />
+      <textarea aria-label={"Transcript " + segment.id} value={text} maxLength={8000} disabled={sourceProtected} onChange={(event) => setText(event.target.value)} />
       <span className={"evidence-chip evidence-" + segment.alignment.kind}>{segment.alignment.kind.toUpperCase()}</span>
       <div className="audio-row-actions">
         <button
@@ -81,7 +82,7 @@ function TranscriptRow({
           type="button"
           className="icon-action"
           title="Save transcript segment as explicit manual alignment"
-          disabled={!valid}
+          disabled={!valid || sourceProtected}
           onClick={() => void commit({
             type: "upsert_transcript_segment",
             segment: {
@@ -100,6 +101,7 @@ function TranscriptRow({
           type="button"
           className="icon-action"
           title="Remove transcript segment"
+          disabled={sourceProtected}
           onClick={() => void commit({ type: "remove_transcript_segment", segment_id: segment.id })}
         >
           <Trash2 size={14} />
@@ -110,12 +112,13 @@ function TranscriptRow({
 }
 
 function CueRow({
-  cue, commit, playhead, onSeek,
+  cue, commit, playhead, onSeek, sourceProtected,
 }: {
   cue: AudioCue;
   commit: Commit;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
+  sourceProtected: boolean;
 }) {
   const [label, setLabel] = useState(cue.label);
   const [at, setAt] = useState(String(valueOf(cue.at)));
@@ -127,8 +130,8 @@ function CueRow({
   const isCurrent = Math.abs(playhead - valueOf(cue.at)) < 1 / 24;
   return (
     <div className={"audio-cue-row" + (isCurrent ? " playback-current" : "")} aria-current={isCurrent ? "true" : undefined}>
-      <input aria-label={"Cue time " + cue.id} value={at} inputMode="decimal" onChange={(event) => setAt(event.target.value)} />
-      <input aria-label={"Cue label " + cue.id} value={label} maxLength={512} onChange={(event) => setLabel(event.target.value)} />
+      <input aria-label={"Cue time " + cue.id} value={at} inputMode="decimal" disabled={sourceProtected} onChange={(event) => setAt(event.target.value)} />
+      <input aria-label={"Cue label " + cue.id} value={label} maxLength={512} disabled={sourceProtected} onChange={(event) => setLabel(event.target.value)} />
       <span className={"evidence-chip evidence-" + cue.evidence}>{cue.evidence.toUpperCase()}</span>
       <button
         type="button"
@@ -142,7 +145,7 @@ function CueRow({
       <button
         type="button"
         className="icon-action"
-        disabled={!valid}
+        disabled={!valid || sourceProtected}
         title="Save cue"
         onClick={() => void commit({
           type: "upsert_audio_cue",
@@ -155,6 +158,7 @@ function CueRow({
         type="button"
         className="icon-action"
         title="Remove cue"
+        disabled={sourceProtected}
         onClick={() => void commit({ type: "remove_audio_cue", cue_id: cue.id })}
       >
         <Trash2 size={14} />
@@ -179,6 +183,7 @@ export default function AudioWorkspace({
   onSeek: (absoluteSeconds: number) => void;
 }) {
   const activeId = project.audio.active_voice_track_id;
+  const sourceProtected = Boolean(project.production_design?.narration_take_lock);
   const active = project.audio.voice_tracks.find((track) => track.id === activeId) ?? null;
   const activeSegments = useMemo(
     () => project.audio.transcript
@@ -247,7 +252,7 @@ export default function AudioWorkspace({
   }, [project.revision, project.audio.mix]);
 
   const doImport = async () => {
-    if (!path.trim() || !desktopMode) return;
+    if (!path.trim() || !desktopMode || sourceProtected) return;
     setImportBusy(true);
     setImportError(null);
     try {
@@ -264,6 +269,7 @@ export default function AudioWorkspace({
   const addSegment = () => {
     if (
       !active ||
+      sourceProtected ||
       !newText.trim() ||
       !newStart.trim() ||
       !newEnd.trim() ||
@@ -289,7 +295,7 @@ export default function AudioWorkspace({
   };
 
   const addCue = () => {
-    if (!newCueLabel.trim() || Number(newCueAt) < 0 || newCueAt.trim() === "") return;
+    if (sourceProtected || !newCueLabel.trim() || Number(newCueAt) < 0 || newCueAt.trim() === "") return;
     void commit({
       type: "upsert_audio_cue",
       cue: {
@@ -355,7 +361,7 @@ export default function AudioWorkspace({
           <input
             aria-label="Voice file absolute path"
             value={path}
-            disabled={!desktopMode || importBusy}
+            disabled={!desktopMode || importBusy || sourceProtected}
             placeholder="/absolute/path/voice.wav"
             onChange={(event) => setPath(event.target.value)}
           />
@@ -365,20 +371,25 @@ export default function AudioWorkspace({
           <input
             aria-label="Voice take label"
             value={takeLabel}
-            disabled={!desktopMode || importBusy}
+            disabled={!desktopMode || importBusy || sourceProtected}
             placeholder="Narrator take 03"
             maxLength={256}
             onChange={(event) => setTakeLabel(event.target.value)}
           />
         </label>
-        <button type="button" className="button button-primary" disabled={!desktopMode || !path.trim() || importBusy} onClick={() => void doImport()}>
+        <button type="button" className="button button-primary" disabled={!desktopMode || !path.trim() || importBusy || sourceProtected} onClick={() => void doImport()}>
           <Plus size={14} /> {importBusy ? "Measuring…" : "Import + measure"}
         </button>
       </div>
       {!desktopMode && <div className="audio-truth-line"><CircleDashed size={14} /> Desktop runtime required for measured file import.</div>}
       {importError && <div className="portable-message error" role="alert"><strong>Voice import blocked.</strong><span>{importError}</span></div>}
 
-      <NarrationTakeReview project={project} desktopMode={desktopMode}/>
+      <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
+      {sourceProtected && <p className="audio-truth-line" role="status">
+        Original measured voice, transcript and cue editing are protected.
+        Use the explicit recorded-source release above before revising source.
+        The music and voice mix remain editable.
+      </p>}
 
       <div className="audio-main-grid">
         <aside className="voice-take-ledger" aria-label="Voice takes">
@@ -397,6 +408,7 @@ export default function AudioWorkspace({
                 type="button"
                 key={track.id}
                 className={selected ? "voice-take-row selected" : "voice-take-row"}
+                disabled={sourceProtected}
                 onClick={() => !selected && void commit({ type: "set_active_voice_track", track_id: track.id })}
               >
                 <span className="take-state">{selected ? <Check size={14} /> : <span />}</span>
@@ -504,16 +516,16 @@ export default function AudioWorkspace({
               <div><strong>Transcript alignment</strong><span>Saving edited timing records manual evidence.</span></div>
               <span className="mono">{active ? "take:" + active.id.slice(0, 8) : "no-active-take"}</span>
             </header>
-            {activeSegments.map((segment) => <TranscriptRow key={segment.id} segment={segment} commit={commit} playhead={playhead} onSeek={onSeek} />)}
+            {activeSegments.map((segment) => <TranscriptRow key={segment.id} segment={segment} commit={commit} playhead={playhead} onSeek={onSeek} sourceProtected={sourceProtected} />)}
             <div className="audio-transcript-new">
               <div className="audio-time-pair">
-                <input aria-label="New transcript start" value={newStart} inputMode="decimal" placeholder="start s" onChange={(event) => setNewStart(event.target.value)} />
+                <input aria-label="New transcript start" value={newStart} inputMode="decimal" placeholder="start s" disabled={sourceProtected} onChange={(event) => setNewStart(event.target.value)} />
                 <span>→</span>
-                <input aria-label="New transcript end" value={newEnd} inputMode="decimal" placeholder="end s" onChange={(event) => setNewEnd(event.target.value)} />
+                <input aria-label="New transcript end" value={newEnd} inputMode="decimal" placeholder="end s" disabled={sourceProtected} onChange={(event) => setNewEnd(event.target.value)} />
               </div>
-              <input aria-label="New transcript speaker" value={newSpeaker} placeholder="Speaker" onChange={(event) => setNewSpeaker(event.target.value)} />
-              <textarea aria-label="New transcript text" value={newText} placeholder={active ? "Enter transcript text" : "Import/select a measured take first"} disabled={!active} onChange={(event) => setNewText(event.target.value)} />
-              <button type="button" className="button" disabled={!active || !newText.trim() || !newStart.trim() || !newEnd.trim() || !(Number(newStart) >= 0) || !(Number(newEnd) > Number(newStart))} onClick={addSegment}>
+              <input aria-label="New transcript speaker" value={newSpeaker} placeholder="Speaker" disabled={sourceProtected} onChange={(event) => setNewSpeaker(event.target.value)} />
+              <textarea aria-label="New transcript text" value={newText} placeholder={active ? "Enter transcript text" : "Import/select a measured take first"} disabled={!active || sourceProtected} onChange={(event) => setNewText(event.target.value)} />
+              <button type="button" className="button" disabled={sourceProtected || !active || !newText.trim() || !newStart.trim() || !newEnd.trim() || !(Number(newStart) >= 0) || !(Number(newEnd) > Number(newStart))} onClick={addSegment}>
                 <Plus size={14} /> Add manual segment
               </button>
             </div>
@@ -521,11 +533,11 @@ export default function AudioWorkspace({
 
           <section className="audio-editor-section">
             <header><div><strong>Stable cues</strong><span>Cue IDs survive text and label edits.</span></div><span>{project.audio.cues.length}</span></header>
-            {project.audio.cues.map((cue) => <CueRow key={cue.id} cue={cue} commit={commit} playhead={playhead} onSeek={onSeek} />)}
+            {project.audio.cues.map((cue) => <CueRow key={cue.id} cue={cue} commit={commit} playhead={playhead} onSeek={onSeek} sourceProtected={sourceProtected} />)}
             <div className="audio-cue-new">
-              <input aria-label="New cue time" value={newCueAt} inputMode="decimal" placeholder="time s" onChange={(event) => setNewCueAt(event.target.value)} />
-              <input aria-label="New cue label" value={newCueLabel} maxLength={512} placeholder="Cue label" onChange={(event) => setNewCueLabel(event.target.value)} />
-              <button type="button" className="button" disabled={!newCueLabel.trim() || newCueAt.trim() === "" || Number(newCueAt) < 0} onClick={addCue}><Plus size={14} /> Add cue</button>
+              <input aria-label="New cue time" value={newCueAt} inputMode="decimal" placeholder="time s" disabled={sourceProtected} onChange={(event) => setNewCueAt(event.target.value)} />
+              <input aria-label="New cue label" value={newCueLabel} maxLength={512} placeholder="Cue label" disabled={sourceProtected} onChange={(event) => setNewCueLabel(event.target.value)} />
+              <button type="button" className="button" disabled={sourceProtected || !newCueLabel.trim() || newCueAt.trim() === "" || Number(newCueAt) < 0} onClick={addCue}><Plus size={14} /> Add cue</button>
             </div>
           </section>
 
