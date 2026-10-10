@@ -3,6 +3,7 @@
 mod catalog;
 mod clock;
 mod data;
+mod directions;
 mod dirty;
 mod distillation;
 mod fidelity;
@@ -19,6 +20,7 @@ mod wav;
 pub use catalog::*;
 pub use clock::*;
 pub use data::*;
+pub use directions::*;
 pub use dirty::*;
 pub use distillation::*;
 pub use fidelity::*;

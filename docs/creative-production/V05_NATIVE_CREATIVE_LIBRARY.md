@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 38 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 25 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -501,3 +501,36 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+## Creative alternatives, owner-annotated references and versioned narrative evidence (E02)
+
+`crates/creative-library/src/directions.rs` begins E02-02/E02-03/E02-04 as
+a **pure read-only study** of the canonical current Project, Brief,
+Scenes, Assets and source revisions. It requires two to four distinct
+original concept candidates (different **metaphor, narrative structure,
+and rhythm**, not merely color treatments). Every concept cites an
+owner-declared imported image/video reference with an exact SHA-256 and
+source revision; hierarchy, framing, transitions, rhythm and the
+originality/non-copying constraints must be stated individually. The
+function validates these annotations against the project ledger but
+does not open/review image bytes or authenticate the claimed rights.
+
+Each planned shot links an actual scene, referenced brief claims,
+and either clearly labeled graphic illustration or explicitly
+owner-attested real/media source. The claim ledger distinguishes
+`illustration_is_not_evidence`, `unsourced_product_claim`,
+`unsupported_claim_source`, `source_bound_needs_human_verification`,
+and `stale_product_revision`. An asset and its claim must refer to
+the **same requested source build/version** before they are even
+eligible for human fact-checking; a new product version invalidates
+the old candidate status. Source hash validation covers the *entire*
+Project snapshot, so an altered scene, asset, brief or lock fails closed.
+
+The report does **not** choose a winner, infer user preferences, approve
+claims or rights, execute software, render anything, install a plugin or
+commit a ProductionPlan. Its source proposals are a foundation for a
+later user-selected, persisted ProductionPlan through the existing
+StudioService CAS. Real reference pixel analysis, independently licensed
+sources, storyboard comprehension tests, manual creative selection and
+native rendered acceptance are still separate **NOT_RUN** gates.
