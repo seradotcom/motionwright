@@ -42,15 +42,25 @@ fn fixture() -> native::HyperframesDocument {
                 clip: native::Clip::None,
                 effects: native::Effects::default(),
                 keyframes: vec![
-                    native::Keyframe{
-                        frame:0,subframe:None,property:native::Property::Opacity,
-                        value:0.0,curve:native::Curve::Hold
+                    native::Keyframe {
+                        frame: 0,
+                        subframe: None,
+                        property: native::Property::Opacity,
+                        value: 0.0,
+                        curve: native::Curve::Hold,
                     },
-                    native::Keyframe{
-                        frame:15,subframe:Some(native::Subframe{num:1,den:2}),
-                        property:native::Property::Opacity,value:1.0,
-                        curve:native::Curve::CubicBezier{x1:.22,y1:0.0,x2:.36,y2:1.0}
-                    }
+                    native::Keyframe {
+                        frame: 15,
+                        subframe: Some(native::Subframe { num: 1, den: 2 }),
+                        property: native::Property::Opacity,
+                        value: 1.0,
+                        curve: native::Curve::CubicBezier {
+                            x1: 0.22,
+                            y1: 0.0,
+                            x2: 0.36,
+                            y2: 1.0,
+                        },
+                    },
                 ],
                 locked_fields: vec![],
                 locked_properties: vec![],
