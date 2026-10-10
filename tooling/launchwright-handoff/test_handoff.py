@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 from export_handoff import Refused,package
+from verify_handoff import verify_zip,HandoffVerificationError
 
 PROJECT="018f0000-0000-7000-8000-000000000001"
 GENERATION="018f0000-0000-7000-8000-000000000002"
@@ -142,5 +143,37 @@ class HandoffContractTests(unittest.TestCase):
         self.request["publish_now"]=True
         with self.assertRaisesRegex(Refused,"exactly"):
             package(self.request,self.root,self.root/"unauthorized.zip")
+
+    def test_independent_receiver_verifies_bundle_and_rejects_tampered_content(self)->None:
+        source=self.root/"original.zip"
+        package(self.request,self.root,source)
+        good=verify_zip(source)
+        self.assertEqual(good["byte_identity"],"PASS")
+        self.assertEqual(good["launchwright_import"],"NOT_RUN")
+        self.assertFalse(good["publication_approved"])
+        altered=self.root/"altered.zip"
+        with zipfile.ZipFile(source,"r")as original,zipfile.ZipFile(altered,"w")as dest:
+            for name in original.namelist():
+                data=original.read(name)
+                if name=="media/creative-master.mp4":
+                    data=b"invalid new movie bytes"
+                dest.writestr(name,data)
+        with self.assertRaisesRegex(HandoffVerificationError,"differ from original"):
+            verify_zip(altered)
+
+    def test_receiver_does_not_infer_release_from_forged_manifest(self)->None:
+        source=self.root/"original.zip"
+        package(self.request,self.root,source)
+        altered=self.root/"publish.zip"
+        with zipfile.ZipFile(source,"r")as original,zipfile.ZipFile(altered,"w")as dest:
+            for name in original.namelist():
+                data=original.read(name)
+                if name=="handoff.json":
+                    manifest=json.loads(data)
+                    manifest["publication_approved"]=True
+                    data=json.dumps(manifest).encode()
+                dest.writestr(name,data)
+        with self.assertRaisesRegex(HandoffVerificationError,"never claim"):
+            verify_zip(altered)
 
 if __name__=="__main__":unittest.main()

@@ -53,6 +53,8 @@ jobs:
           python3 tooling/launchwright-handoff/ci_fixture.py \
             --mp4 verification/fixture-source/original-test.mp4 \
             --output-dir verification/launchwright-handoff-SYNTHETIC
+          python3 tooling/launchwright-handoff/verify_handoff.py \
+            verification/launchwright-handoff-SYNTHETIC/motionwright-to-launchwright-SYNTHETIC-NOT_PUBLISHED.zip
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

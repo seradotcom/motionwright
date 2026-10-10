@@ -618,7 +618,8 @@
       "code_evidence": [
         "tooling/launchwright-handoff/export_handoff.py",
         "tooling/launchwright-handoff/test_handoff.py",
-        "docs/creative-production/V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md"
+        "docs/creative-production/V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md",
+        "tooling/launchwright-handoff/verify_handoff.py"
       ],
       "human_review": "NOT_PERFORMED"
     },

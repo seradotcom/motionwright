@@ -14,6 +14,7 @@ import re
 import shutil
 import sys
 import zipfile
+from verify_handoff import verify_zip, HandoffVerificationError
 
 SCHEMA="motionwright.launchwright-handoff-request/1"
 OUT_SCHEMA="motionwright.launchwright-immutable-artifact/1"
@@ -208,6 +209,16 @@ def package(request:dict,root:Path,output:Path)->dict:
         info=zipfile.ZipInfo("handoff.json",date_time=(2026,1,1,0,0,0))
         info.external_attr=0o644<<16
         archive.writestr(info,json.dumps(manifest,sort_keys=True,indent=2).encode()+b"\n")
+    # Independently inspect the actual archived bytes before exposing the
+    # candidate. This catches any input-file replacement between hash admission
+    # and ZIP streaming, without trusting path names or a source-provided receipt.
+    try:
+        receiver=verify_zip(output)
+        require(receiver["byte_identity"]=="PASS",
+                "Source/receiver handoff SHA verification failed")
+    except (HandoffVerificationError,OSError,KeyError,ValueError,zipfile.BadZipFile)as error:
+        output.unlink(missing_ok=True)
+        raise Refused("Receiver validation rejected the immutable handoff bytes") from error
     digest=hashlib.sha256()
     with output.open("rb")as data:
         while chunk:=data.read(1024*1024):digest.update(chunk)

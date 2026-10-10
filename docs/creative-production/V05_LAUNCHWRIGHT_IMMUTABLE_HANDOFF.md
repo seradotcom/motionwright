@@ -100,6 +100,22 @@ symlinks, traversal and any request that asks to publish automatically.
 It never executes project scripts and has **no network or Launchwright
 credentials**. Zip timestamps/order are fixed for reproducibility.
 
+The companion independent receiver checker validates the **actual output ZIP**
+against its manifest. This catches any on-disk source mutation between initial
+SHA admission and packaging, rejects additional archive members or symlink
+entries, verifies both original project and media bytes, and confirms the
+embedded Launchwright binding belongs to the original snapshot. The exporter
+runs this verification before reporting a candidate ready, while
+`verify_handoff.py` can be invoked separately by a future receiving adapter:
+
+```bash
+python3 tooling/launchwright-handoff/verify_handoff.py /path/to/handoff.zip
+```
+
+It returns only `byte_identity: PASS` and `launchwright_import: NOT_RUN`.
+That is **not** an authenticated handoff, accepted Release, audio/video quality
+result or publication authorization.
+
 ## What remains unfinished
 
 The protocol creates an immutable Motionwright-side candidate, not an
