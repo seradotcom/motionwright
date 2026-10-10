@@ -112,8 +112,7 @@ fn assert_transition(before: &Option<native::Asset>, next: &Option<native::Asset
         check(
             before
                 .as_ref()
-                .is_none_or(|old| old.id != asset.id || old.sha256 != asset.sha256)
-                || before == next,
+                .is_none_or(|old| old.id != asset.id || old.sha256 == asset.sha256),
             "An asset ID cannot be rebound to different bytes without an explicit import identity",
         )?;
     }
@@ -278,4 +277,34 @@ pub fn propose_instance_override(
         requires_project_source_cas: true,
         independent_human_approval: false,
     })
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    fn original(id: u128, sha: &str) -> native::Asset {
+        native::Asset {
+            id: Uuid::from_u128(id),
+            sha256: sha.to_owned(),
+            kind: native::AssetKind::Png,
+            rights: native::AssetRights {
+                owner: "Owner".into(),
+                license: "Owned original".into(),
+                attribution: "Fixture".into(),
+                use_authorized: true,
+                redistribute: false,
+            },
+        }
+    }
+
+    #[test]
+    fn the_same_asset_identity_may_not_point_to_different_bytes() {
+        let before = Some(original(1, &"a".repeat(64)));
+        let forged = Some(original(1, &"b".repeat(64)));
+        assert!(assert_transition(&before, &forged).is_err());
+        let new_identity = Some(original(2, &"b".repeat(64)));
+        assert!(assert_transition(&before, &new_identity).is_ok());
+        assert!(assert_transition(&before, &before).is_ok());
+    }
 }

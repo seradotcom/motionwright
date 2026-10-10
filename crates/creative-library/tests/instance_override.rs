@@ -197,9 +197,9 @@ fn duplicate_properties_and_noop_edits_are_rejected_not_reported_as_revisions() 
 }
 #[test]
 fn forbidden_copy_and_restricted_assets_cannot_bypass_the_original_brand_profile() {
-    let (req, mut brand, taste, mut current) = fixture();
+    let (req, mut brand, taste, _) = fixture();
     brand.forbidden_claims.push("forbidden-claim".into());
-    current = realize(&req, &brand, &taste).unwrap();
+    let current = realize(&req, &brand, &taste).unwrap();
     let invalid = propose_instance_override(
         &current,
         &req,
