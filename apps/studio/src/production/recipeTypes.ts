@@ -80,3 +80,25 @@ export interface SkillAudit {
   artifact_classification:string;standalone_runtime_authority:false;
   independent_human_approval:false;source_changed:false
 }
+
+export type DistillationPolarity='positive'|'negative';
+export interface DistillationReference{
+ original_source_sha256:string;polarity:DistillationPolarity;
+ observed_strength_or_failure:string;source_rights_note:string;source_owner_attested_rights:boolean
+}
+export interface DistilledVariation{
+ aspect:'landscape'|'portrait'|'square';locale:Locale;request_sha256:string;native_output_sha256:string;
+ output_kind:RecipeBackend;native_renderer_observed:false;human_design_approved:false
+}
+export interface DistillationTrial {
+ schema:'motionwright.recipe-distillation-source-trial/1';draft_sha256:string;recipe:string;
+ examples_sha256:string;variations:DistilledVariation[];
+ source_validation:'PASS_SOURCE_SCHEMA_ONLY';native_pixel_validation:'NOT_PERFORMED';
+ human_design_status:'NOT_REVIEWED';owner_install_approval:'NOT_REQUESTED';
+ rendered:false;owner_install_authorized:false;source_contract_only:true;executable_code_admitted:false
+}
+export interface SourceDistillationResponse{
+ schema:'motionwright.creative-source-distillation/1';trial:DistillationTrial;
+ committed:false;rendered:false;installed:false;owner_review:'required';
+ authority:'read_only_source_experiment'
+}

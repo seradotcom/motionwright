@@ -666,3 +666,100 @@ pub async fn native_localized_repair_preflight(
         "authority":"read_only_preflight_then_explicit_existing_Native_SDK_revision"
     }))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DistillationSourceExperimentRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    authoring_intent: String,
+    blueprint: motionwright_creative_library::ComponentRequest,
+    brand: motionwright_creative_library::BrandProfile,
+    taste: motionwright_creative_library::TasteProfile,
+    source_examples: Vec<motionwright_creative_library::DistillationReference>,
+    variations: Vec<motionwright_creative_library::ComponentRequest>,
+}
+/// Pure, versioned source-only trial, never an executable-plugin installation.
+/// The project revision and every referenced media/font digest are mandatory.
+#[tauri::command]
+pub async fn creative_distillation_source_experiment(
+    state: State<'_, AppState>,
+    request: DistillationSourceExperimentRequest,
+) -> Result<Value, String> {
+    use motionwright_creative_library::{self as craft, DistillationDraft, canonical_digest};
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    if request.variations.len() != 9
+        || request.source_examples.len() < 4
+        || request.source_examples.len() > 32
+    {
+        return Err("A source trial requires four to 32 independent examples and exactly nine design variants.".into());
+    }
+    for reference in std::iter::once(&request.blueprint).chain(request.variations.iter()) {
+        for asset in [&reference.primary_asset, &reference.secondary_asset]
+            .into_iter()
+            .flatten()
+        {
+            if !asset.rights.use_authorized
+                || !project.assets.iter().any(|entry| {
+                    entry.id == asset.id
+                        && entry.content_sha256.as_deref() == Some(asset.sha256.as_str())
+                })
+            {
+                return Err("A creative distillation media source is not an authorized digest-bound project asset.".into());
+            }
+        }
+    }
+    for source in [&request.brand.font_asset, &request.brand.logo_asset]
+        .into_iter()
+        .flatten()
+    {
+        if !source.rights.use_authorized
+            || !project.assets.iter().any(|entry| {
+                entry.id == source.id
+                    && entry.content_sha256.as_deref() == Some(source.sha256.as_str())
+            })
+        {
+            return Err("Distillation's custom font or logo does not belong to the current project revision.".into());
+        }
+    }
+    let hash = canonical_digest(&(&request.blueprint, &request.brand, &request.taste))
+        .map_err(|error| error.to_string())?;
+    let draft = DistillationDraft {
+        schema: "motionwright.recipe-distillation-draft/1".into(),
+        id: request.blueprint.instance_id,
+        recipe: request.blueprint.recipe,
+        authoring_intent: request.authoring_intent,
+        proposed_version: request.blueprint.version,
+        source_examples: request.source_examples,
+        color_source: request.brand,
+        taste_source: request.taste,
+        original_template_sha256: hash,
+        request_blueprint: request.blueprint,
+        owner_approved: false,
+        executable_install_authorized: false,
+    };
+    // Explicit compute isolation. No browser, arbitrary imports or effects.
+    let trial = tauri::async_runtime::spawn_blocking(move || {
+        craft::experiment_source_variants(&draft, &request.variations)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Source-only experimental validation failed.".to_string())??;
+    current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    Ok(
+        json!({"schema":"motionwright.creative-source-distillation/1",
+      "trial":trial,"committed":false,"rendered":false,"installed":false,
+      "owner_review":"required","authority":"read_only_source_experiment"}),
+    )
+}

@@ -1773,6 +1773,7 @@ fn main() {
             creative_native::creative_component_catalog,
             creative_native::creative_data_normalize,
             creative_native::creative_sound_audition,
+            creative_native::creative_distillation_source_experiment,
             creative_native::native_localized_repair_preflight,
             assemble_av_master,
             export_native_av_master,

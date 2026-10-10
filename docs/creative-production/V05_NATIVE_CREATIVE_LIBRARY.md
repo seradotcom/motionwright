@@ -328,3 +328,24 @@ execution. Its result explicitly records `NOT_PERFORMED` pixel verification,
 It cannot install a plugin, execute imported source code, promote a recipe
 or grant an agent rights. A future owner-verified disposable-code admission
 procedure is still required for `MW05-E13-02` and is **NOT VERIFIED**.
+
+### Desktop source-distillation trial (read-only)
+
+`Production → Creative library → Source distillation` now includes an
+advanced, locally hosted review of **four user-referenced design sources**
+(two positive and two negative). The input uses their independently supplied
+source SHA-256s, explicit owner rights declarations and concrete
+strength/failure observations. The desktop validates that every image/font
+used by the base recipe and its nine translated layout variations already
+exists in the exact current project by ID and digest. The service accepts
+only the current project revision, builds the nine designs on a bounded
+worker and checks revision again afterward. It exposes per-format native
+source digests, no images/videos and no installation privileges.
+
+The Studio interface intentionally has **no Promote/Install button**:
+the experiment is a draft proposal, not a renderer test or a trusted plugin.
+This does not yet fulfill optional arbitrary component code import/admission,
+positive/negative **independent human** vetting, multi-variant rendered
+comparison or published content in `MW05-E05-04`/`MW05-E13-02`.
+It adds a working source-experiment step rather than inflating counts of
+approved creative components.

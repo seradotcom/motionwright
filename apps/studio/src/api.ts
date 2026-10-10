@@ -1802,3 +1802,23 @@ export async function nativeLocalizedRepairPreflight(
    rationale,edits
  }});
 }
+
+export async function creativeDistillationExperiment(
+  project:Project,
+  intent:string,
+  blueprint:import('./production/recipeTypes').ComponentRequest,
+  brand:import('./production/recipeTypes').BrandProfile,
+  taste:import('./production/recipeTypes').TasteProfile,
+  sources:import('./production/recipeTypes').DistillationReference[],
+  variations:import('./production/recipeTypes').ComponentRequest[],
+):Promise<import('./production/recipeTypes').SourceDistillationResponse>{
+  if(!isTauri())throw new Error("Creative distillation experiments require a verified local desktop domain.");
+  if(!intent.trim()||intent.length>2000||sources.length<4||sources.length>32||variations.length!==9)
+    throw new Error("A source-only experiment needs a human brief, positive and negative sources, and exactly nine variations.");
+  if(sources.some(source=>!/^[a-f0-9]{64}$/.test(source.original_source_sha256)))
+    throw new Error("Every positive and negative reference must have a verified source SHA-256.");
+  return invoke("creative_distillation_source_experiment",{
+    request:{...nativeScope(project),authoring_intent:intent,blueprint,brand,taste,
+      source_examples:sources,variations}
+  });
+}

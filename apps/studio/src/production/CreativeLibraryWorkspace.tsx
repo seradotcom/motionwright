@@ -4,6 +4,7 @@ import {creativeComponentCatalog,creativeComponentProposal,nativeCreativeAvailab
 import type {Change,Project,Scene,DeliverableProfile,Asset} from '../types';
 import type {CreativeCatalog,Locale,CopyPack,BrandProfile,TasteProfile,DataSeries,ComponentRequest,CreativeComponentProposal} from './recipeTypes';
 import type {NativeAsset} from './nativeTypes';
+import CreativeDistillationWorkbench from './CreativeDistillationWorkbench';
 import './native-editor.css';
 
 const reasons=(error:unknown)=>error instanceof Error?error.message:String(error);
@@ -33,6 +34,7 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
   const [sourceId,setSourceId]=useState(''),[secondId,setSecondId]=useState('');
   const [owner,setOwner]=useState(''),[license,setLicense]=useState(''),[authorized,setAuthorized]=useState(false);
   const [dataJson,setDataJson]=useState(''),[preview,setPreview]=useState<CreativeComponentProposal|null>(null);
+  const [draftBasis,setDraftBasis]=useState<{component:ComponentRequest;brand:BrandProfile;taste:TasteProfile}|null>(null);
   const [instanceId,setInstanceId]=useState<string>(()=>crypto.randomUUID());
   const [auditionUrl,setAuditionUrl]=useState<string|null>(null);
   const [auditioning,setAuditioning]=useState(false);
@@ -85,6 +87,7 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
           path:[{x:0,y:.75},{x:.27,y:.16},{x:.65,y:.85},{x:1,y:.25}]},
       };
       const result=await creativeComponentProposal(project,scene.id,displayProfile.id,component,brand,taste);
+      setDraftBasis({component:structuredClone(component),brand:structuredClone(brand),taste:structuredClone(taste)});
       setPreview(result);
     }catch(err){setError(reasons(err));}
     finally{setWorking(false);}
@@ -197,6 +200,9 @@ export default function CreativeLibraryWorkspace({project,scene,displayProfile,c
             <ul>{report.properties.map(property=><li key={property.feature}><strong>{emphasis(property.feature)} — {property.state}.</strong> {property.loss_or_limitation}</li>)}</ul>
           </details>)}
         </details>}
+        {preview&&draftBasis&&catalog&&<CreativeDistillationWorkbench
+          project={project} blueprint={draftBasis.component} brand={draftBasis.brand}
+          taste={draftBasis.taste} catalog={catalog} busy={!canEdit}/>}
         {preview&&<details><summary>Read the retained typed plan</summary><pre className="native-source-code" style={{overflow:'auto',maxHeight:340,fontSize:10}}>{JSON.stringify(preview.renderer_plan,null,2)}</pre></details>}
       </section>
     </div>}
