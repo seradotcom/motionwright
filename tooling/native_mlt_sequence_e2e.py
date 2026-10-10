@@ -479,6 +479,9 @@ def main() -> None:
 
             evidence_path = EVIDENCE / "native-multisegment-timeline-evidence.json"
             evidence = json.loads(evidence_path.read_text())
+            if (evidence.get("provider_project_cleanup") != "not_requested_requires_foreground_broker_consent"
+                or result.get("provider_project_cleanup") != "not_requested_requires_foreground_broker_consent"):
+                raise AssertionError("Native MLT receipt did not disclose pending foreground-only cleanup")
             if evidence.get("source", {}).get("total_frames") != 33:
                 raise AssertionError("Real FFV1 intermediate frame total was altered")
             records = evidence.get("source", {}).get("verified_video_segments", [])
@@ -541,6 +544,7 @@ def main() -> None:
                     "ffprobe_sha256": digest(ffprobe),
                     "rendered_source_frames": [32, 1],
                     "assembled_video_frames": 33,
+                    "provider_project_cleanup": evidence["provider_project_cleanup"],
                     "assembled_video_codec": "ffv1",
                     "assembled_video_has_audio": True,
                     "transport_audio_codec": "pcm_s16le",

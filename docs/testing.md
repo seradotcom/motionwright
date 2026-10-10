@@ -112,7 +112,7 @@ The desktop native MP4 delivery boundary accepts only a minted session grant for
 
 ## Exact native MLT entity selection
 
-The pinned MLT project constructor supplies a default Main sequence in addition to the application-created named sequence. A native unit guard checks complete pages, exact matching names, duplicate-refusal, forged partial cursor, bounded totals and missing/empty reference denial; each mutation still rereads source-revision-bound entity references. The actual MLT E2E remains mandatory: a semantic lookup test alone does not prove real media output.
+The pinned MLT project constructor supplies a default Main sequence in addition to the application-created named sequence. Its destructive `project.close` command requires trusted foreground Broker consent. The unattended verified FFV1/PCM intermediary does not ask for this permission or conceal the retained project: the exact-source E2E checks an explicit pending-cleanup receipt, and provider teardown in a disposable CI runner is not misreported as a user-approved cleanup. A native unit guard checks complete pages, exact matching names, duplicate-refusal, forged partial cursor, bounded totals and missing/empty reference denial; each mutation still rereads source-revision-bound entity references. The actual MLT E2E remains mandatory: a semantic lookup test alone does not prove real media output.
 
 ## Contiguous editorial scenes as source-bound native shots
 

@@ -232,6 +232,7 @@ async fn assemble(
         .await?;
     if evidence.frame_count != 33
         || !evidence.transport_pcm_audio
+        || evidence.provider_project_cleanup != "not_requested_requires_foreground_broker_consent"
         || evidence
             .native_frame_count_observed
             .is_some_and(|observed| observed != 33)
@@ -264,6 +265,7 @@ async fn assemble(
             "artifact_sha256":evidence.artifact_sha256,
             "artifact_bytes":evidence.artifact_bytes,
             "transport_pcm_audio":evidence.transport_pcm_audio,
+            "provider_project_cleanup":evidence.provider_project_cleanup,
             "native_frame_count_observed":evidence.native_frame_count_observed,
             "evidence_scope":evidence.evidence_scope,
         }))?

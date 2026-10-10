@@ -261,6 +261,9 @@ pub struct MltVerifiedLosslessTimeline {
     pub frame_count: u64,
     pub native_frame_count_observed: Option<u64>,
     pub transport_pcm_audio: bool,
+    /// An in-memory MLT project may remain in the bounded provider.
+    /// Destructive project.close requires trusted foreground Broker consent.
+    pub provider_project_cleanup: String,
     pub native_job_ref: String,
     pub provider_revision: String,
     pub artifact_path: String,
@@ -678,27 +681,13 @@ impl ProductionCoordinator {
                 "Project changed during native multisegment timeline rendering",
             ));
         }
-        // The returned owner artifact is source-verified even if the driver
-        // cannot close its short-lived in-memory edit project immediately.
-        let close = self
-            .execute(
-                project_id,
-                expected,
-                &format!("{request_id}:mlt:close"),
-                "driver.mlt-video.project.close",
-                json!({"project":session.project_ref,"expected_revision":session.revision}),
-                true,
-            )
-            .await?;
-        if response_data(&close)?
-            .get("closed")
-            .and_then(Value::as_bool)
-            != Some(true)
-        {
-            return Err(backend(
-                "MLT project could not be closed after verified sequence render",
-            ));
-        }
+        // The pinned provider marks project.close DESTRUCTIVE and requires
+        // operator consent. No agent-facing Broker approval API exists. This
+        // unattended workflow does not request that mutation or bypass its
+        // authority. The in-memory project remains until a trusted foreground
+        // operator closes it or its bounded provider lifetime ends. The
+        // receipt explicitly reports this; no successful cleanup is claimed.
+        // The media bytes and their original source hashes were verified.
         Ok(MltVerifiedLosslessTimeline {
             project_resource: project.resource_key(),
             generation: project.generation,
@@ -708,6 +697,7 @@ impl ProductionCoordinator {
             frame_count: recipe.total_frames,
             native_frame_count_observed,
             transport_pcm_audio: true,
+            provider_project_cleanup: "not_requested_requires_foreground_broker_consent".into(),
             native_job_ref: job_ref,
             provider_revision: session.revision,
             artifact_path: recipe.lossless_sequence_path,
