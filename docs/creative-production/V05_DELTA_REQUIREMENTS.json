@@ -1,0 +1,654 @@
+{
+  "schema": "motionwright.v05-delta-audit/1",
+  "source": "Motionwright v0.5 SRS delta, 64 requirements in 16 epics",
+  "branch_scope": "isolated v0.5 creative expansion, not a full 208-requirement legacy reconciliation",
+  "baseline_acceptance": "NOT_RECONCILED_IN_THIS_BRANCH",
+  "technical_notes": "Source paths indicate code candidates, never completed SRS acceptance. Independently verified same-SHA CI, product/manual tests, interoperability and owner approval remain separate.",
+  "requirements": [
+    {
+      "id": "MW05-E00-01",
+      "title": "Auditoría por requisito",
+      "epic": "E00",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E00-02",
+      "title": "Migración sin pérdida silenciosa",
+      "epic": "E00",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E00-03",
+      "title": "Primer arranque local",
+      "epic": "E00",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E00-04",
+      "title": "Candidato exacto",
+      "epic": "E00",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "tooling/hyperframes/design_review_bundle.py",
+        "SOURCE_LOCK.json"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E01-01",
+      "title": "Keyframes end-to-end",
+      "epic": "E01",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/hyperframes-profile/src/lib.rs",
+        "tooling/hyperframes/native_smoke.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E01-02",
+      "title": "Composición visual rica",
+      "epic": "E01",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/hyperframes-profile/src/lib.rs",
+        "runtime/hyperframes/authoring.js"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E01-03",
+      "title": "Tipografía y assets de marca",
+      "epic": "E01",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/profiles.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E01-04",
+      "title": "Cámara y continuidad",
+      "epic": "E01",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/realization.rs",
+        "runtime/blender-stage/fixed_render.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E02-01",
+      "title": "ProductionPlan como dominio",
+      "epic": "E02",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E02-02",
+      "title": "Alternativas de concepto",
+      "epic": "E02",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E02-03",
+      "title": "Referencias analizadas",
+      "epic": "E02",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E02-04",
+      "title": "Plan de evidencia narrativa",
+      "epic": "E02",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E03-01",
+      "title": "Un playhead observable",
+      "epic": "E03",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E03-02",
+      "title": "Preview escalonado",
+      "epic": "E03",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "apps/studio/src/production/NativeHtmlContactReview.tsx"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E03-03",
+      "title": "Rangos sucios con dependencias",
+      "epic": "E03",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E03-04",
+      "title": "Cache medido",
+      "epic": "E03",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E04-01",
+      "title": "HyperFrames mínimo fiel",
+      "epic": "E04",
+      "implementation_state": "BLOCKED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/driver-hyperframes/src/main.rs",
+        "tooling/hyperframes/broker_smoke.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E04-02",
+      "title": "Informe multidimensional",
+      "epic": "E04",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/fidelity.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E04-03",
+      "title": "fframes como experimento",
+      "epic": "E04",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E04-04",
+      "title": "Híbrido real",
+      "epic": "E04",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E05-01",
+      "title": "ProductHeroReveal probado",
+      "epic": "E05",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/tests/product_hero.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E05-02",
+      "title": "Instancias y overrides",
+      "epic": "E05",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/instance.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E05-03",
+      "title": "Biblioteca de craft",
+      "epic": "E05",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/catalog.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E05-04",
+      "title": "Distillation validada",
+      "epic": "E05",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E06-01",
+      "title": "BrandProfile y TasteProfile distintos",
+      "epic": "E06",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/profiles.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E06-02",
+      "title": "Sistema de layout",
+      "epic": "E06",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/realization.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E06-03",
+      "title": "Datos con unidades",
+      "epic": "E06",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/data.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E06-04",
+      "title": "Biblioteca procedural",
+      "epic": "E06",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/procedural.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E07-01",
+      "title": "ProductStage",
+      "epic": "E07",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "runtime/blender-stage/fixed_render.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E07-02",
+      "title": "Captura real reproducible",
+      "epic": "E07",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E07-03",
+      "title": "Rigs de cámara",
+      "epic": "E07",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "runtime/blender-stage/fixed_render.py",
+        "tooling/blender-stage/native_e2e.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E07-04",
+      "title": "3D nativo mantenible",
+      "epic": "E07",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "runtime/blender-stage/inspect_scene.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E08-01",
+      "title": "Relojes explícitos",
+      "epic": "E08",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/clock.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E08-02",
+      "title": "Narración bloqueada",
+      "epic": "E08",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E08-03",
+      "title": "Sound choreography",
+      "epic": "E08",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/sound.rs",
+        "tooling/hyperframes/original_sound_e2e.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E08-04",
+      "title": "Mix y localización",
+      "epic": "E08",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E09-01",
+      "title": "Evidencia multimodal",
+      "epic": "E09",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "tooling/hyperframes/creative_visual_e2e.py",
+        "tooling/hyperframes/design_review_bundle.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E09-02",
+      "title": "Crítica accionable",
+      "epic": "E09",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/skills.rs",
+        "crates/creative-library/src/repair.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E09-03",
+      "title": "Verificación separada",
+      "epic": "E09",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/fidelity.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E09-04",
+      "title": "Benchmark competente",
+      "epic": "E09",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E10-01",
+      "title": "Propuestas atómicas por alcance",
+      "epic": "E10",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/repair.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E10-02",
+      "title": "Cambios revisables",
+      "epic": "E10",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "apps/studio/src/production/NativeRepairWorkbench.tsx"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E10-03",
+      "title": "Acceso por agentes externos",
+      "epic": "E10",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E10-04",
+      "title": "Revisión diez humana",
+      "epic": "E10",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/service/tests/native_creative_revision_sequence.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E11-01",
+      "title": "Attach primero",
+      "epic": "E11",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E11-02",
+      "title": "Native capsule",
+      "epic": "E11",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/domain/src/native_scenes.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E11-03",
+      "title": "OTIO con medios reales",
+      "epic": "E11",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E11-04",
+      "title": "Portabilidad reproducible",
+      "epic": "E11",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E12-01",
+      "title": "Contrato de generación",
+      "epic": "E12",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E12-02",
+      "title": "Pilot antes de lote",
+      "epic": "E12",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E12-03",
+      "title": "Outcome desconocido",
+      "epic": "E12",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E12-04",
+      "title": "Identidad y consentimiento",
+      "epic": "E12",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E13-01",
+      "title": "Skill no es autoridad",
+      "epic": "E13",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "crates/creative-library/src/skills.rs"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E13-02",
+      "title": "Draft → experiment → admit",
+      "epic": "E13",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E13-03",
+      "title": "Permisos por operación",
+      "epic": "E13",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E13-04",
+      "title": "Observación extensible",
+      "epic": "E13",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E14-01",
+      "title": "Familias de entregables",
+      "epic": "E14",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E14-02",
+      "title": "Responsive storytelling",
+      "epic": "E14",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E14-03",
+      "title": "Master técnico explícito",
+      "epic": "E14",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E14-04",
+      "title": "Handoff Launchwright",
+      "epic": "E14",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E15-01",
+      "title": "Workstation usable",
+      "epic": "E15",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "apps/studio/src/production/CreativeLibraryWorkspace.tsx"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E15-02",
+      "title": "Runtime onboarding",
+      "epic": "E15",
+      "implementation_state": "PARTIAL",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [
+        "tooling/hyperframes/owner_provision.py"
+      ],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E15-03",
+      "title": "Remote como adaptador",
+      "epic": "E15",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    },
+    {
+      "id": "MW05-E15-04",
+      "title": "Valor demostrado",
+      "epic": "E15",
+      "implementation_state": "NOT_VERIFIED",
+      "release_acceptance": "NOT_CLOSED",
+      "code_evidence": [],
+      "human_review": "NOT_PERFORMED"
+    }
+  ]
+}

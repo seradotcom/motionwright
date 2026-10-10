@@ -116,10 +116,13 @@
   window.__timelines.main=timeline;
   window.__mwInspect=()=>doc.nodes.map(node=>{
     const el=nodes.get(node.id),style=getComputedStyle(el),rect=el.getBoundingClientRect();
-    return {id:node.id,kind:node.content.kind,box:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},transform:style.transform,
-      opacity:Number(style.opacity),blend:style.mixBlendMode,clip:style.clipPath,filter:style.filter,text:node.content.kind==='text'?el.textContent:null,
+    return {id:node.id,source_role:node.name,kind:node.content.kind,
+      box:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},transform:style.transform,
+      opacity:Number(style.opacity),blend:style.mixBlendMode,clip:style.clipPath,filter:style.filter,
+      text:node.content.kind==='text'?el.textContent:null,
       truncated:node.content.kind==='text'?(el.scrollWidth>el.clientWidth+1 || el.scrollHeight>el.clientHeight+1):null,
-      computed_font:node.content.kind==='text'?style.fontFamily:null};
+      computed_font:node.content.kind==='text'?style.fontFamily:null,
+      font_size_px:node.content.kind==='text'?Number.parseFloat(style.fontSize):null};
   });
   window.__mwNativeProfile={version:doc.version,frames:doc.canvas.frames,rate:doc.canvas.rate};
 })();

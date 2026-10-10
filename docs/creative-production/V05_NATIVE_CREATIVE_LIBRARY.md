@@ -293,3 +293,20 @@ human review ZIP together; `broker` runs only the canonical real Host
 gate. Selective gates do not certify a new release, override red full
 gates or modify runtime grants. Release review still requires the
 **full same-SHA matrix** and independent security/creative approval.
+
+
+## v0.5 delta requirement audit, separate from legacy acceptance
+
+`docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
+**64 numbered additions/deepening tasks and 16 epics** from the supplied
+v0.5 SRS delta, but never treats source presence as release acceptance.
+The isolated branch inventory currently records 29 **PARTIAL code
+candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
+and 34 **NOT_VERIFIED** requirements. These are conservative per-ID
+bookkeeping states, not completion percentages, and do not replace the
+required reconciliation against the **208 original product IDs and 60
+acceptance tests** assigned to the legacy-product workstream. All 64
+retain `release_acceptance: NOT_CLOSED` and
+`human_review: NOT_PERFORMED` until a same-SHA acceptance record is
+linked. The Python contract tests reject any absent source path or
+implicit promotion from a Rust file to an approved product claim.

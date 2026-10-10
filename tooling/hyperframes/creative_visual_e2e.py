@@ -73,6 +73,20 @@ def main()->None:
     raise AssertionError('Native transport quantized or omitted a requested output frame')
    if any(node.get('truncated') for row in observed for node in row['nodes']):
     raise AssertionError(f'{recipe} {aspect} {locale}: native text is truncated')
+   # Renderer readback, not only typed source validation: CSS computed font
+   # size must preserve semantic readability for actual hero/causal explanatory
+   # captions. Generic micro-label candidates remain advisory.
+   relevant={}
+   if recipe=='hero-reveal':
+    relevant={'hero explanation':18.0,'hero evidence classification':13.0}
+   elif recipe=='causal-diagram':
+    relevant={'causal stage label 0':15.0,'causal stage label 1':15.0,
+      'causal stage label 2':15.0,'causal source classification':13.0}
+   source_nodes={n.get('source_role'):n for n in observed[60]['nodes']}
+   for role,min_px in relevant.items():
+    node=source_nodes.get(role)
+    if not node or node.get('kind')!='text' or not isinstance(node.get('font_size_px'),(int,float)) or node['font_size_px']<min_px:
+     raise AssertionError(f'{recipe} {aspect} {locale}: {role} lost its semantic legibility ({node})')
    frame_hashes=[item['sha256']for item in manifest['frames']]
    if len(set(frame_hashes))<2:raise AssertionError('Animated native source is visually frozen')
    case=evidence/f'{recipe}-{aspect}-{locale}';case.mkdir()
