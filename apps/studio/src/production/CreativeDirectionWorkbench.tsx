@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useState} from 'react';
 import {BookOpen,GitCompareArrows,ShieldAlert} from 'lucide-react';
-import {creativeDirectionSourceState,creativeDirectionStudy} from '../api';
+import {creativeDirectionPlanPreflight,creativeDirectionSourceState,creativeDirectionStudy} from '../api';
 import type {Change,Project,Scene} from '../types';
 import {unapprovedPlanForSelectedDirection} from './directionPlan';
 import type {
@@ -124,8 +124,21 @@ export default function CreativeDirectionWorkbench({
   try{
    if(project.production_design?.plan&&!replaceConsent)
      throw new Error('Confirm that choosing a new draft will replace the existing ProductionPlan.');
-   const draftPlan=unapprovedPlanForSelectedDirection(project,submitted,result,id);
-   await commit({type:'set_production_plan',plan:draftPlan});
+   // The TS check is a local review aid, never the trust boundary.
+   const checked=unapprovedPlanForSelectedDirection(project,submitted,result,id);
+   const verified=await creativeDirectionPlanPreflight(project,submitted,id);
+   if(verified.project_id!==project.id||verified.generation!==project.generation||
+      verified.revision!==project.revision||verified.approval!==null||
+      verified.renderer_executed||verified.project_committed||
+      verified.owner_release_approval!=='NOT_GRANTED'||
+      verified.plan.approval!==null||
+      verified.plan.shots.length!==checked.shots.length||
+      verified.plan.shots.some((shot,index)=>shot.scene_id!==checked.shots[index].scene_id||
+        shot.evidence_kind!==checked.shots[index].evidence_kind||
+        shot.claim_ids.join()!==checked.shots[index].claim_ids.join()||
+        shot.asset_ids.join()!==checked.shots[index].asset_ids.join()))
+     throw new Error('Canonical Rust concept/claim preflight disagreed with the reviewed source.');
+   await commit({type:'set_production_plan',plan:verified.plan});
    setResult(null);setSubmitted(null);
   }catch(reason){setError(failure(reason));}finally{setWorking(false);}
  };

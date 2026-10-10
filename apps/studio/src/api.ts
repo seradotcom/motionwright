@@ -1860,3 +1860,16 @@ export async function creativeDirectionStudy(
   }
   return invoke('creative_direction_study',{input:{...nativeScope(project),request}});
 }
+
+export async function creativeDirectionPlanPreflight(
+ project:Project,request:import('./production/directionTypes').CreativeDirectionStudyRequest,
+ selectedConceptId:string
+):Promise<import('./production/directionTypes').SelectedDirectionPlanPreflight>{
+ if(!isTauri())throw new Error('A browser preview cannot assert an owner-reviewed production plan.');
+ if(request.project_id!==project.id||request.generation!==project.generation||
+    request.revision!==project.revision||!/^[a-f0-9]{64}$/.test(request.project_sha256))
+   throw new Error('The selected creative direction belongs to a stale/foreign Project.');
+ return invoke('creative_direction_plan_preflight',{input:{
+   ...nativeScope(project),request,selected_concept_id:selectedConceptId
+ }});
+}

@@ -915,3 +915,49 @@ pub async fn creative_direction_study(
       "native_pixels_rendered":false
     }))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedDirectionPlanCommand {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    selected_concept_id: Uuid,
+    request: motionwright_creative_library::CreativeDirectionStudyRequest,
+}
+/// Authoritative source-level plan proposal. A JS-computed concept score or
+/// manually forged status cannot become a claim-bearing StudioService edit.
+/// The actual project write remains the user's separate revisioned CAS.
+#[tauri::command]
+pub async fn creative_direction_plan_preflight(
+    state: State<'_, AppState>,
+    input: SelectedDirectionPlanCommand,
+) -> Result<Value, String> {
+    let project = current(&state, input.project_id, input.generation, input.revision)?;
+    if input.request.project_id != project.id
+        || input.request.generation != project.generation
+        || input.request.revision != project.revision
+    {
+        return Err("Selected concept belongs to another project revision.".into());
+    }
+    let (id, generation, revision) = (input.project_id, input.generation, input.revision);
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        motionwright_creative_library::propose_selected_direction_plan(
+            &project,
+            &input.request,
+            input.selected_concept_id,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Source-checked selected concept could not be prepared.".to_string())??;
+    current(&state, id, generation, revision)?;
+    Ok(json!({
+        "schema":"motionwright.source-checked-production-plan/1",
+        "plan":plan,"project_id":id,"generation":generation,"revision":revision,
+        "approval":serde_json::Value::Null,
+        "renderer_executed":false,"project_committed":false,
+        "independent_claim_review":"REQUIRED",
+        "owner_release_approval":"NOT_GRANTED"
+    }))
+}

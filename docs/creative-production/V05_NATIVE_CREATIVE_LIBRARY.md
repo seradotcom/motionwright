@@ -583,3 +583,21 @@ requires a separate acknowledgment; the new plan explicitly sets
 human creative quality review. The main ProductionDesignWorkspace remains
 the persisted owner interface; no parallel plan storage/scheduler was added.
 `directionPlan.test.ts` asserts this opt-in, non-laundering behavior.
+
+
+### Server-authoritative concept selection before StudioService CAS
+
+An explicit click to select a reviewed direction now invokes the desktop
+`creative_direction_plan_preflight`. Rust re-runs the full source/project
+comparison on the *current* Project and validates that every selected
+claim references the same SHA-pinned media, product build and narrative
+shot. The candidate is converted to the **canonical**
+`ProductionPlan`, validated against `Project.scenes`,
+`Project.assets`, `Brief`, and `Project.audio`, and returned with
+`approval: null`, no renderer execution and no project write.
+Only the existing separate `set_production_plan` user action writes
+the new candidate through StudioService revision CAS. The browser's
+original review remains advisory; a forged/stale JS report cannot bypass
+the Rust source gate, and generic licensed footage cannot become proof of
+product behavior. Neither the standalone concept report nor the plan
+preflight verifies asset legal rights or independent product truth.

@@ -65,3 +65,11 @@ export interface CreativeDirectionStudyResponse {
   concept_selected:false;content_approval:'REQUIRES_OWNER_SELECTION';
   native_pixels_rendered:false;
 }
+
+export interface SelectedDirectionPlanPreflight {
+  schema:'motionwright.source-checked-production-plan/1';
+  plan:import('../creativeProduction').ProductionPlan;
+  project_id:string;generation:string;revision:number;approval:null;
+  renderer_executed:false;project_committed:false;
+  independent_claim_review:'REQUIRED';owner_release_approval:'NOT_GRANTED';
+}

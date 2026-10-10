@@ -400,3 +400,172 @@ pub fn analyze_creative_directions(
         production_approval: "PENDING_INDEPENDENT_OWNER_REVIEW".into(),
     })
 }
+
+/// Turn a specifically owner-selected, source-bound direction into an
+/// **unapproved** canonical ProductionPlan. The existing StudioService CAS
+/// remains the only persistence path, and this never authenticates content,
+/// media rights, model claims or a native renderer result.
+pub fn propose_selected_direction_plan(
+    project: &Project,
+    request: &CreativeDirectionStudyRequest,
+    selected_id: Uuid,
+) -> Result<motionwright_domain::ProductionPlan> {
+    use motionwright_domain::{
+        NarrativeEvidenceKind, PlannedShot, ProductionClock, ProductionPlan,
+    };
+    let reviewed = analyze_creative_directions(project, request)?;
+    let direction = request
+        .alternatives
+        .iter()
+        .find(|item| item.id == selected_id)
+        .ok_or_else(|| {
+            CraftError(
+                "The owner-selected concept does not belong to the current source study".into(),
+            )
+        })?;
+    let candidate = reviewed
+        .candidate_reviews
+        .iter()
+        .find(|item| item.concept_id == selected_id)
+        .ok_or_else(|| CraftError("No source review matches the selected concept".into()))?;
+    check(
+        !candidate.owner_selected
+            && !candidate.human_creative_approved
+            && !candidate.real_product_evidence_approved
+            && !candidate.actual_native_pixels_reviewed
+            && canonical_digest(direction)? == candidate.concept_sha256,
+        "A reference analysis cannot manufacture owner approval or another concept",
+    )?;
+    let mut shots = Vec::new();
+    for shot in &direction.shot_studies {
+        let kind = match shot.evidence_kind {
+            CreativeEvidenceKind::GraphicIllustration => {
+                check(
+                    shot.claim_ids.is_empty(),
+                    "Illustrations must not carry product claims into a real-evidence production plan",
+                )?;
+                NarrativeEvidenceKind::GraphicStudy
+            }
+            CreativeEvidenceKind::RealProductCapture => {
+                check(
+                    !shot.claim_ids.is_empty(),
+                    "A real capture needs at least one original source-bound claim",
+                )?;
+                NarrativeEvidenceKind::RealCapture
+            }
+            CreativeEvidenceKind::LicensedFootage => {
+                check(
+                    shot.claim_ids.is_empty(),
+                    "Licensed generic footage cannot prove source product behavior",
+                )?;
+                NarrativeEvidenceKind::LicensedFootage
+            }
+        };
+        for claim_id in &shot.claim_ids {
+            let review = candidate
+                .claim_reviews
+                .iter()
+                .find(|entry| entry.claim_id == *claim_id && entry.scene_id == shot.scene_id)
+                .ok_or_else(|| {
+                    CraftError("Selected concept claim has no exact source review".into())
+                })?;
+            check(
+                review.status == ClaimReviewStatus::SourceBoundNeedsHumanVerification
+                    && !review.verified_product_behavior
+                    && !review.independently_verified_rights
+                    && review.source_asset_id == shot.evidence_asset_id
+                    && review.current_product_version == request.product_version,
+                "Cannot promote unverified, stale, illustrative or unsupported claims as source evidence",
+            )?;
+            let existing = project
+                .brief
+                .claims
+                .iter()
+                .find(|claim| claim.id == *claim_id)
+                .ok_or_else(|| CraftError("Claim no longer belongs to project Brief".into()))?;
+            let source_asset = shot
+                .evidence_asset_id
+                .and_then(|id| media(project, id))
+                .ok_or_else(|| {
+                    CraftError("Claim source asset was removed from current Project".into())
+                })?;
+            check(
+                matches!(&existing.source,Some(SourceReference::Asset{asset_id})
+                   if Some(*asset_id)==shot.evidence_asset_id)
+                    && existing.source_revision.as_deref()
+                        == Some(request.product_version.as_str())
+                    && source_asset.source_revision.as_deref()
+                        == Some(request.product_version.as_str())
+                    && source_asset.content_sha256.as_deref() == review.source_sha256.as_deref(),
+                "Claim source version or media SHA changed after direction comparison",
+            )?;
+        }
+        let asset_ids = shot.evidence_asset_id.into_iter().collect::<Vec<_>>();
+        let purpose = format!(
+            "{}. Audience takeaway: {}",
+            shot.narrative_purpose, shot.audience_takeaway
+        );
+        text(
+            &purpose,
+            4000,
+            "Selected narrative shot exceeds canonical plan text budget",
+        )?;
+        shots.push(PlannedShot {
+            scene_id: shot.scene_id,
+            purpose,
+            claim_ids: shot.claim_ids.clone(),
+            asset_ids,
+            evidence_kind: kind,
+        });
+    }
+    let mut ref_notes = Vec::new();
+    for source_id in &direction.reference_ids {
+        let source = request
+            .references
+            .iter()
+            .find(|item| item.id == *source_id)
+            .ok_or_else(|| CraftError("Selected direction lost the analyzed reference".into()))?;
+        let note = format!(
+            "Originality: {}. Owner-observed hierarchy: {}. No independent rights, copying or claim certification.",
+            source.originality_constraint, source.observed_hierarchy
+        );
+        text(
+            &note,
+            2000,
+            "Reference-derived constraint exceeds canonical plan bounds",
+        )?;
+        ref_notes.push(note);
+    }
+    let mut exclusions = project.brief.exclusions.clone();
+    exclusions
+        .push("No illustrative mockup or generic footage may imply real product operation.".into());
+    exclusions.push(
+        "Claim truth, media rights, render quality and owner approval remain separate.".into(),
+    );
+    let concept = format!(
+        "{}: {}. Structure: {:?}; rhythm: {:?}. {}. Human-selected draft, not an approved product claim.",
+        direction.title,
+        direction.metaphor,
+        direction.structure,
+        direction.rhythm,
+        direction.distinct_visual_argument
+    );
+    let plan = ProductionPlan {
+        objective: project.brief.objective.clone(),
+        audience: project.brief.audience.clone(),
+        concept,
+        reference_constraints: ref_notes,
+        exclusions,
+        shots,
+        clock: ProductionClock::Timeline,
+        approval: None,
+    };
+    plan.validate(
+        &project.scenes,
+        &project.assets,
+        &project.brief,
+        &project.audio,
+    )
+    .map_err(|e| CraftError(e.to_string()))?;
+    Ok(plan)
+}

@@ -265,3 +265,73 @@ fn real_capture_kind_without_an_explicit_brief_claim_is_not_an_evidence_plan() {
     request.alternatives[0].shot_studies[0].claim_ids.clear();
     assert!(analyze_creative_directions(&p, &request).is_err());
 }
+
+#[test]
+fn selected_direction_is_still_unapproved_after_canonical_domain_change_validation() {
+    use motionwright_creative_library::propose_selected_direction_plan;
+    let p = project();
+    let req = request(&p);
+    let plan = propose_selected_direction_plan(&p, &req, id(200)).unwrap();
+    assert!(plan.approval.is_none());
+    assert_eq!(plan.shots[0].claim_ids, vec![id(10)]);
+    assert_eq!(plan.shots[0].asset_ids, vec![id(5)]);
+    assert_eq!(plan.clock, motionwright_domain::ProductionClock::Timeline);
+    plan.validate(&p.scenes, &p.assets, &p.brief, &p.audio)
+        .unwrap();
+    let mut saved = p.clone();
+    saved
+        .apply_change(&Change::SetProductionPlan {
+            plan: Some(plan.clone()),
+        })
+        .unwrap();
+    assert_eq!(saved.production_design.plan, Some(plan));
+    assert!(
+        p.production_design.plan.is_none(),
+        "Pure source preflight changed its input"
+    );
+}
+#[test]
+fn canonical_plan_must_not_launder_claims_through_generic_licensed_footage() {
+    use motionwright_creative_library::propose_selected_direction_plan;
+    let p = project();
+    let mut req = request(&p);
+    req.alternatives[1].shot_studies[0].evidence_kind = CreativeEvidenceKind::LicensedFootage;
+    req.alternatives[1].shot_studies[0].evidence_asset_id = Some(id(5));
+    req.alternatives[1].reference_ids = vec![id(100)];
+    assert!(propose_selected_direction_plan(&p, &req, id(201)).is_err());
+    req.alternatives[1].shot_studies[0].claim_ids.clear();
+    let plan = propose_selected_direction_plan(&p, &req, id(201)).unwrap();
+    assert!(plan.approval.is_none());
+    assert_eq!(plan.shots[0].asset_ids, vec![id(5)]);
+    assert!(plan.shots[0].claim_ids.is_empty());
+    assert_eq!(
+        plan.shots[0].evidence_kind,
+        motionwright_domain::NarrativeEvidenceKind::LicensedFootage
+    );
+}
+#[test]
+fn stale_claim_version_and_illustrative_claim_cannot_be_committed_by_model() {
+    use motionwright_creative_library::propose_selected_direction_plan;
+    let p = project();
+    let mut req = request(&p);
+    req.product_version = "build-2".into();
+    assert!(propose_selected_direction_plan(&p, &req, id(200)).is_err());
+    req = request(&p);
+    assert!(
+        propose_selected_direction_plan(&p, &req, id(201)).is_err(),
+        "Illustration with an actual product claim cannot enter an evidence plan"
+    );
+    req = request(&p);
+    req.alternatives[0].shot_studies[0].claim_ids.clear();
+    assert!(
+        propose_selected_direction_plan(&p, &req, id(200)).is_err(),
+        "Real capture needs explicit owner brief claim"
+    );
+}
+#[test]
+fn an_unknown_owner_selection_id_never_creates_an_approved_plan() {
+    use motionwright_creative_library::propose_selected_direction_plan;
+    let p = project();
+    let req = request(&p);
+    assert!(propose_selected_direction_plan(&p, &req, id(999)).is_err());
+}
