@@ -10,7 +10,7 @@ const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha,sealedBrowser] 
 if(process.argv.length!==8 || ![runtimeRoot,workRoot,outputRoot,assetRoot,sealedBrowser].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
-const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected']);
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_missing_icu','browser_binary_probe_missing_sidecar','browser_binary_probe_missing_shared_library','browser_binary_probe_namespace_denied','browser_binary_probe_permission_denied','browser_binary_probe_process_limit','browser_binary_probe_signal','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected']);
 function phase(name){
   if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
   fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
@@ -92,14 +92,29 @@ if(!executable.isFile() || (executable.mode&0o111)===0){
   phase('browser_binary_exec_denied');
   throw new Error('Owner-installed browser binary lacks executable permissions');
 }
-const probe=spawnSync(browserBinary,['--version'],{timeout:8000,stdio:'ignore'});
+// Probe stdout/stderr is ephemeral inside this exact synthetic CI invocation.
+// Only one fixed error CLASS crosses into journal/phase evidence; never persist
+// browser stderr (it may include absolute machine paths or user content).
+const probe=spawnSync(browserBinary,['--version'],{
+  timeout:8000,encoding:'utf8',maxBuffer:16384,
+  stdio:['ignore','pipe','pipe']
+});
 if(probe.error?.code==='EACCES'||probe.error?.code==='EPERM'){
   phase('browser_binary_exec_denied');
   throw new Error('Host denied execution of the exact owner-pinned browser binary');
 }
 if(probe.error || probe.status!==0){
-  phase('browser_binary_probe_failed');
-  throw new Error('Pinned browser binary cannot run a bounded version probe inside Host');
+  const message=String(probe.stderr??'').toLowerCase().slice(0,12000);
+  const failure=probe.signal!==null?'browser_binary_probe_signal'
+    :/icudtl|icu data|icu_util|invalid file descriptor to icu/.test(message)?'browser_binary_probe_missing_icu'
+    :/\.pak|resource bundle|failed to load resource|v8_context_snapshot|snapshot_blob/.test(message)?'browser_binary_probe_missing_sidecar'
+    :/error while loading shared libraries|cannot open shared object|libnss3|libatk|libasound|libx11|libglib/.test(message)?'browser_binary_probe_missing_shared_library'
+    :/permission denied|operation not permitted|eacces|eperm/.test(message)?'browser_binary_probe_permission_denied'
+    :/namespace|sandbox|userns/.test(message)?'browser_binary_probe_namespace_denied'
+    :/pthread_create|resource temporarily unavailable|eagain|fork/.test(message)?'browser_binary_probe_process_limit'
+    :'browser_binary_probe_failed';
+  phase(failure);
+  throw new Error('Owner-pinned browser executable could not complete bounded version probe: '+failure);
 }
 phase('browser_binary_probe_ok');
 // This is a security boundary, not a performance fallback: the strictly

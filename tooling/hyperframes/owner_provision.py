@@ -51,6 +51,8 @@ def make(args:argparse.Namespace)->dict:
   relative=item.get("path")
   if not isinstance(relative,str) or ".." in Path(relative).parts or Path(relative).is_absolute():raise ValueError(f"{name}: unnormalized runtime path")
   dependency=absolute(str(runtime/relative),"runtime-file")
+  if name=="browser" and (dependency.stat().st_size>320*1024*1024 or dependency.stat().st_size<=0):
+   raise ValueError("Owner-selected browser exceeds the 320 MiB Linux Host authority")
   if digest(dependency)!=item.get("sha256") or dependency.stat().st_size!=item.get("bytes"):
    raise ValueError(f"{name}: installed runtime dependency changed")
  browser=absolute(str(runtime/files["browser"]["path"]),"runtime-file")

@@ -43,6 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tooling/hyperframes/test_owner_provision.py -v
+          python3 tooling/hyperframes/test_design_review_bundle.py -v
           cargo fmt --all -- --check
           cargo test --locked -p motionwright-creative-library --all-targets
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
@@ -306,6 +307,43 @@ jobs:
         with:
           name: native-creative-review-shard-${{ matrix.shard }}-${{ github.sha }}
           path: verification/hyperframes-creative/
+          if-no-files-found: warn
+          retention-days: 7
+
+  creative-human-review-pack:
+    needs:
+      - creative-visual-review
+      - native-blender-stage-preview
+      - creative-original-audio
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: native-creative-review-shard-*-${{ github.sha }}
+          path: _review_inputs/visual
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: original-blender-stage-preview-${{ github.sha }}
+          path: _review_inputs/blender
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: original-audio-${{ github.sha }}
+          path: _review_inputs/audio
+      - name: Assemble compact exact-head native design review material
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tooling/hyperframes/design_review_bundle.py
+          python3 tooling/hyperframes/design_review_bundle.py _review_inputs/visual _review_inputs/blender _review_inputs/audio verification/human-review/motionwright-v05-creative-review.zip "$GITHUB_SHA"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: creative-v05-human-review-pack-${{ github.sha }}
+          path: verification/human-review/
           if-no-files-found: warn
           retention-days: 7
 

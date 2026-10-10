@@ -63,6 +63,15 @@ class OwnerProvisionTests(unittest.TestCase):
   self.args.node=str(self.executable['node'])
   self.executable['node'].chmod(0o600)
   with self.assertRaisesRegex(ValueError,'executable'):provision.make(self.args)
+ def test_reject_oversized_sparse_browser_before_any_full_digest_read(self):
+  browser=self.runtime/'browser'
+  with browser.open('r+b') as handle:handle.truncate(320*1024*1024+1)
+  with self.assertRaisesRegex(ValueError,'exceeds the 320 MiB'):
+   provision.make(self.args)
+ def test_reject_browser_without_executable_mode(self):
+  browser=self.runtime/'browser';browser.chmod(0o600)
+  with self.assertRaisesRegex(ValueError,'regular executable'):
+   provision.make(self.args)
  def test_reject_package_lock_drift(self):
   (self.runtime/'package-lock.json').write_text('{"changed":true}')
   with self.assertRaisesRegex(ValueError,'lock'):provision.make(self.args)

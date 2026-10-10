@@ -252,3 +252,26 @@ returning a proposed edit and an actual source-level difference. Studio's
 A browser demo cannot pretend to approve or perform a native repair.
 This is not autonomous pixel correction: the owner must inspect new native
 frames and accept/reject the resulting design.
+
+## Exact-SHA design-review archive for human sessions
+
+The CI-only `creative-human-review-pack` job downloads original synthetic
+artifacts from the **same exact Motionwright commit** after three native
+visual review shards, Blender preview/editability and original PCM
+measurements have passed independently. The zip contains source-bound
+contact sheets, a retained editable Blender source/interchange, a 90-frame
+video review copy, three deterministic original sound WAVs, signal
+measurements and a blank human scoring sheet. Every included file is
+SHA-256 listed and named relative to a small closed set; no private
+owner content, executable browser, installed npm tree or licensor fonts
+are bundled. The archive is not created if any required upstream
+technical result is missing, untrusted or describes a different source
+revision. The `canonical-broker` execution gate remains separate and may
+still be red while synthetic design review materials are available.
+
+Human reviewers should record reasons for approval or rejection in
+`review-sheet-template.json`; scores default to **null**, not a synthetic
+rating. Required categories cover story, composition, typography,
+timing, camera, direction, provenance, editor retention, audio, formats
+and parity against a competent direct-renderer agent. Source-bound
+technical artifacts do not certify craft or commercial publication.
