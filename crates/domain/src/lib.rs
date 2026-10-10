@@ -1,15 +1,21 @@
 mod canvas;
 mod creative;
+mod creative_revisions;
 mod delivery;
 mod extensions;
+mod hero;
 mod history;
 mod integrations;
+mod production_design;
 pub use canvas::*;
 pub use creative::*;
+pub use creative_revisions::*;
 pub use delivery::*;
 pub use extensions::*;
+pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use production_design::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,7 +23,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const PROJECT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_PROJECT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DomainError {
@@ -455,6 +462,8 @@ pub struct Project {
     pub extensions: Vec<ExtensionProfile>,
     #[serde(default)]
     pub handoffs: Vec<HandoffBinding>,
+    #[serde(default)]
+    pub production_design: ProductionDesign,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -586,6 +595,7 @@ impl Project {
             model_invocations: vec![],
             extensions: vec![],
             handoffs: vec![],
+            production_design: ProductionDesign::default(),
             updated_at: now,
         };
         project.validate()?;
@@ -605,8 +615,19 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != PROJECT_SCHEMA_VERSION {
+        if ![LEGACY_PROJECT_SCHEMA_VERSION, PROJECT_SCHEMA_VERSION].contains(&self.schema_version) {
             return Err(DomainError::Invalid("unsupported project schema".into()));
+        }
+        if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
+            let empty = ProductionDesign::default();
+            if self.production_design != empty
+                || self.branch_workspaces.iter().any(|workspace| {
+                    workspace.base_state.production_design != empty
+                        || workspace.current_state.production_design != empty
+                })
+            {
+                return Err(DomainError::Invalid("creative production state requires project schema 2; legacy writers must not silently discard it".into()));
+            }
         }
         if self.title.trim().is_empty() || self.title.len() > 200 {
             return Err(DomainError::Invalid(
@@ -618,6 +639,8 @@ impl Project {
             return Err(DomainError::Invalid("invalid branch set".into()));
         }
         self.validate_history()?;
+        self.production_design
+            .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -972,7 +995,65 @@ impl Project {
     }
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
+        // Read schema 1 without changing its authority or revision. The first
+        // successful write upgrades its format inside the same transaction.
+        if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
+            self.validate()?;
+            let mut candidate = self.clone();
+            candidate.schema_version = PROJECT_SCHEMA_VERSION;
+            candidate.apply_change(change)?;
+            *self = candidate;
+            return Ok(());
+        }
+        if self.schema_version != PROJECT_SCHEMA_VERSION {
+            return Err(DomainError::Invalid("unsupported project schema".into()));
+        }
         match change {
+            Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
+            Change::UpsertProductHero {
+                instance_id,
+                scene_id,
+                config,
+            } => self.upsert_product_hero(*instance_id, *scene_id, config)?,
+            Change::SetProductionPlan { plan } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if let Some(plan) = plan {
+                    plan.validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+                }
+                self.production_design.plan = plan.clone();
+            }
+            Change::UpsertNativeCapsule { capsule } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.ensure_unlocked(&format!("scene:{}", capsule.scene_id), &[LockKind::Content])?;
+                capsule.validate(&self.scenes, &self.assets)?;
+                if let Some(existing) = self
+                    .production_design
+                    .capsules
+                    .iter_mut()
+                    .find(|item| item.id == capsule.id)
+                {
+                    *existing = capsule.clone();
+                } else {
+                    if self.production_design.capsules.len() >= 256 {
+                        return Err(DomainError::Invalid("capsule budget exceeded".into()));
+                    }
+                    self.production_design.capsules.push(capsule.clone());
+                }
+            }
+            Change::ApplyCreativePatch { patch } => self.apply_creative_patch(patch)?,
+            Change::DetachProductHero { instance_id } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                let hero = self
+                    .production_design
+                    .heroes
+                    .iter()
+                    .find(|hero| hero.id == *instance_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("component:{instance_id}")))?;
+                self.ensure_unlocked(&format!("scene:{}", hero.scene_id), &[LockKind::Content])?;
+                self.production_design
+                    .heroes
+                    .retain(|hero| hero.id != *instance_id);
+            }
             Change::RenameProject { title } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if title.trim().is_empty() || title.len() > 200 {
@@ -2157,6 +2238,26 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    UndoCreativePatch {
+        patch_id: Uuid,
+    },
+    UpsertProductHero {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        config: HeroConfig,
+    },
+    DetachProductHero {
+        instance_id: Uuid,
+    },
+    SetProductionPlan {
+        plan: Option<ProductionPlan>,
+    },
+    UpsertNativeCapsule {
+        capsule: NativeCapsule,
+    },
+    ApplyCreativePatch {
+        patch: CreativePatch,
+    },
     RenameProject {
         title: String,
     },

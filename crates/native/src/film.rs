@@ -1,3 +1,5 @@
+use crate::component_text::fixed_component_text;
+use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
     BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy,
     MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene,
@@ -135,7 +137,7 @@ fn variant_scene_sequence(
     let mut cursor = RationalTime::ZERO;
     let mut output = Vec::with_capacity(source.len());
     for scene in source {
-        let mut projected = scene.clone();
+        let mut projected = responsive_scene(project, scene, profile)?;
         projected.start = cursor;
         cursor = add(cursor, projected.duration, "Variant scene timing overflow")?;
         output.push(projected);
@@ -291,6 +293,14 @@ fn native_linear_position_motion(
     frame_rate: Rate,
 ) -> NativeResult<Option<NativeLinearPositionMotion>> {
     if node.keyframes.is_empty() {
+        return Ok(None);
+    }
+    if node
+        .keyframes
+        .iter()
+        .any(|key| key.property == MotionProperty::Opacity)
+    {
+        entry_motion(node)?;
         return Ok(None);
     }
     let fail = || {
@@ -583,9 +593,9 @@ fn subject(
                 .cloned()
                 .ok_or_else(|| invalid("Text style projection is missing"))?;
             let weight = node.style.font_weight.unwrap_or(400);
-            if !(100..=900).contains(&weight) {
+            if ![400, 500, 600, 700].contains(&weight) {
                 return Err(unsupported(format!(
-                    "Text node {} font weight is outside canonical Film bounds",
+                    "Text node {} font weight has no exact face evidence in the pinned native runtime; author an explicit 400, 500, 600 or 700 weight instead of silently approximating it",
                     node.id
                 )));
             }
@@ -656,7 +666,10 @@ fn subject(
                     height: node.height * projection.object_scale,
                 },
             },
-            initially_visible: true,
+            initially_visible: !node
+                .keyframes
+                .iter()
+                .any(|key| key.property == MotionProperty::Opacity),
             clip_intentional: false,
         },
         constraints,
@@ -762,6 +775,7 @@ fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
 }
 
 struct ShotProjectionContext<'a> {
+    component_texts: &'a BTreeSet<Uuid>,
     profile: &'a DeliverableProfile,
     projection: LayoutProjection,
     output: &'a OutputProfile,
@@ -798,8 +812,20 @@ fn projected_shot(
     for node in &scene.nodes {
         let (mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
-        subjects.push(mapped);
-        visual_constraints.append(&mut node_constraints);
+        if node.kind == "text" && context.component_texts.contains(&node.id) {
+            let (mut lines, mut constraints) =
+                fixed_component_text(node, mapped, projection.object_scale)?;
+            subjects.append(&mut lines);
+            visual_constraints.append(&mut constraints);
+        } else {
+            subjects.push(mapped);
+            visual_constraints.append(&mut node_constraints);
+        }
+        if subjects.len() > 512 {
+            return Err(unsupported(
+                "Component text realization exceeds the native subject budget",
+            ));
+        }
     }
     Ok(Shot {
         id: identity.shot_id,
@@ -814,7 +840,86 @@ fn projected_shot(
     })
 }
 
+fn attach_entrance_motion(
+    shot: &mut Shot,
+    scene: &Scene,
+    scene_start: RationalTime,
+    projection: LayoutProjection,
+    spans: &mut Vec<TemporalSpan>,
+) -> NativeResult<()> {
+    for node in &scene.nodes {
+        if !node
+            .keyframes
+            .iter()
+            .any(|key| key.property == MotionProperty::Opacity)
+        {
+            continue;
+        }
+        if node.kind == "group"
+            || scene
+                .nodes
+                .iter()
+                .any(|child| child.parent_id == Some(node.id))
+        {
+            return Err(unsupported(
+                "Authored entrance motion on source hierarchies requires a dedicated mapping",
+            ));
+        }
+        let Some(entry) = entry_motion(node)? else {
+            continue;
+        };
+        let target = subject_id(node.id, None);
+        let span_id = format!("entrance-{}", node.id.simple());
+        let duration = sub(entry.end, entry.start, "Entrance duration underflow")?;
+        spans.push(TemporalSpan {
+            id: span_id.clone(),
+            minimum: duration,
+            preferred: duration,
+            maximum: duration,
+            anchor: StartAnchor::Absolute {
+                time: add(scene_start, entry.start, "Entrance start overflow")?,
+            },
+            preference_priority: 0,
+        });
+        let offset = Point {
+            x: 0.0,
+            y: entry.offset_y * projection.position_scale_y,
+        };
+        if entry.rotation_deg == 0.0 {
+            shot.motion.push(Invocation {
+                id: format!("slide-{}", node.id.simple()),
+                span_id,
+                easing: MotionEasing::OutCubic,
+                primitive: Primitive::SlideIn { target, offset },
+            });
+        } else {
+            shot.motion.push(Invocation {
+                id: format!("settle-{}", node.id.simple()),
+                span_id: span_id.clone(),
+                easing: MotionEasing::OutCubic,
+                primitive: Primitive::Settle {
+                    target: target.clone(),
+                    offset,
+                    rotation: entry.rotation_deg,
+                },
+            });
+            shot.motion.push(Invocation {
+                id: format!("fade-{}", node.id.simple()),
+                span_id,
+                easing: MotionEasing::OutCubic,
+                primitive: Primitive::FadeIn { target },
+            });
+        }
+    }
+    Ok(())
+}
+
 fn authored_beats_tile_scene(scene: &Scene) -> NativeResult<()> {
+    if !scene.beats.is_empty() && scene.nodes.iter().any(|node| !node.keyframes.is_empty()) {
+        return Err(unsupported(
+            "Authored motion keyframes across multiple beat scopes need an explicit continuity mapping; motion is not restarted silently",
+        ));
+    }
     if scene.beats.is_empty() {
         return Ok(());
     }
@@ -857,7 +962,14 @@ fn build_segment(
     let (text_style, type_scale) =
         text_styles(&scene_refs, &options.font_family, projection.object_scale)?;
     let stroke = global_stroke(&scene_refs, projection.object_scale)?;
+    let component_texts = project
+        .production_design
+        .heroes
+        .iter()
+        .flat_map(|hero| hero.baseline.iter().map(|node| node.id))
+        .collect::<BTreeSet<_>>();
     let shot_context = ShotProjectionContext {
+        component_texts: &component_texts,
         profile,
         projection,
         output: &output,
@@ -972,6 +1084,7 @@ fn build_segment(
                     },
                 });
             }
+            attach_entrance_motion(&mut shot, scene, local_start, projection, &mut spans)?;
             authoring_beats.push(AuthoringBeat {
                 id: uid("beat", scene.id),
                 role: intent.role,

@@ -22,7 +22,7 @@ The receipt `MltPreparedMezzanines` returns the exact segment index, output star
 
 `real-source-ffv1-segments-not-composited`
 
-**That is not an H.264/AAC master**. The stage does not itself create a Semwright semantic MLT project or output a finished video. A separate [experimental owner-only timeline runner](mlt-native-timeline.md) is being validated to import these FFV1 sources, create a track, insert exact clips and render a real lossless video-only Matroska. Neither stage attaches the 48kHz stereo WAV or publishes a final MP4. These operations require a separate authorized end-to-end MLT job, deterministic revision-bound reference updates, actual media inspection and a real multi-segment E2E before the desktop may claim completed output.
+**That is not an H.264/AAC master**. This FFV1 preparation stage does not itself create a Semwright semantic MLT project or compose a finished video. A separate [experimental owner-only MLT timeline runner](mlt-native-timeline.md) reimports the exact verified sources, revalidates revision-bound entity references, inserts source clips onto a semantic track and attempts to render an actual lossless **video-only** Matroska. Independently, a [read-only multisegment voice/audio readiness gate](mlt-multisegment-audio-readiness.md) checks the owner-bound measured WAV, source hashes, rate and sample-precision duration. Neither path mixes audio into the multi-segment result or publishes a completed MP4. The actual native source/MLT end-to-end media and hash gates must PASS at the same SHA before even the video-only timeline is considered verified.
 
 ## Verification
 

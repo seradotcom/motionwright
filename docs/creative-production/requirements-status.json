@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "scope": "creative-v05-expansion-only",
+  "v05_release_ready": false,
+  "baseline_sha": "330e27e22c7d6cba0d555d4b2fed74d9de57e758",
+  "upstream_integrated_sha": "d848657ed78ba73a2c925c7c3eceecce8e4f9054",
+  "original_requirements_ledger": "docs/acceptance/requirements-status.json",
+  "original_acceptance_ledger": "docs/acceptance/acceptance-status.json",
+  "status_semantics": {
+    "bounded_implementation": "The named bounded contract is implemented; this is not full product or human acceptance.",
+    "partial": "Some concrete implementation exists; the remaining requirement is explicit.",
+    "inherited_not_reassessed": "An older capability was preserved, not counted as new or fully accepted here.",
+    "not_implemented": "No implementation of the new requirement is claimed."
+  },
+  "evidence_rule": "Use exact-SHA CI artifacts for test outcomes. Code status does not synthesize PASS, human reviews or a release claim.",
+  "requirements": [
+    {
+      "id": "MW05-E00-01",
+      "implementation": "partial",
+      "implemented_scope": "Original ledgers preserved and upstream snapshot reconciled",
+      "remaining_scope": "Full re-audit of every original requirement is not claimed",
+      "source_paths": [
+        "docs/acceptance/requirements-status.json",
+        "docs/acceptance/acceptance-status.json",
+        "docs/creative-production/OWNERSHIP.md"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E00-02",
+      "implementation": "partial",
+      "implemented_scope": "Legacy format read and transactional format-2 upgrade; fresh import authority",
+      "remaining_scope": "Cross-product legacy importer is not implemented",
+      "source_paths": [
+        "crates/domain/src/lib.rs",
+        "crates/storage/tests/creative_migration.rs",
+        "apps/studio/src/creativeMigration.test.ts",
+        "crates/storage/src/lib.rs",
+        "crates/native/examples/native-render-e2e.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E00-03",
+      "implementation": "partial",
+      "implemented_scope": "Native portable samples and desktop CI packages without paid models",
+      "remaining_scope": "Fresh-machine runtime onboarding and user acceptance remain open",
+      "source_paths": [
+        "crates/storage/src/lib.rs",
+        "crates/storage/tests/creative_migration.rs",
+        "crates/native/examples/native-render-e2e.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/creative-production.spec.ts",
+        "apps/studio/src/production-design.css"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E00-04",
+      "implementation": "bounded_implementation",
+      "implemented_scope": "Exact-SHA compile, native artifacts and creative-review status are separate",
+      "remaining_scope": "Full platform release acceptance remains open",
+      "source_paths": [
+        ".github/workflows/creative-conformance.yml",
+        ".github/workflows/product-hero-e2e.yml"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E01-01",
+      "implementation": "partial",
+      "implemented_scope": "Exact bounded entrances plus inherited linear XY motion",
+      "remaining_scope": "Arbitrary curves, scale and all motion properties are not mapped",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs",
+        "crates/native/src/film.rs",
+        "apps/studio/src/canvasMotion.ts"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E01-02",
+      "implementation": "not_implemented",
+      "implemented_scope": "Rich mask, blend and effect profiles are not added",
+      "remaining_scope": "Direct-versus-mediated property fixtures remain required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E01-03",
+      "implementation": "partial",
+      "implemented_scope": "Attested built-in font weights and explicit authored line layout",
+      "remaining_scope": "External brand fonts, rights admission and rich-text breadth remain open",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E01-04",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Upstream static camera pan and linear motion retained",
+      "remaining_scope": "New focal continuity and camera rigs are not implemented",
+      "source_paths": [
+        "crates/native/src/film.rs",
+        "apps/studio/src/canvasMotion.ts"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E02-01",
+      "implementation": "partial",
+      "implemented_scope": "Persistent plan, evidence links, clocks and concept approval",
+      "remaining_scope": "Complete resumable production stages over jobs remain open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E02-02",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Existing alternatives workflow retained",
+      "remaining_scope": "Competent divergent concepts have not been implemented or benchmarked here",
+      "source_paths": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/CreativeWorkspaces.tsx"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E02-03",
+      "implementation": "partial",
+      "implemented_scope": "Reference-derived constraints can be recorded in the plan",
+      "remaining_scope": "Authorized visual-reference annotations and analysis remain open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E02-04",
+      "implementation": "partial",
+      "implemented_scope": "Capture claims require digest-bound source attachments; graphic study labeled",
+      "remaining_scope": "Actual reproducible capture and truth validation remain open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E03-01",
+      "implementation": "partial",
+      "implemented_scope": "Production and native inspection use the shared playhead and source revision",
+      "remaining_scope": "Full synchronized coverage across all renderers and media remains open",
+      "source_paths": [
+        "apps/studio/src/nativeInspection.ts",
+        "apps/studio/src/NativeInspectionWorkbench.tsx",
+        "tooling/creative_frame_evidence.py",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/creative-production.spec.ts",
+        "apps/studio/src/production-design.css"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E03-02",
+      "implementation": "partial",
+      "implemented_scope": "Editorial study and native source/master evidence explicitly distinguished",
+      "remaining_scope": "All progressive preview tiers and their scheduling remain open",
+      "source_paths": [
+        "apps/studio/src/nativeInspection.ts",
+        "apps/studio/src/NativeInspectionWorkbench.tsx",
+        "tooling/creative_frame_evidence.py",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/creative-production.spec.ts",
+        "apps/studio/src/production-design.css"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E03-03",
+      "implementation": "partial",
+      "implemented_scope": "Scoped edits report conservative full-scene invalidation",
+      "remaining_scope": "Dependency tails and incremental versus full-render equivalence are not implemented",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "crates/domain/src/creative_revisions.rs",
+        "apps/studio/src/CreativePatchWorkbench.tsx",
+        "crates/service/tests/creative_undo.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E03-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No new measured cache-performance contract",
+      "remaining_scope": "Stage-specific saved work and validation cost must be measured",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E04-01",
+      "implementation": "not_implemented",
+      "implemented_scope": "No admitted HyperFrames execution route",
+      "remaining_scope": "Native-preserving Broker integration and direct-versus-mediated proof required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E04-02",
+      "implementation": "partial",
+      "implemented_scope": "Declared multidimensional fidelity and explicit loss metadata",
+      "remaining_scope": "Per-property independently verified negotiation remains open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E04-03",
+      "implementation": "not_implemented",
+      "implemented_scope": "No fframes experiment or support claim",
+      "remaining_scope": "Cold/warm compile, preview, audio and render evaluation required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E04-04",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Existing Motion Canvas to MLT master path retained",
+      "remaining_scope": "General mixed-realization alpha/color transitions are not added",
+      "source_paths": [
+        "crates/native/src/lib.rs",
+        "crates/native/src/production.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E05-01",
+      "implementation": "partial",
+      "implemented_scope": "Native typographic hero in three aspects with motion and source gates",
+      "remaining_scope": "Desktop/mobile/CLI variants, broader copy matrix and human approval remain open",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs",
+        ".github/workflows/creative-conformance.yml",
+        ".github/workflows/product-hero-e2e.yml"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E05-02",
+      "implementation": "bounded_implementation",
+      "implemented_scope": "Versioned first-party instance, stable IDs and three-way overrides",
+      "remaining_scope": "Scope is ProductHeroReveal v1, not arbitrary component migrations",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E05-03",
+      "implementation": "partial",
+      "implemented_scope": "Two exact editable first-party composition families: ProductHeroReveal and SplitExplanation, three reflowed aspects, stable roles, native Film projection and source-derived Rust/Studio parity",
+      "remaining_scope": "The remaining candidate component families, real client use and individually reviewed aesthetic/render evidence are not implemented or certified",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/tests/split_explanation.rs",
+        "apps/studio/src/creativeProduction.ts",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/split-explanation.spec.ts",
+        "apps/studio/conformance/creativeParity.test.ts"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E05-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No automatic component distillation admission",
+      "remaining_scope": "Positive/negative variation evidence and owner review required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E06-01",
+      "implementation": "not_implemented",
+      "implemented_scope": "No separate BrandProfile and TasteProfile governance",
+      "remaining_scope": "Organizational rules and scoped campaign exceptions remain open",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E06-02",
+      "implementation": "partial",
+      "implemented_scope": "Bounded authored lines and content-aware three-aspect reflow",
+      "remaining_scope": "Multilingual and general layout-constraint coverage remain open",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E06-03",
+      "implementation": "not_implemented",
+      "implemented_scope": "No new unit-aware data binding contract",
+      "remaining_scope": "Measured data, formats and dependent invalidation required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E06-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No new procedural fields or repeat system",
+      "remaining_scope": "Seeded bounded generators and editable controls required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E07-01",
+      "implementation": "not_implemented",
+      "implemented_scope": "Typographic graphic study is not ProductStage",
+      "remaining_scope": "Real screen/device anchors and authorized replacement content required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E07-02",
+      "implementation": "not_implemented",
+      "implemented_scope": "No reproducible real software capture added",
+      "remaining_scope": "Versioned scenarios, data state and redactions required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E07-03",
+      "implementation": "not_implemented",
+      "implemented_scope": "No arc, dolly or focal camera rigs added",
+      "remaining_scope": "Provider limits and real temporal previews required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E07-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No new lit native Blender shot renderer",
+      "remaining_scope": "Editable geometry alone is not cinematography evidence",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E08-01",
+      "implementation": "partial",
+      "implemented_scope": "Explicit plan clock kinds and rational music beat data",
+      "remaining_scope": "Clock resolution, retiming and cue conflict propagation remain open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E08-02",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Existing voice takes, cues and locks retained",
+      "remaining_scope": "Narration replacement impact workflow is not extended here",
+      "source_paths": [
+        "crates/domain/src/creative.rs",
+        "apps/studio/src/AudioWorkspace.tsx"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E08-03",
+      "implementation": "not_implemented",
+      "implemented_scope": "No semantic event-driven sound choreography",
+      "remaining_scope": "SFX placement, energy curves and tails must reach an actual mix",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E08-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "Silent AV test audio is not sound production",
+      "remaining_scope": "Automation, ducking, loudness and intelligibility acceptance remain open",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E09-01",
+      "implementation": "partial",
+      "implemented_scope": "Native contact sheets, samples, onions and differences with source identity",
+      "remaining_scope": "Full multimodal aggregation and all providers remain open",
+      "source_paths": [
+        "apps/studio/src/nativeInspection.ts",
+        "apps/studio/src/NativeInspectionWorkbench.tsx",
+        "tooling/creative_frame_evidence.py"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E09-02",
+      "implementation": "partial",
+      "implemented_scope": "Manual source-linked findings and scoped repair review",
+      "remaining_scope": "Automated perceptual critics and complete A/B workflows remain open",
+      "source_paths": [
+        "apps/studio/src/nativeInspection.ts",
+        "apps/studio/src/NativeInspectionWorkbench.tsx",
+        "tooling/creative_frame_evidence.py",
+        "crates/domain/src/production_design.rs",
+        "crates/domain/src/creative_revisions.rs",
+        "apps/studio/src/CreativePatchWorkbench.tsx",
+        "crates/service/tests/creative_undo.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E09-03",
+      "implementation": "bounded_implementation",
+      "implemented_scope": "Technical evidence, canonical effects and creative approval stay separate",
+      "remaining_scope": "Human creative acceptance is not inferred by tests",
+      "source_paths": [
+        "apps/studio/src/nativeInspection.ts",
+        "apps/studio/src/NativeInspectionWorkbench.tsx",
+        "tooling/creative_frame_evidence.py",
+        ".github/workflows/creative-conformance.yml",
+        ".github/workflows/product-hero-e2e.yml"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E09-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No competitor superiority or equal-budget benchmark claim",
+      "remaining_scope": "Competent independent comparison including unfavorable results required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E10-01",
+      "implementation": "bounded_implementation",
+      "implemented_scope": "Scoped proposals commit through shared service with CAS and locks",
+      "remaining_scope": "Supported edit vocabulary is explicit and bounded",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "crates/domain/src/creative_revisions.rs",
+        "apps/studio/src/CreativePatchWorkbench.tsx",
+        "crates/service/tests/creative_undo.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/src/production.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E10-02",
+      "implementation": "partial",
+      "implemented_scope": "Reviewable object changes and inverse as new revision; retained journal",
+      "remaining_scope": "Audio and full dependency review remain open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "crates/domain/src/creative_revisions.rs",
+        "apps/studio/src/CreativePatchWorkbench.tsx",
+        "crates/service/tests/creative_undo.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E10-03",
+      "implementation": "partial",
+      "implemented_scope": "Compact SDK operations and bounded creative observations added",
+      "remaining_scope": "Two complete external-client workflows still need end-to-end validation",
+      "source_paths": [
+        "crates/native/src/lib.rs",
+        "crates/native/src/production.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E10-04",
+      "implementation": "partial",
+      "implemented_scope": "Ten automated revisions, persistence and conflict tests",
+      "remaining_scope": "Ten actual human requests with changed external sources are not performed",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "crates/domain/src/creative_revisions.rs",
+        "apps/studio/src/CreativePatchWorkbench.tsx",
+        "crates/service/tests/creative_undo.rs",
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E11-01",
+      "implementation": "partial",
+      "implemented_scope": "Opaque immutable source attachment without forced conversion",
+      "remaining_scope": "Typed/observable external project regions still require adapters",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E11-02",
+      "implementation": "partial",
+      "implemented_scope": "Source digest and declared support metadata preserved",
+      "remaining_scope": "Native parameters, asset graph, locks and relink execution remain open",
+      "source_paths": [
+        "crates/domain/src/production_design.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/domain/tests/production_design.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E11-03",
+      "implementation": "not_implemented",
+      "implemented_scope": "No new real-media OTIO import or NLE relink path",
+      "remaining_scope": "Bounded cut import and per-property losses remain open",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E11-04",
+      "implementation": "partial",
+      "implemented_scope": "Actual creative bundle round-trip and fresh generation tested",
+      "remaining_scope": "Arbitrary external sources and non-exportable material reporting remain open",
+      "source_paths": [
+        "crates/storage/src/lib.rs",
+        "crates/storage/tests/creative_migration.rs",
+        "crates/native/examples/native-render-e2e.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E12-01",
+      "implementation": "not_implemented",
+      "implemented_scope": "No image/video/TTS/presenter generation provider added",
+      "remaining_scope": "Rights, request provenance and result admission required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E12-02",
+      "implementation": "not_implemented",
+      "implemented_scope": "No paid pilot or production spending occurred",
+      "remaining_scope": "Budget reservations and exact approval per logical attempt required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E12-03",
+      "implementation": "not_implemented",
+      "implemented_scope": "No paid-provider unknown-outcome reconciliation added",
+      "remaining_scope": "Durable provider task lookup before mutation retry required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E12-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No synthetic identity pipeline added",
+      "remaining_scope": "Origin, purpose and consent receipts remain required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E13-01",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Existing skill material is not execution authority",
+      "remaining_scope": "Versioned creative skill/evaluator bundles are not added here",
+      "source_paths": [
+        "apps/desktop/src-tauri/src/effect_grants.rs",
+        "crates/domain/src/extensions.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E13-02",
+      "implementation": "not_implemented",
+      "implemented_scope": "No dynamic code promotion or installation system added",
+      "remaining_scope": "Disposable experiment and explicit owner admission required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E13-03",
+      "implementation": "partial",
+      "implemented_scope": "Existing effects/grants retained; capsule attachment never installs code",
+      "remaining_scope": "Complete skill/package operation-level admission remains open",
+      "source_paths": [
+        "apps/desktop/src-tauri/src/effect_grants.rs",
+        "crates/domain/src/extensions.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/src/production.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E13-04",
+      "implementation": "partial",
+      "implemented_scope": "First-party inspection methods declare version, units and limitations",
+      "remaining_scope": "Dynamic verifier admission is not implemented",
+      "source_paths": [
+        "apps/studio/src/nativeInspection.ts",
+        "apps/studio/src/NativeInspectionWorkbench.tsx",
+        "tooling/creative_frame_evidence.py"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E14-01",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Existing linked output profiles and overrides retained",
+      "remaining_scope": "Global campaign/brand propagation not extended here",
+      "source_paths": [
+        "crates/domain/src/delivery.rs",
+        "apps/studio/src/DeliveryProfiles.tsx"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E14-02",
+      "implementation": "partial",
+      "implemented_scope": "Hero hierarchies reflow across three native aspect outputs",
+      "remaining_scope": "Medium-specific narrative cuts, duration and human rhythm review remain open",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/src/expressive.rs",
+        "crates/native/src/component_text.rs",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "crates/native/tests/product_hero.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E14-03",
+      "implementation": "partial",
+      "implemented_scope": "Three exact native H264/AAC test masters verified",
+      "remaining_scope": "Broader profile and audible sync/quality acceptance remain open",
+      "source_paths": [
+        ".github/workflows/creative-conformance.yml",
+        ".github/workflows/product-hero-e2e.yml",
+        "crates/native/src/lib.rs",
+        "crates/native/src/production.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E14-04",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Existing immutable handoff bindings retained",
+      "remaining_scope": "New claims/rights/creative-approval handoff is not validated end to end",
+      "source_paths": [
+        "crates/domain/src/integrations.rs",
+        "apps/studio/src/IntegrationsWorkspace.tsx"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E15-01",
+      "implementation": "partial",
+      "implemented_scope": "Production workstation, keyboard-native controls, errors and review tools",
+      "remaining_scope": "Full user journey and accessibility acceptance remain open",
+      "source_paths": [
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/creative-production.spec.ts",
+        "apps/studio/src/production-design.css"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E15-02",
+      "implementation": "not_implemented",
+      "implemented_scope": "No runtime installer or new doctor workflow added",
+      "remaining_scope": "Explicit profile installation, size, destination and rollback required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E15-03",
+      "implementation": "inherited_not_reassessed",
+      "implemented_scope": "Local service remains useful without a parallel Platform backend",
+      "remaining_scope": "New remote identity/usage/Teams adapter is not implemented",
+      "source_paths": [
+        "apps/studio/src/WorkflowWorkspace.tsx",
+        "crates/service/src/jobs.rs"
+      ],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    },
+    {
+      "id": "MW05-E15-04",
+      "implementation": "not_implemented",
+      "implemented_scope": "No three-workflow user value or preference pilot",
+      "remaining_scope": "First useful result, reuse and revision-ten measurements required",
+      "source_paths": [],
+      "complete_requirement_acceptance": "NOT_COMPLETED"
+    }
+  ]
+}

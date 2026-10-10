@@ -25,9 +25,9 @@ The desktop editor is organized around:
 - **Workflows** — explicit Semwright recording, trace compilation, advisory patterns/suggestions, exact proposal acceptance, candidate verification, replay and promotion through canonical Broker/Policy gates; no background recording or parallel workflow store.
 - **Alternatives** — synchronized A/B/C comparison and explicit selection/merge into reviewable changes.
 - **Changes** — recent-first paged committed event history, branches, semantic diffs, conflict-aware merges and restore-as-new-change (see [journal pagination](docs/history-pagination.md) and [Native SDK array pagination](docs/native-scope-pagination.md)).
-- **Dependencies** — canonical Project Graph projections and honest CURRENT / STALE / UNKNOWN status.
+- **Dependencies** — honest, recorded local VoiceTrack→asset references and explicit [SHA-256 asset integrity inspection](docs/asset-integrity.md); canonical Project Graph CURRENT / STALE / UNKNOWN authority remains upstream, never inferred from asset list position.
 - **Review** — technical findings separated from creative critique and comments anchored to frame/object/beat/revision.
-- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, [read-only canonical Film preflight](docs/film-preflight.md), [static native camera pan](docs/native-film-static-pan.md), [native linear position motion](docs/native-linear-position-motion.md), explicit native Motion Canvas segment production, [read-only multi-segment source preflight](docs/multi-segment-preflight.md), [deterministic MLT edit/FFV1 source preparation](docs/mlt-multi-segment-preparation.md) and an [experimental video-only semantic MLT timeline assembler](docs/mlt-native-timeline.md) and [single-segment H.264/AAC mastering](docs/desktop-av-master.md) from measured voice with [bounded real MP4/AAC playback](docs/native-av-review.md) and [verified local MP4 delivery](docs/master-verified-export.md), fail-closed WebVTT/SRT sidecars, and portable project exports.
+- **Deliver** — editable 16:9, 9:16, 1:1 or custom profiles, language/cut/brand intent, codecs/audio profiles, [read-only canonical Film preflight](docs/film-preflight.md), [static native camera pan](docs/native-film-static-pan.md), [native linear position motion](docs/native-linear-position-motion.md), explicit native Motion Canvas segment production, [read-only multi-segment source preflight](docs/multi-segment-preflight.md), [deterministic MLT edit/FFV1 source preparation](docs/mlt-multi-segment-preparation.md), [source-bound multisegment audio readiness](docs/mlt-multisegment-audio-readiness.md), an [experimental video-only semantic MLT timeline assembler](docs/mlt-native-timeline.md) that does not deliver a final multi-segment master, and [single-segment H.264/AAC mastering](docs/desktop-av-master.md) with a [decoded-content CI gate](docs/native-av-decoded-content.md), from measured voice with [bounded real MP4/AAC playback](docs/native-av-review.md) and [verified local MP4 delivery](docs/master-verified-export.md) with optional [portable SHA-256 receipt](docs/portable-mp4-integrity.md) and [read-only in-app local verification](docs/local-mp4-integrity-review.md), fail-closed WebVTT/SRT sidecars, and portable project exports.
 
 ## Product acceptance and independent evidence
 
@@ -83,7 +83,7 @@ docs/
 
 The workstation is intentionally kept light. Source-format checks and small unit checks may run locally. Cargo builds/tests/clippy/docs, browser suites, Tauri bundling, native driver integration, rendering, coverage, fuzzing and large media fixtures run in GitHub Actions.
 
-Candidate packaging is also CI-only. Linux AppImage/Debian, current-user Windows NSIS and macOS DMG artifacts are hashed into exact-source receipts; they are not automatically published, signed, notarized or promoted to a release.
+Candidate packaging is also CI-only. Linux AppImage/Debian, current-user Windows NSIS and macOS DMG artifacts are hashed into exact-source receipts. The [isolated installed-package smoke gates](docs/installed-candidate-smoke.md) additionally inspect extracted/deployed binaries, require a rootless Linux AppImage window and exercise a silent Windows current-user installation on disposable runners. No result implies signing, notarization, human install approval or automatic release publication.
 
 ## Licensing
 
@@ -100,3 +100,7 @@ The concrete WebView, controlled-import, portable-bundle and exact-source delive
 ## Acceptance status
 
 Implementation status and product acceptance are intentionally separate. The public ledger in `docs/acceptance/` contains all 208 requirement IDs and 60 acceptance IDs without publishing the private specification text. CI rejects missing IDs and refuses product `PASS` without evidence plus independent review.
+
+## Creative production expansion
+
+The v0.5 creative-production branch adds an implemented, bounded workstation slice; it is not a completed v0.5 release. See [creative production](docs/creative-production/README.md) for editable components, native inspection, scoped undo, portable design samples, document-format migration and explicit remaining work. [The expansion ledger](docs/creative-production/requirements-status.json) preserves all 64 expansion IDs separately from the original acceptance history.

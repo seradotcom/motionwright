@@ -30,6 +30,22 @@ GitHub Actions receipts must identify app SHA, Semwright pin, suite, environment
 
 The `Canonical Graph and Effects` workflow is exact-SHA evidence for adapter compatibility. It runs Semwright's own Project Graph adapter and Effect Conformance suites from the pinned source before Motionwright's wrapper tests. A green lane proves the consumer boundary compiles and preserves the upstream contracts; it does **not** claim Graph admission, render success, or a product-level Effects PASS for a Motionwright deliverable.
 
+## Automated desktop candidate install/extraction inspection
+
+The Candidate Packages workflow verifies exact bundle SHA-256 against its source receipt, extracts Linux Debian/AppImage bundles, inspects real installed PE/Mach-O/ELF executable identity and desktop/bundle metadata, performs a disposable NSIS current-user installation and checks a rootless Xvfb AppImage window. Its 9 Python adversarial unit tests refuse altered archives, mismatched Semwright/source stamps, architecture/metadata substitution and fabricated GUI evidence. These checks are explicitly [automated package smoke](installed-candidate-smoke.md), **not human-installed platform acceptance**, media compatibility, notarization or publication.
+
+## App-owned CAS filesystem shard boundary
+
+Rust storage tests cover non-overwriting SHA-256 source admission, owner-private Unix files, symlinked staging/root/digest shard refusal, arbitrary-source path denial and the same fail-closed policy in reads, asset registration and portable export. See [CAS shard boundary](cas-shard-boundary.md). These are code-level security regressions, not end-user product acceptance.
+
+## Local asset integrity and truthful Dependencies
+
+An explicit read-only [local SHA-256 asset audit](asset-integrity.md) checks exact versioned asset-digest references in bounded pages. Rust tests ingest and alter real content-addressed files, inspect duplicate and missing references, reject symlinks and stale cursors, and confirm no project edits. Synthetic Chromium tests exercise opt-in paging, source revision and voice-track associations without claiming Project Graph or owner filesystem evidence. The browser demo remains Not checked.
+
+## Native SDK read-only asset integrity scope
+
+Native SDK integration tests import a genuine CAS blob, reference it through 19 application-owned assets and enumerate every status in three source-versioned pages without exposing raw paths or digests. They reject malformed/size-switched/forged cursors and a continuation from an older creative revision. The observer hashes only project-owned digests in a bounded worker; `complete` means list coverage, not universal byte verification or Project Graph admission. See [asset integrity](asset-integrity.md).
+
 ## Native SDK project-scope enumeration
 
 Source-bound Rust tests enumerate 271 project-owned records with several bounded Native SDK page limits, verifying complete, ordered, nonoverlapping coverage and reject invalid offsets, wrong-scope cursors and stale creative revisions. Integration writes eleven real scenes and checks both Timeline and Canvas native observation pagination end-to-end through StudioService. Production Jobs use a separate [append-only receipt watermark and keyset history](production-receipt-pagination.md), rather than a project-revision-only offset cursor; the latest-window Studio UI stays lightweight, while a separately requested [Full history](production-jobs-history.md) view walks bounded job pages with explicit stale-receipt recovery. The browser regression uses synthetic Tauri transport to check 42 jobs over three pages and does not infer Driver Host state. See [Native SDK scope pagination](native-scope-pagination.md).
@@ -66,9 +82,13 @@ A separate owner-only native-semantic MLT runner builds a project/sequence/track
 
 A deterministic, owner-only MLT timeline recipe maps each preflight segment to an exact half-open clip interval, stable SHA-256-derived FFV1 output name and pinned landscape profile. Rust tests verify source/scene/job uniqueness, gap-free frame accounting and no generated media claims. The internal production coordinator revalidates the native source preflight before invoking the pinned Semwright MLT frames encoder per segment, verifies video-only FFV1 codec/size/FPS and checks actual artifact bytes. These are separate verified intermediates, **not** a completed multisegment MP4; see [MLT preparation](mlt-multi-segment-preparation.md).
 
+## Bounded multisegment audio/video source readiness
+
+A separate Rust native preflight checks that verified per-segment FFV1 files and the exact saved 48kHz stereo WAV from the app-owned CAS belong to one project/profile/creative revision. It rehashes actual source files within strict byte ceilings, checks the entire WAV RIFF chunk index, actual 48 kHz stereo PCM/float header and sample-frame count, rejects changed/missing/stale media and unimplemented mix/burn-in claims, and aligns the voice duration to the exact rational output FPS within one 48kHz sample. Tests use synthetic FFV1 file bytes and a real test WAV, so no actual MLT mux or decoded AV success is inferred. See [multisegment audio readiness](mlt-multisegment-audio-readiness.md).
+
 ## Multi-segment native MLT source conformance
 
-Rust tests compile 33 authored Motion Canvas scenes into canonical 32+1 native Film segments and check an exact, manifest-SHA-verified 990-frame MLT assembly preflight. They reject stale project revisions, duplicated job references, segment reordering, altered native verdicts, tampered manifest bytes, missing source segments, mixed-renderer cuts and unsupported portrait-only MLT output. **This is read-only source preparation, not a rendered multi-segment master.** See [multi-segment MLT source preflight](multi-segment-preflight.md).
+Rust tests compile 33 authored Motion Canvas scenes into canonical 32+1 native Film segments and check an exact, manifest-SHA-verified 990-frame MLT assembly preflight. They reject stale project revisions, duplicated job references, segment reordering, altered native verdicts, tampered manifest bytes, missing source segments, mixed-renderer cuts and unsupported portrait-only MLT output. The desktop includes an opaque-token-bound **read-only readiness** command, with synthetic browser tests verifying exact request identity, no user-provided paths/hashes, and explicit differentiation between manifest preparation and an actual finished MP4. **This is read-only source preparation, not a rendered multi-segment master.** See [multi-segment MLT source preflight](multi-segment-preflight.md).
 
 ## Native Film semantic preflight
 
@@ -81,6 +101,10 @@ When both a verified Motion Canvas segment and the corresponding MLT H.264/AAC m
 ## Bounded in-app native AV review
 
 The desktop may read a previously authenticated Semwright H.264/AAC MP4 into WebView media memory **only** on explicit user request, using the session export token and a source/project revision match. Rust tests verify exact SHA-256 source bytes, invalid ftyp, stale project, source tampering and 16 MiB cap; synthetic Chromium tests confirm read-only token-only IPC and opt-in UI flow, but do not claim actual decoder compatibility. See [native AV review](native-av-review.md). Larger masters remain available through streaming verified MP4 export.
+
+## Portable MP4 SHA-256 proof and offline verification
+
+The owner-authorized desktop MP4 export can optionally write a create-new portable integrity JSON in the same directory, with a relative basename, source revision and the actual verified MP4 SHA-256. Rust tests cover manifest content, no overwrite, tamper refusal, private paths omitted and Unix mode 0600. The standard-library-only Python verifier hashes bytes in bounded chunks and rejects altered/missing files, symlinks, traversal, malformed origin/codec/FPS/digest, invalid MP4 signature and forged external anchors. Synthetic Chromium confirms explicit opt-in and a source-bound export request. These are **unsigned content-consistency checks**; they do not authenticate the creator or imply video-quality approval. See [portable MP4 proof](portable-mp4-integrity.md).
 
 ## Verified local native MP4 delivery
 
@@ -97,10 +121,17 @@ A new exact-time Film unit gate reproduces 33 authored 1/30-second scenes and re
 ## Multi-segment native renderer diagnostics
 
 The isolated, expensive CI lane exercises an actual 33-scene two-segment render at the pinned 30 fps, with 33 exact 1/30-second authored scene intervals, using the pinned Semwright Motion Canvas/MLT providers. Its original fixture failure came from expecting one deliverable when the canonical project has three; the corrected fixture selects the existing master without deleting valid profiles. A separate native render failure is recorded as an exact, allowlisted `RenderFailureClass` label and 1-based segment index; raw driver text cannot reach user-visible errors or public CI. CI then inspects only the pinned provider's optional exact-name private failure receipt **before disposing of its own output directory**, publishing a bounded fixed-vocabulary `safe-observation-failure.json`; five adversarial tests assert path/redaction, symlink and malformed-receipt denial. No raw stack/receipt is archived. An independent Rust unit regression rejects malicious/fabricated class names. Neither partial results nor a green synthetic regression is accepted as a successful MLT output. See [experimental MLT timeline](mlt-native-timeline.md).
+## Native provider-generation loss and conservative recovery
+
+Both the exact-SHA Motion Canvas-only renderer lane and the separate Motion Canvas → Semwright Driver Host → MLT AV lane now capture passive CI-only process and RSS samples, cgroup OOM counters and daemon exit status before owner teardown. Comparing them helps distinguish errors arising before and after MLT is provisioned, without attributing a root cause from correlations. Typed, redacted status/error timelines are retained separately from raw private receipts. Rust tests require that a failed status read after an acknowledged render start remains `outcome_known=false` and cannot be reported as confirmed RUNNING, FAILURE or SUCCESS. Synthetic Python tests reproduce Timeout followed by an inactive provider and prevent cross-job result substitution. See [provider lifecycle finding #49](reliability/provider-generation-loss.md); these tests do not establish that the pinned Driver Host bug is fixed.
+
+## Independent portable MP4 inspection
+
+The desktop's read-only Tauri verifier consumes an existing unsigned receipt plus a same-folder MP4. Linux CI runs its Rust unit tests for checksum matching, tampered bytes, malformed receipts, unpaired names, traversal and symlinks; browser CI runs synthetic transport tests for deliberate user action, no mutating effect grant, stale-success clearing, and accurate disclaimers. Python's standalone content-verifier tests are separate. These do not certify producer identity, media playback or any independent product acceptance ID. See [local MP4 verification](local-mp4-integrity-review.md).
 
 ## Canonical desktop AV mastering
 
-The desktop MLT AV workflow passes only an authenticated native frame-session token and an already-saved, measured 48 kHz stereo WAV voice take ID. Rust tests validate source CAS digests, refuse stale/mono/non-WAV/unbound inputs, reject WAV length/rate/symlink/tamper, verify deterministic staging and bounded idempotent reuse of exact source SHA, refuse corrupted prior files, and check rational audio/video duration to one sample. The browser tests use an explicitly synthetic Tauri bridge to prove the UI never supplies arbitrary source paths or master evidence. Actual Semwright Broker/MLT H.264/AAC MP4 output remains covered by the exact-SHA [native AV master E2E lane](desktop-av-master.md) and requires independent product acceptance.
+The desktop MLT AV workflow passes only an authenticated native frame-session token and an already-saved, measured 48 kHz stereo WAV voice take ID. Rust tests validate source CAS digests, refuse stale/mono/non-WAV/unbound inputs, reject WAV length/rate/symlink/tamper, verify deterministic staging and bounded idempotent reuse of exact source SHA, refuse corrupted prior files, and check rational audio/video duration to one sample. The browser tests use an explicitly synthetic Tauri bridge to prove the UI never supplies arbitrary source paths or master evidence. Actual Semwright Broker/MLT H.264/AAC MP4 output remains covered by the exact-SHA [native AV master E2E lane](desktop-av-master.md), now with an independent [decoded media content probe](native-av-decoded-content.md) that refuses a static H.264 sequence or silent/swapped 440/660 Hz stereo AAC. That two-second fixture check does not replace independent product acceptance.
 
 ## Source-verified rendered frame readback
 

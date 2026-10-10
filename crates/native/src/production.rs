@@ -791,6 +791,8 @@ fn response_data(value: &Value) -> NativeResult<&Value> {
 }
 
 fn retryable_motion_status_error(error: &Error) -> bool {
+    // Only an ordinary read-only Timeout gets another fresh status request.
+    // Lost provider generations must NOT restart a mutating render job.
     error.code == ErrorCode::Timeout
 }
 
@@ -859,6 +861,24 @@ fn motion_failure_class(data: &Value) -> &'static str {
         .copied()
         .find(|name| Some(*name) == reported)
         .unwrap_or("unclassified")
+}
+
+/// A render-start was already acknowledged. A failed status observation
+/// cannot establish whether that independently running job has completed,
+/// crashed, or is still rendering. Preserve the original typed error code
+/// and native diagnostic, but keep the *render operation* outcome UNKNOWN.
+/// Never interpret an Unavailable provider generation as a known render fail
+/// or generate a replacement render.start with a fresh mutation identity.
+fn unconfirmed_started_motion_render(mut error: Error) -> Error {
+    error.message = format!(
+        "Motion Canvas render started but its terminal result is unconfirmed ({:?}). \
+         Reconcile the original job/request receipt with canonical Broker/Driver Host evidence; \
+         do not redispatch a render automatically.",
+        error.code
+    );
+    error
+        .uncertain()
+        .recipe_progress(1, "driver.motion-canvas.render.start")
 }
 
 fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<String> {
@@ -1072,9 +1092,11 @@ impl ProductionCoordinator {
                         sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
                         continue;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(unconfirmed_started_motion_render(error)),
                 };
-                let data = response_data(&status)?.clone();
+                let data = response_data(&status)
+                    .map_err(unconfirmed_started_motion_render)?
+                    .clone();
                 match data.get("state").and_then(Value::as_str) {
                     Some("succeeded") => break data,
                     Some("failed") => {
@@ -1095,14 +1117,14 @@ impl ProductionCoordinator {
                     }
                     Some("queued") | Some("starting") | Some("rendering") => {}
                     Some(_) => {
-                        return Err(backend(
+                        return Err(unconfirmed_started_motion_render(backend(
                             "Motion Canvas render returned an unsupported job state",
-                        ));
+                        )));
                     }
                     None => {
-                        return Err(backend(
+                        return Err(unconfirmed_started_motion_render(backend(
                             "Motion Canvas render status returned no canonical state",
-                        ));
+                        )));
                     }
                 }
                 poll = poll
@@ -2315,6 +2337,78 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert_eq!(error.code, ErrorCode::PermissionDenied);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn started_motion_render_reuses_exact_mutation_receipt_and_preserves_unknown_status() {
+        let (service, project, temp) = fixture_service();
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let coordinator = ProductionCoordinator::new(service, connection).unwrap();
+        let expected = RevisionStamp::from(&project);
+        let args = json!({
+            "expected_fingerprint": "a".repeat(64),
+            "profile": {
+                "first_frame": 0,
+                "end_frame_exclusive": 60,
+                "scale": "full",
+                "transparent": false,
+                "timeout_ms": 300_000
+            }
+        });
+        let started = coordinator
+            .execute(
+                project.id,
+                &expected,
+                "reliability-same-job-start",
+                "driver.motion-canvas.render.start",
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(started["replayed"], false);
+        let same = coordinator
+            .execute(
+                project.id,
+                &expected,
+                "reliability-same-job-start",
+                "driver.motion-canvas.render.start",
+                args,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(same["replayed"], true);
+        assert_eq!(coordinator.receipts(project.id, 20).unwrap().len(), 2);
+        assert_eq!(
+            coordinator
+                .receipts(project.id, 20)
+                .unwrap()
+                .iter()
+                .filter(|receipt| {
+                    receipt.command == "driver.motion-canvas.render.start"
+                        && receipt.stage == "dispatching"
+                })
+                .count(),
+            1,
+            "a reentered request must not execute another native render mutation"
+        );
+
+        let inactive = unconfirmed_started_motion_render(Error::new(
+            ErrorCode::Unavailable,
+            "Provider capability generation is inactive",
+        ));
+        assert!(!inactive.outcome_known);
+        assert!(inactive.message.contains("Reconcile the original job"));
+        assert!(
+            coordinator
+                .receipts(project.id, 20)
+                .unwrap()
+                .iter()
+                .all(|receipt| receipt.command != "driver.motion-canvas.render.result"),
+            "an unconfirmed job must never invent a verified native result"
+        );
+    }
+
     #[test]
     fn motion_status_retry_is_narrowly_limited_to_timeouts() {
         let timeout = Error::new(ErrorCode::Timeout, "status observation timed out").uncertain();
@@ -2324,6 +2418,26 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(retryable_motion_status_error(&timeout));
         assert!(!retryable_motion_status_error(&unavailable));
         assert!(!retryable_motion_status_error(&backend_failed));
+
+        let abandoned = unconfirmed_started_motion_render(unavailable);
+        assert_eq!(abandoned.code, ErrorCode::Unavailable);
+        assert!(!abandoned.outcome_known);
+        assert!(abandoned.message.contains("Reconcile the original job"));
+        assert!(abandoned.message.contains("do not redispatch"));
+        assert_eq!(
+            abandoned
+                .progress
+                .expect("known job start must be retained")
+                .failed_step,
+            "driver.motion-canvas.render.start"
+        );
+
+        let broken_status = unconfirmed_started_motion_render(backend_failed);
+        assert_eq!(broken_status.code, ErrorCode::BackendFailed);
+        assert!(!broken_status.outcome_known);
+        let timed_out = unconfirmed_started_motion_render(timeout);
+        assert_eq!(timed_out.code, ErrorCode::Timeout);
+        assert!(!timed_out.outcome_known);
     }
 
     #[test]

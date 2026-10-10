@@ -17,8 +17,10 @@ import subprocess
 import tempfile
 import time
 import tomllib
-import wave
 from pathlib import Path
+
+from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
+from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -28,7 +30,18 @@ SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_BIN = ROOT / "target" / "debug" / "examples" / "native-render-e2e"
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
-EVIDENCE = ROOT / "verification" / "native-av-master-e2e" / GITHUB_SHA
+FIXTURE = os.environ.get("MOTIONWRIGHT_E2E_FIXTURE", "baseline")
+HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (1080, 1080),
+                "split-landscape": (1920, 1080), "split-portrait": (1080, 1920),
+                "split-square": (1080, 1080)}
+if FIXTURE not in {"baseline", *HERO_ASPECTS}:
+    raise SystemExit("unknown bounded E2E fixture")
+IS_HERO = FIXTURE != "baseline"
+EXPECTED_FRAMES = 180 if IS_HERO else 60
+EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
+EVIDENCE = ROOT / "verification" / ("product-hero-e2e" if IS_HERO else "native-av-master-e2e") / GITHUB_SHA
+if IS_HERO:
+    EVIDENCE = EVIDENCE / FIXTURE
 
 
 def digest(path: Path) -> str:
@@ -146,9 +159,14 @@ def main() -> None:
         )
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if (seeded["width"], seeded["height"]) != (1920, 1080):
+        seed_command = [str(MW_BIN), "seed", str(database)]
+        if IS_HERO:
+            seed_command = [str(MW_BIN), "seed-hero", str(database), FIXTURE, str(EVIDENCE / "editable-project.json")]
+        seeded = run_json(seed_command, env=env)
+        if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
+        if IS_HERO and seeded.get("fixture") != ("split-explanation/1" if FIXTURE.startswith("split-") else "product-hero-reveal/1"):
+            raise AssertionError("Native composition fixture does not match the requested semantic family")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -360,6 +378,12 @@ def main() -> None:
             stderr=log_stream,
             start_new_session=True,
         )
+        # CI-only, passive process / memory sampling while the real pinned
+        # providers run. Never reads argv/env/secrets and never retries jobs.
+        lifecycle = ProviderLifecycleSampler(
+            daemon, EVIDENCE / "native-provider-lifecycle.json", interval=2.0
+        )
+        lifecycle.start()
 
         try:
             wait_for_socket(daemon, socket, daemon_log)
@@ -431,18 +455,30 @@ def main() -> None:
                 },
             )
 
-            result = run_json(
-                [
-                    str(MW_BIN),
-                    "render",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "motionwright-render-evidence.json"),
-                ],
-                env=env,
-                timeout=420,
-            )
-            if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
+            try:
+                result = run_json(
+                    [
+                        str(MW_BIN),
+                        "render",
+                        str(database),
+                        str(connection_path),
+                        str(EVIDENCE / "motionwright-render-evidence.json"),
+                    ],
+                    env=env,
+                    timeout=420,
+                )
+            except Exception:
+                if IS_HERO:
+                    # Failed native evidence is retained as explicitly unverified
+                    # diagnostic imagery, never promoted to a delivery receipt.
+                    candidates = list(paths["output"].glob("*/frames/*.png"))
+                    if len(candidates) <= 36000:
+                        for index, frame in enumerate(sorted(candidates)):
+                            if index in (0, 20, 44, 60, 179) and frame.is_file() and not frame.is_symlink() and frame.stat().st_size <= 16*1024*1024:
+                                if frame.resolve().is_relative_to(paths["output"].resolve()):
+                                    shutil.copyfile(frame, EVIDENCE / f"UNVERIFIED-native-frame-{index:06d}.png")
+                raise
+            if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 
             artifact = result["artifact"]
@@ -452,7 +488,7 @@ def main() -> None:
             artifact_root = paths["output"] / directory
             manifest_file = artifact_root / "artifact-manifest.json"
             frames = sorted((artifact_root / "frames").glob("*.png"))
-            if not manifest_file.is_file() or len(frames) != 60:
+            if not manifest_file.is_file() or len(frames) != EXPECTED_FRAMES:
                 raise AssertionError(
                     f"native artifact is incomplete: manifest={manifest_file.is_file()} "
                     f"frames={len(frames)}"
@@ -472,13 +508,16 @@ def main() -> None:
             ]:
                 shutil.copyfile(source, EVIDENCE / name)
 
+            if IS_HERO:
+                from creative_frame_evidence import inspect_native_frames
+                inspect_native_frames(frames, EVIDENCE, EXPECTED_SIZE, project=seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
+
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
-            with wave.open(str(audio_path), "wb") as stream:
-                stream.setnchannels(2)
-                stream.setsampwidth(2)
-                stream.setframerate(48_000)
-                stream.writeframes(b"\x00\x00\x00\x00" * 96_000)
+            # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
+            # design. Use exact 2s baseline or 6s hero duration; the full
+            # native AV decode must check actual samples for both.
+            write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
 
@@ -510,6 +549,20 @@ def main() -> None:
                 raise AssertionError("AV master bytes do not match the reported artifact digest")
             shutil.copyfile(master_path, EVIDENCE / "motionwright-master.mp4")
 
+            # Canonical receipts prove bytes; independent ffmpeg/ffprobe
+            # decodes the exact 60-frame baseline or 180-frame hero profile.
+            # Both require measured non-silent, distinct stereo channel tones
+            # and native pixel movement. No decoder runs in the shipped app.
+            decoded = probe_native_mp4(
+                master_path, audio_path, ffmpeg, ffprobe,
+                expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
+            )
+            if decoded["master_sha256"] != master_sha256:
+                raise AssertionError("Decoded-media sample came from a different MP4 digest")
+            if decoded["source_wav_sha256"] != audio_sha256:
+                raise AssertionError("Decoded-media probe used a different WAV source")
+            write_private_json(EVIDENCE / "decoded-media-proof.json", decoded)
+
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -528,9 +581,17 @@ def main() -> None:
                     "artifact_directory": directory,
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
+                    "fixture": FIXTURE,
+                    "creative_approval": "required" if IS_HERO else "not_assessed",
+                    "audio_kind": "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design",
                     "audio_sha256": audio_sha256,
                     "master_path": master_relative,
                     "master_sha256": master_sha256,
+                    "decoded_content_check": decoded["evidence_scope"],
+                    "decoded_stereo_channel_identity": decoded["stereo_channel_identity"],
+                    "decoded_moving_frame_channels": decoded["changed_channel_bytes"],
+                    "decoded_video_frames": decoded["video_frames_decoded"],
+                    "decoded_pcm_frames": decoded["decoded_pcm_frames"],
                     "review_frames": {
                         "first_sha256": digest(EVIDENCE / "frame-first.png"),
                         "middle_sha256": digest(EVIDENCE / "frame-middle.png"),
@@ -539,15 +600,36 @@ def main() -> None:
                 },
             )
         finally:
-            if daemon.poll() is None:
-                pid = daemon.pid
-                daemon.terminate()
+            # A malformed optional diagnostic must never mask the original
+            # native failure or prevent cleanup of the pinned Driver Host.
+            try:
+                diagnostic = EVIDENCE / "motionwright-render-diagnostic.json"
+                if diagnostic.is_file() and 0 < diagnostic.stat().st_size <= 2 * 1024 * 1024:
+                    try:
+                        incident = json.loads(diagnostic.read_text(encoding="utf-8"))
+                        report = summarize_render_receipts(incident.get("receipts"))
+                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", report)
+                    except (OSError, ValueError, TypeError, UnicodeError) as error:
+                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", {
+                            "schema": "motionwright-ci-render-status-reconciliation/1",
+                            "render_outcome": "not_proven",
+                            "diagnostic_parse_error_class": type(error).__name__,
+                        })
+                # Finish *before* intentional owner shutdown so teardown is
+                # not confused with an unexpected process failure.
+                lifecycle.stop()
+            finally:
                 try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pid, signal.SIGKILL)
-                    daemon.wait(timeout=5)
-            log_stream.close()
+                    if daemon.poll() is None:
+                        pid = daemon.pid
+                        daemon.terminate()
+                        try:
+                            daemon.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(pid, signal.SIGKILL)
+                            daemon.wait(timeout=5)
+                finally:
+                    log_stream.close()
 
     print(
         json.dumps(

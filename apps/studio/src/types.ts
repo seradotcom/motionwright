@@ -1,3 +1,4 @@
+import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
 export type RendererKind =
@@ -12,7 +13,7 @@ export type CoordinateSpace = "project_pixels" | "normalized" | "scene_local";
 export type NodeProperty = "position" | "size" | "rotation" | "opacity" | "text" | "style" | "parent" | "order";
 export type BlendMode = "normal" | "multiply" | "screen" | "add";
 export type MotionProperty = "x" | "y" | "width" | "height" | "rotation_deg" | "opacity";
-export type MotionInterpolation = "hold" | "linear" | "ease_in_out";
+export type MotionInterpolation = "hold" | "linear" | "ease_in_out" | "ease_out_cubic";
 export type RelationKind = "align_left" | "align_center_x" | "align_right" | "align_top" | "align_center_y" | "align_bottom" | "follow" | "attach";
 
 export interface RationalTime { num: string; den: string; }
@@ -82,6 +83,7 @@ export interface Branch {
   base_revision: number; head_revision: number; protected: boolean; created_at: string;
 }
 export interface BranchState {
+  production_design?: ProductionDesign;
   scenes: Scene[]; markers: Marker[]; locks: ProjectLock[]; deliverables: DeliverableProfile[];
   brief: Brief; narrative: Narrative; audio: AudioState; visual_language: VisualLanguage;
   proposal_sets: ProposalSet[]; model_invocations: ModelInvocationReceipt[];
@@ -107,6 +109,25 @@ export interface MergeRecord {
 export interface Asset {
   id: string; name: string; media_type: string;
   content_sha256: string | null; source_revision: string | null;
+}
+
+/** SHA-256 state of an existing content-addressed local file, never Project Graph admission. */
+export type AssetIntegrityStatus = "verified" | "missing" | "corrupt" | "unsafe" |
+  "unreadable" | "not_content_addressed" | "deferred_by_budget";
+export interface AssetIntegrityRecord {
+  asset_id: string;
+  status: AssetIntegrityStatus;
+  size_bytes: number | null;
+}
+export interface AssetIntegrityPage {
+  project_id: string;
+  generation: string;
+  revision: number;
+  total_assets: number;
+  items: AssetIntegrityRecord[];
+  next: number | null;
+  complete: boolean;
+  checked_bytes: number;
 }
 
 export type ExtensionKind =
@@ -391,6 +412,26 @@ export interface MotionCanvasRenderEvidence {
   preview?: NativePreviewGrant[];
 }
 
+/** Read-only, session-authorized native multi-segment manifest/Film check.
+ * It is not a completed MLT render and intentionally contains no paths.
+ */
+export interface MultiSegmentReadinessReport {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  verdict: "source_manifest_ready";
+  mlt_profile: "h264-1080p" | "h264-720p";
+  total_frames: number;
+  segments: Array<{
+    segment_id: string;
+    scene_ids: string[];
+    start_frame: number;
+    frame_count: number;
+  }>;
+  evidence_scope: "manifest-digest-verified-not-composited-mp4";
+}
+
 export interface MltAudioArtifact {
   relative_path: string;
   sha256: string;
@@ -409,6 +450,18 @@ export interface AvSyncSpec {
   cues: AvSyncCue[];
 }
 
+export interface PortableMediaVerification {
+  status: "sha256-content-verified";
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  /** String preserves the exact u64 revision without JavaScript rounding. */
+  source_revision: string;
+  signed_authenticity: false;
+  human_acceptance: false;
+  trusted_anchor_matched: boolean;
+}
+
 export interface MasterExportReceipt {
   destination: string;
   size_bytes: number;
@@ -416,6 +469,8 @@ export interface MasterExportReceipt {
   revision: number;
   deliverable_id: string;
   source_current: boolean;
+  /** Optional unsigned local integrity descriptor, not an authenticity signature. */
+  integrity_manifest_path?: string | null;
 }
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */
@@ -488,6 +543,7 @@ export interface WorkflowOverview {
 }
 
 export interface Project {
+  production_design?: ProductionDesign;
   schema_version: number; id: string; generation: string; revision: number;
   title: string; state: ProjectState; active_branch: string;
   branches: Branch[]; branch_workspaces: BranchWorkspace[];
@@ -500,6 +556,12 @@ export interface Project {
 }
 
 export type Change =
+  | { type: "undo_creative_patch"; patch_id: string }
+  | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
+  | { type: "detach_product_hero"; instance_id: string }
+  | { type: "set_production_plan"; plan: ProductionPlan | null }
+  | { type: "upsert_native_capsule"; capsule: NativeCapsule }
+  | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }
   | { type: "set_brief"; objective: string; audience: string; constraints: string[]; exclusions: string[] }
   | { type: "set_narrative_premise"; premise: string }

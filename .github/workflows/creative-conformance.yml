@@ -1,0 +1,82 @@
+name: Creative Rust and Studio Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/**', main]
+    paths:
+      - 'crates/domain/**'
+      - 'apps/studio/src/creativeProduction*'
+      - 'apps/studio/src/types.ts'
+      - 'apps/studio/conformance/**'
+      - '.github/workflows/creative-conformance.yml'
+  pull_request:
+    paths:
+      - 'crates/domain/**'
+      - 'apps/studio/src/creativeProduction*'
+      - 'apps/studio/conformance/**'
+      - '.github/workflows/creative-conformance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: creative-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  exact-editorial-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: creative-parity-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Validate source and produce fixtures from the current Rust implementation
+        run: |
+          set -euo pipefail
+          python3 tooling/source_policy.py
+          mkdir -p verification/creative-parity
+          cargo run --quiet -p motionwright-domain --example creative_fixtures > verification/creative-parity/rust-fixtures.json
+      - name: Compare current Studio realization, merge and digests with Rust
+        working-directory: apps/studio
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          MOTIONWRIGHT_RUST_CREATIVE_FIXTURE="$GITHUB_WORKSPACE/verification/creative-parity/rust-fixtures.json" \
+            npx vitest run conformance/creativeParity.test.ts | tee "$GITHUB_WORKSPACE/verification/creative-parity/studio-comparison.txt"
+      - name: Bind evidence to this exact source
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert source==os.environ['GITHUB_SHA']
+          root=Path('verification/creative-parity')
+          artifacts=[{'path':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.iterdir()) if p.is_file()]
+          (root/'result.json').write_text(json.dumps({'schema':'motionwright.creative-rust-studio-conformance/1','source_sha':source,'contract_parity':'PASS','creative_approval':'not_assessed','artifacts':artifacts},indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: creative-parity-${{ github.sha }}
+          path: verification/creative-parity/
+          if-no-files-found: error
+          retention-days: 7

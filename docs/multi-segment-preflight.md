@@ -2,7 +2,7 @@
 
 Motionwright can produce verified native Motion Canvas segments and independently master one segment through the pinned Semwright MLT Driver. **A multi-segment final MP4 is not yet implemented. The next bounded internal stage, [deterministic MLT FFV1 preparation](mlt-multi-segment-preparation.md), now derives exact clip ranges and uses the pinned Semwright frames encoder to prepare individual verified sources without creating a composited output.** The next required step is to assemble an exact frame-indexed cut from several native segments without guessing source media, flattening unsupported renderers, or silently changing delivery dimensions.
 
-The `motionwright_native::assembly::preflight_multi_segment_mlt` library operation provides the bounded, read-only **source-conformance gate** for that future workflow. It does **not** dispatch MLT `project.create`/`clip.insert`/`render.start`, reencode frames, or generate a finished master. No new desktop button or Native SDK mutating capability is claimed yet.
+The `motionwright_native::assembly::preflight_multi_segment_mlt` library operation provides the bounded, read-only **source-conformance gate** for that future workflow. It does **not** dispatch MLT `project.create`/`clip.insert`/`render.start`, reencode frames, or generate a finished master. A separate **read-only desktop readiness control** in Deliver now invokes the same preflight through the trusted native session and displays the segment/frame report; it never claims a finished MP4. No new Native SDK mutating capability is claimed.
 
 ## Admitted source set
 
@@ -21,7 +21,7 @@ Before returning the typed `MultiSegmentAssemblyPreflight` record, the function 
 
 This checks the **manifests themselves**, not every PNG payload. Actual multi-segment MLT production will need to invoke the pinned Semwright `frames.encode` operation for **every** source segment, which reopens and hashes all indexed PNGs before encoding. Only after a separately controlled MLT timeline assembly and native output verification can the app claim a composited MP4. The preflight deliberately identifies its evidence scope as `manifest-digest-verified-not-composited-mp4`.
 
-No user-editable input can mint a signed or native job result; a future desktop command must obtain the `MotionCanvasRenderEvidence` from a trusted owner registry instead of accepting arbitrary WebView JSON.
+No user-editable input can mint a signed or native job result. The desktop command `preflight_multi_segment_mlt_readiness` now obtains the original `MotionCanvasRenderEvidence`, exact Film authoring options and canonical output root **only from the trusted private preview registry**, using an opaque session token minted after the actual Semwright render. The WebView request accepts project ID/generation/revision, saved profile and that token; it cannot supply arbitrary evidence, hashes or filesystem paths. The response exposes only source-scoped segment IDs and frame offsets, never owner filesystem paths or provider payloads.
 
 ## Tests
 

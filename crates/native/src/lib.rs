@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 pub mod assembly;
 pub mod canonical;
+mod component_text;
+mod expressive;
 pub mod film;
+pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
 pub mod multi_renderer;
 pub mod production;
@@ -330,6 +333,103 @@ impl ObservationProvider for MotionwrightObserver {
             return Ok(page);
         }
 
+        // Read-only asset integrity is not a Project Graph projection.
+        // Its sole authority is the same application-owned, versioned CAS
+        // inspector that the desktop invokes on explicit user request.
+        if query.scope == "asset-integrity" {
+            let limit = usize::from(query.limit).min(16);
+            let offset = match &query.cursor {
+                Some(cursor) => {
+                    if cursor.version != version {
+                        return Err(Error::new(
+                            ErrorCode::StaleReference,
+                            "Creative project changed during asset integrity paging",
+                        ));
+                    }
+                    let fields: Vec<_> = cursor.token.split(':').collect();
+                    if fields.len() != 4
+                        || fields[0] != "assets"
+                        || fields[1] != "v1"
+                        || fields[2] != limit.to_string()
+                    {
+                        return Err(Error::invalid(
+                            "Malformed or changed-page-size asset integrity cursor",
+                        ));
+                    }
+                    let offset = fields[3]
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|value| {
+                            *value > 0
+                                && value.to_string() == fields[3]
+                                && value.is_multiple_of(limit)
+                        })
+                        .ok_or_else(|| {
+                            Error::invalid("Asset integrity cursor does not make progress")
+                        })?;
+                    Some(offset)
+                }
+                None => None,
+            };
+            let service = self.service.clone();
+            let stamp = RevisionStamp::from(&project);
+            // Actual SHA-256 file hashing is bounded to 256 MiB per page and
+            // runs outside the native async executor's core worker threads.
+            let report = tokio::task::spawn_blocking(move || {
+                service.asset_integrity_page(project_id, &stamp, offset, limit)
+            })
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::BackendFailed,
+                    "Application asset integrity read worker failed",
+                )
+            })?
+            .map_err(storage_error)?;
+            // A canceled agent never receives a verified-current result from
+            // a hashing task it no longer has permission to await.
+            context.check_cancelled()?;
+            if report.generation != project.generation || report.revision != project.revision {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Asset integrity result belongs to an older creative revision",
+                ));
+            }
+            let latest = self.service.project(project_id).map_err(storage_error)?;
+            if latest.generation != project.generation || latest.revision != project.revision {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Project changed while verifying content-addressed assets",
+                ));
+            }
+            let next = report.next.map(|start| PageCursor {
+                version: version.clone(),
+                scope: query.scope.clone(),
+                token: format!("assets:v1:{limit}:{start}"),
+            });
+            let page = ObservationPage {
+                version,
+                scope: query.scope.clone(),
+                // Status and size only; source CAS paths/digests and asset
+                // bytes stay private to the trusted Motionwright service.
+                items: report
+                    .items
+                    .into_iter()
+                    .map(|record| {
+                        json!({
+                            "asset_id": record.asset_id.to_string(),
+                            "status": record.status,
+                            "size_bytes": record.size_bytes,
+                        })
+                    })
+                    .collect(),
+                complete: next.is_none(),
+                next,
+            };
+            page.validate_for(query)?;
+            return Ok(page);
+        }
+
         if query.scope == "production-receipts" || query.scope == "production-jobs" {
             let receipts_scope = query.scope == "production-receipts";
             let namespace = if receipts_scope { "receipts" } else { "jobs" };
@@ -468,10 +568,45 @@ impl ObservationProvider for MotionwrightObserver {
         // pages. The prior take(limit)+complete:true pattern silently hid
         // every scene/object/review past the first page from native agents.
         let page = match query.scope.as_str() {
+            "creative-patches" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.patches.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.patches[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
+            "production-plan" => paginate_project_observation(
+                query,
+                &version,
+                usize::from(project.production_design.plan.is_some()),
+                |_| serde_json::to_value(&project.production_design.plan).unwrap_or(Value::Null),
+            )?,
+            "components" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.heroes.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.heroes[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
+            "native-capsules" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.capsules.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.capsules[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
             "summary" => paginate_project_observation(query, &version, 1, |_| {
                 json!({
                     "id": project.id.to_string(),
                     "title": project.title,
+                    "project_schema": project.schema_version,
+                    "write_schema": motionwright_domain::PROJECT_SCHEMA_VERSION,
                     "state": project.state,
                     "revision": project.revision.to_string(),
                     "active_branch": project.active_branch.to_string(),
@@ -580,6 +715,12 @@ struct ApplyHandler {
 
 #[derive(Clone, Copy)]
 enum OperationKind {
+    UndoCreativePatch,
+    UpsertProductHero,
+    DetachProductHero,
+    SetProductionPlan,
+    UpsertNativeCapsule,
+    ApplyCreativePatch,
     RenameProject,
     SetBrief,
     SetNarrativePremise,
@@ -731,6 +872,46 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
     }
 
     match kind {
+        OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
+            patch_id: uuid(args, "patch_id")?,
+        }),
+        OperationKind::UpsertProductHero => Ok(Change::UpsertProductHero {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid ProductHeroReveal config"))?,
+        }),
+        OperationKind::DetachProductHero => Ok(Change::DetachProductHero {
+            instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
+            plan: serde_json::from_value(
+                args.get("plan")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("plan is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid ProductionPlan"))?,
+        }),
+        OperationKind::UpsertNativeCapsule => Ok(Change::UpsertNativeCapsule {
+            capsule: serde_json::from_value(
+                args.get("capsule")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("capsule is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid native source capsule"))?,
+        }),
+        OperationKind::ApplyCreativePatch => Ok(Change::ApplyCreativePatch {
+            patch: serde_json::from_value(
+                args.get("patch")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("patch is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid scoped creative patch"))?,
+        }),
         OperationKind::RenameProject => Ok(Change::RenameProject {
             title: string(args, "title", 200)?,
         }),
@@ -1974,6 +2155,72 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertProductHero,
+            descriptor(
+                "product-hero.upsert",
+                "Create or three-way update an editable ProductHeroReveal",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "instance_id": {"type": "string", "format": "uuid", "maxLength": 64}, "scene_id": {"type": "string", "format": "uuid", "maxLength": 64}, "config": {"type": "object", "properties": {"eyebrow": {"type": "string", "minLength": 1, "maxLength": 48}, "headline": {"type": "string", "minLength": 1, "maxLength": 64}, "body": {"type": "string", "minLength": 1, "maxLength": 150}, "wordmark": {"type": "string", "minLength": 1, "maxLength": 8}, "foreground": {"type": "string", "minLength": 1, "maxLength": 7}, "accent": {"type": "string", "minLength": 1, "maxLength": 7}, "motion": {"type": "boolean"}}, "required": ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], "additionalProperties": false}}),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProductHero,
+            descriptor(
+                "product-hero.detach",
+                "Detach component ownership without deleting authored nodes",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "instance_id": {"type": "string", "format": "uuid", "maxLength": 64}}),
+                    &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetProductionPlan,
+            descriptor(
+                "production-plan.set",
+                "Store or clear the revisioned narrative and evidence plan",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "plan": {"anyOf": [{"type": "null"}, {"type": "object"}]}}),
+                    &["ref", "plan"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertNativeCapsule,
+            descriptor(
+                "native-capsule.upsert",
+                "Preserve an immutable native source attachment",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "capsule": {"type": "object"}}),
+                    &["ref", "capsule"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ApplyCreativePatch,
+            descriptor(
+                "creative.patch.apply",
+                "Atomically apply a bounded scene-scoped patch against the observed revision",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "patch": {"type": "object"}}),
+                    &["ref", "patch"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UndoCreativePatch,
+            descriptor(
+                "creative.patch.undo",
+                "Revert a stored scoped patch as a new revision, preserving compatible later edits",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},"patch_id":{"type":"string","format":"uuid","maxLength":64}}),
+                    &["ref", "patch_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetVisualLanguage,
             descriptor(
                 "visual-language.set",
@@ -2230,7 +2477,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
-        assert_eq!(capabilities.len(), 46);
+        assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
+        assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
+        assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
+        assert_eq!(capabilities.len(), 52);
     }
 
     #[tokio::test]
@@ -2663,6 +2913,140 @@ mod tests {
         assert!(
             paginate_project_observation(&next, &later_version, 8, |index| json!(index)).is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn native_asset_integrity_scopes_every_app_owned_digest_without_paths() {
+        use motionwright_domain::Asset;
+        let (service, mut project) = fixture();
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("native-integrity-fixture.bin");
+        std::fs::write(&source, b"CAS source verified for Native SDK").unwrap();
+        let blob = service.ingest_blob_file(&source).unwrap();
+        let mut ids = Vec::new();
+        for index in 0..19 {
+            let id = Uuid::now_v7();
+            ids.push(id.to_string());
+            project = service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("native-integrity-add-{index}"),
+                    &Change::AddAsset {
+                        asset: Asset {
+                            id,
+                            name: format!("Imported asset {index}"),
+                            media_type: "application/octet-stream".into(),
+                            content_sha256: Some(blob.sha256.clone()),
+                            source_revision: Some("test-import".into()),
+                        },
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        let observer = MotionwrightObserver::new(service.clone());
+        let context = CallContext::application_local("source-bound-asset-integrity").unwrap();
+        let mut cursor = None;
+        let mut observed = Vec::new();
+        let mut first_cursor = None;
+        for iteration in 0..5 {
+            let query = Query {
+                resource: project.resource_key(),
+                scope: "asset-integrity".into(),
+                limit: 7,
+                cursor,
+            };
+            let page = observer.observe(&query, &context).await.unwrap();
+            page.validate_for(&query).unwrap();
+            assert!(page.items.len() <= 7);
+            for item in &page.items {
+                assert_eq!(item["status"], "verified");
+                assert_eq!(item["size_bytes"], blob.size_bytes);
+                assert!(item.get("path").is_none());
+                assert!(item.get("sha256").is_none());
+                observed.push(item["asset_id"].as_str().unwrap().to_owned());
+            }
+            if page.complete {
+                assert_eq!(iteration, 2);
+                assert!(page.next.is_none());
+                break;
+            }
+            if first_cursor.is_none() {
+                first_cursor = page.next.clone();
+            }
+            cursor = page.next;
+            assert!(cursor.is_some());
+        }
+        assert_eq!(observed, ids);
+        let first = first_cursor.unwrap();
+        for token in [
+            "offset:7",
+            "assets:v1:8:7",
+            "assets:v1:7:0",
+            "assets:v1:7:07",
+            "assets:v1:7:1000",
+        ] {
+            let mut forged = first.clone();
+            forged.token = token.into();
+            assert!(
+                observer
+                    .observe(
+                        &Query {
+                            resource: project.resource_key(),
+                            scope: "asset-integrity".into(),
+                            limit: 7,
+                            cursor: Some(forged),
+                        },
+                        &context
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        let current = service.project(project.id).unwrap();
+        let changed = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-integrity-revision-change",
+                &Change::RenameProject {
+                    title: "Current after integrity".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert_eq!(changed.revision, current.revision + 1);
+        let stale = observer
+            .observe(
+                &Query {
+                    resource: project.resource_key(),
+                    scope: "asset-integrity".into(),
+                    limit: 7,
+                    cursor: Some(first),
+                },
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(stale.code, ErrorCode::StaleReference);
+    }
+
+    #[tokio::test]
+    async fn native_asset_integrity_does_not_fabricate_empty_or_undigested_bytes() {
+        let (service, project) = fixture();
+        let observer = MotionwrightObserver::new(service);
+        let context = CallContext::application_local("native-integrity-empty").unwrap();
+        let query = Query {
+            resource: project.resource_key(),
+            scope: "asset-integrity".into(),
+            limit: 16,
+            cursor: None,
+        };
+        let page = observer.observe(&query, &context).await.unwrap();
+        assert!(page.complete);
+        assert!(page.items.is_empty());
+        assert!(page.next.is_none());
     }
 
     #[tokio::test]

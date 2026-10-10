@@ -1,3 +1,4 @@
+import { previewTransform } from "./canvasMotion";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import CanvasStructureEditor from "./CanvasStructureEditor";
@@ -38,38 +39,6 @@ function numberValue(value: string, fallback: number) {
 }
 
 const MOTION_PROPERTIES: MotionProperty[] = ["x", "y", "width", "height", "rotation_deg", "opacity"];
-
-function easedProgress(progress: number, interpolation: MotionInterpolation) {
-  if (interpolation === "hold") return 0;
-  if (interpolation === "ease_in_out") return progress * progress * (3 - 2 * progress);
-  return progress;
-}
-
-function previewTransform(node: CanvasNode, playhead: number): CanvasTransform {
-  const output = nodeTransform(node);
-  for (const property of MOTION_PROPERTIES) {
-    const keys = node.keyframes
-      .filter((keyframe) => keyframe.property === property)
-      .sort((left, right) => seconds(left.at) - seconds(right.at));
-    if (keys.length === 0) continue;
-    let fromValue = output[property];
-    let fromTime = 0;
-    for (const keyframe of keys) {
-      const keyTime = seconds(keyframe.at);
-      if (playhead < keyTime) {
-        const span = keyTime - fromTime;
-        if (span <= 0) break;
-        const progress = Math.max(0, Math.min(1, (playhead - fromTime) / span));
-        output[property] = fromValue + (keyframe.value - fromValue) * easedProgress(progress, keyframe.interpolation);
-        break;
-      }
-      fromValue = keyframe.value;
-      fromTime = keyTime;
-      output[property] = keyframe.value;
-    }
-  }
-  return output;
-}
 
 function propertyLock(property: MotionProperty): NodeProperty {
   if (property === "x" || property === "y") return "position";
@@ -612,6 +581,7 @@ export default function CanvasWorkspace({
                     >
                       <option value="linear">Linear</option>
                       <option value="ease_in_out">Ease in/out</option>
+                      <option value="ease_out_cubic">Ease out cubic</option>
                       <option value="hold">Hold</option>
                     </select>
                   </label>
@@ -654,7 +624,7 @@ export default function CanvasWorkspace({
                     ))}
                 </div>
                 <p className="inspector-note">
-                  Preview interpolation is editorial only. Native Film export rejects motion it cannot preserve exactly.
+                  Editorial preview. Native Film preserves admitted synchronized entrances; other motion is rejected rather than approximated.
                 </p>
               </section>
 

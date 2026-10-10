@@ -1,3 +1,4 @@
+import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import {
   Activity,
   AlignLeft,
@@ -50,6 +51,7 @@ import {
 } from "./api";
 import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
+import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
@@ -93,6 +95,7 @@ type Workspace =
   | "Audio"
   | "Storyboard"
   | "Canvas"
+  | "Production"
   | "Timeline"
   | "Jobs"
   | "Workflows"
@@ -124,6 +127,7 @@ const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Audio", icon: AudioLines },
   { name: "Storyboard", icon: Columns3 },
   { name: "Canvas", icon: Box },
+  { name: "Production", icon: Layers3 },
   { name: "Timeline", icon: Film },
   { name: "Jobs", icon: Activity },
   { name: "Workflows", icon: Wand2 },
@@ -572,33 +576,6 @@ function AlternativesView({ scene }: { scene: Scene | null }) {
       <p className="honesty-note">
         Selection here is local comparison state. No project mutation is claimed until a change set is committed.
       </p>
-    </div>
-  );
-}
-
-function DependenciesView({ project }: { project: Project }) {
-  return (
-    <div className="workspace-scroll table-view">
-      <header className="workspace-heading">
-        <div>
-          <h2>Dependencies</h2>
-          <p>Local projections are visible here; canonical CURRENT / STALE / UNKNOWN requires Project Graph evidence.</p>
-        </div>
-        <span className="status-pill status-unknown">UNKNOWN</span>
-      </header>
-      <div className="data-table" role="table" aria-label="Project dependencies">
-        <div className="data-row dependency-row data-head" role="row">
-          <span>Source</span><span>Consumer</span><span>Projection</span><span>Canonical state</span>
-        </div>
-        {project.assets.map((asset, index) => (
-          <div className="data-row dependency-row" role="row" key={asset.id}>
-            <span>{asset.name}</span>
-            <span>{project.scenes[index % Math.max(project.scenes.length, 1)]?.name ?? "Project"}</span>
-            <span>{asset.source_revision ?? "unversioned"}</span>
-            <span className="status-pill status-unknown">NOT ADMITTED</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -1943,7 +1920,7 @@ export default function App() {
     try {
       const next = await applyChange(boot.project, change);
       setBoot({ ...boot, project: next });
-      if (selectedSceneId && !next.scenes.some((scene) => scene.id === selectedSceneId)) {
+      if (!selectedSceneId || !next.scenes.some((scene) => scene.id === selectedSceneId)) {
         setSelectedSceneId(next.scenes[0]?.id ?? null);
       }
     } catch (reason) {
@@ -2013,6 +1990,8 @@ export default function App() {
         );
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
+      case "Production":
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
           playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
@@ -2044,7 +2023,9 @@ export default function App() {
       case "Changes":
         return <ChangesWorkspace project={project} commit={commit} />;
       case "Dependencies":
-        return <DependenciesView project={project} />;
+        return <DependenciesWorkspace
+          key={[project.id, project.generation, project.revision].join(":")}
+          project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
       case "Review":
         return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
       case "Deliver":
@@ -2132,7 +2113,8 @@ export default function App() {
         </div>
       )}
 
-      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "")}>
+      {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
+      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "") + (workspace === "Production" ? " production-layout" : "")}>
         <ProjectRail
           project={project}
           selectedSceneId={selectedSceneId}
@@ -2146,7 +2128,7 @@ export default function App() {
         <div className="center-stack">
           <div className="workspace-stage">{renderWorkspace()}</div>
         </div>
-        <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />
+        {workspace !== "Production" && <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />}
       </div>
 
       <Timeline
