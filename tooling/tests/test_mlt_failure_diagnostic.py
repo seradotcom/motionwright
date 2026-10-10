@@ -45,6 +45,29 @@ class MltRenderDiagnosticTests(unittest.TestCase):
         self.assertNotIn(private, json.dumps(observed))
         self.assertTrue(self.receipt.exists())
 
+    def test_count_only_render_diagnostics_expose_no_names_or_media(self):
+        private = "/home/customer/private/secret-video.mp4"
+        self.write(stack="Error: native observation count incomplete " + private)
+        frame_root = self.job / "frames"
+        frame_root.mkdir()
+        (frame_root / "000000.png").write_bytes(b"PRIVATE PNG CONTENT")
+        (frame_root / "000002.png").write_bytes(b"MORE PRIVATE PNG CONTENT")
+        (self.job / "native-observations.ndjson").write_bytes(
+            b'{"private":"/home/customer/private"}\n{"private":"second"}\n'
+        )
+        observed = diagnostic.safe_observation_diagnostic(self.root)
+        self.assertEqual(observed["exported_png_count"], 2)
+        self.assertEqual(observed["observation_line_count"], 2)
+        self.assertEqual((observed["first_png_frame"], observed["last_png_frame"]), (0, 2))
+        self.assertNotIn(private, json.dumps(observed))
+        self.assertNotIn("PRIVATE", json.dumps(observed))
+        self.assertTrue(self.receipt.exists())
+        # Never follow an observation-file symlink outside the owner directory.
+        linked = self.job / "native-observations.ndjson"
+        linked.rename(self.job / "old-observations.ndjson")
+        linked.symlink_to(self.root / "missing-external")
+        self.assertIsNone(diagnostic.safe_observation_diagnostic(self.root)["observation_line_count"])
+
     def test_other_supported_reason_stays_finite_and_safe(self):
         for source, expected in diagnostic.REASON_MARKERS.items():
             with self.subTest(reason=expected):
