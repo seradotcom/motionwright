@@ -1,6 +1,8 @@
 //! Semwright-owned semantic MLT timeline assembly using verified FFV1
 //! intermediates and closed, revision-bound Driver Host operations. Produces
-//! an actual lossless video-only Matroska, NOT yet an H.264/AAC finished master.
+//! an actual FFV1+PCM lossless Matroska intermediate, NOT an H.264/AAC master.
+//! The pinned Semwright curated MLT lossless profile requires a PCM audio
+//! stream even if the semantic edit timeline contains only visual clips.
 use super::*;
 use crate::{
     assembly::preflight_multi_segment_mlt,
@@ -127,15 +129,138 @@ fn only_reference(value: &Value, expected_name: &str) -> NativeResult<String> {
     opaque(found, "reference")
 }
 
+/// Validate the *actual pinned* Semwright lossless MLT result contract.
+/// The MLT profile emits FFV1 and PCM s16le. A Matroska stream may not
+/// include 'nb_frames'; never pretend the native probe counted frames when
+/// it only proved a bounded duration. The independent CI -count_frames gate
+/// must prove the exact frame count before product acceptance.
+///
+/// All diagnostics are fixed strings, never provider messages or local paths.
+struct LosslessExpected<'a> {
+    job: &'a str,
+    revision: &'a str,
+    path: &'a str,
+    frames: u64,
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    fps_den: u32,
+}
+
+fn verify_lossless_render_result(
+    result: &Value,
+    expected: &LosslessExpected<'_>,
+) -> NativeResult<Option<u64>> {
+    if result.get("state").and_then(Value::as_str) != Some("succeeded")
+        || result.get("project_revision").and_then(Value::as_str) != Some(expected.revision)
+        || result.get("profile").and_then(Value::as_str) != Some("lossless")
+        || result.get("output").and_then(Value::as_str) != Some(expected.path)
+        || result.get("job").and_then(Value::as_str) != Some(expected.job)
+        || !result.get("error").is_some_and(Value::is_null)
+        || result
+            .get("cancellation_requested")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err(backend(
+            "MLT lossless result did not confirm the exact source-bound job",
+        ));
+    }
+    if result.pointer("/artifact/root").and_then(Value::as_str) != Some("output")
+        || result.pointer("/artifact/path").and_then(Value::as_str) != Some(expected.path)
+        || !result
+            .pointer("/artifact/sha256")
+            .and_then(Value::as_str)
+            .is_some_and(sha256)
+        || !result
+            .pointer("/artifact/bytes")
+            .and_then(Value::as_u64)
+            .is_some_and(|size| size > 0 && size <= MAX_NATIVE_TIMELINE_BYTES)
+    {
+        return Err(backend(
+            "MLT lossless result lacks an exact owner output artifact",
+        ));
+    }
+    if result.pointer("/media/video").and_then(Value::as_bool) != Some(true)
+        || result.pointer("/media/audio").and_then(Value::as_bool) != Some(true)
+        || result.pointer("/media/width").and_then(Value::as_u64) != Some(u64::from(expected.width))
+        || result.pointer("/media/height").and_then(Value::as_u64)
+            != Some(u64::from(expected.height))
+    {
+        return Err(backend(
+            "MLT lossless video and required PCM transport audio profile differ",
+        ));
+    }
+    let codecs = result
+        .pointer("/media/codecs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| backend("MLT lossless result has no measured codecs"))?;
+    if codecs.len() != 2
+        || !codecs.iter().any(|value| value.as_str() == Some("ffv1"))
+        || !codecs
+            .iter()
+            .any(|value| value.as_str() == Some("pcm_s16le"))
+    {
+        return Err(backend("MLT lossless result is not exact FFV1 + PCM s16le"));
+    }
+    let frames_value = result
+        .pointer("/media/frames")
+        .ok_or_else(|| backend("MLT lossless result has no frame observation field"))?;
+    let measured_frames = if frames_value.is_null() {
+        // Pinned Matroska FFprobe may omit nb_frames. Exact decoded frames are
+        // verified by the separate actual native E2E using -count_frames.
+        None
+    } else {
+        let number = frames_value
+            .as_u64()
+            .ok_or_else(|| backend("MLT lossless frame observation is malformed"))?;
+        if number != expected.frames {
+            return Err(backend(
+                "MLT lossless observed native frame count differs from source",
+            ));
+        }
+        Some(number)
+    };
+    let duration_num = result
+        .pointer("/media/duration_num")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| backend("MLT lossless result has no positive media duration"))?;
+    let duration_den = result
+        .pointer("/media/duration_den")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| backend("MLT lossless result has no positive media timebase"))?;
+    if expected.fps_num == 0 || expected.fps_den == 0 || expected.frames == 0 {
+        return Err(backend("MLT lossless expected clock is malformed"));
+    }
+    let measured = u128::from(duration_num) * u128::from(expected.fps_num);
+    let exact = u128::from(expected.frames)
+        .checked_mul(u128::from(expected.fps_den))
+        .and_then(|frames| frames.checked_mul(u128::from(duration_den)))
+        .ok_or_else(|| backend("MLT lossless media duration product overflow"))?;
+    let one_frame = u128::from(expected.fps_den) * u128::from(duration_den);
+    if measured.abs_diff(exact) > one_frame {
+        return Err(backend(
+            "MLT lossless duration is inconsistent with its source frame clock",
+        ));
+    }
+    Ok(measured_frames)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MltVerifiedVideoTimeline {
+pub struct MltVerifiedLosslessTimeline {
     pub project_resource: String,
     pub generation: Uuid,
     pub revision: u64,
     pub deliverable_id: Uuid,
     pub recipe_sha256: String,
+    /// Source/plan frame count. Matroska probe may not report nb_frames:
+    /// only independent E2E decoder counting can establish observed frames.
     pub frame_count: u64,
+    pub native_frame_count_observed: Option<u64>,
+    pub transport_pcm_audio: bool,
     pub native_job_ref: String,
     pub provider_revision: String,
     pub artifact_path: String,
@@ -207,8 +332,10 @@ impl ProductionCoordinator {
     }
 
     /// Semwright Driver Host actually assembles the exact input FFV1 sources
-    /// into an owned native MLT video-only lossless output. Audio attachment
-    /// and H.264/AAC master publication are separate future gates.
+    /// into an owned lossless FFV1/PCM Matroska intermediary. The pinned
+    /// curated MLT encoder creates an audio stream, regardless of whether
+    /// a voice or music source was mixed. Never mislabel it video-only.
+    /// Human-approved audio and final H.264/AAC publication are later gates.
     pub async fn assemble_native_mlt_video_timeline(
         &self,
         project_id: Uuid,
@@ -217,7 +344,7 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         options: &FilmBuildOptions,
         rendered: &MotionCanvasRenderEvidence,
-    ) -> NativeResult<MltVerifiedVideoTimeline> {
+    ) -> NativeResult<MltVerifiedLosslessTimeline> {
         if request_id.is_empty()
             || request_id.len() > 54
             || !request_id
@@ -512,28 +639,23 @@ impl ProductionCoordinator {
             )
             .await?;
         let result = response_data(&result)?;
-        if result.get("state").and_then(Value::as_str) != Some("succeeded")
-            || result.get("project_revision").and_then(Value::as_str)
-                != Some(session.revision.as_str())
-            || result.pointer("/media/video").and_then(Value::as_bool) != Some(true)
-            || result.pointer("/media/audio").and_then(Value::as_bool) != Some(false)
-            || result.pointer("/media/frames").and_then(Value::as_u64) != Some(recipe.total_frames)
-            || result.pointer("/artifact/root").and_then(Value::as_str) != Some("output")
-            || result.pointer("/artifact/path").and_then(Value::as_str)
-                != Some(recipe.lossless_sequence_path.as_str())
-            || !result
-                .pointer("/media/codecs")
-                .and_then(Value::as_array)
-                .is_some_and(|codecs| codecs.iter().any(|codec| codec.as_str() == Some("ffv1")))
-        {
-            return Err(backend(
-                "MLT result did not contain the exact video-only FFV1 timeline",
-            ));
-        }
+        let native_frame_count_observed = verify_lossless_render_result(
+            result,
+            &LosslessExpected {
+                job: &job_ref,
+                revision: &session.revision,
+                path: &recipe.lossless_sequence_path,
+                frames: recipe.total_frames,
+                width: recipe.provider_profile.width,
+                height: recipe.provider_profile.height,
+                fps_num: recipe.provider_profile.fps_num,
+                fps_den: recipe.provider_profile.fps_den,
+            },
+        )?;
         let artifact_sha256 = required_string(
             result,
             "/artifact/sha256",
-            "MLT video-only sequence has no SHA-256",
+            "MLT lossless intermediary has no SHA-256",
         )?;
         let source = verify_output_artifact(
             &self.client.connection().output_root,
@@ -542,11 +664,11 @@ impl ProductionCoordinator {
             MAX_NATIVE_TIMELINE_BYTES,
         )?;
         let size = fs::metadata(source)
-            .map_err(|_| backend("Native MLT video-only source became inaccessible"))?
+            .map_err(|_| backend("Native MLT lossless intermediary became inaccessible"))?
             .len();
         if result.pointer("/artifact/bytes").and_then(Value::as_u64) != Some(size) {
             return Err(backend(
-                "MLT timeline artifact byte count differs from native receipt",
+                "MLT lossless artifact byte count differs from native receipt",
             ));
         }
         let latest = self.service.project(project_id).map_err(storage_error)?;
@@ -577,20 +699,23 @@ impl ProductionCoordinator {
                 "MLT project could not be closed after verified sequence render",
             ));
         }
-        Ok(MltVerifiedVideoTimeline {
+        Ok(MltVerifiedLosslessTimeline {
             project_resource: project.resource_key(),
             generation: project.generation,
             revision: project.revision,
             deliverable_id,
             recipe_sha256: recipe.input_sha256,
             frame_count: recipe.total_frames,
+            native_frame_count_observed,
+            transport_pcm_audio: true,
             native_job_ref: job_ref,
             provider_revision: session.revision,
             artifact_path: recipe.lossless_sequence_path,
             artifact_sha256,
             artifact_bytes: size,
             source: sources,
-            evidence_scope: "actual-native-mlt-ffv1-video-only-no-audio-master".into(),
+            evidence_scope: "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
+                .into(),
         })
     }
 }
@@ -626,6 +751,69 @@ mod tests {
             .push(json!({"kind":"sequence","reference":"duplicate"}));
         assert!(created(&valid, "sequence").is_err());
     }
+    #[test]
+    fn native_lossless_profile_is_ffv1_and_pcm_not_video_only_and_may_omit_nb_frames() {
+        let revision = "a".repeat(64);
+        let path = "owner-lossless.mkv";
+        let mut result = json!({
+            "job":"render:owner-job",
+            "project_revision":revision,
+            "profile":"lossless",
+            "output":path,
+            "state":"succeeded",
+            "error":null,
+            "cancellation_requested":false,
+            "artifact":{"root":"output","path":path,"sha256":"b".repeat(64),"bytes":8192},
+            "media":{"width":1280,"height":720,"frames":null,
+                "duration_num":1100,"duration_den":1000,
+                "video":true,"audio":true,"codecs":["ffv1","pcm_s16le"]}
+        });
+        let verify = |receipt: &Value| {
+            verify_lossless_render_result(
+                receipt,
+                &LosslessExpected {
+                    job: "render:owner-job",
+                    revision: &revision,
+                    path,
+                    frames: 33,
+                    width: 1280,
+                    height: 720,
+                    fps_num: 30,
+                    fps_den: 1,
+                },
+            )
+        };
+        assert_eq!(
+            verify(&result).unwrap(),
+            None,
+            "Matroska ffprobe may not encode nb_frames; external exact-frame decoder is mandatory"
+        );
+        result["media"]["frames"] = json!(33);
+        assert_eq!(verify(&result).unwrap(), Some(33));
+        result["media"]["frames"] = json!(32);
+        assert!(verify(&result).unwrap_err().message.contains("frame count"));
+        result["media"]["frames"] = Value::Null;
+        result["media"]["audio"] = json!(false);
+        assert!(verify(&result).unwrap_err().message.contains("PCM"));
+        result["media"]["audio"] = json!(true);
+        result["media"]["codecs"] = json!(["ffv1", "aac"]);
+        assert!(verify(&result).unwrap_err().message.contains("PCM s16le"));
+        result["media"]["codecs"] = json!(["ffv1", "pcm_s16le"]);
+        result["artifact"]["path"] = json!("/home/private/foreign.mkv");
+        assert!(verify(&result).is_err());
+        result["artifact"]["path"] = json!(path);
+        result["media"]["duration_num"] = json!(800);
+        assert!(verify(&result).unwrap_err().message.contains("duration"));
+        result["media"]["duration_num"] = json!(1100);
+        result["media"]["height"] = json!(1080);
+        assert!(verify(&result).is_err());
+        result["media"]["height"] = json!(720);
+        result["project_revision"] = json!("c".repeat(64));
+        assert!(verify(&result).is_err());
+        result["project_revision"] = json!(revision);
+        assert_eq!(verify(&result).unwrap(), None);
+    }
+
     #[test]
     fn only_unique_owner_returned_identity_is_reusable() {
         let ok = json!({
