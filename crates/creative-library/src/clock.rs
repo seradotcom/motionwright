@@ -199,7 +199,7 @@ pub fn schedule_original_sound(
         "Scheduling accepts only original focus or transition sound cues",
     )?;
     check(
-        scene_samples >= 48000 && scene_samples <= 48000 * 600,
+        (48000..=48000 * 600).contains(&scene_samples),
         "Sound cue scene duration is out of bounds",
     )?;
     check(

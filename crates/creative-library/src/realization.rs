@@ -365,13 +365,26 @@ pub fn realize_html(
     let title = req.copy.headline.as_str();
     let body = req.copy.body.as_str();
     let compact = c.portrait;
-    let top = if compact { 0.12 } else { 0.19 };
-    let headline_size = if compact { 0.14 } else { 0.20 };
+    let hero_reveal = req.recipe == RecipeId::HeroReveal;
+    let top = if hero_reveal {
+        if compact { 0.155 } else { 0.270 }
+    } else if compact {
+        0.12
+    } else {
+        0.19
+    };
+    let headline_size = if hero_reveal {
+        if compact { 0.16 } else { 0.24 }
+    } else if compact {
+        0.14
+    } else {
+        0.20
+    };
     let first = c.headline(
         "primary-statement",
-        0.09,
+        if hero_reveal { 0.075 } else { 0.09 },
         top,
-        0.82,
+        if hero_reveal && !compact { 0.43 } else { 0.82 },
         headline_size,
         title,
         false,
@@ -520,33 +533,178 @@ pub fn realize_html(
             )?;
         }
         RecipeId::HeroReveal => {
-            c.rect(
-                "hero-product-panel",
-                0.55,
-                0.34,
-                0.35,
-                0.42,
-                ColorRole::Surface,
-                20.0,
-            );
-            let n = c.rect(
-                "hero-brand-mark",
-                0.61,
-                0.44,
-                0.23,
-                0.13,
+            // Semantic hierarchy, material stage and retained source. Without
+            // authorized product imagery, original abstract geometry only.
+            let (x, y, w, h) = if compact {
+                (0.105, 0.465, 0.79, 0.38)
+            } else {
+                (0.535, 0.225, 0.405, 0.57)
+            };
+            let eyebrow = c.headline(
+                "hero-editorial-eyebrow",
+                0.075,
+                if compact { 0.075 } else { 0.135 },
+                if compact { 0.82 } else { 0.40 },
+                0.07,
+                &req.copy.eyebrow,
+                true,
                 ColorRole::Accent,
+            )?;
+            c.enter(eyebrow, 0.0, -5.0)?;
+            let stage = c.rect("hero-product-panel", x, y, w, h, ColorRole::Surface, 16.0);
+            c.nodes[stage].pose.rotation = if compact { -1.1 } else { -1.4 };
+            c.nodes[stage].effects.shadow = Some(native::Shadow {
+                x: 0.0,
+                y: 14.0,
+                blur: 28.0,
+                color: "#00000088".into(),
+            });
+            let inlay = c.rect(
+                "hero-surface-inset",
+                x + w * 0.025,
+                y + h * 0.029,
+                w * 0.95,
+                h * 0.94,
+                ColorRole::Background,
                 12.0,
             );
-            c.enter(n, 18.0, 0.0)?;
-            c.rule("hero-reveal-rule", 0.1, 0.80, 0.75, ColorRole::Accent);
-            c.headline(
+            c.nodes[inlay].pose.rotation = if compact { -1.1 } else { -1.4 };
+            let indicator = c.rect(
+                "hero-signal-axis",
+                x + w * 0.07,
+                y + h * 0.095,
+                w * 0.25,
+                h * 0.012,
+                ColorRole::Accent,
+                0.0,
+            );
+            if req.motion {
+                let full = c.nodes[indicator].pose.width;
+                c.key(indicator, 0, Property::Width, 1.0, Curve::Hold);
+                c.key(
+                    indicator,
+                    req.output.frames / 3,
+                    Property::Width,
+                    full,
+                    Curve::CubicBezier {
+                        x1: 0.17,
+                        y1: 0.0,
+                        x2: 0.31,
+                        y2: 1.0,
+                    },
+                );
+            }
+            if let Some(asset) = req.primary_asset.clone() {
+                let image = c.image(
+                    "hero-real-product-surface",
+                    asset,
+                    x + w * 0.075,
+                    y + h * 0.16,
+                    w * 0.85,
+                    h * 0.71,
+                )?;
+                c.nodes[image].effects.shadow = Some(native::Shadow {
+                    x: 0.0,
+                    y: 8.0,
+                    blur: 18.0,
+                    color: "#00000055".into(),
+                });
+                if req.motion {
+                    let end = (req.output.frames / 3).max(1);
+                    let y = c.nodes[image].pose.y;
+                    c.key(image, 0, Property::Opacity, 0.0, Curve::Hold);
+                    c.key(image, end, Property::Opacity, 1.0, Curve::EaseInOut);
+                    c.key(image, 0, Property::Y, y + 10.0, Curve::Hold);
+                    c.key(image, end, Property::Y, y, Curve::EaseOutCubic);
+                }
+            } else {
+                // Abstract original geometry must not be mistaken for the app.
+                let frame = c.rect(
+                    "hero-original-object-frame",
+                    x + w * 0.18,
+                    y + h * 0.24,
+                    w * 0.63,
+                    h * 0.53,
+                    ColorRole::Surface,
+                    12.0,
+                );
+                c.nodes[frame].pose.rotation = -4.0;
+                let mark = c.rect(
+                    "hero-brand-mark",
+                    x + w * 0.33,
+                    y + h * 0.35,
+                    w * 0.42,
+                    h * 0.30,
+                    ColorRole::Accent,
+                    10.0,
+                );
+                c.nodes[mark].pose.rotation = -4.0;
+                c.nodes[mark].effects.shadow = Some(native::Shadow {
+                    x: 0.0,
+                    y: 8.0,
+                    blur: 18.0,
+                    color: "#00000066".into(),
+                });
+                if req.motion {
+                    let end = (req.output.frames / 2).max(1);
+                    let y = c.nodes[mark].pose.y;
+                    c.key(mark, 0, Property::Rotation, -11.0, Curve::Hold);
+                    c.key(
+                        mark,
+                        end,
+                        Property::Rotation,
+                        -4.0,
+                        Curve::CubicBezier {
+                            x1: 0.20,
+                            y1: 0.0,
+                            x2: 0.22,
+                            y2: 1.0,
+                        },
+                    );
+                    c.key(mark, 0, Property::Opacity, 0.0, Curve::Hold);
+                    c.key(mark, end, Property::Opacity, 1.0, Curve::EaseInOut);
+                    c.key(mark, 0, Property::Y, y + 18.0, Curve::Hold);
+                    c.key(mark, end, Property::Y, y, Curve::EaseOutCubic);
+                }
+            }
+            let (tx, ty, tw, th) = if compact {
+                (0.075, 0.345, 0.83, 0.087)
+            } else {
+                (0.075, 0.600, 0.405, 0.125)
+            };
+            let explanation = c.headline(
                 "hero-explanation",
-                0.09,
-                0.55,
-                0.39,
-                0.13,
+                tx,
+                ty,
+                tw,
+                th,
                 body,
+                true,
+                ColorRole::MutedText,
+            )?;
+            if req.motion {
+                let start = (req.output.frames / 6).max(1);
+                let end = (req.output.frames / 2).max(start + 1);
+                let y = c.nodes[explanation].pose.y;
+                c.key(explanation, 0, Property::Opacity, 0.0, Curve::Hold);
+                c.key(explanation, start, Property::Opacity, 0.0, Curve::Hold);
+                c.key(explanation, end, Property::Opacity, 1.0, Curve::EaseInOut);
+                c.key(explanation, 0, Property::Y, y + 9.0, Curve::Hold);
+                c.key(explanation, end, Property::Y, y, Curve::EaseOutCubic);
+            }
+            let (fx, fy, fw) = if compact {
+                (0.075, 0.89, 0.83)
+            } else {
+                (0.075, 0.85, 0.425)
+            };
+            c.rule("hero-reveal-rule", fx, fy, fw, ColorRole::Accent);
+            c.headline(
+                "hero-evidence-classification",
+                fx,
+                fy + 0.025,
+                fw,
+                0.072,
+                &req.copy.disclosure,
                 true,
                 ColorRole::MutedText,
             )?;

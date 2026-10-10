@@ -1,7 +1,7 @@
 use motionwright_creative_library::{
-    self as craft, AuthoringClock, ClockAnchor, ComponentRequest, CopyPack, CreativeClockMap,
-    Locale, ProceduralOptions, RecipeId, SemanticSoundEvent, SoundCue, native,
-    schedule_original_sound, sound_component,
+    AuthoringClock, ClockAnchor, ComponentRequest, CopyPack, CreativeClockMap, Locale,
+    ProceduralOptions, RecipeId, SemanticSoundEvent, SoundCue, native, schedule_original_sound,
+    sound_component,
 };
 use uuid::Uuid;
 fn clock() -> CreativeClockMap {

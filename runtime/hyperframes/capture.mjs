@@ -8,7 +8,7 @@ const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha] = process.argv
 if(process.argv.length!==7 || ![runtimeRoot,workRoot,outputRoot,assetRoot].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
-const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_launch_unknown']);
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown']);
 function phase(name){
   if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
   fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
@@ -86,13 +86,16 @@ try{
   // include machine paths, source snippets or private argv and must not be
   // copied into a persistent readback/CI artifact.
   const message=String(error?.message??'').toLowerCase().slice(0,6000);
-  const category=message.includes('resource temporarily unavailable')||message.includes('eagain')||message.includes('pthread_create')
+  const category=/resource temporarily unavailable|eagain|pthread_create|fork: retry|unable to create thread/.test(message)
     ?'browser_process_limit'
-    :message.includes('operation not permitted')||message.includes('permission denied')||message.includes('namespace')||message.includes('sandbox')
+    :/failed to move to new namespace|no usable sandbox|unprivileged userns|unprivileged_userns|user namespace|zygote.*sandbox|failed to set permissions/.test(message)
     ?'browser_namespace_denied'
-    :message.includes('shared libraries')||message.includes('not found')||message.includes('no such file')
+    :/spawn.*eacces|spawn.*eperm|permission denied.*chrom|permission denied.*headless_shell/.test(message)
+    ?'browser_executable_denied'
+    :/error while loading shared libraries|shared object file|cannot open shared object file|executable doesn't exist|no such file or directory/.test(message)
     ?'browser_dependency_missing'
-    :message.includes('eacces')||message.includes('executable')?'browser_executable_denied'
+    :/target page, context or browser has been closed|browser closed|failed to launch|exited with code/.test(message)
+    ?'browser_browser_crash'
     :'browser_launch_unknown';
   phase(category);
   throw new Error('Native browser launch failed inside the owner-controlled profile: '+category);
