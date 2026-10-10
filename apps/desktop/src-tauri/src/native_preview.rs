@@ -187,8 +187,10 @@ fn segment_artifact(
 }
 
 impl NativePreviewRegistry {
-    /// Registration is possible only after the real, verified Semwright
-    /// render operation has returned its authoritative segment evidence.
+    /// Legacy manifest-only registration is exclusively for adversarial unit
+    /// tests. Production must require source-bound FilmBuildOptions via
+    /// register_with_options; otherwise readiness may be misattributed.
+    #[cfg(test)]
     pub fn register(
         &self,
         output_root: &Path,
