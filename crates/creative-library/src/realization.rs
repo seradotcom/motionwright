@@ -1072,8 +1072,26 @@ pub fn realize_html(
             }
         }
         RecipeId::CausalDiagram => {
+            // A generic "causal" kit cannot claim an observed causal result
+            // without an approved causal-evidence contract. Show an actual
+            // readable authored input/change/output illustration and explicitly
+            // classify the relationship as illustrative, not verified science.
+            let (stages, note): ([&str; 3], &str) = match req.locale {
+                Locale::En => (
+                    ["Input", "Change", "Output"],
+                    "ILLUSTRATIVE FLOW / NO VERIFIED CAUSAL CLAIM",
+                ),
+                Locale::Es => (
+                    ["Inicio", "Cambio", "Salida"],
+                    "FLUJO ILUSTRATIVO / SIN PRUEBA DE CAUSALIDAD",
+                ),
+                Locale::De => (
+                    ["Start", "Wandel", "Ziel"],
+                    "ILLUSTRATIVER ABLAUF / KEIN KAUSALER NACHWEIS",
+                ),
+            };
             for (i, x) in [0.12, 0.41, 0.70].into_iter().enumerate() {
-                c.rect(
+                let panel = c.rect(
                     &format!("causal-node-{i}"),
                     x,
                     0.52,
@@ -1086,9 +1104,27 @@ pub fn realize_html(
                     },
                     12.0,
                 );
+                let label = c.headline(
+                    &format!("causal-stage-label-{i}"),
+                    x - 0.035,
+                    0.75,
+                    0.25,
+                    0.075,
+                    stages[i],
+                    true,
+                    ColorRole::Text,
+                )?;
+                c.require_readable_copy(label, if c.portrait { 15.0 } else { 16.0 })?;
+                if req.motion && i > 0 {
+                    let entrance = (req.output.frames / 6) * (i as u32);
+                    c.key(panel, 0, Property::Opacity, 0.0, Curve::Hold);
+                    c.key(panel, entrance, Property::Opacity, 1.0, Curve::EaseInOut);
+                    c.key(label, 0, Property::Opacity, 0.0, Curve::Hold);
+                    c.key(label, entrance, Property::Opacity, 1.0, Curve::EaseInOut);
+                }
             }
             for (i, x) in [0.30, 0.59].into_iter().enumerate() {
-                c.path(
+                let edge = c.path(
                     &format!("causal-edge-{i}"),
                     vec![
                         Point {
@@ -1103,7 +1139,44 @@ pub fn realize_html(
                     ColorRole::Accent,
                     3.0,
                 )?;
+                let arrow = c.path(
+                    &format!("causal-arrowhead-{i}"),
+                    vec![
+                        Point {
+                            x: (x + 0.075) * c.w,
+                            y: 0.595 * c.h,
+                        },
+                        Point {
+                            x: (x + 0.10) * c.w,
+                            y: 0.62 * c.h,
+                        },
+                        Point {
+                            x: (x + 0.075) * c.w,
+                            y: 0.645 * c.h,
+                        },
+                    ],
+                    ColorRole::Accent,
+                    3.0,
+                )?;
+                if req.motion {
+                    let start = (req.output.frames / 6) * (i as u32 + 1);
+                    c.key(edge, 0, Property::Opacity, 0.0, Curve::Hold);
+                    c.key(edge, start, Property::Opacity, 1.0, Curve::EaseInOut);
+                    c.key(arrow, 0, Property::Opacity, 0.0, Curve::Hold);
+                    c.key(arrow, start, Property::Opacity, 1.0, Curve::EaseInOut);
+                }
             }
+            let note_id = c.headline(
+                "causal-source-classification",
+                0.09,
+                0.875,
+                0.84,
+                0.105,
+                note,
+                true,
+                ColorRole::MutedText,
+            )?;
+            c.require_readable_copy(note_id, 13.0)?;
         }
         RecipeId::SeriesReveal | RecipeId::StateComparison => {
             let data = req.data.as_ref().ok_or_else(|| {
