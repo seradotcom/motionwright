@@ -18,6 +18,8 @@ import time
 import tomllib
 from pathlib import Path
 
+from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
 PIN = SOURCE_LOCK["dependencies"]["semwright"]["revision"]
@@ -288,6 +290,13 @@ def main() -> None:
             stderr=log_stream,
             start_new_session=True,
         )
+        # Passive, bounded lifecycle evidence on disposable CI only. The
+        # sampler never inspects argv, env, sessions or rendered media and
+        # cannot relaunch provider processes or jobs.
+        lifecycle = ProviderLifecycleSampler(
+            daemon, EVIDENCE / "native-provider-lifecycle.json", interval=2.0
+        )
+        lifecycle.start()
 
         try:
             wait_for_socket(daemon, socket, daemon_log)
@@ -427,15 +436,37 @@ def main() -> None:
                 },
             )
         finally:
-            if daemon.poll() is None:
-                pid = daemon.pid
-                daemon.terminate()
+            # Preserve only source-bound error classes and status timestamps.
+            # Even malformed optional diagnostic input cannot prevent proper
+            # cleanup or replace the original render error.
+            try:
+                diagnostic = EVIDENCE / "motionwright-render-diagnostic.json"
+                if diagnostic.is_file() and 0 < diagnostic.stat().st_size <= 2 * 1024 * 1024:
+                    try:
+                        incident = json.loads(diagnostic.read_text(encoding="utf-8"))
+                        summary = summarize_render_receipts(incident.get("receipts"))
+                        write_private_json(
+                            EVIDENCE / "provider-status-reconciliation.json", summary
+                        )
+                    except (OSError, ValueError, TypeError, UnicodeError) as error:
+                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", {
+                            "schema": "motionwright-ci-render-status-reconciliation/1",
+                            "render_outcome": "not_proven",
+                            "diagnostic_parse_error_class": type(error).__name__,
+                        })
+                lifecycle.stop()
+            finally:
                 try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pid, signal.SIGKILL)
-                    daemon.wait(timeout=5)
-            log_stream.close()
+                    if daemon.poll() is None:
+                        pid = daemon.pid
+                        daemon.terminate()
+                        try:
+                            daemon.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(pid, signal.SIGKILL)
+                            daemon.wait(timeout=5)
+                finally:
+                    log_stream.close()
 
     print(
         json.dumps(

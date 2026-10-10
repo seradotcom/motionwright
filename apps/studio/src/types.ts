@@ -109,6 +109,25 @@ export interface Asset {
   content_sha256: string | null; source_revision: string | null;
 }
 
+/** SHA-256 state of an existing content-addressed local file, never Project Graph admission. */
+export type AssetIntegrityStatus = "verified" | "missing" | "corrupt" | "unsafe" |
+  "unreadable" | "not_content_addressed" | "deferred_by_budget";
+export interface AssetIntegrityRecord {
+  asset_id: string;
+  status: AssetIntegrityStatus;
+  size_bytes: number | null;
+}
+export interface AssetIntegrityPage {
+  project_id: string;
+  generation: string;
+  revision: number;
+  total_assets: number;
+  items: AssetIntegrityRecord[];
+  next: number | null;
+  complete: boolean;
+  checked_bytes: number;
+}
+
 export type ExtensionKind =
   | "remotion-renderer"
   | "manim-gl-renderer"
@@ -429,6 +448,18 @@ export interface AvSyncSpec {
   cues: AvSyncCue[];
 }
 
+export interface PortableMediaVerification {
+  status: "sha256-content-verified";
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  /** String preserves the exact u64 revision without JavaScript rounding. */
+  source_revision: string;
+  signed_authenticity: false;
+  human_acceptance: false;
+  trusted_anchor_matched: boolean;
+}
+
 export interface MasterExportReceipt {
   destination: string;
   size_bytes: number;
@@ -436,6 +467,8 @@ export interface MasterExportReceipt {
   revision: number;
   deliverable_id: string;
   source_current: boolean;
+  /** Optional unsigned local integrity descriptor, not an authenticity signature. */
+  integrity_manifest_path?: string | null;
 }
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */

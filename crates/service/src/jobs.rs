@@ -316,6 +316,16 @@ pub(crate) fn derive_production_jobs_all(
             }
             "failed_known" => {
                 entry.last_observation = ProductionObservationState::FailedKnown;
+                // A failed read-only status/result call proves only that the
+                // *observation* failed. It cannot prove a previously started
+                // render has stopped. In particular, an inactive provider
+                // generation must never leave a stale "running" label as
+                // a confirmed current job state, or invent FAILED/SUCCESS.
+                if matches!(kind, RenderCommand::Status | RenderCommand::Result)
+                    && !entry.state.definitive_terminal()
+                {
+                    entry.state = ProductionJobState::OutcomeUnknown;
+                }
             }
             "outcome_unknown" => {
                 entry.last_observation = ProductionObservationState::OutcomeUnknown;
@@ -391,6 +401,95 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn provider_generation_loss_after_timeout_must_not_report_running_failed_or_success() {
+        let generation = Uuid::now_v7();
+        let receipts = vec![
+            receipt(
+                generation,
+                7,
+                "original-render-start",
+                "driver.motion-canvas.render.start",
+                "completed",
+                json!({"result": {"data": {"job_ref":"mc:original","state":"queued"}}}),
+                "2026-10-09T01:00:00Z",
+            ),
+            receipt(
+                generation,
+                7,
+                "status-observed-running",
+                "driver.motion-canvas.render.status",
+                "completed",
+                json!({"result": {"data": {"job_ref":"mc:original","state":"rendering"}}}),
+                "2026-10-09T01:00:02Z",
+            ),
+            receipt(
+                generation,
+                7,
+                "status-timeout",
+                "driver.motion-canvas.render.status",
+                "outcome_unknown",
+                json!({"job_ref":"mc:original","error":{"code":"Timeout","outcome_known":false}}),
+                "2026-10-09T01:00:04Z",
+            ),
+            receipt(
+                generation,
+                7,
+                "status-provider-inactive",
+                "driver.motion-canvas.render.status",
+                "failed_known",
+                json!({"job_ref":"mc:original","error":{"code":"Unavailable","message":"Provider capability generation is inactive","outcome_known":true}}),
+                "2026-10-09T01:00:05Z",
+            ),
+        ];
+        let jobs = derive_production_jobs(&receipts, generation, 7, 10);
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        assert_eq!(job.job_ref, "mc:original");
+        assert_eq!(job.state, ProductionJobState::OutcomeUnknown);
+        assert_eq!(
+            job.last_observation,
+            ProductionObservationState::FailedKnown
+        );
+        assert!(!job.artifact_available);
+        assert!(!job.result_available);
+        assert_eq!(job.local_observations, 4);
+        assert_eq!(job.root_request_id, "original-render-start");
+
+        let no_timeout = derive_production_jobs(
+            &[
+                receipts[0].clone(),
+                receipts[1].clone(),
+                receipts[3].clone(),
+            ],
+            generation,
+            7,
+            10,
+        );
+        assert_eq!(no_timeout[0].state, ProductionJobState::OutcomeUnknown);
+
+        // Only an actual, later canonical job-result observation can prove
+        // native SUCCESS; a status timeout/provider crash never can.
+        let mut recovered = receipts;
+        recovered.push(receipt(
+            generation,
+            7,
+            "original-render-result",
+            "driver.motion-canvas.render.result",
+            "completed",
+            json!({"result": {"data": {"job_ref":"mc:original","state":"succeeded",
+                "artifact":{"manifest":"verified-canonical-frame-manifest"}}}}),
+            "2026-10-09T01:00:06Z",
+        ));
+        let reconciled = derive_production_jobs(&recovered, generation, 7, 10);
+        assert_eq!(reconciled[0].state, ProductionJobState::Succeeded);
+        assert_eq!(
+            reconciled[0].last_observation,
+            ProductionObservationState::Observed
+        );
+        assert!(reconciled[0].result_available);
     }
 
     #[test]

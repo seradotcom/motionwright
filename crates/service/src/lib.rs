@@ -28,9 +28,10 @@ pub struct VerifiedMasterVoice {
 use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
-    BlobDescriptor, BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan,
-    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
-    ProjectBackup, ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
+    BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan, PortableBlob,
+    ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark, ProjectBackup,
+    ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
 };
 use parking_lot::Mutex;
 use std::{
@@ -189,6 +190,20 @@ impl StudioService {
 
     pub fn project(&self, id: Uuid) -> StorageResult<Project> {
         self.store.lock().load_project(id)
+    }
+
+    /// Explicit read-only, bounded SHA-256 inspection of assets already
+    /// referenced by the exact project revision. No file paths cross IPC.
+    pub fn asset_integrity_page(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        offset: Option<usize>,
+        limit: usize,
+    ) -> StorageResult<AssetIntegrityPage> {
+        self.store
+            .lock()
+            .inspect_asset_integrity_page(project_id, expected, offset, limit)
     }
 
     pub fn projects(&self, limit: usize) -> StorageResult<Vec<Project>> {
