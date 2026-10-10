@@ -68,7 +68,7 @@ def main()->None:
     'objective':'Continue same source without any shared chat', 'duration_seconds':3}}
   action('agent_b',second,write=True,success=False)
   expect(read('agent_b')['items'][0]['revision']=='1','Agent B did not refresh its new revision')
-  preview=action('agent_b',{**second,'action':'preview','expected_revision':1})
+  preview=action('agent_b',{**{k:v for k,v in second.items() if k!='request_id'},'action':'preview','expected_revision':1})
   expect(preview['candidate_scene_count']==1 and not preview['committed'],'Preview applied scene')
   committed=action('agent_b',{**second,'expected_revision':1},write=True)
   expect(committed['revision']==2 and committed['scene_count']==1,'Agent B failed its independent commit')
