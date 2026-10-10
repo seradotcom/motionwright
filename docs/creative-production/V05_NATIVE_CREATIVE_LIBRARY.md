@@ -275,3 +275,21 @@ rating. Required categories cover story, composition, typography,
 timing, camera, direction, provenance, editor retention, audio, formats
 and parity against a competent direct-renderer agent. Source-bound
 technical artifacts do not certify craft or commercial publication.
+
+
+## Selective expensive CI verification
+
+The source-bound workflow still runs all full gates on each explicit
+development-branch push or relevant PR. To avoid repeatedly installing
+Chromium, Node, Blender and Semwright for every narrow debugging edit,
+the owner can dispatch one **selective** gate on the same immutable SHA:
+
+    gh workflow run hyperframes-native.yml --ref ci/v05-native-fidelity-continuation -f selected_gate=broker
+
+Other dispatch values are `full`, `creative-library`, and
+`creative-design`. The `creative-design` gate keeps three visual
+shards, native Blender, original PCM and the combined source-attested
+human review ZIP together; `broker` runs only the canonical real Host
+gate. Selective gates do not certify a new release, override red full
+gates or modify runtime grants. Release review still requires the
+**full same-SHA matrix** and independent security/creative approval.

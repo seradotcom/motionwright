@@ -34,3 +34,36 @@ export function detectNativeSandboxMode() {
     restrict:readBoundedKernelStatus('/proc/sys/kernel/apparmor_restrict_unprivileged_userns')
   });
 }
+
+
+// This classifier is pure and returns one fixed observation symbol. Chromium
+// stderr is never included in the returned value, persisted artifacts or
+// application diagnostics. Its data is untrusted even when the binary is pinned.
+export function classifyPinnedBrowserProbe(errorCode, signal, stderr) {
+  const error=String(errorCode??'');
+  const failureSignal=String(signal??'');
+  const message=String(stderr??'').toLowerCase().slice(0,12000);
+  if(error==='ETIMEDOUT')return 'browser_binary_probe_timeout';
+  const signals={
+    SIGSEGV:'browser_binary_probe_sigsegv',
+    SIGABRT:'browser_binary_probe_sigabrt',
+    SIGTRAP:'browser_binary_probe_sigtrap',
+    SIGSYS:'browser_binary_probe_sigsys',
+    SIGKILL:'browser_binary_probe_sigkill',
+    SIGBUS:'browser_binary_probe_sigbus'
+  };
+  if(failureSignal)return signals[failureSignal]??'browser_binary_probe_sigother';
+  if(/icudtl|icu data|icu_util|invalid file descriptor to icu/.test(message))
+    return 'browser_binary_probe_missing_icu';
+  if(/\.pak|resource bundle|failed to load resource|v8_context_snapshot|snapshot_blob/.test(message))
+    return 'browser_binary_probe_missing_sidecar';
+  if(/error while loading shared libraries|cannot open shared object|libnss3|libatk|libasound|libx11|libglib/.test(message))
+    return 'browser_binary_probe_missing_shared_library';
+  if(/permission denied|operation not permitted|eacces|eperm/.test(message))
+    return 'browser_binary_probe_permission_denied';
+  if(/namespace|sandbox|userns/.test(message))
+    return 'browser_binary_probe_namespace_denied';
+  if(/pthread_create|resource temporarily unavailable|eagain|fork/.test(message))
+    return 'browser_binary_probe_process_limit';
+  return 'browser_binary_probe_failed';
+}

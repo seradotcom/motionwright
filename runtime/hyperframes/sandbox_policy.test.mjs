@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classifyHostSandbox,detectNativeSandboxMode} from './sandbox_policy.mjs';
+import {classifyHostSandbox, classifyPinnedBrowserProbe, detectNativeSandboxMode} from './sandbox_policy.mjs';
 const baseline={
   uidMap:'         0       1001          1\n',
   status:'Name:\tnode\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n',
@@ -26,4 +26,31 @@ test('the executing process cannot acquire bwrap authority merely by setting an 
   process.env.MOTIONWRIGHT_ASSUME_HOST_SANDBOX='1';
   assert.equal(detectNativeSandboxMode(),before);
   delete process.env.MOTIONWRIGHT_ASSUME_HOST_SANDBOX;
+});
+
+
+test('pinned browser preflight classifies causes without persisting arbitrary diagnostic text',()=>{
+  const cases=[
+    ['ETIMEDOUT','SIGTERM','private home path /home/alice/secret','browser_binary_probe_timeout'],
+    ['', 'SIGSEGV','private file name','browser_binary_probe_sigsegv'],
+    ['', 'SIGABRT','private command-line value','browser_binary_probe_sigabrt'],
+    ['', 'SIGSYS','seccomp syscall','browser_binary_probe_sigsys'],
+    ['', 'SIGTRAP','chromium trap','browser_binary_probe_sigtrap'],
+    ['', 'SIGKILL','process killed','browser_binary_probe_sigkill'],
+    ['', 'SIGBUS','memory mapped file','browser_binary_probe_sigbus'],
+    ['', 'SIGTERM','unknown termination','browser_binary_probe_sigother'],
+    ['', '', 'ICU initialization failed to load icudtl.dat','browser_binary_probe_missing_icu'],
+    ['', '', 'Missing headless_lib.pak resource','browser_binary_probe_missing_sidecar'],
+    ['', '', 'error while loading shared libraries libnss3.so','browser_binary_probe_missing_shared_library'],
+    ['', '', 'permission denied executing bin','browser_binary_probe_permission_denied'],
+    ['', '', 'failed to move to new namespace','browser_binary_probe_namespace_denied'],
+    ['', '', 'pthread_create: Resource temporarily unavailable','browser_binary_probe_process_limit'],
+    ['', '', 'unrecognized raw stderr /home/alice/private-app','browser_binary_probe_failed']
+  ];
+  for(const [code,signal,diagnostic,expected] of cases){
+    assert.equal(classifyPinnedBrowserProbe(code,signal,diagnostic),expected);
+    const category=classifyPinnedBrowserProbe(code,signal,diagnostic);
+    assert.ok(/^browser_binary_probe_[a-z_]+$/.test(category));
+    assert.ok(!category.includes('private')&&!category.includes('/home/'));
+  }
 });

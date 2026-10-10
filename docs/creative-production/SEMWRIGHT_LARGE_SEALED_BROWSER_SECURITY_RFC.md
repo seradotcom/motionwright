@@ -125,3 +125,39 @@ mounts, or merge unreviewed Semwright Core changes.
 
 The failing `canonical-broker` CI is a product blocker, not an ignorable
 flaky-test status.
+
+
+## Potential module-relative resource bundle dependency (under investigation)
+
+The Linux Host currently materializes an executable `/plugin/tools/chromium`
+from a sealed Host descriptor. Chromium's sources load ICU and headless
+resource packs using a path derived from the executable/module directory:
+see [Chromium ICU initialization](https://chromium.googlesource.com/chromium/src/+/1cde1cb8d/base/i18n/icu_util.cc)
+and [Headless ResourceBundle initialization](https://chromium.googlesource.com/chromium/src/+/111.0.5563.110/headless/lib/headless_content_main_delegate.cc).
+A browser launched from a different module directory can therefore lack
+`icudtl.dat` or other non-executable `.pak`/snapshot resources even though
+the exact binary digest and execution permission are correct.
+
+**This is a hypothesis, not an established cause for the latest Host failure.**
+The E2E now emits only a fixed, scrubbed error class for the owner-installed
+binary version-probe failure. We must wait for source-bound CI evidence
+before changing the Host.
+
+If module-relative sidecars are confirmed necessary, the correct follow-up
+is not to execute the original browser from a data mount. Extend the
+**existing Semwright Host** with an owner-approved, versioned bundle of
+strictly named, SHA-256-verified **read-only non-executable data files**
+mounted alongside the individually sealed executable, without granting
+write or execute rights to any source directory. Host-managed immutable
+sidecars must be bounded by individual and aggregate budgets, reject
+symlink path traversal and digest drift, remain unavailable to other tools
+unless explicitly granted, and be dropped on cleanup. Shared libraries are
+**executable code** and require their own independently reviewed sealed-tool
+authority; they must not be smuggled into a data-only sidecar exception.
+
+A generic mount of the whole npm/browser tree at `/plugin/tools` would
+make the confinement review much harder and is **not** approved here.
+Document the exact sidecars required by the Playwright-pinned browser,
+create adversarial fixture tests, verify that no private source can
+select runtime sidecars, and retest byte-identical direct/Host pixels
+before treating this as resolved.

@@ -2,6 +2,17 @@ name: HyperFrames native profile
 
 on:
   workflow_dispatch:
+    inputs:
+      selected_gate:
+        description: "Select a specific expensive native gate for disposable CI iteration"
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - broker
+          - creative-library
+          - creative-design
   push:
     branches: ['ci/v05-hyperframes-native', 'ci/v05-native-fidelity-continuation']
   pull_request:
@@ -25,6 +36,7 @@ env:
 
 jobs:
   creative-library-contracts:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'creative-library'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -49,6 +61,7 @@ jobs:
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
 
   sealed-browser-admission:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -78,6 +91,7 @@ jobs:
           retention-days: 7
 
   native-blender-stage-preview:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'creative-design'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -112,6 +126,7 @@ jobs:
           retention-days: 7
 
   creative-original-audio:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'creative-design'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -141,6 +156,7 @@ jobs:
           retention-days: 7
 
   native-studio-desktop:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -187,6 +203,7 @@ jobs:
           retention-days: 7
 
   creative-integration-contracts:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -209,6 +226,7 @@ jobs:
           cargo clippy --locked -p motionwright-domain -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
   native-profile:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full'
     # This profile keeps Chromium's sandbox enabled and uses a worker that
     # supports unprivileged browser namespaces without relaxing host controls.
     runs-on: ubuntu-22.04
@@ -265,6 +283,7 @@ jobs:
           retention-days: 7
 
   creative-visual-review:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'creative-design'
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     strategy:
@@ -311,6 +330,7 @@ jobs:
           retention-days: 7
 
   creative-human-review-pack:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'creative-design'
     needs:
       - creative-visual-review
       - native-blender-stage-preview
@@ -348,6 +368,7 @@ jobs:
           retention-days: 7
 
   canonical-broker:
+    if: github.event_name != 'workflow_dispatch' || inputs.selected_gate == 'full' || inputs.selected_gate == 'broker'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
