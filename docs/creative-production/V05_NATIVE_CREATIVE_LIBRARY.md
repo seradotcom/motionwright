@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 38 **PARTIAL code
+The isolated branch inventory currently records 39 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 25 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 24 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -564,3 +564,22 @@ The selective CI gates are keyed by `selected_gate` in their concurrency
 identifier; simultaneous Studio and Rust checks on the **same branch** must
 not cancel one another. As before, running `selected_gate=full` still
 does not bypass any independent release, owner or security review.
+
+
+### Explicit selected concept → unapproved canonical ProductionPlan (E02-01)
+
+After a **human clicks** one particular concept, Studio can create a
+`ProductionPlan` draft through the existing
+`Change::SetProductionPlan` / StudioService revision CAS. It is never
+done by opening a comparison or by receiving a model completion. The
+client defensively cross-checks the exact project ID/generation/revision,
+source SHA, chosen concept identity, and every source-backed claim against
+the current Project Brief, imported Asset ID/SHA and declared product
+version before saving. A stale claim, generic footage pretending to prove
+product behavior, illustration with claims or unfamiliar source blocks
+that plan's creation. For an existing ProductionPlan, replacing it
+requires a separate acknowledgment; the new plan explicitly sets
+`approval: null`, retaining independent native renderer, rights and
+human creative quality review. The main ProductionDesignWorkspace remains
+the persisted owner interface; no parallel plan storage/scheduler was added.
+`directionPlan.test.ts` asserts this opt-in, non-laundering behavior.

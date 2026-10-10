@@ -332,10 +332,12 @@ pub fn analyze_creative_directions(
                 }
                 CreativeEvidenceKind::RealProductCapture
                 | CreativeEvidenceKind::LicensedFootage => {
-                    check(
-                        !shot.claim_ids.is_empty(),
-                        "Real evidence classification needs at least one explicit brief claim",
-                    )?;
+                    if matches!(shot.evidence_kind, CreativeEvidenceKind::RealProductCapture) {
+                        check(
+                            !shot.claim_ids.is_empty(),
+                            "Real product capture requires at least one explicit brief claim",
+                        )?;
+                    }
                     let id = shot.evidence_asset_id.ok_or_else(|| {
                         CraftError("Real capture/footage claim lacks original source asset".into())
                     })?;

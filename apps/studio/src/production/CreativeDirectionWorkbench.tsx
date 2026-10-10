@@ -1,7 +1,8 @@
 import {useEffect,useMemo,useState} from 'react';
 import {BookOpen,GitCompareArrows,ShieldAlert} from 'lucide-react';
 import {creativeDirectionSourceState,creativeDirectionStudy} from '../api';
-import type {Project,Scene} from '../types';
+import type {Change,Project,Scene} from '../types';
+import {unapprovedPlanForSelectedDirection} from './directionPlan';
 import type {
  CreativeDirection,CreativeDirectionStudyReport,CreativeDirectionStudyRequest,
  CreativeEvidenceKind,CreativeReferenceStudy,CreativeRhythm,NarrativeStructure
@@ -35,8 +36,9 @@ function draft(index:number):ConceptDraft{
 const format=(value:string)=>value.replaceAll('_',' ');
 const failure=(error:unknown)=>error instanceof Error?error.message:String(error);
 export default function CreativeDirectionWorkbench({
- project,scene,available,busy
-}:{project:Project;scene:Scene|null;available:boolean;busy:boolean}){
+ project,scene,available,busy,commit
+}:{project:Project;scene:Scene|null;available:boolean;busy:boolean;
+  commit:(change:Change)=>Promise<void>}){
  const media=useMemo(()=>project.assets.filter(asset=>
   !!asset.content_sha256&&!!asset.source_revision&&
   (asset.media_type.startsWith('image/')||asset.media_type.startsWith('video/'))),[project.assets]);
@@ -52,15 +54,19 @@ export default function CreativeDirectionWorkbench({
  const [originality,setOriginality]=useState('');
  const [concepts,setConcepts]=useState<ConceptDraft[]>(()=>[draft(0),draft(1)]);
  const [result,setResult]=useState<CreativeDirectionStudyReport|null>(null);
+ const [submitted,setSubmitted]=useState<CreativeDirectionStudyRequest|null>(null);
+ const [replaceConsent,setReplaceConsent]=useState(false);
  const [error,setError]=useState<string|null>(null),[working,setWorking]=useState(false);
  const chosen=media.find(a=>a.id===assetId);
- useEffect(()=>{setResult(null);setError(null);},[project.id,project.generation,project.revision,scene?.id]);
+ useEffect(()=>{
+   setResult(null);setSubmitted(null);setReplaceConsent(false);setError(null);
+ },[project.id,project.generation,project.revision,scene?.id]);
  useEffect(()=>{setResult(null);setRights(false);setReferenceId(crypto.randomUUID());},[assetId]);
  const update=(index:number,change:Partial<ConceptDraft>)=>{
   setConcepts(existing=>existing.map((item,i)=>i===index?{...item,...change}:item));setResult(null);
  };
  const inspect=async()=>{
-  setWorking(true);setError(null);setResult(null);
+  setWorking(true);setError(null);setResult(null);setSubmitted(null);
   try{
    if(!scene||!chosen?.content_sha256||!chosen.source_revision)
     throw new Error('Select an imported reference with an exact SHA-256 and source version.');
@@ -81,8 +87,8 @@ export default function CreativeDirectionWorkbench({
     observed_rhythm:referenceRhythm,originality_constraint:originality
    };
    const alternatives:CreativeDirection[]=concepts.map(concept=>{
-    if(concept.evidence_kind!=='graphic_illustration'&&!concept.claim_ids.length)
-      throw new Error('A real product/footage claim needs an explicit, actually sourced Brief claim.');
+    if(concept.evidence_kind==='real_product_capture'&&!concept.claim_ids.length)
+      throw new Error('A real product capture needs an explicit, actually sourced Brief claim.');
     return {
      id:concept.id,title:concept.title,metaphor:concept.metaphor,
      structure:concept.structure,rhythm:concept.rhythm,
@@ -109,7 +115,18 @@ export default function CreativeDirectionWorkbench({
       response.report.winning_concept_id!==null||response.report.renderer_executed||
       response.concept_selected||response.source_media_opened||response.project_modified)
     throw new Error('Direction preflight returned a different source or implicit user approval.');
-   setResult(response.report);
+   setSubmitted(request);setResult(response.report);
+  }catch(reason){setError(failure(reason));}finally{setWorking(false);}
+ };
+ const chooseConcept=async(id:string)=>{
+  if(!result||!submitted)return;
+  setWorking(true);setError(null);
+  try{
+   if(project.production_design?.plan&&!replaceConsent)
+     throw new Error('Confirm that choosing a new draft will replace the existing ProductionPlan.');
+   const draftPlan=unapprovedPlanForSelectedDirection(project,submitted,result,id);
+   await commit({type:'set_production_plan',plan:draftPlan});
+   setResult(null);setSubmitted(null);
   }catch(reason){setError(failure(reason));}finally{setWorking(false);}
  };
  return <details className="native-contact-review" aria-label="Source-bound creative direction comparison">
@@ -208,6 +225,11 @@ export default function CreativeDirectionWorkbench({
   </div>
   {error&&<p className="production-error" role="alert">{error}</p>}
   {result&&<section className="native-job-controls" aria-label="Unapproved creative comparison report">
+   {project.production_design?.plan&&<label className="production-check">
+    <input type="checkbox" checked={replaceConsent} disabled={busy||working}
+      onChange={e=>setReplaceConsent(e.target.checked)}/>
+    I understand that choosing a new concept draft replaces the existing ProductionPlan and clears its content approval.
+   </label>}
    <strong>{result.candidate_reviews.length} distinct concepts validated against revision {result.revision}</strong>
    <p className="production-help">No concept selected, no media pixels inspected and no product claims verified. A human must review the source media, originality and narrative arguments before creating or approving any ProductionPlan.</p>
    {result.candidate_reviews.map((review,index)=><div key={review.concept_id} className="native-difference">
@@ -215,8 +237,15 @@ export default function CreativeDirectionWorkbench({
     <p className="mono">Source {review.concept_sha256.slice(0,16)}… · reference analysis {review.reference_analysis_sha256.slice(0,16)}…</p>
     {review.claim_reviews.map(row=><p key={row.claim_id}>{project.brief.claims.find(c=>c.id===row.claim_id)?.text??row.claim_id}: <strong>{format(row.status)}</strong> {row.source_version&&' · source build '+row.source_version}</p>)}
     {!review.claim_reviews.length&&<p>No product claim has been attached; this remains a design study.</p>}
+    <button className="secondary-button" type="button"
+      disabled={busy||working||!available||!submitted||
+        !!project.production_design?.plan&&!replaceConsent||
+        review.claim_reviews.some(row=>row.status!=='source_bound_needs_human_verification')}
+      onClick={()=>void chooseConcept(review.concept_id)}>
+      Choose this direction as an unapproved ProductionPlan draft
+    </button>
    </div>)}
-   <p className="production-help">Owner selection: pending. This comparison does not commit a project revision or create a renderer grant.</p>
+   <p className="production-help">Only an explicit click creates a new unapproved plan through the existing revision/CAS service. An illustration with selected claims, generic footage or stale/unsourced capture remains ineligible as claim evidence. Creative approval, proof of functionality and render quality are still separate decisions.</p>
   </section>}
  </details>;
 }
