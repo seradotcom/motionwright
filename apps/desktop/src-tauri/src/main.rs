@@ -23,8 +23,8 @@ use motionwright_native::{
     build_application,
     film::{FilmBuildOptions, build_motion_canvas_segments},
     production::{
-        MltAvMasterEvidence, MltAvMasterRequest, MotionCanvasRenderEvidence, ProductionClient,
-        ProductionConnection, ProductionCoordinator,
+        MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
+        MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
     },
 };
 use motionwright_service::{
@@ -34,6 +34,7 @@ use motionwright_service::{
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -155,6 +156,29 @@ struct NativeAvMasterResponse {
     evidence: MltAvMasterEvidence,
     /// Owner-minted session-only export handle; never a filesystem path.
     export_token: Option<Uuid>,
+}
+
+/// All private MLT receipts, temporary filesystem paths and opaque native
+/// project references remain on the trusted side of the IPC boundary.
+/// A verified master is delivered/reviewed only via a session token.
+#[derive(Debug, Serialize)]
+struct NativeMultisegmentAvResponse {
+    project_resource: String,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Uuid,
+    frame_count: u64,
+    video_segments: usize,
+    video_codec: &'static str,
+    audio_codec: &'static str,
+    audio_sample_rate: u32,
+    audio_channels: u16,
+    master_sha256: String,
+    export_token: Uuid,
+    /// A verified media output is not proof that destructive MLT cleanup
+    /// was approved. Expose the exact deferred status, not hidden success.
+    provider_project_cleanup: &'static str,
+    evidence_scope: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1235,6 +1259,206 @@ async fn assemble_av_master(
     })
 }
 
+/// Finalize the existing *owner-registered* multisegment native render via
+/// the Semwright MLT semantic editor and curated AV mux. The WebView supplies
+/// only expected project/profile IDs, one-time RenderLocal permission and a
+/// prior opaque preview token, never media paths, render recipes or digests.
+/// This is distinct from single-segment assemble_av_master above.
+#[tauri::command]
+async fn assemble_multisegment_av_master(
+    state: State<'_, AppState>,
+    request: AssembleAvMasterRequest,
+) -> Result<NativeMultisegmentAvResponse, String> {
+    let connection_path =
+        std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION").ok_or_else(|| {
+            "Canonical Semwright multisegment mastering is not configured.".to_string()
+        })?;
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Multisegment master input was invalidated by a creative revision.".into());
+    }
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.id == request.deliverable_id)
+        .ok_or_else(|| "Multisegment mastering requires a saved export profile.".to_string())?;
+    if profile.voice_track_id != Some(request.voice_track_id) {
+        return Err("Bind the selected measured voice to this exact saved profile.".into());
+    }
+    let (render, film_options, preview_root) = state.preview.multi_segment_source(
+        &project,
+        request.preview_token,
+        request.deliverable_id,
+    )?;
+    // Bound overflows, empty sources and unverified speaker durations before
+    // consuming a one-time effect grant.
+    let total_frames = render.segments.iter().try_fold(0u64, |sum, segment| {
+        sum.checked_add(segment.frame_count)
+            .ok_or("Native multisegment total frame count overflow.")
+    })?;
+    if render.segments.len() < 2 || !(2..=36_000).contains(&total_frames) {
+        return Err("Multisegment native master source frame count is unsupported.".into());
+    }
+    let selected_voice = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| track.id == request.voice_track_id)
+        .ok_or_else(|| "Selected measured voice take is missing.".to_string())?;
+    validate_master_voice_timing(
+        selected_voice.measured_duration,
+        total_frames,
+        render.frame_rate.num,
+        render.frame_rate.den,
+    )?;
+    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+        .map_err(|_| "Canonical Semwright connection could not be loaded.".to_string())?;
+    if connection.resource != project.resource_key() || connection.output_root != preview_root {
+        return Err("Native multisegment source belongs to a different owner output root.".into());
+    }
+    // Only application-held Film authoring options and verified manifests are
+    // used; do not derive any new render input from a WebView JSON object.
+    let preflight_root = preview_root.clone();
+    let preflight_project = project.clone();
+    let preflight_render = render.clone();
+    let preflight_options = film_options.clone();
+    let profile_id = request.deliverable_id;
+    tauri::async_runtime::spawn_blocking(move || {
+        preflight_multi_segment_mlt(
+            &preflight_project,
+            profile_id,
+            &preflight_options,
+            &preflight_render,
+            &preflight_root,
+        )
+        .map_err(|_| "Native multisegment source failed owner-bound preflight.".to_string())
+    })
+    .await
+    .map_err(|_| "Multisegment source preflight task failed.".to_string())??;
+
+    // This is a mutating native production request. Authorization is a
+    // scoped, short-lived, single-use desktop effect grant.
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::RenderLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        request.request_id.trim(),
+    )?;
+    let expected = RevisionStamp {
+        resource: project.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    let mut source_digest = Sha256::new();
+    source_digest.update(b"motionwright/multisegment-av-visual/v1");
+    for segment in &render.segments {
+        source_digest.update((segment.fingerprint.len() as u64).to_be_bytes());
+        source_digest.update(segment.fingerprint.as_bytes());
+        source_digest.update(segment.frame_count.to_be_bytes());
+        source_digest.update((segment.scene_ids.len() as u64).to_be_bytes());
+        for id in &segment.scene_ids {
+            source_digest.update(id.as_bytes());
+        }
+    }
+    let canonical = canonical_av_request_id(
+        project.id,
+        project.generation,
+        project.revision,
+        request.deliverable_id,
+        &hex::encode(source_digest.finalize()),
+        &selected_voice.source_sha256,
+    );
+    // Source + speaker identity are 256-bit hashed into the stage name.
+    // The native MLT subrequest is still short enough to accommodate typed
+    // suffixes without violating the existing Broker request ID budget.
+    let native_request_id = format!("mav-{}", &canonical[5..29]);
+    let root = connection.output_root.clone();
+    let service = state.service.clone();
+    let voice_track = request.voice_track_id;
+    let source = expected.clone();
+    let id = project.id;
+    let stable = canonical.clone();
+    let staged = tauri::async_runtime::spawn_blocking(move || {
+        let original = service
+            .verified_master_voice(id, &source, voice_track)
+            .map_err(sanitized)?;
+        stage_measured_wav(&root, &original, &stable)
+    })
+    .await
+    .map_err(|_| "Native multisegment source WAV staging failed.".to_string())??;
+
+    let output_root = connection.output_root.clone();
+    let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
+        .map_err(|_| "Canonical Semwright Native SDK connection was rejected.".to_string())?;
+    let visual = coordinator
+        .assemble_native_mlt_video_only_timeline(
+            project.id,
+            &expected,
+            &format!("{native_request_id}-visual"),
+            request.deliverable_id,
+            &film_options,
+            &render,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "Canonical multisegment visual assembly failed: {}",
+                error.message
+            )
+        })?;
+    let master = coordinator
+        .assemble_native_mlt_multisegment_av_master(
+            project.id,
+            &expected,
+            MltMultisegmentAvMasterRequest {
+                request_id: &native_request_id,
+                deliverable_id: request.deliverable_id,
+                options: &film_options,
+                rendered: &render,
+                visual: &visual,
+                audio: &staged,
+            },
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "Canonical multisegment AV mastering failed: {}",
+                error.message
+            )
+        })?;
+    let export_token = state
+        .av_delivery
+        .register_multisegment(&output_root, &master)
+        .ok_or_else(|| {
+            "Verified native master was retained but could not be authorized for export."
+                .to_string()
+        })?;
+    let master_sha256 = master
+        .master
+        .pointer("/artifact/sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Native multisegment MP4 lost its verified content digest.".to_string())?;
+    Ok(NativeMultisegmentAvResponse {
+        project_resource: project.resource_key(),
+        generation: project.generation,
+        revision: project.revision,
+        deliverable_id: request.deliverable_id,
+        frame_count: master.frame_count,
+        video_segments: render.segments.len(),
+        video_codec: "h264",
+        audio_codec: "aac",
+        audio_sample_rate: 48_000,
+        audio_channels: 2,
+        master_sha256: master_sha256.to_owned(),
+        export_token,
+        provider_project_cleanup: "not_requested_requires_foreground_broker_consent",
+        evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved",
+    })
+}
+
 /// Deliver a previous verified canonical master to an explicitly named
 /// destination. The source is resolved from a scoped session handle rather
 /// than any WebView-provided path, and files are created without overwrite.
@@ -1926,6 +2150,7 @@ fn main() {
             render_motion_canvas,
             preflight_multi_segment_mlt_readiness,
             assemble_av_master,
+            assemble_multisegment_av_master,
             export_native_av_master,
             verify_local_media_integrity,
             review_native_av_master,

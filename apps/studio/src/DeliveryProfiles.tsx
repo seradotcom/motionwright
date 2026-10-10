@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import NativeAvReview from "./NativeAvReview";
 import {
   assembleNativeAvMaster,
+  assembleNativeMultisegmentAvMaster,
   exportCaptionSidecar,
   exportOtio,
   exportVerifiedNativeMaster,
@@ -21,6 +22,7 @@ import type {
   MultiSegmentReadinessReport,
   MotionCanvasFilmOptions,
   MltAvMasterEvidence,
+  NativeMultisegmentAvMasterEvidence,
   MasterExportReceipt,
   PortableMediaVerification,
   Project,
@@ -132,13 +134,14 @@ export default function DeliveryProfiles({
   const [trustedMediaSha256, setTrustedMediaSha256] = useState("");
   const [verifiedMedia, setVerifiedMedia] = useState<PortableMediaVerification | null>(null);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
+  const [multiMaster, setMultiMaster] = useState<NativeMultisegmentAvMasterEvidence | null>(null);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "export-master" | "verify-media" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -273,13 +276,31 @@ export default function DeliveryProfiles({
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
   const currentAv = avEvidence?.generation === project.generation
     && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
+  const currentMultiMaster = multiMaster?.generation === project.generation
+    && multiMaster.deliverable_id === selected?.id ? multiMaster : null;
+  const multiSourceFrames = currentMotion?.segments.reduce(
+    (sum, segment) => sum + segment.frame_count, 0,
+  ) ?? 0;
+  const multiVideoSeconds = currentMotion?.segments.length && currentMotion.segments.length > 1
+    ? multiSourceFrames / motionFrameRate : Number.NaN;
+  const multiVoiceAligned = Number.isFinite(voiceDurationSeconds)
+    && Number.isFinite(multiVideoSeconds)
+    && Math.abs(voiceDurationSeconds - multiVideoSeconds) <= 1 / 48_000;
+  const multiMasterReady = Boolean(desktopMode && selected && !dirty
+    && verifiedWavIntent && multiVoiceAligned && multiSourceToken
+    && currentMultiSource && currentMultiSource.total_frames === multiSourceFrames
+    && masterProfileSupported);
+  const activeExportToken = currentMotion?.segments.length && currentMotion.segments.length > 1
+    ? currentMultiMaster?.revision === project.revision
+      ? currentMultiMaster.export_token : null
+    : currentAv?.revision === project.revision ? currentAv.export_token : null;
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
   const reviewAvailable = Boolean(desktopMode && selected && !dirty
-    && currentAv?.revision === project.revision && currentAv.export_token);
+    && Boolean(activeExportToken));
   const exportReady = Boolean(desktopMode && selected && !dirty
-    && currentAv?.revision === project.revision && currentAv?.export_token
+    && Boolean(activeExportToken)
     && masterDeliveryPath.trim().toLowerCase().endsWith(".mp4"));
 
   const preflightKey = JSON.stringify([
@@ -415,11 +436,11 @@ export default function DeliveryProfiles({
   };
 
   const exportMaster = () => {
-    if (!exportReady || !currentAv?.export_token) return;
+    if (!exportReady || !activeExportToken) return;
     void run("export-master", async () => {
       const receipt = await exportVerifiedNativeMaster(
         project,
-        currentAv.export_token!,
+        activeExportToken,
         masterDeliveryPath.trim(),
         includeMediaIntegrity,
       );
@@ -440,6 +461,19 @@ export default function DeliveryProfiles({
       setMessage("Local MP4 bytes match the unsigned receipt · SHA-256 "
         + result.sha256.slice(0, 16) + "… · source r" + result.source_revision
         + (result.trusted_anchor_matched ? " · independent hash matched" : ""));
+    });
+  };
+
+  const assembleMultiMaster = () => {
+    if (!selected || !selectedVoice || !multiSourceToken || !multiMasterReady) return;
+    void run("multi-master", async () => {
+      const verified = await assembleNativeMultisegmentAvMaster(
+        project, selected.id, selectedVoice.id, multiSourceToken,
+      );
+      setMultiMaster(verified);
+      setMessage("Semwright native semantic MLT produced a source-bound " + verified.frame_count
+        + "-frame H.264/AAC MP4 using a measured 48 kHz stereo voice take. "
+        + "Technical integrity is verified; human sound and creative approval remain separate.");
     });
   };
 
@@ -968,19 +1002,30 @@ export default function DeliveryProfiles({
               <header>
                 <div>
                   <strong>Native audiovisual master</strong>
-                  <span>Verified Motion Canvas segment + measured source WAV → Semwright MLT → H.264/AAC MP4.</span>
+                  <span>Verified Motion Canvas cut + measured source WAV → Semwright MLT → H.264/AAC MP4.</span>
                 </div>
                 <span className="status-pill status-unknown">OWNER-GRANTED</span>
               </header>
               <div className="delivery-editor-actions">
-                <button className="button button-primary" type="button"
-                  disabled={!masterReady || busy !== null}
-                  onClick={assembleMaster}>
-                  <Play size={14} />
-                  {busy === "master" ? "Mastering…" : "Assemble native AV master"}
-                </button>
+                {(!currentMotion || currentMotion.segments.length <= 1) && (
+                  <button className="button button-primary" type="button"
+                    disabled={!masterReady || busy !== null}
+                    onClick={assembleMaster}>
+                    <Play size={14} />
+                    {busy === "master" ? "Mastering…" : "Assemble native AV master"}
+                  </button>
+                )}
+                {currentMotion && currentMotion.segments.length > 1 && (
+                  <button className="button button-primary" type="button"
+                    disabled={!multiMasterReady || busy !== null}
+                    onClick={assembleMultiMaster}>
+                    <Play size={14} />
+                    {busy === "multi-master" ? "Assembling native MLT + AV…"
+                      : "Assemble multi-segment MP4"}
+                  </button>
+                )}
               </div>
-              {!masterPreviewToken && (
+              {!masterPreviewToken && !multiSourceToken && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.
                 </div>
@@ -988,6 +1033,19 @@ export default function DeliveryProfiles({
               {!verifiedWavIntent && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Bind one saved, imported measured 48 kHz stereo WAV voice take to the output profile.
+                </div>
+              )}
+              {multiSourceToken && !currentMultiSource && (
+                <div className="delivery-truth-note">
+                  <CircleDashed size={14} /> Run the multi-segment source preflight before
+                  requesting native MLT+AV mastering. The desktop will resolve the
+                  original Film options from the opaque preview token.
+                </div>
+              )}
+              {multiSourceToken && verifiedWavIntent && !multiVoiceAligned && (
+                <div className="delivery-truth-note warning">
+                  <CircleDashed size={14} /> Measured voice must match the entire native
+                  multi-segment cut within one 48 kHz PCM sample. No padding or retiming.
                 </div>
               )}
               {masterPreviewToken && verifiedWavIntent && !voiceAligned && (
@@ -1012,6 +1070,26 @@ export default function DeliveryProfiles({
                   </strong></div>
                 </div>
               )}
+              {currentMultiMaster && (
+                <div className="portable-plan" aria-label="Native multi-segment AV master evidence" role="status">
+                  <div><span>Source</span><strong>{currentMultiMaster.video_segments} semantic MLT segments</strong></div>
+                  <div><span>Frames</span><strong>{currentMultiMaster.frame_count}</strong></div>
+                  <div><span>Master</span><strong className="mono">
+                    {currentMultiMaster.master_sha256.slice(0, 16)}… SHA-256
+                  </strong></div>
+                  <div><span>Format</span><strong>H.264 · AAC · 48 kHz stereo</strong></div>
+                  <div><span>MLT resource cleanup</span><strong>
+                    {currentMultiMaster.provider_project_cleanup ===
+                      "not_requested_requires_foreground_broker_consent"
+                      ? "Pending foreground Broker consent"
+                      : "Unknown · verify operator approval"}
+                  </strong></div>
+                  <div><span>Applicability</span><strong>
+                    {currentMultiMaster.revision === project.revision
+                      ? "CURRENT · NATIVE" : "STALE · HISTORICAL"}
+                  </strong></div>
+                </div>
+              )}
               <div className="delivery-editor-actions">
                 <button className="button" type="button"
                   disabled={!reviewAvailable || busy !== null}
@@ -1020,11 +1098,11 @@ export default function DeliveryProfiles({
                   {showNativeAvReview && reviewAvailable ? "Close native review" : "Review native MP4"}
                 </button>
               </div>
-              {showNativeAvReview && reviewAvailable && currentAv?.export_token && (
+              {showNativeAvReview && reviewAvailable && activeExportToken && (
                 <NativeAvReview
-                  key={project.id + ":" + project.revision + ":" + currentAv.export_token}
+                  key={project.id + ":" + project.revision + ":" + activeExportToken}
                   project={project}
-                  exportToken={currentAv.export_token}
+                  exportToken={activeExportToken}
                 />
               )}
               <div className="delivery-truth-note">
@@ -1071,7 +1149,7 @@ export default function DeliveryProfiles({
                 <CircleDashed size={14} /> Optional receipt checks file bytes and source revision offline.
                 It is unsigned: it does not prove publisher identity, codec quality or human approval.
               </div>
-              {!currentAv?.export_token && (
+              {!activeExportToken && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real owner-authorized MLT AV master in this desktop session first. No arbitrary master paths are accepted.
                 </div>

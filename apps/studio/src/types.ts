@@ -472,6 +472,25 @@ export interface MasterExportReceipt {
   /** Optional unsigned local integrity descriptor, not an authenticity signature. */
   integrity_manifest_path?: string | null;
 }
+/** Trusted desktop mint from a source-bound multi-segment native MP4.
+ * No MLT raw project handles, filesystem paths, or arbitrary render plans. */
+export interface NativeMultisegmentAvMasterEvidence {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  frame_count: number;
+  video_segments: number;
+  video_codec: "h264";
+  audio_codec: "aac";
+  audio_sample_rate: 48000;
+  audio_channels: 2;
+  master_sha256: string;
+  export_token: string;
+  provider_project_cleanup: "not_requested_requires_foreground_broker_consent";
+  evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved";
+}
+
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */
   export_token?: string | null;

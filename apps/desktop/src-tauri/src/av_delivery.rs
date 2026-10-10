@@ -1,6 +1,7 @@
 use motionwright_domain::Project;
 use motionwright_native::production::{
-    MltAvMasterEvidence, read_verified_production_artifact, verified_native_media_path,
+    MltAvMasterEvidence, MltMultisegmentAvMasterEvidence, read_verified_production_artifact,
+    verified_native_media_path,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,6 +113,78 @@ impl NativeMasterDeliveryRegistry {
             frame_count: master.frame_count,
             owner_root: owner_root.to_path_buf(),
             relative_path: relative_path.to_owned(),
+            sha256: sha256.to_owned(),
+        };
+        let mut entries = self.entries.lock().ok()?;
+        if entries.len() >= MAX_DELIVERY_HANDLES {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+        Some(token)
+    }
+
+    /// Accept only trusted current exact-source multisegment production
+    /// receipts. No JS/WebView input is an artifact path or a digest.
+    /// The same one-use export capability is returned for an independently
+    /// audited native H.264/AAC master from a semantic MLT cut.
+    pub fn register_multisegment(
+        &self,
+        owner_root: &Path,
+        evidence: &MltMultisegmentAvMasterEvidence,
+    ) -> Option<Uuid> {
+        if evidence.evidence_scope
+            != "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+            || evidence.master.get("profile")?.as_str()? != "h264-aac-mp4"
+            || evidence.video.project_resource != evidence.project_resource
+            || evidence.video.generation != evidence.generation
+            || evidence.video.revision != evidence.revision
+            || evidence.video.deliverable_id != evidence.deliverable_id
+            || evidence.video.frame_count != evidence.frame_count
+            || evidence.video.native_frame_count_observed != Some(evidence.frame_count)
+            || evidence.video.transport_pcm_audio
+            || evidence.video.native_render_profile != "lossless-video-only"
+            || evidence.measured_voice.project_resource != evidence.project_resource
+            || evidence.measured_voice.generation != evidence.generation
+            || evidence.measured_voice.revision != evidence.revision
+            || evidence.measured_voice.deliverable_id != evidence.deliverable_id
+            || evidence.measured_voice.total_frames != evidence.frame_count
+            || evidence.measured_voice.audio_sha256 != evidence.staged_audio.sha256
+            || evidence.measured_voice.audio_sample_rate != 48_000
+            || evidence.measured_voice.audio_channels != 2
+            || evidence.frame_count == 0
+            || evidence.frame_count > 36_000
+            || evidence.measured_voice.fps_num == 0
+            || evidence.measured_voice.fps_den == 0
+        {
+            return None;
+        }
+        let id = Uuid::parse_str(evidence.project_resource.strip_prefix("project:")?).ok()?;
+        let artifact = evidence.master.get("artifact")?;
+        let path = artifact.get("path")?.as_str()?;
+        let sha256 = artifact.get("sha256")?.as_str()?;
+        let bytes = artifact.get("bytes")?.as_u64()?;
+        if artifact.get("root")?.as_str()? != "output"
+            || path.is_empty()
+            || path.len() > 4096
+            || !valid_sha256(sha256)
+            || !(1..=MAX_MASTER_BYTES).contains(&bytes)
+        {
+            return None;
+        }
+        // Owner files are verified by ProductionCoordinator before this
+        // function is called; the scoped export/stream path will verify again.
+        let token = Uuid::new_v4();
+        let entry = DeliveryHandle {
+            token,
+            project_id: id,
+            generation: evidence.generation,
+            revision: evidence.revision,
+            deliverable_id: evidence.deliverable_id,
+            frame_rate_num: evidence.measured_voice.fps_num,
+            frame_rate_den: evidence.measured_voice.fps_den,
+            frame_count: evidence.frame_count,
+            owner_root: owner_root.to_path_buf(),
+            relative_path: path.to_owned(),
             sha256: sha256.to_owned(),
         };
         let mut entries = self.entries.lock().ok()?;
