@@ -247,25 +247,24 @@ fn validate_motion_proof(
         let manifest_relative = format!("{directory}/artifact-manifest.json");
         let path = output_artifact_path(root, &manifest_relative, RECOVERY_MANIFEST_LIMIT)?;
         let sha = sha256_file(&path)?;
-        if let Some(known) = previous_manifests {
-            if known[segment_index] != sha {
-                return Err(Error::new(
-                    ErrorCode::StaleReference,
-                    "Recovery renderer manifest digest changed",
-                ));
-            }
+        if let Some(known) = previous_manifests
+            && known[segment_index] != sha
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Recovery renderer manifest digest changed",
+            ));
         }
         if let Some(provider_digest) = segment
             .artifact
             .get("manifest_sha256")
             .and_then(Value::as_str)
+            && provider_digest != sha
         {
-            if provider_digest != sha {
-                return Err(Error::new(
-                    ErrorCode::StaleReference,
-                    "Recovery renderer manifest disagrees with provider",
-                ));
-            }
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Recovery renderer manifest disagrees with provider",
+            ));
         }
         let manifest: Value = serde_json::from_slice(
             &fs::read(path).map_err(|_| backend("Recovery manifest could not be read"))?,
