@@ -55,7 +55,8 @@ def inspect_native_frames(frames: list[Path], destination: Path, size: tuple[int
     header = 90
     sheet = Image.new("RGB", (cols*(thumb_width+gutter)+gutter, header+rows*(thumb_height+label_height+gutter)+gutter), "#151A20")
     draw = ImageDraw.Draw(sheet)
-    draw.text((gutter,18), "PRODUCTHEROREVEAL / NATIVE FRAME CONTACT SHEET", fill="#F2F4F3")
+    family = "SPLITEXPLANATION" if project.get("fixture") == "split-explanation/1" else "PRODUCTHEROREVEAL"
+    draw.text((gutter,18), f"{family} / NATIVE FRAME CONTACT SHEET", fill="#F2F4F3")
     draw.text((gutter,40), f"{size[0]}x{size[1]} / 30 fps / revision {project['revision']} / Motionwright {source_sha[:12]}", fill="#A5C8DF")
     draw.text((gutter,61), "Technical samples only. Human creative approval and glyph review are still required.", fill="#A5C8DF")
     for i, image in enumerate(images):
@@ -79,7 +80,7 @@ def inspect_native_frames(frames: list[Path], destination: Path, size: tuple[int
         "technical_sampling":"PASS","creative_approval":"required","pixel_equivalence_with_editorial_preview":"not_claimed",
         "limitations":["This detects frozen or drifting fixtures, not aesthetic quality.",
                        "No OCR or independently measured glyph layout is inferred from these samples.",
-                       "The silent audio fixture tests transport only, not sound choreography."],
+                       "Synthetic non-silent 440/660 Hz stereo tones test decoded transport only, not sound choreography."],
         "contact_sheet":{"path":"native-contact-sheet.png","sha256":sha256(destination/"native-contact-sheet.png")},
         "onion":{"path":"native-onion-012-020-030.png","sha256":sha256(destination/"native-onion-012-020-030.png")},
         "difference":{"path":"native-diff-012-020.png","sha256":sha256(destination/"native-diff-012-020.png")},

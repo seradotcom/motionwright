@@ -150,11 +150,11 @@ jobs:
       - name: Exercise spatial regression guardrails against synthetic failures
         run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
 
-      - name: Render and inspect three native Hero variants
+      - name: Render and inspect six native semantic composition variants
         run: |
           set -euo pipefail
           mkdir -p verification/product-hero-e2e
-          for aspect in landscape portrait square; do
+          for aspect in landscape portrait square split-landscape split-portrait split-square; do
             MOTIONWRIGHT_E2E_FIXTURE="$aspect" python3 tooling/native_av_master_e2e.py \
               | tee "verification/product-hero-e2e/$aspect.log"
           done
@@ -166,13 +166,15 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path("verification/product-hero-e2e") / os.environ["GITHUB_SHA"]
-          for aspect, size in {"landscape":(1920,1080), "portrait":(1080,1920), "square":(1080,1080)}.items():
+          for aspect, size in {"landscape":(1920,1080), "portrait":(1080,1920), "square":(1080,1080),
+                               "split-landscape":(1920,1080), "split-portrait":(1080,1920), "split-square":(1080,1080)}.items():
               folder = root / aspect
               result = json.loads((folder / "result.json").read_text())
               inspection = json.loads((folder / "creative-frame-inspection.json").read_text())
               assert result["native_av_master_e2e"] == "PASS"
               assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
               assert result["frame_count"] == 180
+              assert result["project"]["fixture"] == ("split-explanation/1" if aspect.startswith("split-") else "product-hero-reveal/1")
               assert (result["project"]["width"], result["project"]["height"]) == size
               assert inspection["revision"] == result["project"]["revision"]
               assert inspection["technical_sampling"] == "PASS"
@@ -188,7 +190,9 @@ jobs:
               for entry in [inspection["source_project"], inspection["contact_sheet"], *inspection["samples"]]:
                   assert hashlib.sha256((folder / entry["path"]).read_bytes()).hexdigest() == entry["sha256"]
               assert hashlib.sha256((folder / "motionwright-master.mp4").read_bytes()).hexdigest() == result["master_sha256"]
-              print(aspect, "native timing/source/master verified; creative review required")
+              assert result["decoded_content_check"] == "actual_decoded_h264_aac_six_second_hero_fixture"
+              assert result["decoded_stereo_channel_identity"] == "confirmed_distinct_source_tones"
+              print(aspect, "native source, timing, decoded master and spatial proof verified; human creative review still required")
           PY_VERIFY
 
       - name: Upload native design-review artifacts

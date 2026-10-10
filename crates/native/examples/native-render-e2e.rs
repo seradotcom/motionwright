@@ -574,27 +574,32 @@ fn seed_hero(
     aspect: &str,
     project_json: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (width, height) = match aspect {
+    let split = aspect.starts_with("split-");
+    let shape = aspect.strip_prefix("split-").unwrap_or(aspect);
+    let (width, height) = match shape {
         "landscape" => (1920, 1080),
         "portrait" => (1080, 1920),
         "square" => (1080, 1080),
-        _ => return Err("hero aspect must be landscape, portrait or square".into()),
+        _ => return Err("native composition must have a bounded family/aspect".into()),
     };
     let service = StudioService::open(database)?;
     if !service.projects(2)?.is_empty() {
         return Err("hero seed database must start empty".into());
     }
-    let initial = service.create_project("ProductHeroReveal native acceptance")?;
+    let label = if split {
+        "SplitExplanation"
+    } else {
+        "ProductHeroReveal"
+    };
+    let initial = service.create_project(&format!("{label} native acceptance"))?;
     let scene_project = service
         .apply(
             initial.id,
             &initial.stamp(),
             "hero-seed-scene",
             &Change::AddScene {
-                name: "ProductHeroReveal".into(),
-                objective:
-                    "Evaluate native typography, staggered entrances and editable preservation"
-                        .into(),
+                name: label.into(),
+                objective: "Evaluate native typography, staggered entrances, spatial layout and editable preservation".into(),
                 duration_seconds: 6,
             },
         )?
@@ -608,14 +613,25 @@ fn seed_hero(
             &Change::UpsertProductHero {
                 instance_id: Uuid::parse_str("00000000-0000-4000-8000-000000000005")?,
                 scene_id,
-                config: motionwright_domain::HeroConfig::default(),
+                config: if split {
+                    motionwright_domain::HeroConfig {
+                        layout: motionwright_domain::HeroLayout::SplitExplanation,
+                        eyebrow: "MOTIONWRIGHT / EXPLANATION".into(),
+                        headline: "The problem\nand the approach".into(),
+                        body: "A clear second part explains what changes, without inventing software evidence.".into(),
+                        wordmark: "WHY".into(),
+                        ..motionwright_domain::HeroConfig::default()
+                    }
+                } else {
+                    motionwright_domain::HeroConfig::default()
+                },
             },
         )?
         .project;
     let mut profile = hero_project.deliverables[0].clone();
     profile.width = width;
     profile.height = height;
-    profile.name = format!("ProductHero / {aspect}");
+    profile.name = format!("{label} / {shape}");
     let project = service
         .apply(
             hero_project.id,
@@ -695,7 +711,7 @@ fn seed_hero(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "fixture": "product-hero-reveal/1", "project_id": project.id, "resource": project.resource_key(),
+            "fixture": if split { "split-explanation/1" } else { "product-hero-reveal/1" }, "project_id": project.id, "resource": project.resource_key(),
             "generation": project.generation, "revision": project.revision, "scene_id": scene_id,
             "deliverable_id": deliverable.id, "width": width, "height": height, "frame_count": 180,
             "creative_approval": "required"
