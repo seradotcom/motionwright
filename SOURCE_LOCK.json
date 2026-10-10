@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-08",
+  "generated_at": "2026-10-10",
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "8fa191250ae68274182570c65f067f7a60f85625",
+      "revision": "04142a2ae16e53a58bb6cf43135786e396a4b720",
       "version": "1.0.0",
       "branch_observed": "main",
       "native_sdk_package": "semwright-native-sdk",
@@ -15,7 +15,7 @@
         "effects"
       ],
       "license_observed": "MIT OR Apache-2.0",
-      "verification": "git fetch origin main && test $(git rev-parse origin/main) = 8fa191250ae68274182570c65f067f7a60f85625"
+      "verification": "git fetch origin main && test $(git rev-parse origin/main) = 04142a2ae16e53a58bb6cf43135786e396a4b720"
     }
   },
   "notes": [

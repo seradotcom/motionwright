@@ -31,11 +31,11 @@ parking_lot = "0.12"
 async-trait = "0.1"
 symphonia = { version = "0.6.1", features = ["all"] }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync"] }
-semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-native-sdk" }
-semwright-driver-sdk = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-driver-sdk" }
-semwright-types = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-types" }
-semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-media-time" }
-semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-project-graph" }
-semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-effect-conformance" }
-semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-motion-authoring" }
-semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "8fa191250ae68274182570c65f067f7a60f85625", package = "semwright-semantic-composition" }
+semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-native-sdk" }
+semwright-driver-sdk = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-driver-sdk" }
+semwright-types = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-types" }
+semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-media-time" }
+semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-project-graph" }
+semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-effect-conformance" }
+semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-motion-authoring" }
+semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "04142a2ae16e53a58bb6cf43135786e396a4b720", package = "semwright-semantic-composition" }

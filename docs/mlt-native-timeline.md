@@ -19,6 +19,38 @@ It then uses only the following typed, allowlisted commands from the exact pinne
 
 Every step calls the existing Motionwright production receipt layer, has its own stable request identifier and passes only semantic entity references issued by the current Semwright provider revision. A lost/unknown mutation is not silently resent with a fresh identity. Foreign output roots, wrong codecs, mixed renderers, altered creative source, displaced clip times or provider revisions fail closed.
 
+## Optional pinned Semwright video-only native lossless intermediate
+
+Semwright upstream PR [#254](https://github.com/seradotcom/semwright/pull/254)
+is included through an intentional immutable Native SDK and Driver Host pin
+`04142a2ae16e53a58bb6cf43135786e396a4b720`. This adds a second,
+closed, source-bound output of this *same* semantic project editor:
+`ProductionCoordinator::assemble_native_mlt_video_only_timeline`.
+It creates a distinct no-overwrite output path and chooses the provider's
+`lossless-video-only` FFV1 Matroska profile. The original
+`assemble_native_mlt_video_timeline` remains FFV1+PCM and is preserved.
+Neither mode accepts arbitrary render scripts, engine flags, or model/user
+filesystem paths.
+
+For video-only output, **the Host itself must decode and count every frame**:
+the Semwright receipt must report the expected source frame count (not
+`null`), exactly one FFV1 video stream, no audio, the intended owner-root
+file, original project revision, bounded dimensions/duration and content
+SHA-256. Any missing or false observation is rejected *before* Motionwright
+accepts the new artifact. The source segments, semantic clip spans and
+reference readbacks stay identical; there is no alternate local renderer.
+
+The GitHub Actions E2E uses independent disposable `pcm` and
+`video-only` lanes. Each rebuilds and runs both providers at exact SHA,
+renders real 32+1 Motion Canvas frames, assembles MLT, verifies the source
+and final file hashes, and decodes the result using an independent
+`ffprobe -count_frames`. The video-only lane also rejects even a silent PCM
+track. Passing this proves an editable lossless visual intermediate, **not**
+a combined H.264/AAC master, approved sound, or a new product acceptance.
+Downstream mux of measured audio remains separate and must use the native
+`driver.mlt-video.av.mux` capability, with its own source-bound authority,
+verification and end-to-end media checks.
+
 ## Output and remaining limits
 
 This method returns **`MltVerifiedLosslessTimeline`** with the actual owner-root FFV1 + PCM Matroska SHA-256, source frame count, nullable provider-observed frame count, current creative version, FFV1 source receipts and explicit scope:
