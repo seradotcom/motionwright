@@ -727,8 +727,8 @@ mod original_mix_source_tests {
     fn stale_sha_or_unsupported_rate_and_channels_never_pass_pcm_decoder() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("invalid.wav");
-        let (wav, _) = wav(48000, 2, 48000);
-        std::fs::write(&file, &wav).unwrap();
+        let (original_wav, _) = wav(48000, 2, 48000);
+        std::fs::write(&file, &original_wav).unwrap();
         assert!(decode_original_mix_pcm(&file, &"ab".repeat(32)).is_err());
         let (audio, _) = wav(44100, 2, 44100);
         std::fs::write(&file, &audio).unwrap();
