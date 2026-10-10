@@ -86,6 +86,10 @@ The desktop may read a previously authenticated Semwright H.264/AAC MP4 into Web
 
 The desktop native MP4 delivery boundary accepts only a minted session grant for an already-completed, source-bound MLT master. Native Rust tests verify scoped source identity, refused symlinked export parents, create-new/no-overwrite, bounded SHA-256-verified streaming, and refusal to copy changed master bytes. Synthetic Chromium tests cover explicit user destination, one-time DeliverLocal grant, request parameters and revision invalidation. See [verified master export](master-verified-export.md); green tests do not certify signed distribution or human review.
 
+## Exact native MLT entity selection
+
+The pinned MLT project constructor supplies a default Main sequence in addition to the application-created named sequence. A native unit guard checks complete pages, exact matching names, duplicate-refusal, forged partial cursor, bounded totals and missing/empty reference denial; each mutation still rereads source-revision-bound entity references. The actual MLT E2E remains mandatory: a semantic lookup test alone does not prove real media output.
+
 ## Contiguous editorial scenes as source-bound native shots
 
 A new exact-time Film unit gate reproduces 33 authored 1/30-second scenes and requires two complete native render segments of 32+1 frames. For a multi-scene segment, each source scene maps to an independent authored beat/shot under one Semwright Motion Canvas run Sequence; the original time spans stay constrained, each shot interval remains exact, and no editorial scene is dropped. The pinned provider supplies precise per-shot visibility within that Sequence. The strict native MLT E2E (not a synthetic acceptance) is still required to verify every actual PNG, observation, FFV1 intermediary and resulting 33-frame video-only Matroska before approval. This change is a candidate repair for observed short renders, not a CI shortcut or product-acceptance mark.

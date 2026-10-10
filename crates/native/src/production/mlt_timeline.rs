@@ -92,21 +92,39 @@ fn new_session(value: &Value) -> NativeResult<MltSession> {
     })
 }
 fn only_reference(value: &Value, expected_name: &str) -> NativeResult<String> {
-    if value.get("total").and_then(Value::as_u64) != Some(1) {
-        return Err(backend(
-            "MLT semantic lookup has unexpected entity cardinality",
-        ));
-    }
+    // The real pinned Semwright MLT Project::new seeds its own "Main" sequence.
+    // Creating a source-bound Motionwright sequence therefore returns two
+    // legitimate entities. A list with more than one item is not ambiguous if
+    // exactly one complete, current-revision entry has the canonical name.
+    // Never choose item[0], accept duplicate names or follow an incomplete
+    // cursor page: every returned native reference is revision-bound.
     let items = value
         .get("items")
         .and_then(Value::as_array)
         .ok_or_else(|| backend("MLT semantic lookup contains no entity list"))?;
-    if items.len() != 1 || items[0].get("name").and_then(Value::as_str) != Some(expected_name) {
+    let total = value
+        .get("total")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| backend("MLT semantic lookup has no bounded total"))?;
+    if total == 0
+        || total > 100
+        || usize::try_from(total).ok() != Some(items.len())
+        || !value.get("cursor").is_some_and(Value::is_null)
+    {
         return Err(backend(
-            "MLT semantic entity identity does not match canonical recipe",
+            "MLT semantic lookup returned incomplete or unbounded entity page",
         ));
     }
-    opaque(&items[0], "reference")
+    let mut matches = items
+        .iter()
+        .filter(|entry| entry.get("name").and_then(Value::as_str) == Some(expected_name));
+    let found = matches
+        .next()
+        .ok_or_else(|| backend("MLT semantic lookup lacks canonical entity name"))?;
+    if matches.next().is_some() {
+        return Err(backend("MLT semantic entity name is ambiguous"));
+    }
+    opaque(found, "reference")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +180,10 @@ impl ProductionCoordinator {
     ) -> NativeResult<String> {
         let mut args = serde_json::Map::new();
         args.insert("project".into(), query.session.project_ref.clone().into());
+        // This owner-created project has a bounded number of sequences/tracks.
+        // Explicitly fetch the entire page before checking an exact name;
+        // never mistake the default "Main" sequence for the created one.
+        args.insert("limit".into(), json!(100));
         if let Some(sequence) = query.sequence {
             args.insert("sequence".into(), sequence.into());
         }
@@ -607,7 +629,10 @@ mod tests {
     #[test]
     fn only_unique_owner_returned_identity_is_reusable() {
         let ok = json!({
-            "total":1,"items":[{"name":"Motionwright native visual segments","reference":"granted-track"}]
+            "total":2,"cursor":null,"items":[
+                {"name":"Default Video","reference":"foreign-default"},
+                {"name":"Motionwright native visual segments","reference":"granted-track"}
+            ]
         });
         assert_eq!(
             only_reference(&ok, "Motionwright native visual segments").unwrap(),
@@ -615,7 +640,16 @@ mod tests {
         );
         assert!(only_reference(&ok, "foreign-track").is_err());
         let mut bad = ok;
+        bad["total"] = json!(3);
+        assert!(only_reference(&bad, "Motionwright native visual segments").is_err());
         bad["total"] = json!(2);
+        bad["cursor"] = json!("page-2");
+        assert!(only_reference(&bad, "Motionwright native visual segments").is_err());
+        bad["cursor"] = Value::Null;
+        bad["items"][0]["name"] = json!("Motionwright native visual segments");
+        assert!(only_reference(&bad, "Motionwright native visual segments").is_err());
+        bad["items"][0]["name"] = json!("Default Video");
+        bad["items"][1]["reference"] = json!("");
         assert!(only_reference(&bad, "Motionwright native visual segments").is_err());
     }
 }

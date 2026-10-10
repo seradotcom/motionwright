@@ -1531,7 +1531,9 @@ mod tests {
         let segments =
             build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap();
         let sequence = &segments[0].film.sequences[0];
-        assert_eq!(sequence.beats.len(), 2);
+        // Two authored beats in the first scene plus the second scene's
+        // implicit beat remain independently scheduled in one native run.
+        assert_eq!(sequence.beats.len(), 3);
         assert_ne!(
             sequence.beats[0].shots[0].subjects[0].id,
             sequence.beats[1].shots[0].subjects[0].id
@@ -1549,6 +1551,16 @@ mod tests {
         assert_eq!(first_interval.end, Rational::new(1, 1).unwrap());
         assert_eq!(second_interval.start, Rational::new(1, 1).unwrap());
         assert_eq!(second_interval.end, Rational::new(2, 1).unwrap());
+        let third_interval = realization
+            .schedule
+            .interval(&sequence.beats[2].shots[0].span_id)
+            .unwrap();
+        assert_eq!(third_interval.start, Rational::new(2, 1).unwrap());
+        assert_eq!(third_interval.end, Rational::new(3, 1).unwrap());
+        assert_ne!(
+            sequence.beats[1].shots[0].subjects[0].id,
+            sequence.beats[2].shots[0].subjects[0].id
+        );
     }
 
     #[test]
