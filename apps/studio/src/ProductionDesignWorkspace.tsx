@@ -150,7 +150,7 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
   const attach = () => {
     if (!scene || !asset?.content_sha256) return;
     const capsule:NativeCapsule={id:crypto.randomUUID(),scene_id:scene.id,source_asset_id:asset.id,source_sha256:asset.content_sha256,label:asset.name,
-      fidelity:{renderer,renderer_version:version,visual:"unavailable",temporal:"unavailable",structural:"native",editable:"unavailable",losses:["Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted."],evidence_sha256:null},editable_parameters:[],native_editor_hint:"Open with the original application's trusted environment"};
+      fidelity:{renderer,renderer_version:version,visual:"unavailable",temporal:"unavailable",structural:"unavailable",editable:"unavailable",losses:["Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted."],evidence_sha256:null},editable_parameters:[],native_editor_hint:"Open with the original application's trusted environment"};
     return commit({type:"upsert_native_capsule",capsule});
   };
   return <div className="production-sources"><div className="production-section-title"><FileBox size={18}/><div><h2>Native source capsules</h2><p>Attach first. Preserve source bytes before considering translation or baking.</p></div></div>

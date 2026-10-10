@@ -37,9 +37,11 @@ StudioService project revision/CAS architecture.
    original source. Real Blender binary projects are treated as opaque
    because their native effect semantics require Blender.
 5. The existing portable project bundle can preserve content-addressed
-   source blobs without including runtime credentials. Portability to
-   a different machine and semantic source editing must be independently
-   revalidated before creative production.
+   source blobs without granting the source application's runtime credentials.
+   **Opaque blobs are not guaranteed to be free of embedded secrets or
+   private media**: the owner must inspect rights and sensitive data before
+   exporting or sharing a bundle. Portability to another machine and native
+   semantic editing must be independently revalidated before production.
 
 ## GLB 2.0 admission constraints
 
