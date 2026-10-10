@@ -1116,9 +1116,12 @@ async fn export_native_av_master(
         request.destination.trim(),
     )?;
     let destination = request.destination;
-    let receipt = tauri::async_runtime::spawn_blocking(move || source.copy_to(&destination))
-        .await
-        .map_err(|_| "Native master export task failed.".to_string())??;
+    let write_integrity = request.include_integrity_manifest;
+    let receipt = tauri::async_runtime::spawn_blocking(move || {
+        source.copy_with_integrity(&destination, write_integrity, SEMWRIGHT_REVISION)
+    })
+    .await
+    .map_err(|_| "Native master export task failed.".to_string())??;
     let latest = state
         .service
         .project(request.project_id)

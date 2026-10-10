@@ -14,6 +14,8 @@ The **source** is independently reverified using Motionwright's canonical owner-
 
 ## Product scope
 
+On explicit opt-in, the same one-time destination-bound delivery operation also reserves a non-overwriting local `.mp4.motionwright-integrity.json` sibling with source revision, native profile, pinned Semwright SHA and the exported MP4 SHA-256; see [portable integrity verification](portable-mp4-integrity.md). No additional arbitrary source path or generic filesystem permission is introduced. The receipt is **unsigned** and cannot prove publisher authenticity or content quality.
+
 The UI shows the destination, byte count, SHA-256 and CURRENT or HISTORICAL source status. The receipt is session-bound for the current desktop application. Export is not a signed release, a network publication, media-quality approval, source-video playback, automated upload or independent product acceptance. Correctness of the *bytes* is distinct from viewer compatibility, audio mix quality and final creative approval.
 
 This closes one critical local-first deliverable action without introducing general read/write filesystem capability to Semwright agents. A truly persistent, portable media artifact catalog and external deliveries require separate explicit trust boundaries.

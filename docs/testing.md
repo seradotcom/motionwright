@@ -78,6 +78,10 @@ When both a verified Motion Canvas segment and the corresponding MLT H.264/AAC m
 
 The desktop may read a previously authenticated Semwright H.264/AAC MP4 into WebView media memory **only** on explicit user request, using the session export token and a source/project revision match. Rust tests verify exact SHA-256 source bytes, invalid ftyp, stale project, source tampering and 16 MiB cap; synthetic Chromium tests confirm read-only token-only IPC and opt-in UI flow, but do not claim actual decoder compatibility. See [native AV review](native-av-review.md). Larger masters remain available through streaming verified MP4 export.
 
+## Portable MP4 SHA-256 proof and offline verification
+
+The owner-authorized desktop MP4 export can optionally write a create-new portable integrity JSON in the same directory, with a relative basename, source revision and the actual verified MP4 SHA-256. Rust tests cover manifest content, no overwrite, tamper refusal, private paths omitted and Unix mode 0600. The standard-library-only Python verifier hashes bytes in bounded chunks and rejects altered/missing files, symlinks, traversal, malformed origin/codec/FPS/digest, invalid MP4 signature and forged external anchors. Synthetic Chromium confirms explicit opt-in and a source-bound export request. These are **unsigned content-consistency checks**; they do not authenticate the creator or imply video-quality approval. See [portable MP4 proof](portable-mp4-integrity.md).
+
 ## Verified local native MP4 delivery
 
 The desktop native MP4 delivery boundary accepts only a minted session grant for an already-completed, source-bound MLT master. Native Rust tests verify scoped source identity, refused symlinked export parents, create-new/no-overwrite, bounded SHA-256-verified streaming, and refusal to copy changed master bytes. Synthetic Chromium tests cover explicit user destination, one-time DeliverLocal grant, request parameters and revision invalidation. See [verified master export](master-verified-export.md); green tests do not certify signed distribution or human review.
