@@ -65,7 +65,12 @@ def main() -> None:
     records = []
     seen_names: set[str] = set()
     for raw in args.artifact:
-        path = pathlib.Path(raw).resolve()
+        provided = pathlib.Path(raw)
+        # Resolve only after detecting a symlink: Path.resolve() itself
+        # follows the link and would otherwise neutralize this guard.
+        if provided.is_symlink():
+            raise SystemExit(f"candidate artifact must be a regular non-symlink file: {raw}")
+        path = provided.resolve()
         if not path.exists():
             raise SystemExit(f"candidate artifact does not exist: {raw}")
         if path.is_symlink() or not path.is_file():

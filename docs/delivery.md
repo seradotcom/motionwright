@@ -65,7 +65,7 @@ The dedicated Candidate Packages workflow builds release-shaped desktop bundles 
 - Windows produces an NSIS installer with `currentUser` install mode and downgrade protection enabled.
 - macOS produces a DMG candidate without claiming signing or notarization.
 
-`tooling/package_receipt.py` rejects missing, empty, symlinked or unexpected bundle types and records the exact source SHA, pinned Semwright SHA, OS/architecture, file size and SHA-256 for every candidate artifact. Each receipt explicitly leaves publishing, distribution signing, notarization and human install acceptance unclaimed.
+`tooling/package_receipt.py` rejects missing, empty, symlinked or unexpected bundle types and records the exact source SHA, pinned Semwright SHA, OS/architecture, file size and SHA-256 for every candidate artifact. Each receipt explicitly leaves publishing, distribution signing, notarization and human install acceptance unclaimed. The [post-build installed-package smoke](installed-candidate-smoke.md) re-verifies those exact artifact hashes, inspects Linux/Windows/macOS binaries after extraction or a disposable install, and tests a rootless AppImage GUI window under Xvfb; it never upgrades product acceptance or claims signing.
 
 Candidate artifacts are CI evidence, not releases. The workflow does not create a tag, GitHub Release, updater feed or automatic publication. Linux AppImage is the default no-root path; the Debian package is an explicit system-package alternative. Windows NSIS is fixed to current-user installation rather than relying on an implicit default. macOS users retain normal platform protections; no Gatekeeper bypass or ad-hoc "fix" is part of the product instructions.
 
