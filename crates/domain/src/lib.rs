@@ -6,6 +6,7 @@ mod extensions;
 mod hero;
 mod history;
 mod integrations;
+mod narration_lock;
 mod native_scenes;
 mod production_design;
 pub use canvas::*;
@@ -16,6 +17,7 @@ pub use extensions::*;
 pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use narration_lock::*;
 pub use native_scenes::*;
 pub use production_design::*;
 
@@ -634,6 +636,11 @@ impl Project {
                 return Err(DomainError::Invalid("creative production state requires project schema 2; legacy writers must not silently discard it".into()));
             }
         }
+        if self.schema_version < 3 && self.production_design.narration_take_lock.is_some() {
+            return Err(DomainError::Invalid(
+                "recorded narration decisions require project schema 3; older writers must not discard them".into()
+            ));
+        }
         if self.schema_version < 3
             && (!self.production_design.workspace.is_empty()
                 || self.branch_workspaces.iter().any(|state| {
@@ -658,6 +665,16 @@ impl Project {
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+        if self
+            .production_design
+            .narration_take_lock
+            .as_ref()
+            .is_some_and(|locked| locked.source_project_revision > self.revision)
+        {
+            return Err(DomainError::Invalid(
+                "narration approval references a future project revision".into(),
+            ));
+        }
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1011,6 +1028,15 @@ impl Project {
         Ok(())
     }
 
+    fn ensure_narration_not_recorded(&self) -> Result<()> {
+        if self.production_design.narration_take_lock.is_some() {
+            return Err(DomainError::Locked(
+                "recorded narration source: release the exact take before replacing voice, words or timing".into()
+            ));
+        }
+        Ok(())
+    }
+
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
         // Read schema 1 without changing its authority or revision. The first
         // successful write upgrades its format inside the same transaction.
@@ -1039,6 +1065,61 @@ impl Project {
                     plan.validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
                 }
                 self.production_design.plan = plan.clone();
+            }
+            Change::RecordNarrationTake {
+                expected_source_sha256,
+                expected_project_revision,
+                reviewer,
+                reason,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                if self.production_design.narration_take_lock.is_some()
+                    || *expected_project_revision != self.revision
+                {
+                    return Err(DomainError::Invalid("Recorded narration source is already protected or project revision is stale".into()));
+                }
+                let locked = NarrationTakeLock::record(
+                    &self.audio,
+                    &self.assets,
+                    self.revision,
+                    expected_source_sha256,
+                    reviewer,
+                    reason,
+                )?;
+                self.production_design.narration_take_lock = Some(locked);
+            }
+            Change::ReleaseNarrationTake {
+                expected_source_sha256,
+                reviewer,
+                reason,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if expected_source_sha256.len() != 64
+                    || !expected_source_sha256
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    || reviewer.trim().is_empty()
+                    || reviewer.len() > 200
+                    || reviewer.chars().any(char::is_control)
+                    || reason.trim().is_empty()
+                    || reason.len() > 2000
+                    || reason.chars().any(|c| c.is_control() && c != '\n')
+                {
+                    return Err(DomainError::Invalid("Releasing narration requires exact source SHA, recorded reviewer and reason".into()));
+                }
+                let old = self
+                    .production_design
+                    .narration_take_lock
+                    .as_ref()
+                    .ok_or_else(|| {
+                        DomainError::NotFound("no recorded narration take protection".into())
+                    })?;
+                if old.source_content_sha256 != *expected_source_sha256 {
+                    return Err(DomainError::Invalid(
+                        "Narration source SHA is stale; explicit release refused".into(),
+                    ));
+                }
+                self.production_design.narration_take_lock = None;
             }
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -1953,6 +2034,7 @@ impl Project {
                 }
             }
             Change::ImportMeasuredVoice { asset, track } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 asset.validate()?;
                 if !asset.media_type.starts_with("audio/")
@@ -1980,11 +2062,13 @@ impl Project {
                 self.audio.validate()?;
             }
             Change::AddVoiceTrack { track } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 self.audio.voice_tracks.push(track.clone());
                 self.audio.validate()?;
             }
             Change::SetActiveVoiceTrack { track_id } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if !self
                     .audio
@@ -1997,11 +2081,13 @@ impl Project {
                 self.audio.active_voice_track_id = Some(*track_id);
             }
             Change::AddTranscriptSegment { segment } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 self.audio.transcript.push(segment.clone());
                 self.audio.validate()?;
             }
             Change::UpsertTranscriptSegment { segment } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 if let Some(existing) = self
                     .audio
@@ -2016,6 +2102,7 @@ impl Project {
                 self.audio.validate()?;
             }
             Change::RemoveTranscriptSegment { segment_id } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 if self
                     .audio
@@ -2038,11 +2125,13 @@ impl Project {
                 }
             }
             Change::AddAudioCue { cue } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
                 self.audio.cues.push(cue.clone());
                 self.audio.validate()?;
             }
             Change::UpsertAudioCue { cue } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
                 if let Some(existing) = self
                     .audio
@@ -2057,6 +2146,7 @@ impl Project {
                 self.audio.validate()?;
             }
             Change::RemoveAudioCue { cue_id } => {
+                self.ensure_narration_not_recorded()?;
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
                 let before = self.audio.cues.len();
                 self.audio.cues.retain(|cue| cue.id != *cue_id);
@@ -2272,6 +2362,20 @@ pub enum Change {
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
+    },
+    /// Source-content decision: only a recorded human UI action is allowed.
+    /// This does not authenticate a reviewer or approve a published film.
+    RecordNarrationTake {
+        expected_source_sha256: String,
+        expected_project_revision: u64,
+        reviewer: String,
+        reason: String,
+    },
+    /// Explicit undo of source protection, independently CAS-stamped by service.
+    ReleaseNarrationTake {
+        expected_source_sha256: String,
+        reviewer: String,
+        reason: String,
     },
     UpsertNativeCapsule {
         capsule: NativeCapsule,

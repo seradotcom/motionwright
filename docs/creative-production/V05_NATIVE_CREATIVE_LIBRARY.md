@@ -501,3 +501,29 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+### Persistent source narration decision (SQLite/CAS)
+
+The v0.5 project domain now supports `record_narration_take` and
+`release_narration_take` as **explicit serialized Changes** through
+the existing StudioService and underlying SQLite compare-and-swap
+revision log. The approved *content* identity is a canonical digest
+of the active measured voice asset SHA-256, track metadata, original
+transcript segments (ordered by stable ID), and source-linked cues.
+User-recorded authorship/reason and originating project revision
+remain attached to `ProductionDesign.narration_take_lock`. Unknown
+or weak ASR alignment is rejected when recording a source decision.
+A protected source forbids changes to the voice, active track,
+transcript or linked cue edits unless a separate revision first releases
+the exact SHA, with a recorded new reason. The original `SetMixIntent`
+still permits sound mixing adjustments without rewriting protected
+words. The project is reopened from the real persisted SQLite file in
+tests, which also check stale write rejection and explicit unlocking.
+
+This records a **local user decision**, not identity-authenticated
+e-signature, independently decoded audio, artistic PASS or publication
+permission. Those fields are explicitly false in its native record.
+A future verified actor/permission service is necessary before
+claiming a legally authenticated LockedNarration take or E08-02 release.
+Older project-schema writers cannot discard this record silently.
