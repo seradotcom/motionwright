@@ -1530,6 +1530,106 @@ mod tests {
     }
 
     #[test]
+    fn portable_bundle_round_trip_preserves_native_capsule_and_unknown_glb_effect_bytes() {
+        use motionwright_domain::{Fidelity, FidelityReport, NativeCapsule};
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let mut source = Store::open(source_dir.path().join("original.sqlite3")).unwrap();
+        let binary = source_dir.path().join("owner-source.glb");
+        let json = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"Owner original","extensions":{"EXT_ProprietaryLight":{"unrecognized":"retain"}}}],"extensionsUsed":["EXT_ProprietaryLight"],"extensionsRequired":["EXT_ProprietaryLight"],"extras":{"owner_editable_original":"NEVER_FLATTEN"}}"#;
+        let mut json_bytes = json.to_vec();
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        glb.extend_from_slice(&0_u32.to_le_bytes());
+        glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json_bytes);
+        let original_glb_bytes = glb.len() as u32;
+        glb[8..12].copy_from_slice(&original_glb_bytes.to_le_bytes());
+        fs::write(&binary, &glb).unwrap();
+        let blob = source.ingest_blob_file(&binary).unwrap();
+        let mut project = Project::new("Owned original scene asset").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Existing native stage".into(),
+                objective: "Attach source rather than rebuild".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+        let asset_id = Uuid::now_v7();
+        project.assets.push(Asset {
+            id: asset_id,
+            name: "owner-source.glb".into(),
+            media_type: "model/gltf-binary".into(),
+            content_sha256: Some(blob.sha256.clone()),
+            source_revision: Some("owner-import-on-another-machine".into()),
+        });
+        let capsule = NativeCapsule {
+            id: Uuid::now_v7(),
+            scene_id: project.scenes[0].id,
+            source_asset_id: asset_id,
+            source_sha256: blob.sha256.clone(),
+            label: "Attached owner GLB original".into(),
+            fidelity: FidelityReport {
+                renderer: "blender".into(),
+                renderer_version: "source-only-4.0".into(),
+                visual: Fidelity::Unavailable,
+                temporal: Fidelity::Unavailable,
+                structural: Fidelity::Native,
+                editable: Fidelity::Unavailable,
+                losses: vec!["Original unknown extension cannot be semantically imported".into()],
+                evidence_sha256: None,
+            },
+            editable_parameters: vec![],
+            native_editor_hint: "Owner's Blender session".into(),
+        };
+        project.production_design.capsules.push(capsule.clone());
+        project.validate().unwrap();
+        source.create_project(&project).unwrap();
+        let saved = source.load_project(project.id).unwrap();
+        assert_eq!(saved.production_design.capsules, vec![capsule.clone()]);
+        let bundle = source_dir.path().join("owner-original.motionwright");
+        let manifest = source.export_project_bundle(project.id, &bundle).unwrap();
+        assert_eq!(manifest.blobs.len(), 1);
+        assert_eq!(manifest.blobs[0].sha256, blob.sha256);
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let mut target = Store::open(target_dir.path().join("new-device.sqlite3")).unwrap();
+        assert_eq!(
+            target.inspect_project_bundle(&bundle).unwrap().blob_count,
+            1
+        );
+        let restored = target.import_project_bundle(&bundle).unwrap();
+        assert_eq!(restored.id, project.id);
+        assert_ne!(restored.generation, project.generation);
+        assert_eq!(restored.production_design.capsules, vec![capsule]);
+        assert!(
+            !restored.production_design.capsules[0]
+                .fidelity
+                .usable_without_loss_consent()
+        );
+        assert_eq!(restored.assets[0].content_sha256, Some(blob.sha256.clone()));
+        let recovered = target.read_blob(&blob.sha256, glb.len() as u64).unwrap();
+        assert_eq!(recovered, glb);
+        assert!(
+            recovered
+                .windows(b"EXT_ProprietaryLight".len())
+                .any(|window| window == b"EXT_ProprietaryLight")
+        );
+        // Neither project authority nor owner application runtime is imported
+        // by restoring a source-only capsule on a different machine.
+        assert!(
+            !restored
+                .extensions
+                .iter()
+                .any(|extension| extension.enabled)
+        );
+    }
+
+    #[test]
     fn portable_bundle_rejects_credential_like_project_metadata_without_creating_destination() {
         let temp = tempfile::tempdir().unwrap();
         let mut store = Store::open(temp.path().join("source.sqlite3")).unwrap();

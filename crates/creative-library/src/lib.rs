@@ -1,5 +1,6 @@
 //! Original first-party creative recipes, not a renderer or another execution backend.
 //! All outputs are editable, bounded native documents with stable component identities.
+mod attached;
 mod catalog;
 mod clock;
 mod data;
@@ -16,6 +17,7 @@ mod skills;
 mod sound;
 mod stage;
 mod wav;
+pub use attached::*;
 pub use catalog::*;
 pub use clock::*;
 pub use data::*;

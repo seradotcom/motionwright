@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 35 **PARTIAL code
+The isolated branch inventory currently records 37 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 28 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 26 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -501,3 +501,26 @@ authentication. The baseline is ephemeral UI state to avoid quietly
 persisting a purported owner-signed take. A true owner-approved
 persistent narration lock and mix/caption reflow must still be
 implemented as a separate canonical change operation.
+
+
+## Attach-first GLB/Blender source introspection and portable owner handoff
+
+The desktop Native Sources inspector now reads exact, project-owned CAS
+bytes behind the existing NativeCapsule; it never executes an attached
+source, turns a manifest into a new runtime grant, changes original source
+or treats external structure as editable native objects. glTF 2.0 GLB
+JSON array counts are **structured observable**; proprietary chunks,
+unknown extensions and extras are **opaque preserved**, and source-level
+Blender `.blend` files stay entirely opaque. Inspections are bounded to
+32 MiB, digest-bound to the current project generation/revision and
+non-authoritative for rendering, rights, appearance or native editing.
+
+The portable bundle test additionally exercises a second fresh Store:
+one owner-imported original GLB NativeCapsule containing a proprietary
+extension must restore with identical source bytes, original source
+SHA-256 and fidelity-loss declarations, but a **rotated generation**;
+no external application's execution credentials or permissions are
+implicitly admitted. See `V05_NATIVE_ATTACH_INSPECTION.md`.
+This adds verifiable *partial* evidence to E11-01 and E11-04.
+Neither native semantic editing nor a general third-party source
+round-trip is yet release-accepted.

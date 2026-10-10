@@ -1,4 +1,5 @@
 import NativeCreativeEditor from "./production/NativeCreativeEditor";
+import AttachedSourceWorkbench from "./AttachedSourceWorkbench";
 import CreativeLibraryWorkspace from "./production/CreativeLibraryWorkspace";
 import ExpandedStudy from "./ExpandedStudy";
 import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
@@ -149,7 +150,7 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
   const attach = () => {
     if (!scene || !asset?.content_sha256) return;
     const capsule:NativeCapsule={id:crypto.randomUUID(),scene_id:scene.id,source_asset_id:asset.id,source_sha256:asset.content_sha256,label:asset.name,
-      fidelity:{renderer,renderer_version:version,visual:"unavailable",temporal:"unavailable",structural:"native",editable:"unavailable",losses:["Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted."],evidence_sha256:null},editable_parameters:[],native_editor_hint:"Open with the original application's trusted environment"};
+      fidelity:{renderer,renderer_version:version,visual:"unavailable",temporal:"unavailable",structural:"unavailable",editable:"unavailable",losses:["Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted."],evidence_sha256:null},editable_parameters:[],native_editor_hint:"Open with the original application's trusted environment"};
     return commit({type:"upsert_native_capsule",capsule});
   };
   return <div className="production-sources"><div className="production-section-title"><FileBox size={18}/><div><h2>Native source capsules</h2><p>Attach first. Preserve source bytes before considering translation or baking.</p></div></div>
@@ -159,7 +160,7 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
     <button className="primary-button" disabled={busy || !scene || !asset?.content_sha256 || !renderer.trim() || !version.trim()} onClick={attach}><Plus size={14}/> Attach source to scene</button>
     <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
       <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>
-      {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small></article>)}</div>
+      {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small><AttachedSourceWorkbench project={project} capsule={c} busy={busy}/></article>)}</div>
   </div>;
 }
 
