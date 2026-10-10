@@ -745,26 +745,49 @@ fn visual_token(project: &Project, names: &[&str], purpose: &str) -> NativeResul
         })
 }
 
-fn assets(project: &Project) -> NativeResult<Vec<AssetRef>> {
-    if project.assets.len() > 128 {
+/// A Native Motion Canvas Film is a visual composition. Include only media
+/// that an actual authored visual subject references. Automatically copying
+/// every Project/CAS asset into Film is incorrect: measured VO, music, fonts,
+/// and unused binary imports belong to other subsystems, and have not been
+/// registered with the Motion Canvas managed-asset registry. An unrelated
+/// WAV asset caused a real driver composition-plan rejection in native CI.
+/// Preserve true digest-bound image/video asset references and fail closed.
+fn assets(project: &Project, sequences: &[Sequence]) -> NativeResult<Vec<AssetRef>> {
+    let referenced = sequences
+        .iter()
+        .flat_map(|sequence| &sequence.beats)
+        .flat_map(|beat| &beat.shots)
+        .flat_map(|shot| &shot.subjects)
+        .filter_map(|subject| match &subject.content {
+            SubjectContent::Image { asset_id, .. } | SubjectContent::Video { asset_id, .. } => {
+                Some(asset_id.clone())
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if referenced.len() > 128 {
         return Err(unsupported(
-            "Canonical Film supports at most 128 digest-bound assets",
+            "Canonical Film supports at most 128 referenced digest-bound visual assets",
         ));
     }
-    project
-        .assets
+    referenced
         .iter()
-        .map(|asset| {
-            let digest = asset.content_sha256.clone().ok_or_else(|| {
-                unsupported(format!(
-                    "Asset {} has no content digest and cannot enter canonical Film",
-                    asset.id
-                ))
-            })?;
+        .map(|reference| {
+            let asset = project
+                .assets
+                .iter()
+                .find(|asset| uid("asset", asset.id) == *reference)
+                .ok_or_else(|| {
+                    unsupported("Authored visual subject has no matching project media asset")
+                })?;
+            let digest = asset
+                .content_sha256
+                .clone()
+                .ok_or_else(|| unsupported("Referenced visual asset has no content digest"))?;
             let sha256 = Digest::parse(digest)
-                .map_err(|error| contract("Asset digest is invalid", error))?;
+                .map_err(|error| contract("Referenced visual asset digest is invalid", error))?;
             Ok(AssetRef {
-                id: uid("asset", asset.id),
+                id: reference.clone(),
                 sha256,
                 media_type: asset.media_type.clone(),
                 provenance: asset.source_revision.clone(),
@@ -1176,6 +1199,7 @@ fn build_segment(
         sequences
     };
 
+    let segment_assets = assets(project, &sequences)?;
     let film = Film {
         version: AUTHORING_VERSION,
         id: format!("mw-{}-{segment_index}", project.id.simple()),
@@ -1220,7 +1244,7 @@ fn build_segment(
             version: 1,
             cues: vec![],
         },
-        assets: assets(project)?,
+        assets: segment_assets,
     };
     let realization = realize(&film)
         .map_err(|error| contract("Canonical Motion Canvas Film realization failed", error))?;
@@ -1346,6 +1370,57 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn unrelated_measured_voice_does_not_enter_native_visual_film_assets() {
+        // Regression from the real 33-frame H264/AAC E2E: importing an actual
+        // voice take to Studio CAS must never force that audio asset through
+        // Motion Canvas composition.plan, whose managed visual asset registry
+        // did not import it. Rendering source objects remains unchanged.
+        let mut project = fixture_project();
+        let master_id = project
+            .deliverables
+            .iter()
+            .find(|profile| profile.name == "Master 16:9")
+            .unwrap()
+            .id;
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                })
+                .collect(),
+        };
+        let original = build_motion_canvas_segments(&project, master_id, &options).unwrap();
+        assert!(
+            original
+                .iter()
+                .all(|segment| segment.film.assets.is_empty())
+        );
+        project.assets.push(motionwright_domain::Asset {
+            id: Uuid::new_v4(),
+            name: "Measured 48 kHz stereo voice WAV".into(),
+            media_type: "audio/wav".into(),
+            content_sha256: Some("a".repeat(64)),
+            source_revision: Some("actual-source-import".into()),
+        });
+        let with_audio = build_motion_canvas_segments(&project, master_id, &options).unwrap();
+        assert_eq!(original.len(), with_audio.len());
+        for (before, after) in original.iter().zip(&with_audio) {
+            assert_eq!(before.film.assets, after.film.assets);
+            assert!(after.film.assets.is_empty());
+            assert_eq!(before.frame_count, after.frame_count);
+            assert_eq!(before.film.timing, after.film.timing);
+            assert_eq!(before.film.sequences, after.film.sequences);
+        }
     }
 
     #[test]

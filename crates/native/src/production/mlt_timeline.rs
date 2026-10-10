@@ -14,10 +14,51 @@ const MLT_TIMELINE_POLL_SECS: u64 = 330;
 const MLT_TIMELINE_POLL_MS: u64 = 1000;
 const MAX_NATIVE_TIMELINE_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// The source-bound semantic edit path has precisely two permitted,
+/// immutable native output profiles. Never accept untrusted strings or
+/// codec/consumer flags from Studio, a client, or an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MltTimelineMode {
+    PcmTransport,
+    VideoOnly,
+}
+impl MltTimelineMode {
+    const fn profile(self) -> &'static str {
+        match self {
+            Self::PcmTransport => "lossless",
+            Self::VideoOnly => "lossless-video-only",
+        }
+    }
+    const fn audio(self) -> bool {
+        matches!(self, Self::PcmTransport)
+    }
+    const fn scope(self) -> &'static str {
+        match self {
+            Self::PcmTransport => {
+                "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
+            }
+            Self::VideoOnly => {
+                "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MltSession {
     project_ref: String,
     revision: String,
+}
+
+/// Closed native production request, never deserialized from WebView.
+struct MltTimelineRequest<'a> {
+    project_id: Uuid,
+    expected: &'a RevisionStamp,
+    request_id: &'a str,
+    deliverable_id: Uuid,
+    options: &'a FilmBuildOptions,
+    rendered: &'a MotionCanvasRenderEvidence,
+    mode: MltTimelineMode,
 }
 
 struct MltEntityQuery<'a> {
@@ -145,6 +186,7 @@ struct LosslessExpected<'a> {
     height: u32,
     fps_num: u32,
     fps_den: u32,
+    mode: MltTimelineMode,
 }
 
 fn verify_lossless_render_result(
@@ -153,7 +195,7 @@ fn verify_lossless_render_result(
 ) -> NativeResult<Option<u64>> {
     if result.get("state").and_then(Value::as_str) != Some("succeeded")
         || result.get("project_revision").and_then(Value::as_str) != Some(expected.revision)
-        || result.get("profile").and_then(Value::as_str) != Some("lossless")
+        || result.get("profile").and_then(Value::as_str) != Some(expected.mode.profile())
         || result.get("output").and_then(Value::as_str) != Some(expected.path)
         || result.get("job").and_then(Value::as_str) != Some(expected.job)
         || !result.get("error").is_some_and(Value::is_null)
@@ -182,33 +224,47 @@ fn verify_lossless_render_result(
         ));
     }
     if result.pointer("/media/video").and_then(Value::as_bool) != Some(true)
-        || result.pointer("/media/audio").and_then(Value::as_bool) != Some(true)
+        || result.pointer("/media/audio").and_then(Value::as_bool) != Some(expected.mode.audio())
         || result.pointer("/media/width").and_then(Value::as_u64) != Some(u64::from(expected.width))
         || result.pointer("/media/height").and_then(Value::as_u64)
             != Some(u64::from(expected.height))
     {
         return Err(backend(
-            "MLT lossless video and required PCM transport audio profile differ",
+            "MLT lossless video or expected audio profile differs",
         ));
     }
     let codecs = result
         .pointer("/media/codecs")
         .and_then(Value::as_array)
         .ok_or_else(|| backend("MLT lossless result has no measured codecs"))?;
-    if codecs.len() != 2
-        || !codecs.iter().any(|value| value.as_str() == Some("ffv1"))
-        || !codecs
-            .iter()
-            .any(|value| value.as_str() == Some("pcm_s16le"))
-    {
-        return Err(backend("MLT lossless result is not exact FFV1 + PCM s16le"));
+    let known_ffv1 = codecs.iter().any(|value| value.as_str() == Some("ffv1"));
+    let exact_codecs = match expected.mode {
+        MltTimelineMode::PcmTransport => {
+            codecs.len() == 2
+                && known_ffv1
+                && codecs
+                    .iter()
+                    .any(|value| value.as_str() == Some("pcm_s16le"))
+        }
+        MltTimelineMode::VideoOnly => codecs.len() == 1 && known_ffv1,
+    };
+    if !exact_codecs {
+        return Err(backend(
+            "MLT lossless result does not match the exact closed output profile",
+        ));
     }
     let frames_value = result
         .pointer("/media/frames")
         .ok_or_else(|| backend("MLT lossless result has no frame observation field"))?;
     let measured_frames = if frames_value.is_null() {
-        // Pinned Matroska FFprobe may omit nb_frames. Exact decoded frames are
-        // verified by the separate actual native E2E using -count_frames.
+        // Legacy PCM Matroska may not expose nb_frames; separate CI decodes
+        // those historical results. The NEW video-only source strictly
+        // requires the full Host decoder to report exact observed frames.
+        if expected.mode == MltTimelineMode::VideoOnly {
+            return Err(backend(
+                "MLT video-only result lacks the independently decoded frame count",
+            ));
+        }
         None
     } else {
         let number = frames_value
@@ -261,6 +317,8 @@ pub struct MltVerifiedLosslessTimeline {
     pub frame_count: u64,
     pub native_frame_count_observed: Option<u64>,
     pub transport_pcm_audio: bool,
+    /// The exact curated provider profile; only trusted, closed enum values.
+    pub native_render_profile: String,
     /// An in-memory MLT project may remain in the bounded provider.
     /// Destructive project.close requires trusted foreground Broker consent.
     pub provider_project_cleanup: String,
@@ -348,6 +406,54 @@ impl ProductionCoordinator {
         options: &FilmBuildOptions,
         rendered: &MotionCanvasRenderEvidence,
     ) -> NativeResult<MltVerifiedLosslessTimeline> {
+        self.assemble_mlt_timeline_mode(MltTimelineRequest {
+            project_id,
+            expected,
+            request_id,
+            deliverable_id,
+            options,
+            rendered,
+            mode: MltTimelineMode::PcmTransport,
+        })
+        .await
+    }
+
+    /// A distinct video-only source for native av.mux. This still uses the
+    /// exact source-bound semantic editing path and current SDK/Host grants.
+    pub async fn assemble_native_mlt_video_only_timeline(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<MltVerifiedLosslessTimeline> {
+        self.assemble_mlt_timeline_mode(MltTimelineRequest {
+            project_id,
+            expected,
+            request_id,
+            deliverable_id,
+            options,
+            rendered,
+            mode: MltTimelineMode::VideoOnly,
+        })
+        .await
+    }
+
+    async fn assemble_mlt_timeline_mode(
+        &self,
+        request: MltTimelineRequest<'_>,
+    ) -> NativeResult<MltVerifiedLosslessTimeline> {
+        let MltTimelineRequest {
+            project_id,
+            expected,
+            request_id,
+            deliverable_id,
+            options,
+            rendered,
+            mode,
+        } = request;
         if request_id.is_empty()
             || request_id.len() > 54
             || !request_id
@@ -376,7 +482,16 @@ impl ProductionCoordinator {
             rendered,
             &self.client.connection().output_root,
         )?;
-        let recipe: MltNativeVideoRecipe = mlt_native_video_recipe(&checked)?;
+        let mut recipe: MltNativeVideoRecipe = mlt_native_video_recipe(&checked)?;
+        if mode == MltTimelineMode::VideoOnly {
+            // Deterministic, separate create-new output; never overwrite
+            // or falsely reuse the original PCM-bearing Matroska.
+            recipe.lossless_sequence_profile = mode.profile().into();
+            recipe.lossless_sequence_path = format!(
+                "{}-sequence-video-only-ffv1.mkv",
+                recipe.owner_output_namespace,
+            );
+        }
         let sources = self
             .prepare_multi_segment_ffv1(
                 project_id,
@@ -653,6 +768,7 @@ impl ProductionCoordinator {
                 height: recipe.provider_profile.height,
                 fps_num: recipe.provider_profile.fps_num,
                 fps_den: recipe.provider_profile.fps_den,
+                mode,
             },
         )?;
         let artifact_sha256 = required_string(
@@ -696,7 +812,8 @@ impl ProductionCoordinator {
             recipe_sha256: recipe.input_sha256,
             frame_count: recipe.total_frames,
             native_frame_count_observed,
-            transport_pcm_audio: true,
+            transport_pcm_audio: mode.audio(),
+            native_render_profile: mode.profile().into(),
             provider_project_cleanup: "not_requested_requires_foreground_broker_consent".into(),
             native_job_ref: job_ref,
             provider_revision: session.revision,
@@ -704,8 +821,7 @@ impl ProductionCoordinator {
             artifact_sha256,
             artifact_bytes: size,
             source: sources,
-            evidence_scope: "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
-                .into(),
+            evidence_scope: mode.scope().into(),
         })
     }
 }
@@ -742,6 +858,62 @@ mod tests {
         assert!(created(&valid, "sequence").is_err());
     }
     #[test]
+    fn video_only_native_receipt_requires_decoded_frames_without_any_audio() {
+        let revision = "a".repeat(64);
+        let path = "owner-lossless-video-only.mkv";
+        let mut result = json!({
+            "job":"render:video-only",
+            "project_revision":revision, "profile":"lossless-video-only",
+            "output":path, "state":"succeeded", "error":null,
+            "cancellation_requested":false,
+            "artifact":{"root":"output","path":path,"sha256":"b".repeat(64),"bytes":8192},
+            "media":{"width":1280,"height":720,"frames":33,
+                "duration_num":1100,"duration_den":1000,
+                "video":true,"audio":false,"codecs":["ffv1"]}
+        });
+        let verify = |data: &Value| {
+            verify_lossless_render_result(
+                data,
+                &LosslessExpected {
+                    job: "render:video-only",
+                    revision: &revision,
+                    path,
+                    frames: 33,
+                    width: 1280,
+                    height: 720,
+                    fps_num: 30,
+                    fps_den: 1,
+                    mode: MltTimelineMode::VideoOnly,
+                },
+            )
+        };
+        assert_eq!(verify(&result).unwrap(), Some(33));
+        result["media"]["frames"] = Value::Null;
+        assert!(
+            verify(&result)
+                .unwrap_err()
+                .message
+                .contains("decoded frame count")
+        );
+        result["media"]["frames"] = json!(32);
+        assert!(verify(&result).is_err());
+        result["media"]["frames"] = json!(33);
+        result["media"]["audio"] = json!(true);
+        result["media"]["codecs"] = json!(["ffv1", "pcm_s16le"]);
+        assert!(verify(&result).is_err());
+        result["media"]["audio"] = json!(false);
+        result["media"]["codecs"] = json!(["ffv1"]);
+        result["profile"] = json!("lossless");
+        assert!(verify(&result).is_err());
+        result["profile"] = json!("lossless-video-only");
+        result["artifact"]["bytes"] = json!(0);
+        assert!(verify(&result).is_err());
+        result["artifact"]["bytes"] = json!(8192);
+        result["project_revision"] = json!("c".repeat(64));
+        assert!(verify(&result).is_err());
+    }
+
+    #[test]
     fn native_lossless_profile_is_ffv1_and_pcm_not_video_only_and_may_omit_nb_frames() {
         let revision = "a".repeat(64);
         let path = "owner-lossless.mkv";
@@ -770,6 +942,7 @@ mod tests {
                     height: 720,
                     fps_num: 30,
                     fps_den: 1,
+                    mode: MltTimelineMode::PcmTransport,
                 },
             )
         };
@@ -784,10 +957,20 @@ mod tests {
         assert!(verify(&result).unwrap_err().message.contains("frame count"));
         result["media"]["frames"] = Value::Null;
         result["media"]["audio"] = json!(false);
-        assert!(verify(&result).unwrap_err().message.contains("PCM"));
+        assert!(
+            verify(&result)
+                .unwrap_err()
+                .message
+                .contains("audio profile")
+        );
         result["media"]["audio"] = json!(true);
         result["media"]["codecs"] = json!(["ffv1", "aac"]);
-        assert!(verify(&result).unwrap_err().message.contains("PCM s16le"));
+        assert!(
+            verify(&result)
+                .unwrap_err()
+                .message
+                .contains("closed output profile")
+        );
         result["media"]["codecs"] = json!(["ffv1", "pcm_s16le"]);
         result["artifact"]["path"] = json!("/home/private/foreign.mkv");
         assert!(verify(&result).is_err());

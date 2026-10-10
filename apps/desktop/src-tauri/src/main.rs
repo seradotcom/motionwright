@@ -38,7 +38,7 @@ use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-const SEMWRIGHT_REVISION: &str = "8fa191250ae68274182570c65f067f7a60f85625";
+const SEMWRIGHT_REVISION: &str = "04142a2ae16e53a58bb6cf43135786e396a4b720";
 const SEMWRIGHT_VERSION: &str = "1.0.0";
 
 #[derive(Clone)]

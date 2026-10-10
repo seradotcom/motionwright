@@ -39,6 +39,12 @@ jobs:
   native-mlt-sequence:
     runs-on: ubuntu-24.04
     timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ['pcm', 'video-only', 'final-mp4']
+    env:
+      MOTIONWRIGHT_MLT_MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -136,7 +142,10 @@ jobs:
       - name: Test redacted native observation diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_mlt_failure_diagnostic.py' -v
 
-      - name: Produce a real two-segment FFV1 PCM MLT lossless intermediary through pinned Driver Host
+      - name: Reject silent swapped and duplicated measured stereo CI sources
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_mlt_ci_audio.py' -v
+
+      - name: Produce exact two-segment native FFV1 intermediary through pinned Driver Host
         run: |
           set -euo pipefail
           python3 tooling/native_mlt_sequence_e2e.py | tee verification/native-mlt-sequence-e2e/run.log
@@ -147,7 +156,11 @@ jobs:
           root="verification/native-mlt-sequence-e2e/$GITHUB_SHA"
           test -s "$root/result.json"
           test -s "$root/native-multisegment-timeline-evidence.json"
-          test -s "$root/native-two-segment-lossless.mkv"
+          if [[ "$MOTIONWRIGHT_MLT_MODE" = 'video-only' || "$MOTIONWRIGHT_MLT_MODE" = 'final-mp4' ]]; then
+            test -s "$root/native-two-segment-video-only.mkv"
+          else
+            test -s "$root/native-two-segment-lossless.mkv"
+          fi
           python3 - <<'PY'
           import hashlib, json, os
           from pathlib import Path
@@ -159,23 +172,48 @@ jobs:
           assert result["assembled_video_frames"] == 33
           assert result["rendered_source_frames"] == [32, 1]
           assert result["assembled_video_codec"] == "ffv1"
-          assert result["assembled_video_has_audio"] is True
-          assert result["transport_audio_codec"] == "pcm_s16le"
-          assert evidence["transport_pcm_audio"] is True
+          mode = os.environ["MOTIONWRIGHT_MLT_MODE"]
+          assert result["mode"] == mode
+          video_only = mode in ("video-only", "final-mp4")
+          assert result["assembled_video_has_audio"] is (not video_only)
+          assert result["transport_audio_codec"] == (None if video_only else "pcm_s16le")
+          assert evidence["transport_pcm_audio"] is (not video_only)
+          assert evidence["native_render_profile"] == ("lossless-video-only" if video_only else "lossless")
+          if video_only:
+              assert evidence["native_frame_count_observed"] == 33
           assert evidence["provider_project_cleanup"] == "not_requested_requires_foreground_broker_consent"
           assert result["provider_project_cleanup"] == evidence["provider_project_cleanup"]
-          assert evidence["evidence_scope"] == "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
+          scope = ("actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+                   if video_only else "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master")
+          assert evidence["evidence_scope"] == result["evidence_scope"] == scope
           assert evidence["frame_count"] == 33
           assert len(evidence["source"]["verified_video_segments"]) == 2
-          artifact = root / "native-two-segment-lossless.mkv"
+          artifact = root / ("native-two-segment-video-only.mkv" if video_only
+                             else "native-two-segment-lossless.mkv")
           assert hashlib.sha256(artifact.read_bytes()).hexdigest() == result["video_sha256"]
           assert artifact.stat().st_size == result["video_bytes"]
+          if mode == "final-mp4":
+              assert result["final_master_frames"] == 33
+              assert result["measured_voice_pcm_frames"] == 52800
+              assert result["final_master_video_codec"] == "h264"
+              assert result["final_master_audio_codec"] == "aac"
+              assert result["final_master_audio_rate"] == 48000
+              assert result["final_master_audio_channels"] == 2
+              assert result["decoded_stereo_content"] == "distinct_source_400hz_left_600hz_right"
+              assert 52_800 <= result["decoded_master_pcm_frames"] <= 53_824
+              assert (root / "decoded-stereo-content-proof.json").is_file()
+              assert result["final_evidence_scope"] == "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+              master = root / "native-multisegment-master.mp4"
+              assert master.is_file()
+              assert hashlib.sha256(master.read_bytes()).hexdigest() == result["final_master_sha256"]
+              assert master.stat().st_size == result["final_master_bytes"]
+              assert (root / "native-multisegment-av-master-evidence.json").is_file()
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: motionwright-native-mlt-sequence-${{ github.sha }}
+          name: motionwright-native-mlt-sequence-${{ matrix.mode }}-${{ github.sha }}
           path: verification/native-mlt-sequence-e2e
           if-no-files-found: error
           retention-days: 14
