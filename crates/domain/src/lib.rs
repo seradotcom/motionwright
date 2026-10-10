@@ -7,6 +7,7 @@ mod hero;
 mod history;
 mod integrations;
 mod native_scenes;
+mod paid_generation;
 mod production_design;
 pub use canvas::*;
 pub use creative::*;
@@ -17,6 +18,7 @@ pub use hero::*;
 pub use history::*;
 pub use integrations::*;
 pub use native_scenes::*;
+pub use paid_generation::*;
 pub use production_design::*;
 
 use chrono::{DateTime, Utc};
@@ -636,9 +638,20 @@ impl Project {
         }
         if self.schema_version < 3
             && (!self.production_design.workspace.is_empty()
+                || !self.production_design.paid_generation.is_empty()
                 || self.branch_workspaces.iter().any(|state| {
                     !state.base_state.production_design.workspace.is_empty()
                         || !state.current_state.production_design.workspace.is_empty()
+                        || !state
+                            .base_state
+                            .production_design
+                            .paid_generation
+                            .is_empty()
+                        || !state
+                            .current_state
+                            .production_design
+                            .paid_generation
+                            .is_empty()
                 }))
         {
             return Err(DomainError::Invalid(
@@ -658,6 +671,7 @@ impl Project {
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+        self.production_design.paid_generation.validate(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1027,6 +1041,7 @@ impl Project {
         }
         match change {
             Change::EditCreativeWorkspace { edit } => self.edit_creative_workspace(edit)?,
+            Change::EditPaidGeneration { edit } => self.edit_paid_generation(edit)?,
             Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
             Change::UpsertProductHero {
                 instance_id,
@@ -2256,6 +2271,9 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    EditPaidGeneration {
+        edit: PaidGenerationEdit,
+    },
     EditCreativeWorkspace {
         edit: CreativeWorkspaceEdit,
     },

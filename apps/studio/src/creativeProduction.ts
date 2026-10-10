@@ -1,4 +1,5 @@
 import type { CreativeWorkspace } from "./production/nativeTypes";
+import type { PaidGenerationLedger } from "./paidGenerationTypes";
 import type { CreativePatchRecord } from "./creativeUndo";
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
@@ -28,7 +29,7 @@ export interface NativeCapsule {
   id: string; scene_id: string; source_asset_id: string; source_sha256: string; label: string;
   fidelity: FidelityReport; editable_parameters: string[]; native_editor_hint: string;
 }
-export interface ProductionDesign { workspace?: CreativeWorkspace; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; }
+export interface ProductionDesign { workspace?: CreativeWorkspace; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; paid_generation?:PaidGenerationLedger; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }

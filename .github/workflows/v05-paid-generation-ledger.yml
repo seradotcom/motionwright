@@ -1,0 +1,65 @@
+name: V05 paid generation integrity and unknown outcomes
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-paid-generation-ledger']
+    paths:
+      - 'crates/domain/**'
+      - 'crates/service/tests/paid_generation_persistence.rs'
+      - 'docs/creative-production/**'
+      - '.github/workflows/v05-paid-generation-ledger.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paid-generation-immutable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paid-generation-state-and-persistence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: v05-paid-generation-state-1.98.1
+          cache-on-failure: true
+      - name: Verify exact Rust schema, source ledger, and durability
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-domain --test paid_generation_ledger
+          cargo test --locked -p motionwright-service --test paid_generation_persistence
+          cargo clippy --locked -p motionwright-domain -p motionwright-service --all-targets -- -D warnings
+      - name: Ensure release acceptance remains separately gated
+        run: |
+          set -euo pipefail
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+          python3 tooling/source_policy.py
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('docs/creative-production/V05_DELTA_REQUIREMENTS.json').read_text())
+          for key in ('MW05-E12-01','MW05-E12-02','MW05-E12-03','MW05-E12-04'):
+              entry=next(row for row in data['requirements'] if row['id']==key)
+              assert entry['implementation_state']=='PARTIAL'
+              assert entry['release_acceptance']=='NOT_CLOSED'
+              assert entry['human_review']=='NOT_PERFORMED'
+          print('v05-paid-generation=SOURCE-CONTRACT-CHECK-OK; paid-provider-E2E-NOT_RUN')
+          PY
