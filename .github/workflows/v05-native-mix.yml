@@ -1,0 +1,67 @@
+name: V05 original source-bound voice music SFX mix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/v05-native-mix']
+    paths:
+      - 'crates/creative-library/**'
+      - 'tooling/hyperframes/original_mix_e2e.py'
+      - '.github/workflows/v05-native-mix.yml'
+      - 'docs/creative-production/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-original-mix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  original-mix-voice-music-sfx-technical:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: v05-original-source-mix-1.98.1
+          cache-on-failure: true
+      - name: Validate exact source assets, manual speech activity windows, no approvals and clip refusal
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-creative-library --test native_mix
+          cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
+          cargo build --locked -p motionwright-creative-library --example native_mix_fixture
+          python3 -m py_compile tooling/hyperframes/original_mix_e2e.py
+          python3 tooling/hyperframes/test_requirement_audit.py -v
+      - name: Install independent FFmpeg EBU R128/true-peak meter in CI only
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
+      - name: Produce and independently decode three original unmastered audio profiles
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 tooling/hyperframes/original_mix_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v05-original-voice-music-sfx-NOT_MASTERED-${{ github.sha }}
+          path: verification/original-voice-music-sfx/
+          if-no-files-found: warn
+          retention-days: 7
