@@ -14,13 +14,15 @@ import time
 from typing import Any
 
 ALLOWED_ROLES = frozenset({
-    "semwrightd", "semwright-sandbo", "semwright-motio",
+    "semwrightd", "semwright-sandb", "semwright-motio",
     "semwright-mlt-v", "semwright", "node", "firefox", "bwrap",
     "melt", "ffmpeg", "ffprobe", "sh", "bash", "python3",
 })
 MAX_PROCS = 64
 MAX_SAMPLES = 720
 MAX_STATUS_BYTES = 16384
+MAX_THREADS_PER_PROCESS = 128
+MAX_CHILDREN_BYTES = 4096
 
 
 def parse_status(content: str) -> dict[str, Any]:
@@ -49,43 +51,69 @@ def parse_status(content: str) -> dict[str, Any]:
 
 
 def tree_snapshot(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, Any]:
-    """Resolve only the daemon's descendants from a bounded /proc listing."""
+    """Inspect only the Broker daemon and its descendants, not all user PIDs.
+
+    Linux exposes direct children under each selected process's /task/<tid>/
+    children file. Following the bounded tree avoids reading unrelated users'
+    /proc/<pid>/status at all. Task enumeration includes multi-threaded native
+    providers which may have spawned children from non-leader threads.
+    """
     if root_pid <= 0:
         return {"root_observed": False, "truncated": False, "processes": []}
-    processes = {}
-    try:
-        entries = list(proc_root.iterdir())
-    except OSError:
-        return {"root_observed": False, "truncated": False, "processes": []}
-    for path in entries:
-        if not path.name.isdecimal():
+
+    seen: dict[int, dict[str, Any]] = {}
+    pending: set[int] = {root_pid}
+    truncated = False
+
+    while pending and len(seen) < MAX_PROCS:
+        pid = pending.pop()
+        if pid in seen:
             continue
+        process = proc_root / str(pid)
         try:
-            # Never read a root-owned proc text file larger than a small cap.
-            with (path / "status").open("rb") as handle:
-                data = handle.read(MAX_STATUS_BYTES + 1)
+            with (process / "status").open("rb") as stream:
+                data = stream.read(MAX_STATUS_BYTES + 1)
             if len(data) > MAX_STATUS_BYTES:
+                truncated = True
                 continue
-            processes[int(path.name)] = parse_status(data.decode("ascii", "replace"))
+            state = parse_status(data.decode("ascii", "replace"))
         except (OSError, ValueError):
             continue
+        seen[pid] = state
 
-    seen: set[int] = set()
-    active: set[int] = {root_pid}
-    while active and len(seen) <= MAX_PROCS:
-        pid = active.pop()
-        if pid in seen or pid not in processes:
+        tasks = process / "task"
+        try:
+            tids = sorted(
+                (path.name for path in tasks.iterdir() if path.name.isdecimal()),
+                key=int,
+            )
+        except OSError:
+            truncated = True
             continue
-        seen.add(pid)
-        active.update(
-            child_pid for child_pid, info in processes.items()
-            if info["ppid"] == pid and child_pid not in seen
-        )
-    items = [{"pid": pid, **processes[pid]} for pid in sorted(seen)[:MAX_PROCS]]
+        if len(tids) > MAX_THREADS_PER_PROCESS:
+            truncated = True
+        for tid in tids[:MAX_THREADS_PER_PROCESS]:
+            try:
+                with (tasks / tid / "children").open("rb") as stream:
+                    contents = stream.read(MAX_CHILDREN_BYTES + 1)
+                if len(contents) > MAX_CHILDREN_BYTES:
+                    truncated = True
+                    continue
+                for item in contents.decode("ascii", "replace").split():
+                    if item.isdecimal():
+                        child_pid = int(item)
+                        if child_pid > 0 and child_pid != pid and child_pid not in seen:
+                            pending.add(child_pid)
+            except (OSError, ValueError):
+                # A child may exit concurrently with this read. The sampler
+                # is a passive observation, not execution lifecycle authority.
+                continue
     return {
-        "root_observed": root_pid in processes,
-        "truncated": len(seen) > MAX_PROCS or bool(active),
-        "processes": items,
+        "root_observed": root_pid in seen,
+        "truncated": truncated or bool(pending),
+        "processes": [
+            {"pid": pid, **seen[pid]} for pid in sorted(seen)
+        ],
     }
 
 

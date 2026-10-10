@@ -34,7 +34,7 @@ class ProviderDiagnosticTests(unittest.TestCase):
             proc = Path(directory)
             for pid, name, parent in [
                 (100, "semwrightd", 1),
-                (120, "semwright-sandbo", 100),
+                (120, "semwright-sandb", 100),
                 (140, "node", 120),
                 (155, "firefox", 140),
                 (900, "other-persons-process", 1),
@@ -42,10 +42,20 @@ class ProviderDiagnosticTests(unittest.TestCase):
                 folder = proc / str(pid)
                 folder.mkdir()
                 (folder / "status").write_text(status(name, parent), encoding="ascii")
+                leader = folder / "task" / str(pid)
+                leader.mkdir(parents=True)
+                leader_children = {120: "140", 140: "155"}.get(pid, "")
+                (leader / "children").write_text(leader_children, encoding="ascii")
+            # A multi-threaded daemon may launch a child from a worker TID.
+            # Sampling only /proc/<pid>/task/<pid>/children misses that job.
+            worker = proc / "100" / "task" / "101"
+            worker.mkdir()
+            (worker / "children").write_text("120", encoding="ascii")
             observed = mod.tree_snapshot(100, proc)
             self.assertTrue(observed["root_observed"])
             self.assertFalse(observed["truncated"])
             self.assertEqual([p["pid"] for p in observed["processes"]], [100, 120, 140, 155])
+            self.assertEqual(observed["processes"][1]["role"], "semwright-sandb")
             self.assertNotIn("900", str(observed))
             self.assertNotIn("private/token", str(observed))
             self.assertFalse(mod.tree_snapshot(9000, proc)["root_observed"])
