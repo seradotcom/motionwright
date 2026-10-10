@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 ALLOWED_ROLES = frozenset({
-    "semwrightd", "semwright-sandbo", "semwright-motio",
+    "semwrightd", "semwright-sandb", "semwright-motio",
     "semwright-mlt-v", "semwright", "node", "firefox", "bwrap",
     "melt", "ffmpeg", "ffprobe", "sh", "bash", "python3",
 })

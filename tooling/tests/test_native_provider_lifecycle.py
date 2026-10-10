@@ -34,7 +34,7 @@ class ProviderDiagnosticTests(unittest.TestCase):
             proc = Path(directory)
             for pid, name, parent in [
                 (100, "semwrightd", 1),
-                (120, "semwright-sandbo", 100),
+                (120, "semwright-sandb", 100),
                 (140, "node", 120),
                 (155, "firefox", 140),
                 (900, "other-persons-process", 1),
@@ -55,6 +55,7 @@ class ProviderDiagnosticTests(unittest.TestCase):
             self.assertTrue(observed["root_observed"])
             self.assertFalse(observed["truncated"])
             self.assertEqual([p["pid"] for p in observed["processes"]], [100, 120, 140, 155])
+            self.assertEqual(observed["processes"][1]["role"], "semwright-sandb")
             self.assertNotIn("900", str(observed))
             self.assertNotIn("private/token", str(observed))
             self.assertFalse(mod.tree_snapshot(9000, proc)["root_observed"])
