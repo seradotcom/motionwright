@@ -1,6 +1,7 @@
 //! Original first-party creative recipes, not a renderer or another execution backend.
 //! All outputs are editable, bounded native documents with stable component identities.
 mod catalog;
+mod clock;
 mod data;
 mod fidelity;
 mod procedural;
@@ -11,6 +12,7 @@ mod sound;
 mod stage;
 mod wav;
 pub use catalog::*;
+pub use clock::*;
 pub use data::*;
 pub use fidelity::*;
 pub use motionwright_hyperframes_profile as native;

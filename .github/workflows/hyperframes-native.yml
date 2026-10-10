@@ -65,14 +65,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends blender python3-pil python3-numpy
+          sudo apt-get install -y --no-install-recommends blender python3-pil python3-numpy libegl1 libgbm1 libgles2 libgl1-mesa-dri xvfb xauth
           blender -b --version | head -1
           python3 -m py_compile runtime/blender-stage/fixed_render.py runtime/blender-stage/inspect_scene.py
       - name: Build typed stage plan and reopen actual Blender camera/geometry
         run: |
           set -euo pipefail
           cargo build --locked -p motionwright-creative-library --example native_catalog_fixture
-          /usr/bin/python3 tooling/blender-stage/native_e2e.py
+          LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x1024x24" /usr/bin/python3 tooling/blender-stage/native_e2e.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

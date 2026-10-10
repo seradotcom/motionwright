@@ -57,3 +57,13 @@
 .native-fidelity-table th {color:var(--muted);font-weight:500;}
 .native-creative-editor details ul {padding-left:16px;font-size:11px;line-height:1.65;color:var(--muted);}
 .native-creative-editor details ul li {margin:8px 0;}
+
+.native-contact-review {display:grid;gap:14px;border-top:1px solid var(--border-soft);padding-top:18px;min-width:0;}
+.native-render-view-heading {display:flex;align-items:center;gap:9px;font-size:12px;}
+.native-contact-strip {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;min-width:0;}
+.native-contact-strip button {min-width:0;background:var(--surface-2);border:1px solid var(--border);padding:5px;cursor:pointer;text-align:left;color:var(--text);}
+.native-contact-strip button:hover {border-color:var(--muted);}
+.native-contact-strip img {display:block;width:100%;max-height:110px;aspect-ratio:16/9;object-fit:contain;background:var(--bg);}
+.native-contact-strip span {display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;font-variant-numeric:tabular-nums;color:var(--muted);padding:5px 0 2px;}
+.native-review-comparison {width:100%;height:auto;max-width:100%;background:var(--bg);border:1px solid var(--border);}
+@media(max-width:600px){.native-contact-strip{grid-template-columns:repeat(3,minmax(0,1fr));}}

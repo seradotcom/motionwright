@@ -8,7 +8,7 @@ const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha] = process.argv
 if(process.argv.length!==7 || ![runtimeRoot,workRoot,outputRoot,assetRoot].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
-const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames']);
+const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_launch_unknown']);
 function phase(name){
   if(!allowedPhases.has(name))throw new Error('Unsupported native capture phase marker');
   fs.appendFileSync(path.join(workRoot,'native-capture-phases.txt'),name+'\n',{encoding:'utf8',flag:'a'});
@@ -77,7 +77,26 @@ const framesDir=path.join(outputRoot,'frames');fs.mkdirSync(framesDir,{recursive
 const observationsPath=path.join(outputRoot,'observations.ndjson');
 const observationFd=fs.openSync(observationsPath,'wx',0o600);let observationBytes=0;
 const diagnostics=[];const refused=[];const deadline=Date.now()+240000;
-const browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),headless:true,chromiumSandbox:true,args:['--enable-logging=stderr'],timeout:30000});
+let browser;
+try{
+  browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),
+    headless:true,chromiumSandbox:true,args:['--enable-logging=stderr'],timeout:30000});
+}catch(error){
+  // Record only one of five fixed classes. Browser launch diagnostics could
+  // include machine paths, source snippets or private argv and must not be
+  // copied into a persistent readback/CI artifact.
+  const message=String(error?.message??'').toLowerCase().slice(0,6000);
+  const category=message.includes('resource temporarily unavailable')||message.includes('eagain')||message.includes('pthread_create')
+    ?'browser_process_limit'
+    :message.includes('operation not permitted')||message.includes('permission denied')||message.includes('namespace')||message.includes('sandbox')
+    ?'browser_namespace_denied'
+    :message.includes('shared libraries')||message.includes('not found')||message.includes('no such file')
+    ?'browser_dependency_missing'
+    :message.includes('eacces')||message.includes('executable')?'browser_executable_denied'
+    :'browser_launch_unknown';
+  phase(category);
+  throw new Error('Native browser launch failed inside the owner-controlled profile: '+category);
+}
 phase('browser');
 try {
   const context=await browser.newContext({viewport:{width:c.width,height:c.height},deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'light',reducedMotion:'no-preference',serviceWorkers:'block',acceptDownloads:false});

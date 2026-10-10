@@ -152,3 +152,28 @@ sound PCM artifact do **not** constitute a production-ready campaign. Owners
 must review each target format, exact source, licensed materials, accessibility,
 readability and temporal continuity. Committing a recipe's typed native HTML
 source through Studio is one revision, never an implicit runtime grant.
+
+## Rational sound events and five-frame native review
+
+The first-party `CreativeClockMap` in `crates/creative-library/src/clock.rs`
+supports timeline, voice, music and source-media clocks as monotonic exact
+integer anchors. It preserves sub-sample fractions rather than accumulating
+rounded frame durations; an event that lands between PCM samples is refused
+until a separately authorized resampling/retiming choice is made. Semantic
+focus and transition cues can place their original synthetic sound into an
+explicitly bounded 48 kHz soundtrack only when both the exact source revision
+and human cue approval match. This remains an authoring plan: narrator/track
+mixing and master loudness acceptance are separate.
+
+`NativeHtmlContactReview` in Studio reads at most five source-verified native
+PNG frames through server-owned, project/revision-scoped grants. It supports
+onion and bounded RGB differences and revokes temporary browser blob URLs.
+The comparison is deliberately a thumbnail inspection, not a full-frame
+bit-equivalence or artistic-quality verdict. A reviewer must still inspect
+complete temporal transitions and source/target dependencies.
+
+The isolated HyperFrames runner also records a bounded fixed set of technical
+milestones and categorized browser-start failures. These logs contain no user
+copy, credentials, arbitrary stdout/stderr or external URLs; they help identify
+whether an owner-constrained browser fails at module loading, namespace
+creation or resource limits without relaxing the existing Host sandbox.

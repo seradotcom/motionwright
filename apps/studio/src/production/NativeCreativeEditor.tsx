@@ -7,6 +7,7 @@ import type {NativeFrameSelection} from '../nativeFrameSelection';
 import type {Change,Project,Scene,DeliverableProfile} from '../types';
 import {seconds} from '../types';
 import NativeNodeInspector from './NativeNodeInspector';
+import NativeHtmlContactReview from './NativeHtmlContactReview';
 import type {CreativeWorkspaceEdit,NativeSceneDocument,NativeSceneDifference,NativeNode,NativeProtection,HyperframesRenderEvidence} from './nativeTypes';
 import './native-editor.css';
 type Probe=Awaited<ReturnType<typeof probeNativeHtmlRuntime>>;
@@ -125,6 +126,7 @@ export default function NativeCreativeEditor({project,scene,displayProfile,commi
         <section className="native-render-view"><header><Film size={15}/><strong>Actual native frame</strong></header>{selection?<NativeFrameStage project={project} selection={selection}/>:<div className="native-no-frame"><Square size={30}/><p>No verified current native frame</p><span>Edited source is not displayed as a finished render. Render or recover its exact revision.</span></div>}
           {scene&&<div className="production-transport"><input aria-label="Native creative playhead" type="range" min={0} max={seconds(scene.duration)} step={displayProfile?1/seconds(displayProfile.frame_rate):1/30} value={Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start)))} onChange={e=>onSeek(seconds(scene.start)+Number(e.target.value))}/><span className="mono">{Math.max(0,playhead-seconds(scene.start)).toFixed(3)} s</span></div>}
           {evidence&&<p className="production-help">{evidence.frame_count} verified frames · {evidence.rate.num}/{evidence.rate.den} fps · {evidence.alpha?'RGBA':'opaque'} · source {evidence.source_sha256.slice(0,12)}…</p>}
+          {evidence&&scene&&<NativeHtmlContactReview project={project} evidence={evidence} onSeek={relative=>onSeek(seconds(scene.start)+relative)}/>}
           <button className="primary-button" disabled={blocked||!unchanged||!extension||scene?.renderer!=='hyperframes'||['rendering','unknown','cancelling'].includes(jobState)} onClick={render}><Film size={14}/> Render saved native revision</button>
           <div className="native-job-controls"><strong>Logical attempt · {jobState}</strong><input aria-label="Native render attempt UUID" value={attempt} placeholder="Existing attempt UUID" onChange={e=>{setAttempt(e.target.value);setJobState('unknown');}}/><div className="production-button-row"><button className="secondary-button" disabled={!attempt||!available} onClick={()=>reconcile('status')}>Observe</button><button className="secondary-button" disabled={!attempt||!available||jobState==='succeeded'} onClick={()=>reconcile('cancel')}>Cancel</button><button className="secondary-button" disabled={!attempt||!saved||pending!==null} onClick={recover}>Recover frames</button></div><p className="production-help">{jobDetail || 'A lost reply never starts another paid or local job automatically. Existing attempts remain in the application receipt history.'}</p></div>
         </section></div>

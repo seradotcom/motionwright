@@ -212,20 +212,20 @@ pub fn preflight_creative_skills(
     match &contribution.output {
         CreativeRealization::NativeHtml(doc) => {
             for node in &doc.nodes {
-                if let native::Content::Text { size, .. } = &node.content {
-                    if *size < brand.minimum_body_size {
-                        let mut item = finding(
-                            CreativeSkillId::Typography,
-                            SkillIssueKind::TechnicalPreflight,
-                            "A native text node falls below the brand-designated minimum body size.",
-                            "Readability at delivery size may be insufficient.",
-                            "Recompose the text block or shorten copy; do not reduce type indefinitely.",
-                        );
-                        item.object_id = Some(node.id);
-                        item.source_frame_start = Some(0);
-                        item.source_frame_end = Some(doc.canvas.frames - 1);
-                        findings.push(item);
-                    }
+                if let native::Content::Text { size, .. } = &node.content
+                    && *size < brand.minimum_body_size
+                {
+                    let mut item = finding(
+                        CreativeSkillId::Typography,
+                        SkillIssueKind::TechnicalPreflight,
+                        "A native text node falls below the brand-designated minimum body size.",
+                        "Readability at delivery size may be insufficient.",
+                        "Recompose the text block or shorten copy; do not reduce type indefinitely.",
+                    );
+                    item.object_id = Some(node.id);
+                    item.source_frame_start = Some(0);
+                    item.source_frame_end = Some(doc.canvas.frames - 1);
+                    findings.push(item);
                 }
             }
             if doc.nodes.iter().any(|node| !node.keyframes.is_empty())
