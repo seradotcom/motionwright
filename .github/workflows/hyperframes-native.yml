@@ -195,6 +195,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
           cargo test --locked -p motionwright-service original_mix_source_tests
+          cargo test --locked -p motionwright-service --test original_mix_custody
           cargo clippy --locked -p motionwright-service --all-targets -- -D warnings
           cargo test --locked -p motionwright-desktop --all-targets
           cargo clippy --locked -p motionwright-desktop --all-targets -- -D warnings

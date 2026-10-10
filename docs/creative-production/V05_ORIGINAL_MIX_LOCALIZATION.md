@@ -87,3 +87,18 @@ independent true-peak/R128 measurements for each real deliverable.
 The independent CI fixture uses original synthetic tones, and an
 actual human speech/operator project audition and independent
 release acceptance remain **NOT VERIFIED**.
+
+
+### Actual content-addressed owner source custody (separate acceptance)
+
+The service checks an imported owner's WAV source SHA-256 and retains
+its hashed bytes under the **existing** content-addressed Store's
+extensionless SHA filename. `crates/service/tests/original_mix_custody.rs`
+tests this exact path rather than only a convenience `.wav` fixture:
+it imports 3 separate WAVs, removes their external original paths, and
+requires the verified blob decoder to independently produce the correct
+48-kHz stereo decoded PCM hash and frame count. It also rejects stale
+project revisions, foreign asset IDs/projects and unrelated file/MIME types.
+This demonstrates the auditioner does not need a new media store, ambient
+user paths or an agent-specific filesystem permission. Any decoding
+or authorization failure must block output without publishing a master.

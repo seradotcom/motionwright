@@ -406,7 +406,8 @@
         "apps/desktop/src-tauri/src/creative_native.rs",
         "apps/studio/src/NativeOriginalMixReview.tsx",
         "apps/studio/src/nativeMixTypes.ts",
-        "apps/studio/src/nativeOriginalMixBrowser.test.ts"
+        "apps/studio/src/nativeOriginalMixBrowser.test.ts",
+        "crates/service/tests/original_mix_custody.rs"
       ],
       "human_review": "NOT_PERFORMED"
     },
