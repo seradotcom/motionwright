@@ -65,9 +65,16 @@ def read_json(root:Path,name:str)->dict:
     return result
 def rational(source:object,label:str)->Fraction:
     value=exact(source,{"num","den"},label)
-    numerator,denominator=value["num"],value["den"]
-    insist(type(numerator)is int and type(denominator)is int
-           and 0<=numerator<=1000000 and 0<denominator<=1000000,
+    def integer(v:object)->int:
+        # Semwright RationalTime serializes 64-bit numerators/denominators as
+        # decimal strings to preserve integer precision in JavaScript.
+        if type(v)is int:
+            return v
+        insist(isinstance(v,str) and re.fullmatch(r"(0|[1-9][0-9]{0,9})",v)is not None,
+               f"Invalid canonical rational-time integer encoding in {label}")
+        return int(v)
+    numerator,denominator=integer(value["num"]),integer(value["den"])
+    insist(0<=numerator<=1000000 and 0<denominator<=1000000,
            f"Invalid nonnegative rational time for {label}")
     return Fraction(numerator,denominator)
 def frames(value:Fraction,rate:int,label:str)->int:
@@ -470,8 +477,8 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
         insist(imported_duration>0 and imported_duration<=Fraction(600),
                "Edited cut duration out of native scene bounds")
         if imported_duration!=original_duration:
-            updates[scene_id]={"num":imported_duration.numerator,
-                               "den":imported_duration.denominator}
+            updates[scene_id]={"num":str(imported_duration.numerator),
+                               "den":str(imported_duration.denominator)}
     insist(set(observed_order)==set(original_ids),
            "NLE omitted, repeated or invented a source scene")
     expected_source_sha=manifest["project_sha256"]

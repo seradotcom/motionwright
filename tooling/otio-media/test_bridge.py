@@ -27,8 +27,8 @@ class PortableOtioTests(unittest.TestCase):
         sha=hashlib.sha256(self.media.read_bytes()).hexdigest()
         self.project={
             "id":ID(1),"generation":ID(2),"revision":7,"title":"Owned video source",
-            "scenes":[{"id":ID(10+i),"name":f"Source scene {i}","start":{"num":i,"den":1},
-                       "duration":{"num":1,"den":1}} for i in range(3)],
+            "scenes":[{"id":ID(10+i),"name":f"Source scene {i}","start":{"num":str(i),"den":"1"},
+                       "duration":{"num":"1","den":"1"}} for i in range(3)],
             "assets":[{"id":ID(50),"name":"Owner original","media_type":"video/mp4",
                        "content_sha256":sha,"source_revision":"first-party-test"}],
         }
@@ -132,7 +132,7 @@ class PortableOtioTests(unittest.TestCase):
         self.assertEqual(result["proposed_scene_order"],[ID(11),ID(10),ID(12)])
         self.assertEqual(result["native_change_proposals"],[
             {"type":"move_scene","scene_id":ID(11),"to_index":0},
-            {"type":"set_scene_duration","scene_id":ID(10),"duration":{"num":1,"den":2}}
+            {"type":"set_scene_duration","scene_id":ID(10),"duration":{"num":"1","den":"2"}}
         ])
 
     def test_missing_binding_remains_missing_not_a_fabricated_clip(self):

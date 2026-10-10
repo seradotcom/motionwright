@@ -105,7 +105,7 @@ def main()->None:
         assert proposal["native_change_proposals"]==[
             {"type":"move_scene","scene_id":project["scenes"][1]["id"],"to_index":0},
             {"type":"set_scene_duration","scene_id":project["scenes"][0]["id"],
-             "duration":{"num":1,"den":2}}
+             "duration":{"num":"1","den":"2"}}
         ]
         assert proposal["media_refs_verified"]==2 and proposal["missing_references_retained"]==1
         assert not proposal["edit_imported"] and proposal["owner_revision_commit_required"]
