@@ -1,11 +1,18 @@
 import {useEffect,useState} from 'react';
 import {BookOpenCheck,GitCompareArrows,LockKeyhole} from 'lucide-react';
-import type {Project} from './types';
+import type {Project,RationalTime} from './types';
 import type {NarrationSourceSnapshot,NarrationReplacementImpact} from './narrationReviewTypes';
 import {nativeNarrationReplacementImpact,nativeNarrationSourceSnapshot} from './api';
 
 const reason=(value:unknown)=>value instanceof Error?value.message:String(value);
-const seconds=(value:{num:number;den:number})=>(value.num/value.den).toFixed(3)+' s';
+// Display approximation only. The source and impact retain exact rational
+// num/den *strings* from the canonical domain without any re-quantization.
+const seconds=(value:RationalTime)=>{
+  const numerator=Number(value.num),denominator=Number(value.den);
+  const estimate=numerator/denominator;
+  return Number.isFinite(estimate)&&denominator!==0
+    ? estimate.toFixed(3)+' s ≈' : 'rational timing unavailable';
+};
 
 export default function NarrationTakeReview({
   project,desktopMode
