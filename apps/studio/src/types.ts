@@ -487,6 +487,7 @@ export interface NativeMultisegmentAvMasterEvidence {
   audio_channels: 2;
   master_sha256: string;
   export_token: string;
+  provider_project_cleanup: "not_requested_requires_foreground_broker_consent";
   evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved";
 }
 

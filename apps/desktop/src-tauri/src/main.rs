@@ -175,6 +175,9 @@ struct NativeMultisegmentAvResponse {
     audio_channels: u16,
     master_sha256: String,
     export_token: Uuid,
+    /// A verified media output is not proof that destructive MLT cleanup
+    /// was approved. Expose the exact deferred status, not hidden success.
+    provider_project_cleanup: &'static str,
     evidence_scope: &'static str,
 }
 
@@ -1451,6 +1454,7 @@ async fn assemble_multisegment_av_master(
         audio_channels: 2,
         master_sha256: master_sha256.to_owned(),
         export_token,
+        provider_project_cleanup: "not_requested_requires_foreground_broker_consent",
         evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved",
     })
 }

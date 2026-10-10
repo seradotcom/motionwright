@@ -1076,6 +1076,12 @@ export default function DeliveryProfiles({
                     {currentMultiMaster.master_sha256.slice(0, 16)}… SHA-256
                   </strong></div>
                   <div><span>Format</span><strong>H.264 · AAC · 48 kHz stereo</strong></div>
+                  <div><span>MLT resource cleanup</span><strong>
+                    {currentMultiMaster.provider_project_cleanup ===
+                      "not_requested_requires_foreground_broker_consent"
+                      ? "Pending foreground Broker consent"
+                      : "Unknown · verify operator approval"}
+                  </strong></div>
                   <div><span>Applicability</span><strong>
                     {currentMultiMaster.revision === project.revision
                       ? "CURRENT · NATIVE" : "STALE · HISTORICAL"}

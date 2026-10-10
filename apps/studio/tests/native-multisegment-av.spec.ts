@@ -50,6 +50,7 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
     video_codec: "h264", audio_codec: "aac",
     audio_sample_rate: 48000, audio_channels: 2,
     master_sha256: "b".repeat(64), export_token: "synthetic-export-token",
+    provider_project_cleanup: "not_requested_requires_foreground_broker_consent",
     evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved",
   };
   await page.addInitScript(({ initial, original, previewToken, av }) => {
@@ -131,6 +132,7 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
   await expect(receipt).toContainText("2 semantic MLT segments");
   await expect(receipt).toContainText("480");
   await expect(receipt).toContainText("H.264 · AAC · 48 kHz stereo");
+  await expect(receipt).toContainText("Pending foreground Broker consent");
   await expect(receipt).toContainText("CURRENT · NATIVE");
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
   const requests = await page.evaluate(() => (
