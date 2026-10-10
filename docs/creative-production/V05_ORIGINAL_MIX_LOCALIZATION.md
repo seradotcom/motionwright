@@ -33,3 +33,27 @@ Tests include missing/wrong source digest, non-active/foreign voice, unapproved 
 This is a **bounded mixing prototype** for first-party source assets: no automatic high-quality TTS, real speech-language translation, licensed music acquisition, speech intelligibility testing, multichannel broadcast mastering, LUFS target optimization or final third-party audio deliverable. The 15-second PCM budget is deliberate; a long-form production mix requires a validated streaming/chunked implementation with continuous automation and independent QC. The user must still listen to and approve each real delivery profile. The actual project runtime must admit the original PCM source rights and attach the produced audio to a real composed video by the existing media pipeline.
 
 The requirement is **PARTIAL**, not accepted for v0.5 release. A successful synthetic proxy test only supports deterministic gain, ducking, checksum fidelity and independent signal analysis.
+
+### Verifiable exact-head technical measurements (2026-10-10)
+
+Workflow `38074769955` passed on
+`cb8b5ea177087553e87ffef796948d74a89818c9`.
+All three 2.4-second, 48 kHz stereo WAVs independently decoded to exactly
+115,200 frames. Source and output SHA-256 matched and actual rendered music
+ducking passed all explicitly timed windows.
+
+| Original tone-proxy profile | Measured integrated loudness | Measured intersample true peak |
+|---|---:|---:|
+| en | −20.5 LUFS | −15.4 dBFS |
+| es | −20.5 LUFS | −15.6 dBFS |
+| de | −20.4 LUFS | −15.4 dBFS |
+
+These are measurements made by an independent FFmpeg EBU R128 analyzer;
+they are **not target loudness normalization**, a voice-over quality score,
+speech intelligibility, source-rights proof, live localization,
+mastering approval or commercial delivery. The source is entirely
+non-speech sine-tone simulation. All three retained native output WAVs
+are labeled *SYNTHETIC / NOT MASTERED* in the CI artifact.
+
+Evidence: `https://github.com/seradotcom/motionwright/actions/runs/38074769955`;
+download artifact `v05-original-voice-music-sfx-NOT_MASTERED-cb8b5ea177087553e87ffef796948d74a89818c9`.
