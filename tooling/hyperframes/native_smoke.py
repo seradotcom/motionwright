@@ -17,6 +17,9 @@ def main()->None:
     head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     evidence=ROOT/'verification/hyperframes-native'/head;evidence.mkdir(parents=True,exist_ok=False)
     runtime_sha=digest((RUNTIME/'runtime.json').read_bytes())
+    browser_info=json.loads((RUNTIME/'runtime.json').read_text())['files']['browser']
+    browser=RUNTIME/browser_info['path']
+    assert browser.is_file() and digest(browser.read_bytes())==browser_info['sha256']
     entries={mode:json.loads(subprocess.check_output([str(FIXTURE),mode,runtime_sha])) for mode in ['opaque','alpha','ntsc']}
     results={}
     with tempfile.TemporaryDirectory(prefix='motionwright-hyperframes-') as directory:
@@ -28,7 +31,7 @@ def main()->None:
             plan_bytes=entry['plan_json'].encode();source=entry['source_html'].encode()
             assert digest(source)==entry['source_sha256']
             (folder/'plan.json').write_bytes(plan_bytes);(folder/'index.html').write_bytes(source)
-            args=[str(BIN),'render','--runtime-root',str(RUNTIME),'--node-sealed',str(Path(shutil.which('node')).resolve()),'--ffmpeg-sealed',str(Path(shutil.which('ffmpeg')).resolve()),
+            args=[str(BIN),'render','--runtime-root',str(RUNTIME),'--node-sealed',str(Path(shutil.which('node')).resolve()),'--ffmpeg-sealed',str(Path(shutil.which('ffmpeg')).resolve()),'--chromium-sealed',str(browser),
                   '--work-root',str(work),'--output-root',str(output),'--assets-root',str(assets),'--job',job,'--plan-sha256',digest(plan_bytes),'--source-sha256',entry['source_sha256']]
             observed=run(args)
             (evidence/(mode+'.log')).write_bytes(observed.stdout+b'\n'+observed.stderr)

@@ -4,9 +4,9 @@
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "8fa191250ae68274182570c65f067f7a60f85625",
+      "revision": "61a64a9c541cf19ea88dd022b4e51e111ad24ecc",
       "version": "1.0.0",
-      "branch_observed": "main",
+      "branch_observed": "ci/owner-reviewed-large-browser",
       "native_sdk_package": "semwright-native-sdk",
       "driver_sdk_package": "semwright-driver-sdk",
       "features_planned": [
@@ -15,13 +15,13 @@
         "effects"
       ],
       "license_observed": "MIT OR Apache-2.0",
-      "verification": "git fetch origin main && test $(git rev-parse origin/main) = 8fa191250ae68274182570c65f067f7a60f85625"
+      "verification": "git fetch origin ci/owner-reviewed-large-browser && test $(git rev-parse FETCH_HEAD) = 61a64a9c541cf19ea88dd022b4e51e111ad24ecc"
     }
   },
   "notes": [
     "Motionwright is an external consumer. It does not copy Semwright Core crates into this repository.",
-    "The exact Semwright 1.0.0 release-preparation revision is used for reproducible CI and must be intentionally updated.",
     "Motionwright uses Native SDK for application cooperation and public Driver SDK for the bounded Manim Community renderer provider.",
-    "Application state, transactions, revisions and receipts remain Motionwright-owned."
+    "Application state, transactions, revisions and receipts remain Motionwright-owned.",
+    "This temporary pinned Semwright owner-reviewed Linux browser class is a candidate branch, not merged main, and requires security approval before release. Never imply current Semwright main authorizes large sealed browser tools."
   ]
 }

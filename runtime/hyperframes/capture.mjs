@@ -6,8 +6,8 @@ import {createRequire} from 'node:module';
 import {detectNativeSandboxMode} from './sandbox_policy.mjs';
 import {spawnSync} from 'node:child_process';
 
-const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha] = process.argv.slice(2);
-if(process.argv.length!==7 || ![runtimeRoot,workRoot,outputRoot,assetRoot].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
+const [runtimeRoot,workRoot,outputRoot,assetRoot,expectedPlanSha,sealedBrowser] = process.argv.slice(2);
+if(process.argv.length!==8 || ![runtimeRoot,workRoot,outputRoot,assetRoot,sealedBrowser].every(value=>path.isAbsolute(value)) || !/^[a-f0-9]{64}$/.test(expectedPlanSha)) throw new Error('Capture requires exact Host-bound arguments');
 // Static diagnostic milestones in an already owner-writable job root. No
 // user text, secret values, browser stderr, URLs or system paths are logged.
 const allowedPhases=new Set(['entry','plan','runtime','modules','assets','fonts','browser','page','fonts_loaded','frames','browser_namespace_denied','browser_process_limit','browser_dependency_missing','browser_executable_denied','browser_browser_crash','browser_launch_unknown','browser_binary_exec_denied','browser_binary_probe_failed','browser_binary_probe_ok','outer_host_bwrap_verified','chromium_userns_selected']);
@@ -83,7 +83,10 @@ const diagnostics=[];const refused=[];const deadline=Date.now()+240000;
 // inside the current Semwright Host confinement. This is not an installation
 // or a relaxation of browser sandboxing. It distinguishes OS exec denial from
 // a later Chromium sandbox/namespace startup failure, without copying stderr.
-const browserBinary=path.join(runtimeRoot,receipt.files.browser.path);
+// The fixed Rust launcher matched the owner-pinned sha256 against the
+// exact binary exposed by the Host's sealed ToolPath. Do not execute from
+// the data-only runtime mount (noexec) even when those bytes match.
+const browserBinary=sealedBrowser;
 const executable=fs.statSync(browserBinary);
 if(!executable.isFile() || (executable.mode&0o111)===0){
   phase('browser_binary_exec_denied');
@@ -107,7 +110,7 @@ const sandboxMode=detectNativeSandboxMode();
 phase(sandboxMode==='semwright-bwrap-outer'?'outer_host_bwrap_verified':'chromium_userns_selected');
 let browser;
 try{
-  browser=await chromium.launch({executablePath:path.join(runtimeRoot,receipt.files.browser.path),
+  browser=await chromium.launch({executablePath:sealedBrowser,
     headless:true,chromiumSandbox:sandboxMode==='chromium-userns',args:['--enable-logging=stderr'],timeout:30000});
 }catch(error){
   // Record only one of five fixed classes. Browser launch diagnostics could

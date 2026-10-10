@@ -27,7 +27,7 @@ def absolute(path:str,kind:str)->Path:
 def value(path:Path)->dict:return json.loads(path.read_text('utf-8'))
 def file_descriptor(path:Path)->dict:return {"path":str(path),"sha256":digest(path),"bytes":path.stat().st_size}
 def make(args:argparse.Namespace)->dict:
- if not args.approved_license_terms or not args.approved_sandbox_controls:
+ if not args.approved_license_terms or not args.approved_sandbox_controls or not args.approved_large_browser_tool:
   raise ValueError("Owner must explicitly confirm dependency license review and the restricted sandbox policy")
  paths={name:absolute(getattr(args,name),name)for name in ["runtime","driver","runner","node","ffmpeg","work","output","assets"]}
  runtime=paths["runtime"];rfile=absolute(str(runtime/"runtime.json"),"runtime-file");receipt=value(rfile)
@@ -53,12 +53,17 @@ def make(args:argparse.Namespace)->dict:
   dependency=absolute(str(runtime/relative),"runtime-file")
   if digest(dependency)!=item.get("sha256") or dependency.stat().st_size!=item.get("bytes"):
    raise ValueError(f"{name}: installed runtime dependency changed")
+ browser=absolute(str(runtime/files["browser"]["path"]),"runtime-file")
+ if browser.stat().st_size>320*1024*1024 or browser.stat().st_size<=0 or not browser.stat().st_mode&0o111:
+  raise ValueError("Owner-reviewed Linux Chromium requires a regular executable no larger than 320 MiB")
  tools=[
   {"root":"hyperframes-runner-root","name":"hyperframes-runner","sha256":digest(paths["runner"]),
    "mounts":["hyperframes-runtime","hyperframes-assets","hyperframes-work","hyperframes-output"],
-   "dependencies":["node","ffmpeg"]},
+   "dependencies":["node","ffmpeg","chromium"]},
   {"root":"node-root","name":"node","sha256":digest(paths["node"]),"mounts":[],"dependencies":[]},
   {"root":"ffmpeg-root","name":"ffmpeg","sha256":digest(paths["ffmpeg"]),"mounts":[],"dependencies":[]},
+  {"root":"chromium-root","name":"chromium","sha256":digest(browser),
+   "sealed_executable_profile":"linux_browser320_mib","mounts":[],"dependencies":[]},
  ]
  manifest={
   "manifest_version":1,"protocol":8,"id":"hyperframes","version":"0.1.0","publisher":"motionwright",
@@ -78,7 +83,7 @@ def make(args:argparse.Namespace)->dict:
  grants=[("hyperframes-runtime",paths["runtime"],False),("hyperframes-assets",paths["assets"],False),
          ("hyperframes-work",paths["work"],True),("hyperframes-output",paths["output"],True),
          ("hyperframes-runner-root",paths["runner"],False),("node-root",paths["node"],False),
-         ("ffmpeg-root",paths["ffmpeg"],False)]
+         ("ffmpeg-root",paths["ffmpeg"],False),("chromium-root",browser,False)]
  owner=["# REVIEW: merge these entries into the real owner-owned Semwright config; not applied automatically.",
         'drivers = ["__OWNER_SET_MANIFEST_PATH__"]','driver_network = false','','[policy]',
         'profile = "workspace"','allow = ["driver:hyperframes"]']
@@ -94,6 +99,7 @@ def main()->None:
  p.add_argument("--out-dir",required=True,help="Fresh directory for review-only manifest and owner-policy template")
  p.add_argument("--approved-license-terms",action="store_true",help="Owner has independently reviewed all dependency and source rights")
  p.add_argument("--approved-sandbox-controls",action="store_true",help="Owner accepts the bounded Semwright Host policy; no network or arbitrary source")
+ p.add_argument("--approved-large-browser-tool",action="store_true",help="Owner explicitly reviewed SHA-256 and bounded 320 MiB Linux-only Chromium tool authority")
  args=p.parse_args()
  try:
   result=make(args)

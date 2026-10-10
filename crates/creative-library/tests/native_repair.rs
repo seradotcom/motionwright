@@ -260,8 +260,13 @@ fn stale_preconditions_or_out_of_range_text_or_pose_are_never_coerced() {
         next: 112.0,
     };
     assert!(
-        propose_native_repair(&doc, &"a".repeat(64), "Stale agent proposal", &[op.clone()])
-            .is_err()
+        propose_native_repair(
+            &doc,
+            &"a".repeat(64),
+            "Stale agent proposal",
+            std::slice::from_ref(&op)
+        )
+        .is_err()
     );
     assert!(
         propose_native_repair(

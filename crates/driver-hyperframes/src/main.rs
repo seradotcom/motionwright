@@ -225,6 +225,10 @@ impl HyperframesDriver {
                     RuntimeToolArg::ToolPath {
                         tool: "ffmpeg".into(),
                     },
+                    literal("--chromium-sealed"),
+                    RuntimeToolArg::ToolPath {
+                        tool: "chromium".into(),
+                    },
                     literal("--work-root"),
                     mount(WORK),
                     literal("--output-root"),

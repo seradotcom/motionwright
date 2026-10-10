@@ -44,6 +44,9 @@ def main()->None:
  evidence=ROOT/'verification/hyperframes-creative'/rev/f'shard-{shard}';evidence.mkdir(parents=True,exist_ok=False)
  runtime_digest=digest((RUNTIME/'runtime.json').read_bytes())
  node=Path(shutil.which('node')).resolve();ffmpeg=Path(shutil.which('ffmpeg')).resolve()
+ browser_info=json.loads((RUNTIME/'runtime.json').read_text())['files']['browser']
+ browser=(RUNTIME/browser_info['path']).resolve(strict=True)
+ if not browser.is_file() or digest(browser.read_bytes())!=browser_info['sha256']:raise AssertionError('Native visual fixture browser digest mismatch')
  rows=[];contact=[]
  with tempfile.TemporaryDirectory(prefix='mw-creative-visual-') as tmp:
   root=Path(tmp);work=root/'work';out=root/'out';assets=root/'assets'
@@ -57,7 +60,7 @@ def main()->None:
    if digest(html)!=fixture['source_sha256']:raise AssertionError('Native HTML source digest changed in transport')
    job='hf-'+format(index+1,'032x');(work/job).mkdir();(out/job).mkdir()
    (work/job/'plan.json').write_bytes(body);(work/job/'index.html').write_bytes(html)
-   command=[str(RUNNER),'render','--runtime-root',str(RUNTIME),'--node-sealed',str(node),'--ffmpeg-sealed',str(ffmpeg),
+   command=[str(RUNNER),'render','--runtime-root',str(RUNTIME),'--node-sealed',str(node),'--ffmpeg-sealed',str(ffmpeg),'--chromium-sealed',str(browser),
      '--work-root',str(work),'--output-root',str(out),'--assets-root',str(assets),'--job',job,
      '--plan-sha256',digest(body),'--source-sha256',fixture['source_sha256']]
    run(command,240)

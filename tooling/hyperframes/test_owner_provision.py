@@ -18,7 +18,9 @@ class OwnerProvisionTests(unittest.TestCase):
   for name in ('work','output','assets'):(root/name).mkdir(mode=0o700)
   files={}
   for name in ('hyperframes_script','gsap_script','sans_font','mono_font','browser'):
-   file=runtime/name;file.write_text(f'{name} synthetic digest material');files[name]={'path':name,'sha256':sha(file),'bytes':file.stat().st_size}
+   file=runtime/name;file.write_text(f'{name} synthetic digest material');
+   if name=='browser':file.chmod(0o700)
+   files[name]={'path':name,'sha256':sha(file),'bytes':file.stat().st_size}
   inventory=runtime/'runtime-files.json';inventory.write_text('{"schema":1,"files":[]}')
   lock=runtime/'package-lock.json';lock.write_text('{"name":"synthetic"}')
   receipt={'schema':1,'hyperframes':'0.8.143','capture_profile':'hyperframes-core-chromium-png-v2',
@@ -27,17 +29,21 @@ class OwnerProvisionTests(unittest.TestCase):
   (runtime/'runtime.json').write_text(json.dumps(receipt))
   self.runtime=runtime
   self.args=argparse.Namespace(runtime=str(runtime),work=str(root/'work'),output=str(root/'output'),assets=str(root/'assets'),
-      approved_license_terms=True,approved_sandbox_controls=True,**{k:str(v)for k,v in self.executable.items()})
+      approved_license_terms=True,approved_sandbox_controls=True,approved_large_browser_tool=True,**{k:str(v)for k,v in self.executable.items()})
  def test_success_does_not_modify_runtime_or_install_dependencies(self):
   before={p.name:sha(p)for p in self.runtime.iterdir()if p.is_file()}
   result=provision.make(self.args)
   self.assertEqual(result['manifest']['id'],'hyperframes')
   self.assertFalse(result['manifest']['network'])
   self.assertEqual(result['manifest']['sha256'],sha(self.executable['driver']))
+  self.assertEqual(len(result['manifest']['tools']),4)
+  self.assertEqual(result['manifest']['tools'][-1]['name'],'chromium')
+  self.assertEqual(result['manifest']['tools'][-1]['sealed_executable_profile'],'linux_browser320_mib')
+  self.assertEqual(result['manifest']['tools'][0]['dependencies'],['node','ffmpeg','chromium'])
   self.assertIn('network = false',result['owner'].replace('driver_network = false','network = false'))
   self.assertEqual(before,{p.name:sha(p)for p in self.runtime.iterdir()if p.is_file()})
  def test_owner_must_approve_both_rights_and_sandbox(self):
-  for field in ('approved_license_terms','approved_sandbox_controls'):
+  for field in ('approved_license_terms','approved_sandbox_controls','approved_large_browser_tool'):
    setattr(self.args,field,False)
    with self.assertRaisesRegex(ValueError,'explicitly confirm'):provision.make(self.args)
    setattr(self.args,field,True)

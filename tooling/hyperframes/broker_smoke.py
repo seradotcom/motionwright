@@ -40,6 +40,10 @@ def main()->None:
     for key,path in BINS.items():
         if not path.is_file() or path.is_symlink():raise AssertionError('Missing regular compiled tool: '+key)
     node=Path(shutil.which('node')).resolve();ffmpeg=Path(shutil.which('ffmpeg')).resolve()
+    browser_receipt=json.loads((RUNTIME/'runtime.json').read_text())['files']['browser']
+    browser=(RUNTIME/browser_receipt['path']).resolve(strict=True)
+    if not browser.is_file() or browser.is_symlink() or browser.stat().st_size>320*1024*1024 or browser.stat().st_size!=browser_receipt['bytes'] or digest(browser)!=browser_receipt['sha256']:
+        raise AssertionError('Owner-installed Chromium executable cannot meet the exact bounded Host contract')
     result_root=ROOT/'verification/hyperframes-broker'/source_sha;result_root.mkdir(parents=True,exist_ok=False)
     with tempfile.TemporaryDirectory(prefix='motionwright-hf-broker-') as directory:
         temp=Path(directory);home=temp/'home';runtime_state=temp/'runtime-state';state=temp/'state';config=temp/'config';work=temp/'work';output=temp/'output';data=temp/'data'
@@ -70,9 +74,11 @@ def main()->None:
             'tools':[
                 {'root':'hyperframes-runner-root','name':'hyperframes-runner','sha256':digest(runner),
                  'mounts':['hyperframes-runtime','hyperframes-assets','hyperframes-work','hyperframes-output'],
-                 'dependencies':['node','ffmpeg']},
+                 'dependencies':['node','ffmpeg','chromium']},
                 {'root':'node-root','name':'node','sha256':digest(node),'mounts':[],'dependencies':[]},
                 {'root':'ffmpeg-root','name':'ffmpeg','sha256':digest(ffmpeg),'mounts':[],'dependencies':[]},
+                {'root':'chromium-root','name':'chromium','sha256':digest(browser),
+                 'sealed_executable_profile':'linux_browser320_mib','mounts':[],'dependencies':[]},
             ],
             'network':False,'loopback_port':None,
             'resources':{'open_files':512,'processes':256,'cpu_seconds':300,'operation_cpu_seconds':0,
@@ -85,7 +91,7 @@ def main()->None:
         write(manifest_path,manifest,True)
         grants=[('hyperframes-runtime',RUNTIME,False),('hyperframes-assets',assets,False),
                 ('hyperframes-work',work,True),('hyperframes-output',output,True),
-                ('hyperframes-runner-root',runner,False),('node-root',node,False),('ffmpeg-root',ffmpeg,False)]
+                ('hyperframes-runner-root',runner,False),('node-root',node,False),('ffmpeg-root',ffmpeg,False),('chromium-root',browser,False)]
         lines=[f'drivers = [{json.dumps(str(manifest_path))}]','driver_network = false','','[policy]',
                'profile = "workspace"','allow = ["driver:hyperframes"]']
         for name,path,writable in grants:
@@ -155,7 +161,7 @@ def main()->None:
             direct_work=temp/'direct-work';direct_output=temp/'direct-output';direct_work.mkdir();direct_output.mkdir();direct_id='hf-00000000000000000000000000000064';(direct_work/direct_id).mkdir();(direct_output/direct_id).mkdir()
             source=json.loads(source_file.read_text());plan_bytes=source['plan_json'].encode();html=source['source_html'].encode()
             (direct_work/direct_id/'plan.json').write_bytes(plan_bytes);(direct_work/direct_id/'index.html').write_bytes(html)
-            execute([str(BINS['runner']),'render','--runtime-root',str(RUNTIME),'--node-sealed',str(node),'--ffmpeg-sealed',str(ffmpeg),'--work-root',str(direct_work),'--output-root',str(direct_output),'--assets-root',str(assets),'--job',direct_id,'--plan-sha256',hashlib.sha256(plan_bytes).hexdigest(),'--source-sha256',source['source_sha256']],env,360)
+            execute([str(BINS['runner']),'render','--runtime-root',str(RUNTIME),'--node-sealed',str(node),'--ffmpeg-sealed',str(ffmpeg),'--chromium-sealed',str(browser),'--work-root',str(direct_work),'--output-root',str(direct_output),'--assets-root',str(assets),'--job',direct_id,'--plan-sha256',hashlib.sha256(plan_bytes).hexdigest(),'--source-sha256',source['source_sha256']],env,360)
             direct=json.loads((direct_output/direct_id/'frames.json').read_text())
             canonical_hashes=[frame['sha256'] for frame in canonical['frames']];direct_hashes=[frame['sha256'] for frame in direct['frames']]
             if canonical_hashes!=direct_hashes:raise AssertionError('Broker-mediated and direct native pixels differ on the exact same source/runtime')

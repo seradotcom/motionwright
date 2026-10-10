@@ -23,6 +23,7 @@ struct Args {
     runtime: PathBuf,
     node: PathBuf,
     ffmpeg: PathBuf,
+    chromium: PathBuf,
     work: PathBuf,
     output: PathBuf,
     assets: PathBuf,
@@ -78,7 +79,7 @@ struct Artifact {
     media_type: &'static str,
 }
 fn parse(raw: &[String]) -> Result<Args> {
-    if raw.first().map(String::as_str) != Some("render") || raw.len() != 19 {
+    if raw.first().map(String::as_str) != Some("render") || raw.len() != 21 {
         return Err(invalid(
             "Runner requires the exact bounded render argument set",
         ));
@@ -89,6 +90,7 @@ fn parse(raw: &[String]) -> Result<Args> {
             "--runtime-root",
             "--node-sealed",
             "--ffmpeg-sealed",
+            "--chromium-sealed",
             "--work-root",
             "--output-root",
             "--assets-root",
@@ -119,6 +121,7 @@ fn parse(raw: &[String]) -> Result<Args> {
         runtime: PathBuf::from(get("--runtime-root")?),
         node: PathBuf::from(get("--node-sealed")?),
         ffmpeg: PathBuf::from(get("--ffmpeg-sealed")?),
+        chromium: PathBuf::from(get("--chromium-sealed")?),
         work: PathBuf::from(get("--work-root")?),
         output: PathBuf::from(get("--output-root")?),
         assets: PathBuf::from(get("--assets-root")?),
@@ -251,10 +254,27 @@ fn render(args: Args) -> Result<()> {
     let assets = root(&args.assets)?;
     executable(&args.node)?;
     executable(&args.ffmpeg)?;
+    executable(&args.chromium)?;
     let work = root(&work_parent.join(&args.job))?;
     let output = root(&output_parent.join(&args.job))?;
     phase(&work, "roots")?;
-    let _receipt = validate_runtime(&runtime)?;
+    let receipt = validate_runtime(&runtime)?;
+    // The owner-installed browser source and actual Host sealed executable
+    // must be BYTE-IDENTICAL; a model cannot substitute another program or
+    // a same-named system browser through a typed Host tool argument.
+    let expected = receipt
+        .files
+        .get("browser")
+        .ok_or_else(|| invalid("Runtime missing pinned browser binary"))?;
+    let sealed_browser = fs::metadata(&args.chromium)?;
+    if sealed_browser.len() != expected.bytes
+        || sealed_browser.len() > 320 * 1024 * 1024
+        || file_sha(&args.chromium, 320 * 1024 * 1024)? != expected.sha256
+    {
+        return Err(invalid(
+            "Host sealed browser differs from the exact pinned runtime binary",
+        ));
+    }
     phase(&work, "runtime")?;
     let plan_bytes = read(&work, "plan.json", 2 * 1024 * 1024)?;
     if sha(&plan_bytes) != args.plan_sha {
@@ -290,7 +310,8 @@ fn render(args: Args) -> Result<()> {
         .arg(&work)
         .arg(&output)
         .arg(&assets)
-        .arg(&args.plan_sha);
+        .arg(&args.plan_sha)
+        .arg(&args.chromium);
     child_environment(&mut capture, &runtime, &work)?;
     phase(&work, "launcher")?;
     let status = capture.status()?;
