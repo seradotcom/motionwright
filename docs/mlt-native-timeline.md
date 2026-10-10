@@ -74,13 +74,20 @@ receipt. No second backend, local command invocation, arbitrary filter or
 destructive MLT project cleanup is introduced.
 
 The exact-SHA CI matrix adds a third disposable `final-mp4` mode. It
-imports an actual 52,800-sample test tone through Studio as measured WAV,
-binds it to the saved 33-frame profile, renders and assembles the same
-Semwright 32+1 semantic cut, and invokes native AV mux. A separate host-side
-FFprobe checks exactly 33 decoded H.264 frames and one AAC stereo 48 kHz
-stream; hash checks cover the master, edited FFV1 and audited decoded audio.
-This is **technical media verification** of a synthetic test, not a product
-acceptance, approved narration recording or human creative-quality verdict.
+imports an actual 52,800-frame/48 kHz stereo test WAV through Studio,
+with **independent 400 Hz left and 600 Hz right channel fundamentals**.
+It binds the source to the saved 33-frame profile, renders and assembles
+the same Semwright 32+1 semantic cut, and invokes the native AV mux.
+An independent FFprobe counts all 33 decoded H.264 frames and verifies AAC
+48 kHz stereo, while bounded CI-only FFmpeg decodes the **actual final MP4**
+to s16le and verifies the known independent left/right signatures. Swapped,
+duplicated, missing, silent or malformed PCM samples fail the same source
+contract; negative tests exercise that gate without running a renderer.
+All master/intermediate and audited decoded WAV hashes must still match.
+AAC sample quantization may add up to one 1024-frame access unit; the
+original imported WAV is checked to sample precision before authorizing mux.
+This is **technical decoded media verification**, not production narration,
+human mix approval or a creative-quality verdict.
 The trusted desktop command and Studio UI entry must be separately reviewed
 before this can be offered as a full user-facing editing workflow.
 

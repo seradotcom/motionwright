@@ -155,6 +155,11 @@ fn verify_exact_native_mux(response: &Value, expected: &MuxExpected<'_>) -> Nati
             .get("bytes")
             .and_then(Value::as_u64)
             .is_some_and(|n| (1..=MLT_MASTER_MAX_BYTES).contains(&n))
+        || decoded.get("root").and_then(Value::as_str) != Some("output")
+        || !decoded
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| (1..=MLT_MASTER_MAX_BYTES).contains(&n))
         || !decoded
             .get("sha256")
             .and_then(Value::as_str)
@@ -168,17 +173,15 @@ fn verify_exact_native_mux(response: &Value, expected: &MuxExpected<'_>) -> Nati
             "Native MP4 master/decoded-audio artifact identity is incomplete",
         ));
     }
-    // The pinned Semwright AV mux validates exact incoming SHA-256s itself.
-    // Recheck its optional provenance identifiers if its result exposes them;
-    // only our original verified owner-root inputs are supplied as arguments.
+    // The *pinned* Semwright AV mux always returns exact input digests.
+    // Require both provenance attestations; missing identifiers must not
+    // silently qualify as source-bound success. The app also rehashes
+    // the original owner-root media independently before dispatch.
     for (key, digest) in [
         ("video_sha256", expected.source_video),
         ("audio_sha256", expected.source_audio),
     ] {
-        if response
-            .get(key)
-            .is_some_and(|v| v.as_str() != Some(digest))
-        {
+        if response.get(key).and_then(Value::as_str) != Some(digest) {
             return Err(backend(
                 "Native mux receipt contradicts the selected source bytes",
             ));
@@ -452,7 +455,9 @@ mod tests {
             "decoded_audio_media":{"video":false,"audio":true,"codecs":["pcm_s16le"]},
             "artifact":{"root":"output","path":"owner-master.mp4",
                         "sha256":"a".repeat(64),"bytes":10240},
-            "decoded_audio":{"path":"owner-decoded.wav","sha256":"b".repeat(64)}
+            "decoded_audio":{"root":"output","path":"owner-decoded.wav","sha256":"b".repeat(64),"bytes":213070},
+            "video_sha256":"c".repeat(64),
+            "audio_sha256":"d".repeat(64)
         });
         let check = |v: &Value| {
             verify_exact_native_mux(
@@ -501,5 +506,13 @@ mod tests {
         assert!(check(&r).is_err());
         r["decoded_audio_media"]["codecs"] = json!(["pcm_s16le"]);
         assert!(check(&r).is_ok());
+        r.as_object_mut().unwrap().remove("video_sha256");
+        assert!(check(&r).is_err());
+        r["video_sha256"] = json!("c".repeat(64));
+        r["audio_sha256"] = json!("a".repeat(64));
+        assert!(check(&r).is_err());
+        r["audio_sha256"] = json!("d".repeat(64));
+        r["decoded_audio"]["root"] = json!("project");
+        assert!(check(&r).is_err());
     }
 }

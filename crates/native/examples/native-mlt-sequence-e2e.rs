@@ -85,10 +85,14 @@ fn write_synthetic_stereo_wav(path: &Path) -> Result<(), Box<dyn std::error::Err
     output.write_all(b"data")?;
     output.write_all(&pcm_bytes.to_le_bytes())?;
     for index in 0..sample_count {
-        // A bounded audible deterministic waveform, without sampling drift.
-        let value = (((index % 120) as i16) - 60) * 250;
-        output.write_all(&value.to_le_bytes())?;
-        output.write_all(&value.to_le_bytes())?;
+        // Real 48 kHz stereo import; distinct bounded left-400Hz and
+        // right-600Hz source signatures expose swapped, silent, and
+        // unintended channel merges after the native AAC mux.
+        // One period is exactly 120 / 80 samples respectively.
+        let left = (((index % 120) as i16) - 60) * 250;
+        let right = (((index % 80) as i16) - 40) * 260;
+        output.write_all(&left.to_le_bytes())?;
+        output.write_all(&right.to_le_bytes())?;
     }
     output.sync_all()?;
     Ok(())

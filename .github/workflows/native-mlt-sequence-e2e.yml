@@ -142,6 +142,9 @@ jobs:
       - name: Test redacted native observation diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_mlt_failure_diagnostic.py' -v
 
+      - name: Reject silent swapped and duplicated measured stereo CI sources
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_mlt_ci_audio.py' -v
+
       - name: Produce exact two-segment native FFV1 intermediary through pinned Driver Host
         run: |
           set -euo pipefail
@@ -153,7 +156,7 @@ jobs:
           root="verification/native-mlt-sequence-e2e/$GITHUB_SHA"
           test -s "$root/result.json"
           test -s "$root/native-multisegment-timeline-evidence.json"
-          if [[ "$MOTIONWRIGHT_MLT_MODE" = 'video-only' ]]; then
+          if [[ "$MOTIONWRIGHT_MLT_MODE" = 'video-only' || "$MOTIONWRIGHT_MLT_MODE" = 'final-mp4' ]]; then
             test -s "$root/native-two-segment-video-only.mkv"
           else
             test -s "$root/native-two-segment-lossless.mkv"
@@ -171,7 +174,7 @@ jobs:
           assert result["assembled_video_codec"] == "ffv1"
           mode = os.environ["MOTIONWRIGHT_MLT_MODE"]
           assert result["mode"] == mode
-          video_only = mode == "video-only"
+          video_only = mode in ("video-only", "final-mp4")
           assert result["assembled_video_has_audio"] is (not video_only)
           assert result["transport_audio_codec"] == (None if video_only else "pcm_s16le")
           assert evidence["transport_pcm_audio"] is (not video_only)
@@ -196,6 +199,9 @@ jobs:
               assert result["final_master_audio_codec"] == "aac"
               assert result["final_master_audio_rate"] == 48000
               assert result["final_master_audio_channels"] == 2
+              assert result["decoded_stereo_content"] == "distinct_source_400hz_left_600hz_right"
+              assert 52_800 <= result["decoded_master_pcm_frames"] <= 53_824
+              assert (root / "decoded-stereo-content-proof.json").is_file()
               assert result["final_evidence_scope"] == "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
               master = root / "native-multisegment-master.mp4"
               assert master.is_file()
