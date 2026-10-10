@@ -6,7 +6,7 @@ Motionwright is a local-first creative application. Security claims in this repo
 
 The Tauri shell uses an explicit Content Security Policy. Application scripts are self-hosted; remote script origins and dynamic-code allowances are not permitted. Remote frames, embedded objects, form submission and base-URL rewriting are disabled. The WebView may reach only the Tauri IPC origin declared by the shell.
 
-The desktop crate does not include Tauri shell, filesystem, HTTP or process plugins. Privileged application operations are explicit Rust commands backed by the Motionwright service. Source-verified native PNG preview uses only bounded binary IPC responses and server-minted session handles, never generic path-based file access; canonical AV mastering accepts only a verified session render handle and an existing measured VoiceTrack ID, with one-time effect grant prior to any owner-output file staging; see [native frame preview](native-frame-preview.md) and [one-time, source-verified MP4 delivery](master-verified-export.md), and [token-only, 16 MiB-bounded local video review](native-av-review.md). Canonical Semwright execution uses its separately verified Native SDK/owner connection rather than a generic WebView shell escape.
+The desktop crate does not include Tauri shell, filesystem, HTTP or process plugins. Privileged application operations are explicit Rust commands backed by the Motionwright service. Source-verified native PNG preview uses only bounded binary IPC responses and server-minted session handles, never generic path-based file access; canonical AV mastering accepts only a verified session render handle and an existing measured VoiceTrack ID, with one-time effect grant prior to any owner-output file staging; see [native frame preview](native-frame-preview.md), [one-time, source-verified MP4 delivery](master-verified-export.md), [explicit unsigned portable hash receipt](portable-mp4-integrity.md), and [token-only, 16 MiB-bounded local video review](native-av-review.md). Canonical Semwright execution uses its separately verified Native SDK/owner connection rather than a generic WebView shell escape.
 
 `tooling/source_policy.py` checks this boundary on every normal CI run and rejects dynamic-code primitives in application UI source.
 
@@ -16,10 +16,12 @@ Asset admission is content-addressed and fail-closed:
 
 - input files must be regular files, not symlinks or special filesystem entries;
 - imported bytes are hashed before a project change can reference them;
-- content-addressed storage is re-hashed before commit and on bounded reads;
+- content-addressed storage is re-hashed before commit and on bounded reads; [owned CAS shard/staging boundaries](cas-shard-boundary.md) reject symlinked internal directories, use create-new destination admission, and preserve private Unix file permissions;
 - SVG is inspected even when its extension or declared media type is misleading;
 - static SVG is allowed, while scripts, event handlers, external references, active embedded content, CSS URL loading, XML entities and external stylesheets are rejected;
 - measured voice evidence enters through the dedicated audio import boundary rather than a caller-authored project mutation.
+
+The read-only [asset integrity inspection](asset-integrity.md) can rehash existing content-addressed blobs associated with the exact project revision. It accepts no caller-selected source paths and uses bounded per-file and per-page work budgets; this is not Project Graph admission.
 
 These checks do not claim that every media decoder is memory-safe. Decoder/runtime vulnerability management remains a dependency and release concern.
 
@@ -95,4 +97,4 @@ canonical Semwright production connection and the isolated Manim Community runti
 
 ## Evidence not yet claimed
 
-This repository does not turn missing evidence into a PASS. In particular, platform tenant isolation, release signing/notarization, all renderer sandbox properties and production penetration testing require their own execution evidence. Optional or upstream-dependent capabilities remain gated until their real runtime is exercised.
+This repository does not turn missing evidence into a PASS. The [installed candidate package smoke](installed-candidate-smoke.md) runs only on disposable CI runners; it validates extracted binaries and one rootless Linux AppImage window without weakening Gatekeeper/WebKit security, and still records human installation acceptance as NOT_RUN. In particular, platform tenant isolation, release signing/notarization, all renderer sandbox properties and production penetration testing require their own execution evidence. Optional or upstream-dependent capabilities remain gated until their real runtime is exercised.

@@ -42,7 +42,10 @@ test("keyboard focus is visible and workspace navigation remains operable", asyn
   await page.getByRole("button", { name: "Dependencies", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "Dependencies" })).toBeVisible();
-  await expect(page.getByText("NOT ADMITTED").first()).toBeVisible();
+  // Dependencies must never synthesize Graph admission or source-to-scene edges.
+  await expect(page.getByText("GRAPH · UNKNOWN")).toBeVisible();
+  await expect(page.getByRole("table", { name: "Project asset dependencies and integrity" }))
+    .toContainText("Not checked");
 });
 
 

@@ -6,6 +6,7 @@ import {
   exportCaptionSidecar,
   exportOtio,
   exportVerifiedNativeMaster,
+  verifyPortableMediaReceipt,
   preflightMotionCanvas,
   renderMotionCanvas,
 } from "./api";
@@ -19,6 +20,7 @@ import type {
   MotionCanvasFilmOptions,
   MltAvMasterEvidence,
   MasterExportReceipt,
+  PortableMediaVerification,
   Project,
 } from "./types";
 
@@ -123,6 +125,10 @@ export default function DeliveryProfiles({
   const [sidecarPath, setSidecarPath] = useState("");
   const [otioPath, setOtioPath] = useState("");
   const [masterDeliveryPath, setMasterDeliveryPath] = useState("");
+  const [includeMediaIntegrity, setIncludeMediaIntegrity] = useState(false);
+  const [verifyManifestPath, setVerifyManifestPath] = useState("");
+  const [trustedMediaSha256, setTrustedMediaSha256] = useState("");
+  const [verifiedMedia, setVerifiedMedia] = useState<PortableMediaVerification | null>(null);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
@@ -130,7 +136,7 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "master" | "export-master" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "master" | "export-master" | "verify-media" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -387,10 +393,25 @@ export default function DeliveryProfiles({
         project,
         currentAv.export_token!,
         masterDeliveryPath.trim(),
+        includeMediaIntegrity,
       );
       onExportEvidence(receipt);
       setMessage("Verified MP4 delivered to " + receipt.destination
-        + " · SHA-256 " + receipt.sha256.slice(0, 16) + "… · source r" + receipt.revision);
+        + " · SHA-256 " + receipt.sha256.slice(0, 16) + "… · source r" + receipt.revision
+        + (receipt.integrity_manifest_path
+          ? " · portable verification receipt written"
+          : ""));
+    });
+  };
+
+  const inspectPortableMedia = () => {
+    setVerifiedMedia(null);
+    void run("verify-media", async () => {
+      const result = await verifyPortableMediaReceipt(verifyManifestPath, trustedMediaSha256);
+      setVerifiedMedia(result);
+      setMessage("Local MP4 bytes match the unsigned receipt · SHA-256 "
+        + result.sha256.slice(0, 16) + "… · source r" + result.source_revision
+        + (result.trusted_anchor_matched ? " · independent hash matched" : ""));
     });
   };
 
@@ -975,6 +996,19 @@ export default function DeliveryProfiles({
                   {busy === "export-master" ? "Verifying…" : "Export verified MP4"}
                 </button>
               </div>
+              <label className="caption-toggle">
+                <input type="checkbox"
+                  aria-label="Write portable MP4 integrity receipt"
+                  checked={includeMediaIntegrity}
+                  disabled={!desktopMode}
+                  onChange={(event) => setIncludeMediaIntegrity(event.target.checked)}
+                />
+                Write portable SHA-256 verification receipt (.json) next to the MP4
+              </label>
+              <div className="delivery-truth-note">
+                <CircleDashed size={14} /> Optional receipt checks file bytes and source revision offline.
+                It is unsigned: it does not prove publisher identity, codec quality or human approval.
+              </div>
               {!currentAv?.export_token && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real owner-authorized MLT AV master in this desktop session first. No arbitrary master paths are accepted.
@@ -990,12 +1024,79 @@ export default function DeliveryProfiles({
                   <div><span>Destination</span><strong className="mono">{currentExport.destination}</strong></div>
                   <div><span>Bytes copied</span><strong>{currentExport.size_bytes}</strong></div>
                   <div><span>SHA-256</span><strong className="mono">{currentExport.sha256.slice(0, 16)}…</strong></div>
+                  {currentExport.integrity_manifest_path && (
+                    <div><span>Integrity JSON</span><strong className="mono">{currentExport.integrity_manifest_path}</strong></div>
+                  )}
                   <div><span>Status</span><strong>{currentExport.source_current
                     && currentExport.revision === project.revision ? "VERIFIED · CURRENT" : "VERIFIED · HISTORICAL"}</strong></div>
                 </div>
               )}
               <div className="delivery-truth-note">
                 <CircleDashed size={14} /> The MP4 copy is local and SHA-256 verified. No upload, external publication, human review or media signing is performed.
+              </div>
+            </section>
+
+            <section className="caption-export-panel" aria-label="Verify portable MP4 integrity">
+              <header>
+                <div>
+                  <strong>Verify a delivered MP4</strong>
+                  <span>Open an existing portable receipt and compare the local MP4 bytes, even after the original editing session has ended.</span>
+                </div>
+                <span className="status-pill status-unknown">READ ONLY</span>
+              </header>
+              <div className="caption-controls">
+                <label className="caption-path">
+                  <span className="field-label">Receipt · absolute .mp4.motionwright-integrity.json path</span>
+                  <input type="text"
+                    aria-label="Portable MP4 receipt path"
+                    placeholder="/absolute/path/final-master.mp4.motionwright-integrity.json"
+                    value={verifyManifestPath}
+                    disabled={!desktopMode || busy !== null}
+                    onChange={(event) => {
+                      setVerifyManifestPath(event.target.value);
+                      setVerifiedMedia(null);
+                      setMessage(null);
+                      setError(null);
+                    }}
+                  />
+                </label>
+                <button className="button button-primary" type="button"
+                  disabled={!desktopMode || !verifyManifestPath.trim() || busy !== null}
+                  onClick={inspectPortableMedia}>
+                  <CircleCheck size={14} aria-hidden="true" />
+                  {busy === "verify-media" ? "Comparing bytes…" : "Verify local MP4"}
+                </button>
+              </div>
+              <label className="caption-path">
+                <span className="field-label">Independent trusted SHA-256 · optional, not copied from the receipt</span>
+                <input type="text"
+                  aria-label="Independent trusted MP4 SHA-256"
+                  maxLength={64}
+                  spellCheck={false}
+                  className="mono"
+                  placeholder="64 lowercase hexadecimal characters"
+                  value={trustedMediaSha256}
+                  disabled={!desktopMode || busy !== null}
+                  onChange={(event) => {
+                    setTrustedMediaSha256(event.target.value);
+                    setVerifiedMedia(null);
+                    setMessage(null);
+                    setError(null);
+                  }}
+                />
+              </label>
+              {verifiedMedia && (
+                <div className="portable-plan" aria-label="Portable MP4 integrity result" role="status">
+                  <div><span>Byte comparison</span><strong>SHA-256 CONTENT MATCH</strong></div>
+                  <div><span>File</span><strong>{verifiedMedia.filename}</strong></div>
+                  <div><span>Size</span><strong>{verifiedMedia.size_bytes.toLocaleString()} bytes</strong></div>
+                  <div><span>SHA-256</span><strong className="mono">{verifiedMedia.sha256}</strong></div>
+                  <div><span>Origin described</span><strong className="mono">r{verifiedMedia.source_revision} · self-declared</strong></div>
+                  <div><span>Independent anchor</span><strong>{verifiedMedia.trusted_anchor_matched ? "MATCHED" : "NOT PROVIDED"}</strong></div>
+                </div>
+              )}
+              <div className="delivery-truth-note">
+                <CircleDashed size={14} aria-hidden="true" /> Local SHA-256 consistency does not authenticate the publisher, certify playback or constitute human approval. A receipt can be replaced together with its MP4; use a hash obtained independently when authenticity matters.
               </div>
             </section>
 

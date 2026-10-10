@@ -14,6 +14,8 @@ on:
       - 'apps/desktop/src-tauri/**'
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
+      - 'tooling/native_provider_lifecycle.py'
+      - 'tooling/tests/test_native_provider_lifecycle.py'
       - '.github/workflows/native-render-e2e.yml'
 
 permissions:
@@ -110,6 +112,9 @@ jobs:
             motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
             -- --nocapture
 
+      - name: Verify bounded provider lifecycle diagnostics
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
+
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
@@ -125,6 +130,7 @@ jobs:
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-first.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-middle.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-last.png"
+          test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-lifecycle.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -136,6 +142,11 @@ jobs:
           assert result["linear_position_motion_sampled"] is True
           assert result["native_motion_frame_sha256"]["start"] != result["native_motion_frame_sha256"]["end_of_linear_tween"]
           assert len(result["artifact_manifest_sha256"]) == 64
+          health = json.loads((root / "native-provider-lifecycle.json").read_text())
+          assert health["schema"] == "motionwright-ci-provider-lifecycle/1"
+          assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
+          assert health["sample_count"] >= 1
+          assert health["daemon_exit_before_owner_cleanup"] is None
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
