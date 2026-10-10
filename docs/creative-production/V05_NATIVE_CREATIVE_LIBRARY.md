@@ -229,3 +229,26 @@ of nested namespace enforcement, not an automatic fallback to an
 unconfined browser. Human acceptance and an external security review
 remain pending. Do not disable AppArmor or broaden host filesystem/network
 grants to make the test pass.
+
+## Explicit localized repair contracts
+
+`crates/creative-library/src/repair.rs` proposes one to three typed adjustments
+to a retained native document: bounded pose/opacity/size, effect blur, exact
+text runs and exact rational keyframe **values**. Every repair validates the
+currently observed source SHA-256 and the expected original property value.
+No source code, unbounded effect, arbitrary script, path or renderer privilege
+is accepted. The library refuses changes to locked human fields and properties,
+any repeated field within one atomic proposal, nonexistent nodes, stale
+keyframe knots, no-op edits, non-finite values and invalid native documents.
+A proposal retains all other objects and original source data, carries
+conservative full-scene invalidation until the renderer proves a narrower
+temporal dependency, and sets execution/equivalence/approval to **false**.
+
+The desktop `native_localized_repair_preflight` compares this proposal
+against the canonical domain's `CreativeWorkspaceEdit` validation before
+returning a proposed edit and an actual source-level difference. Studio's
+`NativeRepairWorkbench` offers a bounded one-field repair, preview and
+**separate user-driven commit** through the existing project revision CAS.
+A browser demo cannot pretend to approve or perform a native repair.
+This is not autonomous pixel correction: the owner must inspect new native
+frames and accept/reject the resulting design.

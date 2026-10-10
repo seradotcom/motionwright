@@ -1788,3 +1788,17 @@ export async function creativeSoundAudition(project:Project,plan:unknown,sourceS
   }
   return bytes;
 }
+
+export async function nativeLocalizedRepairPreflight(
+ project:Project,documentId:string,expectedSha:string,rationale:string,
+ edits:import('./production/nativeTypes').NativeRepairOperation[]
+):Promise<import('./production/nativeTypes').LocalizedNativeRepairPreflight>{
+ if(!isTauri())throw new Error("Localized creative source repairs require the desktop domain service.");
+ if(!/^[0-9a-f]{64}$/.test(expectedSha))throw new Error("Repair source fingerprint is missing or malformed.");
+ if(!rationale.trim()||rationale.length>2000||edits.length<1||edits.length>3)
+   throw new Error("Repair requires a rationale and one to three explicit changes.");
+ return invoke("native_localized_repair_preflight",{request:{
+   ...nativeScope(project),document_id:documentId,expected_source_sha256:expectedSha,
+   rationale,edits
+ }});
+}

@@ -592,3 +592,77 @@ pub async fn creative_sound_audition(
     )?;
     Ok(tauri::ipc::Response::new(bytes))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalizedNativeRepairRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    document_id: Uuid,
+    expected_source_sha256: String,
+    rationale: String,
+    edits: Vec<motionwright_creative_library::NativeRepairOperation>,
+}
+/// A repair proposal is a pure source edit. It never renders or writes project
+/// data and cannot bypass the existing CAS revision and human property locks.
+#[tauri::command]
+pub async fn native_localized_repair_preflight(
+    state: State<'_, AppState>,
+    request: LocalizedNativeRepairRequest,
+) -> Result<Value, String> {
+    use motionwright_creative_library::propose_native_repair;
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let saved = project
+        .production_design
+        .workspace
+        .native_scenes
+        .iter()
+        .find(|entry| entry.id == request.document_id)
+        .ok_or_else(|| {
+            "Localized repair requires an existing editable source document.".to_string()
+        })?;
+    let NativeSceneSource::Hyperframes(source) = &saved.source;
+    let proposal = propose_native_repair(
+        source,
+        &request.expected_source_sha256,
+        &request.rationale,
+        &request.edits,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut modified = saved.clone();
+    modified.source = NativeSceneSource::Hyperframes(proposal.document.clone());
+    let edit = CreativeWorkspaceEdit::UpsertNativeScene {
+        scene: modified,
+        expected_source_sha256: Some(request.expected_source_sha256.clone()),
+    };
+    let difference = project
+        .preview_creative_workspace(&edit)
+        .map_err(|e| e.to_string())?;
+    if difference.changed_nodes != proposal.changed_nodes
+        || difference.source_sha256.as_deref() != Some(proposal.expected_source_sha256.as_str())
+        || difference.proposed_source_sha256.as_deref()
+            != Some(proposal.proposed_source_sha256.as_str())
+    {
+        return Err("Localized repair/source-CAS difference was not preserved by the canonical project validation.".into());
+    }
+    // Do not hand a stale repair back to Studio if another writer committed
+    // while the purely local source comparison was in progress.
+    let _latest = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    Ok(json!({
+        "schema":"motionwright.native-localized-repair-preflight/1",
+        "proposal":proposal,"difference":difference,"normalized_edit":edit,
+        "committed":false,"rendered":false,"requires_owner_approval":true,
+        "authority":"read_only_preflight_then_explicit_existing_Native_SDK_revision"
+    }))
+}

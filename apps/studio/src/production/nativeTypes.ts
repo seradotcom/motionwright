@@ -31,3 +31,23 @@ export type CreativeWorkspaceEdit=
 export interface NativeSceneDifference{document_id:string;source_sha256:string|null;proposed_source_sha256:string|null;scene_id:string;profile_id:string;added_nodes:string[];removed_nodes:string[];changed_nodes:string[];camera_changed:boolean;canvas_changed:boolean;asset_dependencies_changed:boolean;dirty_start:RationalTime;dirty_end:RationalTime;evidence_level:string}
 export interface NativeArtifact{relative_path:string;sha256:string;bytes:number;media_type:string}
 export interface HyperframesRenderEvidence{project_id:string;generation:string;revision:number;scene_id:string;document_id:string;profile_id:string;job_ref:string;source_sha256:string;plan_sha256:string;rate:NativeRate;width:number;height:number;frame_count:number;alpha:boolean;color:string;frames:NativeArtifact;mezzanine:NativeArtifact;source:NativeArtifact;document:NativeArtifact;observations:NativeArtifact;runtime_receipt_sha256:string;creative_approval:'required';preview:Array<{token:string;segment_id:string;scene_ids:string[];frame_count:number}>}
+
+export type PoseRepairProperty='x'|'y'|'width'|'height'|'scale_x'|'scale_y'|'rotation'|'opacity';
+export type NativeRepairOperation=
+ |{kind:'set_pose';node_id:string;property:PoseRepairProperty;expected:number;next:number}
+ |{kind:'set_blur';node_id:string;expected:number;next:number}
+ |{kind:'replace_text_run';node_id:string;run_index:number;expected_text:string;next_text:string}
+ |{kind:'set_keyframe_value';node_id:string;property:NativeProperty;frame:number;
+   subframe:{num:number;den:number}|null;expected:number;next:number};
+export interface LocalizedNativeRepair {
+ schema:'motionwright.native-repair-proposal/1';expected_source_sha256:string;proposed_source_sha256:string;
+ description:string;changed_nodes:string[];changed_properties:string[];
+ dirty_first_frame:number;dirty_end_frame_exclusive:number;dirty_reason:string;
+ document:HyperframesDocument;committed:false;runtime_executed:false;
+ renderer_equivalence_checked:false;creative_approval:'human_approval_required'
+}
+export interface LocalizedNativeRepairPreflight {
+ schema:'motionwright.native-localized-repair-preflight/1';proposal:LocalizedNativeRepair;
+ difference:NativeSceneDifference;normalized_edit:CreativeWorkspaceEdit;committed:false;rendered:false;
+ requires_owner_approval:true;authority:string
+}

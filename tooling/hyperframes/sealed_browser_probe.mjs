@@ -8,6 +8,9 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../runtime/hyperframes');
+// Playwright's .executablePath() otherwise defaults to ambient ~/.cache even
+// when npm installation used an explicitly owner-scoped browser root.
+process.env.PLAYWRIGHT_BROWSERS_PATH=path.join(root,'.browsers');
 const require=createRequire(path.join(root,'package.json'));
 const {chromium}=require('playwright');
 const limit=256*1024*1024;
