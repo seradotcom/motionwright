@@ -17,6 +17,11 @@ const MAX_PCM_BYTES: usize = (MAX_SAMPLES * 4) as usize;
 #[serde(deny_unknown_fields)]
 pub struct PcmStemReceipt {
     pub asset_id: Uuid,
+    /// Exact SHA-256 of the immutable source file owned by Project.assets.
+    /// Usually a WAV/other admitted audio container, NOT its decoded PCM.
+    pub source_asset_sha256: String,
+    /// Exact independently decoded stereo PCM hash used by the mixer itself.
+    /// Containers and PCM must have separate fingerprints.
     pub decoded_pcm_sha256: String,
     pub sample_frames: u64,
 }
@@ -90,14 +95,16 @@ fn time_to_sample(r: RationalTime) -> Result<u64> {
 }
 fn check_stem(asset: &PcmStemReceipt, project: &Project, n: u64) -> Result<()> {
     check(
-        asset.sample_frames == n && valid_sha(&asset.decoded_pcm_sha256),
+        asset.sample_frames == n
+            && valid_sha(&asset.source_asset_sha256)
+            && valid_sha(&asset.decoded_pcm_sha256),
         "Mix stems must be exact 48-kHz source-length and PCM digest",
     )?;
     check(
         project.assets.iter().any(|registered| {
             registered.id == asset.asset_id
                 && registered.media_type.starts_with("audio/")
-                && registered.content_sha256.as_deref() == Some(asset.decoded_pcm_sha256.as_str())
+                && registered.content_sha256.as_deref() == Some(asset.source_asset_sha256.as_str())
         }),
         "Mix stem is not a current project-owned source asset",
     )?;
@@ -144,6 +151,7 @@ impl OriginalMixPlan {
             track.sample_rate_hz == 48000
                 && track.channels == 2
                 && track.asset_id == self.measured_voice.asset_id
+                && track.source_sha256 == self.measured_voice.source_asset_sha256
                 && time_to_sample(track.measured_duration)? == self.sample_frames
                 && project.assets.iter().any(|asset| {
                     asset.id == track.asset_id

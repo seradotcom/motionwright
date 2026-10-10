@@ -72,6 +72,7 @@ fn fixture() -> (domain::Project, OriginalMixPlan, [Vec<u8>; 3]) {
     p.deliverables[0].voice_track_id = Some(id(40));
     let stem = |idx: usize| PcmStemReceipt {
         asset_id: id(20 + idx as u128),
+        source_asset_sha256: source_sha[idx].clone(),
         decoded_pcm_sha256: source_sha[idx].clone(),
         sample_frames: n as u64,
     };
@@ -151,6 +152,24 @@ fn rendered_wav_has_exact_pcm_bytes_and_cannot_claim_an_audio_master() {
     assert_eq!(&wav[36..40], b"data");
     assert_eq!(&wav[44..], pcm);
     assert_eq!(wav.len(), pcm.len() + 44);
+}
+#[test]
+fn container_asset_sha_and_actual_decoded_pcm_sha_remain_separate_original_identities() {
+    let (mut project, mut plan, [voice, music, sfx]) = fixture();
+    // A real original WAV file hashes differently from the decoded s16le
+    // data. Project.assets and VoiceTrack must keep the container's SHA,
+    // while the mixer independently validates the decoded PCM bytes.
+    let container = "ef".repeat(32);
+    project.assets[0].content_sha256 = Some(container.clone());
+    project.audio.voice_tracks[0].source_sha256 = container.clone();
+    plan.measured_voice.source_asset_sha256 = container;
+    let output = render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+    assert_eq!(
+        output.1.input_source_checks,
+        "ALL_THREE_FULL_PCM_SHA256_VERIFIED"
+    );
+    plan.measured_voice.source_asset_sha256 = "dd".repeat(32);
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err());
 }
 #[test]
 fn identical_inputs_repeat_without_randomness_or_unapproved_resampling() {

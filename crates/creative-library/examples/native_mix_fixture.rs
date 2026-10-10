@@ -116,6 +116,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     project.deliverables[0].voice_track_id = Some(id(301));
     let stem = |index: usize| PcmStemReceipt {
         asset_id: id(200 + index as u128),
+        source_asset_sha256: source_hashes[index].clone(),
         decoded_pcm_sha256: source_hashes[index].clone(),
         sample_frames: n,
     };

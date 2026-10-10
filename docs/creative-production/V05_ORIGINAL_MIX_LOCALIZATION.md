@@ -6,7 +6,7 @@
 
 `crates/creative-library/src/mix.rs` provides `OriginalMixPlan` and `render_original_source_mix`:
 
-- Three distinct owner-registered audio assets: measured voice, music and SFX, all 48 kHz stereo signed 16-bit PCM source with SHA-256 over the actual decoded bytes.
+- Three distinct owner-registered audio assets: measured voice, music and SFX. Each has an **original source-file SHA-256** bound to `Project.assets` (for example a verified imported WAV) *and a separate independently decoded* 48-kHz stereo s16le PCM SHA-256 bound to the samples actually used. A WAV container checksum is never silently substituted for its decoded audio content.
 - The active measured voice track must refer to its original project asset. Delivery language, output sample rate and optional voice-track pin must match an **existing** DeliverableProfile. Inputs belong to the exact project/generation/revision; a missing or stale source digest is denied.
 - Ducking windows are sample-accurate. They must be exactly the manually timed (or sufficiently high-confidence measured) transcript segments in the **existing** `Project.audio`. Unknown or low-confidence ASR cannot silently establish spoken content or drive automation.
 - Voice and music gains come from existing domain `MixIntent`. SFX gain, music duck attenuation (0–30 dB) and linear attack/release (1–48,000 samples) are explicit. Changes cannot reassign source asset identity, round a fractional sample, extend the clip or cross a voice window without failing validation.
