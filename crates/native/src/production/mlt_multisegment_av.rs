@@ -225,7 +225,10 @@ impl ProductionCoordinator {
             .find(|profile| profile.id == deliverable_id)
             .and_then(|profile| profile.voice_track_id)
             .ok_or_else(|| {
-                unsupported("A measured voice take must be selected for this deliverable")
+                Error::new(
+                    ErrorCode::Unsupported,
+                    "A measured voice take must be selected for this deliverable",
+                )
             })?;
         let voice = self
             .service
