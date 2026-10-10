@@ -22,6 +22,122 @@ fn insert(project: &mut Project, id: Uuid, config: HeroConfig) {
         .unwrap();
 }
 #[test]
+fn split_explanation_reflows_without_changing_stable_object_identity() {
+    let id = Uuid::new_v4();
+    let original = realize_product_hero(id, &HeroConfig::default(), 1920, 1080).unwrap();
+    let config = HeroConfig {
+        layout: HeroLayout::SplitExplanation,
+        wordmark: "DETAIL".into(),
+        headline: "First, the problem".into(),
+        body: "Then, explain the solution with original copy that can be edited.".into(),
+        ..HeroConfig::default()
+    };
+    for (width, height) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+        let nodes = realize_product_hero(id, &config, width, height).unwrap();
+        assert_eq!(nodes.len(), 6);
+        assert_eq!(
+            nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+            original.iter().map(|node| node.id).collect::<Vec<_>>()
+        );
+        for node in &nodes {
+            assert!(node.name.starts_with("SplitExplanation / "));
+            assert!(node.x >= 0.0 && node.y >= 0.0);
+            assert!(node.x + node.width <= f64::from(width));
+            assert!(node.y + node.height <= f64::from(height));
+        }
+        let rule = nodes
+            .iter()
+            .find(|node| node.name.ends_with("rule"))
+            .unwrap();
+        if width > height {
+            assert!(rule.height > rule.width, "landscape is column-based");
+        } else {
+            assert!(rule.width > rule.height, "square/portrait are stacked");
+        }
+        let disclosure = nodes
+            .iter()
+            .find(|node| node.name.ends_with("disclosure"))
+            .unwrap();
+        assert!(
+            disclosure
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("NOT A CAPTURE")
+        );
+    }
+    // A missing layout in a legitimate older creative document is a real
+    // default, not a refused migration, changed renderer or renamed node.
+    let mut legacy = serde_json::to_value(HeroConfig::default()).unwrap();
+    legacy.as_object_mut().unwrap().remove("layout");
+    let restored: HeroConfig = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored.layout, HeroLayout::ProductHeroReveal);
+    assert_eq!(
+        realize_product_hero(id, &restored, 1920, 1080).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn switching_component_family_is_atomic_and_respects_human_copy() {
+    let mut project = project();
+    let id = Uuid::new_v4();
+    insert(&mut project, id, HeroConfig::default());
+    let eyebrow = hero_node_id(id, "eyebrow");
+    let body = hero_node_id(id, "body");
+    project
+        .apply_change(&Change::UpdateCanvasText {
+            scene_id: project.scenes[0].id,
+            node_id: eyebrow,
+            text: Some("This measured statement is human-authored.".into()),
+        })
+        .unwrap();
+    let before_revision = project.revision;
+    insert(
+        &mut project,
+        id,
+        HeroConfig {
+            layout: HeroLayout::SplitExplanation,
+            wordmark: "DETAIL".into(),
+            ..HeroConfig::default()
+        },
+    );
+    assert_eq!(project.revision, before_revision);
+    assert_eq!(
+        project.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == eyebrow)
+            .unwrap()
+            .text
+            .as_deref(),
+        Some("This measured statement is human-authored.")
+    );
+    project
+        .apply_change(&Change::UpdateCanvasText {
+            scene_id: project.scenes[0].id,
+            node_id: body,
+            text: Some("Independent human narrative".into()),
+        })
+        .unwrap();
+    let prior = project.clone();
+    assert!(
+        project
+            .apply_change(&Change::UpsertProductHero {
+                instance_id: id,
+                scene_id: project.scenes[0].id,
+                config: HeroConfig {
+                    layout: HeroLayout::SplitExplanation,
+                    body: "A conflicting regeneration".into(),
+                    ..HeroConfig::default()
+                },
+            })
+            .is_err()
+    );
+    assert_eq!(project, prior, "human overrides cannot be lost on conflict");
+}
+
+#[test]
 fn hero_identity_and_generated_base_are_stable() {
     let mut p = project();
     let id = Uuid::new_v4();

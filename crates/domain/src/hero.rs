@@ -3,6 +3,17 @@ use crate::*;
 use sha2::{Digest, Sha256};
 
 pub const HERO_VERSION: u32 = 1;
+
+/// A closed family of editable, deterministic six-object realizations.
+/// The default preserves every preexisting ProductHeroReveal project.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeroLayout {
+    #[default]
+    ProductHeroReveal,
+    SplitExplanation,
+}
+
 pub const HERO_ROLES: [&str; 6] = [
     "eyebrow",
     "headline",
@@ -15,6 +26,8 @@ pub const HERO_ROLES: [&str; 6] = [
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeroConfig {
+    #[serde(default)]
+    pub layout: HeroLayout,
     pub eyebrow: String,
     pub headline: String,
     pub body: String,
@@ -26,6 +39,7 @@ pub struct HeroConfig {
 impl Default for HeroConfig {
     fn default() -> Self {
         Self {
+            layout: HeroLayout::ProductHeroReveal,
             eyebrow: "MOTIONWRIGHT / CREATIVE PRODUCTION".into(),
             headline: "Make the work.\nKeep the craft.".into(),
             body: "A composition you can direct, revise and keep editing.".into(),
@@ -177,9 +191,16 @@ pub fn realize_product_hero(
     let h = f64::from(height);
     let portrait = height > width;
     let square = height == width;
+    let split = config.layout == HeroLayout::SplitExplanation;
     let scale = w.min(h) / 1080.0;
     let left = w * 0.09;
-    let (headline_y, body_y, mark_x, mark_y, mark_w, mark_h) = if portrait {
+    let (headline_y, body_y, mark_x, mark_y, mark_w, mark_h) = if split && portrait {
+        (h * 0.20, h * 0.67, left, h * 0.565, w * 0.60, h * 0.045)
+    } else if split && square {
+        (h * 0.17, h * 0.65, left, h * 0.55, w * 0.65, h * 0.07)
+    } else if split {
+        (h * 0.32, h * 0.41, w * 0.57, h * 0.275, w * 0.34, h * 0.09)
+    } else if portrait {
         (h * 0.15, h * 0.39, w * 0.16, h * 0.56, w * 0.68, h * 0.26)
     } else if square {
         (h * 0.16, h * 0.43, w * 0.51, h * 0.60, w * 0.38, h * 0.25)
@@ -188,7 +209,13 @@ pub fn realize_product_hero(
     };
     let headline = wrap_copy(
         &config.headline,
-        if portrait {
+        if split && portrait {
+            23
+        } else if split && square {
+            22
+        } else if split {
+            17
+        } else if portrait {
             19
         } else if square {
             22
@@ -199,7 +226,13 @@ pub fn realize_product_hero(
     )?;
     let body = wrap_copy(
         &config.body,
-        if portrait {
+        if split && portrait {
+            39
+        } else if split && square {
+            35
+        } else if split {
+            29
+        } else if portrait {
             33
         } else if square {
             38
@@ -208,7 +241,9 @@ pub fn realize_product_hero(
         },
         4,
     )?;
-    let text_width = if portrait || square {
+    let text_width = if split && !portrait && !square {
+        w * 0.37
+    } else if portrait || square {
         w * 0.82
     } else {
         w * 0.49
@@ -234,8 +269,28 @@ pub fn realize_product_hero(
             left,
             headline_y,
             text_width,
-            if portrait { h * 0.22 } else { h * 0.30 },
-            if square { 68.0 } else { 82.0 } * scale,
+            if split && portrait {
+                h * 0.18
+            } else if split && square {
+                h * 0.24
+            } else if split {
+                h * 0.35
+            } else if portrait {
+                h * 0.22
+            } else {
+                h * 0.30
+            },
+            if split && portrait {
+                74.0
+            } else if split && square {
+                64.0
+            } else if split {
+                66.0
+            } else if square {
+                68.0
+            } else {
+                82.0
+            } * scale,
             600,
             120,
             1060,
@@ -245,11 +300,37 @@ pub fn realize_product_hero(
         (
             "body",
             body,
-            left,
+            if split && !portrait && !square {
+                w * 0.57
+            } else {
+                left
+            },
             body_y,
-            text_width,
-            if portrait { h * 0.13 } else { h * 0.17 },
-            30.0 * scale,
+            if split && !portrait && !square {
+                w * 0.35
+            } else {
+                text_width
+            },
+            if split && portrait {
+                h * 0.14
+            } else if split && square {
+                h * 0.20
+            } else if split {
+                h * 0.31
+            } else if portrait {
+                h * 0.13
+            } else {
+                h * 0.17
+            },
+            if split && portrait {
+                31.0
+            } else if split && square {
+                29.0
+            } else if split {
+                38.0
+            } else {
+                30.0
+            } * scale,
             400,
             460,
             1260,
@@ -263,7 +344,13 @@ pub fn realize_product_hero(
             mark_y,
             mark_w,
             mark_h,
-            if portrait {
+            if split && portrait {
+                54.0
+            } else if split && square {
+                47.0
+            } else if split {
+                50.0
+            } else if portrait {
                 246.0
             } else if square {
                 186.0
@@ -273,16 +360,40 @@ pub fn realize_product_hero(
             600,
             160,
             1460,
-            86.0 * scale,
-            -5.0,
+            if split { 26.0 } else { 86.0 } * scale,
+            if split { 0.0 } else { -5.0 },
         ),
         (
             "rule",
             String::new(),
-            left,
-            h * 0.87,
-            if portrait { w * 0.18 } else { w * 0.09 },
-            3.0 * scale,
+            if split && !portrait && !square {
+                w * 0.5
+            } else {
+                left
+            },
+            if split && portrait {
+                h * 0.5
+            } else if split && square {
+                h * 0.49
+            } else if split {
+                h * 0.25
+            } else {
+                h * 0.87
+            },
+            if split && !portrait && !square {
+                3.0 * scale
+            } else if split {
+                w * 0.82
+            } else if portrait {
+                w * 0.18
+            } else {
+                w * 0.09
+            },
+            if split && !portrait && !square {
+                h * 0.5
+            } else {
+                3.0 * scale
+            },
             0.0,
             400,
             600,
@@ -292,7 +403,12 @@ pub fn realize_product_hero(
         ),
         (
             "disclosure",
-            "GRAPHIC STUDY / NOT A PRODUCT CAPTURE".into(),
+            if split {
+                "SPLIT EXPLANATION / GRAPHIC STUDY · NOT A CAPTURE"
+            } else {
+                "GRAPHIC STUDY / NOT A PRODUCT CAPTURE"
+            }
+            .into(),
             left,
             h * 0.905,
             w * 0.82,
@@ -314,7 +430,14 @@ pub fn realize_product_hero(
         let is_text = role != "rule";
         let mut node = CanvasNode {
             id: hero_node_id(id, role),
-            name: format!("ProductHeroReveal / {role}"),
+            name: format!(
+                "{} / {role}",
+                if split {
+                    "SplitExplanation"
+                } else {
+                    "ProductHeroReveal"
+                }
+            ),
             kind: if is_text { "text" } else { "rectangle" }.into(),
             parent_id: None,
             x,

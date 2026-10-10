@@ -6,15 +6,15 @@ This is a **work-in-progress v0.5 expansion**, not a v0.5 product release or a c
 
 Production is a workstation within the existing Studio. It uses the same application-owned project, revision journal, SQLite transaction service, desktop effect grants and public Semwright Native SDK. There is no second scheduler, Core, paid model integration or Platform requirement.
 
-The implemented slice includes a first-party typographic `ProductHeroReveal`, persisted production plans, digest-bound opaque native-source attachments, scoped canvas proposals, explicit undo/redo as new revisions, and native frame inspection. The component supports three reflowed aspect families, editable text/brand color/motion controls and a conservative text budget. It is a **graphic study**, not a real software capture, a 3D product stage, or all desktop/mobile/CLI hero variants.
+The implemented slice includes two first-party, semantic, typographic composition families (`ProductHeroReveal` and `SplitExplanation`), persisted production plans, digest-bound opaque native-source attachments, scoped canvas proposals, explicit undo/redo as new revisions, and native frame inspection. The component supports three reflowed aspect families, editable text/brand color/motion controls and a conservative text budget. It is a **graphic study**, not a real software capture, a 3D product stage, or all desktop/mobile/CLI hero variants.
 
 `requirements-status.json` tracks all 64 expansion IDs without replacing the original 208-requirement ledger. An implemented contract is not an automatically approved design. Code presence, integration tests, native evidence and human acceptance remain different fields.
 
 ## Start a design session
 
-Use a desktop build from this branch's successful Candidate Packages workflow, not an older release. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.
+Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.
 
-The ProductHero native evidence artifact contains one folder per aspect:
+The existing ProductHero native evidence artifact contains one folder per aspect. SplitExplanation has its own Rust/Studio semantic and Film-conformance gates, but still requires separate rendered-frame visual review before its design is approved:
 
 - `hero.motionwright/manifest.json`: an actual portable project bundle, not a loose scene mock. In **Deliver → Inspect and import**, select the absolute path of the `hero.motionwright` directory, inspect it, then import the verified bundle.
 - `motionwright-master.mp4`: a real six-second H.264/AAC master produced through Semwright's Motion Canvas and MLT providers. Its audio is deterministic **synthetic 440/660 Hz stereo test tones** for decoded H.264/AAC transport verification, **not sound design**.
@@ -22,7 +22,7 @@ The ProductHero native evidence artifact contains one folder per aspect:
 
 Import preserves internal scene/component identities and authored values while creating a fresh project generation. Existing native render readback tokens are not included in the portable bundle. Generate a new preview before using native inspection in the restored desktop project. Import refuses an already-existing project ID rather than overwriting it.
 
-Open **Production → Components** and select the imported scene. Change one bounded copy field or the accent, compare aspects, scrub the shared playhead, and update the component. Use **Edit objects** for ordinary object editing. Compatible human overrides survive subsequent component updates; conflicting copy, ambiguous reflow or a deleted component object produces an explicit error instead of regeneration.
+Open **Production → Components** and select the imported scene. The **Composition family** selector switches between a product reveal and a two-part explanatory graphic. In landscape the second family uses two columns separated by an intentional vertical rule; portrait and square reflow to stacked sections. Its six object identities remain stable, permitting per-property edits and conflict-aware family changes without flattening the project. A layout switch is an authored project revision only when explicitly saved, not when changing the preview. The existing default is preserved for old projects with no layout field. Change one bounded copy field or the accent, compare aspects, scrub the shared playhead, and update the component. Use **Edit objects** for ordinary object editing. Compatible human overrides survive subsequent component updates; conflicting copy, ambiguous reflow or a deleted component object produces an explicit error instead of regeneration.
 
 In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, then apply once. The reversible history can preview undo or redo. Every inverse is a new CAS-protected revision. An intervening conflicting edit, property lock, missing object or incompatible new scene duration blocks the inverse. The original journal is never rewound.
 

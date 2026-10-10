@@ -284,10 +284,17 @@
     },
     {
       "id": "MW05-E05-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No claim that 36 candidate names are a usable library",
-      "remaining_scope": "Implement and individually review the remaining component families",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Two exact editable first-party composition families: ProductHeroReveal and SplitExplanation, three reflowed aspects, stable roles, native Film projection and source-derived Rust/Studio parity",
+      "remaining_scope": "The remaining candidate component families, real client use and individually reviewed aesthetic/render evidence are not implemented or certified",
+      "source_paths": [
+        "crates/domain/src/hero.rs",
+        "crates/native/tests/split_explanation.rs",
+        "apps/studio/src/creativeProduction.ts",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/split-explanation.spec.ts",
+        "apps/studio/conformance/creativeParity.test.ts"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
