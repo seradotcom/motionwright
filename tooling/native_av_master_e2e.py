@@ -33,7 +33,9 @@ GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 FIXTURE = os.environ.get("MOTIONWRIGHT_E2E_FIXTURE", "baseline")
 HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (1080, 1080),
                 "split-landscape": (1920, 1080), "split-portrait": (1080, 1920),
-                "split-square": (1080, 1080)}
+                "split-square": (1080, 1080),
+                "metric-landscape": (1920, 1080), "metric-portrait": (1080, 1920),
+                "metric-square": (1080, 1080)}
 if FIXTURE not in {"baseline", *HERO_ASPECTS}:
     raise SystemExit("unknown bounded E2E fixture")
 IS_HERO = FIXTURE != "baseline"
@@ -165,7 +167,10 @@ def main() -> None:
         seeded = run_json(seed_command, env=env)
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
-        if IS_HERO and seeded.get("fixture") != ("split-explanation/1" if FIXTURE.startswith("split-") else "product-hero-reveal/1"):
+        expected_family = ("metric-evidence/1" if FIXTURE.startswith("metric-") else
+                           "split-explanation/1" if FIXTURE.startswith("split-") else
+                           "product-hero-reveal/1")
+        if IS_HERO and seeded.get("fixture") != expected_family:
             raise AssertionError("Native composition fixture does not match the requested semantic family")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"

@@ -449,3 +449,125 @@ fn capsule_is_an_attachment_not_a_runtime_grant() {
     forged["execute_command"] = serde_json::json!("untrusted-code");
     assert!(serde_json::from_value::<NativeCapsule>(forged).is_err());
 }
+
+#[test]
+fn metric_evidence_reflows_without_inventing_attested_sources_or_resetting_object_ids() {
+    let id = Uuid::new_v4();
+    let original = realize_product_hero(id, &HeroConfig::default(), 1920, 1080).unwrap();
+    let config = HeroConfig {
+        layout: HeroLayout::MetricEvidence,
+        eyebrow: "USER AUTHORED / NOT VERIFIED".into(),
+        headline: "42% growth".into(),
+        body: "A reported figure needs a source, date and independently checked evidence.".into(),
+        wordmark: "DATA".into(),
+        accent: "#D9A46E".into(),
+        ..HeroConfig::default()
+    };
+    for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+        let nodes = realize_product_hero(id, &config, w, h).unwrap();
+        assert_eq!(nodes.len(), HERO_ROLES.len());
+        assert_eq!(
+            nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
+            original.iter().map(|n| n.id).collect::<Vec<_>>(),
+        );
+        for node in &nodes {
+            assert!(node.name.starts_with("MetricEvidence / "));
+            assert!(node.x >= 0.0 && node.y >= 0.0);
+            assert!(node.x + node.width <= f64::from(w));
+            assert!(node.y + node.height <= f64::from(h));
+        }
+        let rule = nodes.iter().find(|n| n.name.ends_with("rule")).unwrap();
+        if w > h {
+            assert!(rule.height > rule.width);
+        } else {
+            assert!(rule.width > rule.height);
+        }
+        let fact = nodes.iter().find(|n| n.name.ends_with("headline")).unwrap();
+        assert_eq!(fact.text.as_deref(), Some("42% growth"));
+        assert_eq!(fact.style.fill.as_deref(), Some("#D9A46E"));
+        let disclosure = nodes
+            .iter()
+            .find(|n| n.name.ends_with("disclosure"))
+            .unwrap();
+        assert_eq!(
+            disclosure.text.as_deref(),
+            Some("METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED"),
+        );
+    }
+    let serde = serde_json::to_string(&config).unwrap();
+    let restored: HeroConfig = serde_json::from_str(&serde).unwrap();
+    assert_eq!(restored.layout, HeroLayout::MetricEvidence);
+    let quiet = HeroConfig {
+        motion: false,
+        ..config
+    };
+    assert!(
+        realize_product_hero(id, &quiet, 1920, 1080)
+            .unwrap()
+            .iter()
+            .all(|n| n.keyframes.is_empty())
+    );
+}
+
+#[test]
+fn metric_evidence_family_change_protects_human_copy_and_rejects_conflicts() {
+    let mut p = project();
+    let id = Uuid::new_v4();
+    insert(&mut p, id, HeroConfig::default());
+    let eyebrow = hero_node_id(id, "eyebrow");
+    let body = hero_node_id(id, "body");
+    p.apply_change(&Change::UpdateCanvasText {
+        scene_id: p.scenes[0].id,
+        node_id: eyebrow,
+        text: Some("Human-authored source context".into()),
+    })
+    .unwrap();
+    let config = HeroConfig {
+        layout: HeroLayout::MetricEvidence,
+        headline: "42% growth".into(),
+        wordmark: "DATA".into(),
+        ..HeroConfig::default()
+    };
+    insert(&mut p, id, config.clone());
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .find(|n| n.id == eyebrow)
+            .unwrap()
+            .text
+            .as_deref(),
+        Some("Human-authored source context"),
+    );
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .find(|n| n.id == body)
+            .unwrap()
+            .name,
+        "MetricEvidence / body",
+    );
+    p.apply_change(&Change::UpdateCanvasText {
+        scene_id: p.scenes[0].id,
+        node_id: body,
+        text: Some("Human-controlled explanation".into()),
+    })
+    .unwrap();
+    let original = p.clone();
+    assert!(
+        p.apply_change(&Change::UpsertProductHero {
+            instance_id: id,
+            scene_id: p.scenes[0].id,
+            config: HeroConfig {
+                body: "An incompatible regenerated metric claim".into(),
+                ..config
+            },
+        })
+        .is_err()
+    );
+    assert_eq!(
+        p, original,
+        "conflicts must not partially apply a generated metric"
+    );
+}

@@ -12,6 +12,7 @@ pub enum HeroLayout {
     #[default]
     ProductHeroReveal,
     SplitExplanation,
+    MetricEvidence,
 }
 
 pub const HERO_ROLES: [&str; 6] = [
@@ -189,6 +190,9 @@ pub fn realize_product_hero(
     }
     let w = f64::from(width);
     let h = f64::from(height);
+    if config.layout == HeroLayout::MetricEvidence {
+        return realize_metric_evidence(id, config, w, h);
+    }
     let portrait = height > width;
     let square = height == width;
     let split = config.layout == HeroLayout::SplitExplanation;
@@ -687,4 +691,218 @@ impl Project {
         *self = candidate;
         Ok(())
     }
+}
+
+/// MetricEvidence is an editorial study of *user-authored* information, not
+/// independently verified data. The conspicuous disclosure is part of the
+/// six-node source of truth and survives a native film realization.
+fn realize_metric_evidence(
+    id: Uuid,
+    config: &HeroConfig,
+    w: f64,
+    h: f64,
+) -> Result<Vec<CanvasNode>> {
+    let portrait = h > w;
+    let square = h == w;
+    let wide = !portrait && !square;
+    let scale = w.min(h) / 1080.0;
+    let left = w * 0.085;
+    let fact = wrap_copy(
+        &config.headline,
+        if wide {
+            11
+        } else if square {
+            15
+        } else {
+            13
+        },
+        3,
+    )?;
+    let explanation = wrap_copy(
+        &config.body,
+        if wide {
+            29
+        } else if square {
+            32
+        } else {
+            30
+        },
+        4,
+    )?;
+    let fact_y = if wide {
+        h * 0.255
+    } else if square {
+        h * 0.22
+    } else {
+        h * 0.23
+    };
+    let fact_h = if wide {
+        h * 0.43
+    } else if square {
+        h * 0.30
+    } else {
+        h * 0.25
+    };
+    let fact_font = if wide {
+        120.0
+    } else if square {
+        94.0
+    } else {
+        118.0
+    };
+    let wordmark_y = if wide {
+        h * 0.285
+    } else if square {
+        h * 0.565
+    } else {
+        h * 0.54
+    };
+    let rule_y = if wide {
+        h * 0.22
+    } else if square {
+        h * 0.615
+    } else {
+        h * 0.605
+    };
+    let body_y = if wide {
+        h * 0.42
+    } else if square {
+        h * 0.68
+    } else {
+        h * 0.65
+    };
+    let entries = [
+        (
+            "eyebrow",
+            config.eyebrow.clone(),
+            left,
+            h * 0.085,
+            w * 0.82,
+            40.0 * scale,
+            23.0 * scale,
+            500,
+            0,
+            500,
+            14.0 * scale,
+        ),
+        (
+            "headline",
+            fact,
+            left,
+            fact_y,
+            if wide { w * 0.40 } else { w * 0.82 },
+            fact_h,
+            fact_font * scale,
+            700,
+            120,
+            1060,
+            54.0 * scale,
+        ),
+        (
+            "body",
+            explanation,
+            if wide { w * 0.62 } else { left },
+            body_y,
+            if wide { w * 0.30 } else { w * 0.82 },
+            if wide { h * 0.28 } else { h * 0.16 },
+            if wide { 34.0 } else { 30.0 } * scale,
+            400,
+            460,
+            1260,
+            24.0 * scale,
+        ),
+        (
+            "wordmark",
+            config.wordmark.clone(),
+            if wide { w * 0.62 } else { left },
+            wordmark_y,
+            if wide { w * 0.30 } else { w * 0.50 },
+            if wide {
+                h * 0.065
+            } else if square {
+                h * 0.050
+            } else {
+                h * 0.045
+            },
+            if wide {
+                40.0
+            } else if square {
+                35.0
+            } else {
+                40.0
+            } * scale,
+            600,
+            160,
+            1460,
+            26.0 * scale,
+        ),
+        (
+            "rule",
+            String::new(),
+            if wide { w * 0.55 } else { left },
+            rule_y,
+            if wide { 3.0 * scale } else { w * 0.82 },
+            if wide { h * 0.48 } else { 3.0 * scale },
+            0.0,
+            400,
+            600,
+            1360,
+            10.0 * scale,
+        ),
+        (
+            "disclosure",
+            "METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED".to_owned(),
+            left,
+            h * 0.905,
+            w * 0.83,
+            28.0 * scale,
+            17.0 * scale,
+            400,
+            740,
+            1500,
+            10.0 * scale,
+        ),
+    ];
+    let mut nodes = Vec::with_capacity(HERO_ROLES.len());
+    for (index, (role, text, x, y, width, height, font_size, weight, start, end, offset)) in
+        entries.into_iter().enumerate()
+    {
+        let is_text = role != "rule";
+        let mut node = CanvasNode {
+            id: hero_node_id(id, role),
+            name: format!("MetricEvidence / {role}"),
+            kind: if is_text { "text" } else { "rectangle" }.into(),
+            parent_id: None,
+            x,
+            y,
+            width,
+            height,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: is_text.then_some(text),
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 10 + index as i32,
+            style: NodeStyle {
+                fill: Some(if matches!(role, "headline" | "wordmark" | "rule") {
+                    config.accent.clone()
+                } else {
+                    config.foreground.clone()
+                }),
+                font_family: is_text.then(|| "Instrument Sans Variable".into()),
+                font_size: is_text.then_some(font_size),
+                font_weight: is_text.then_some(weight),
+                line_height: is_text.then_some(1.12),
+                ..Default::default()
+            },
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+            keyframes: vec![],
+        };
+        if config.motion {
+            node.keyframes = entry_keys(&node, start, end, offset, 0.0);
+        }
+        node.validate()?;
+        nodes.push(node);
+    }
+    Ok(nodes)
 }
