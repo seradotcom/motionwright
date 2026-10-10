@@ -91,6 +91,34 @@ human mix approval or a creative-quality verdict.
 The trusted desktop command and Studio UI entry must be separately reviewed
 before this can be offered as a full user-facing editing workflow.
 
+## Owner-authorized desktop and Studio workflow (stacked UI integration)
+
+The trusted desktop command `assemble_multisegment_av_master` accepts only
+the saved project/generation/revision, deliverable and voice-track identities,
+an already registered **opaque NativePreviewRegistry token** and a one-use
+`RenderLocal` effect grant. The original Film authoring options, actual
+per-segment native evidence and canonical output root come **only** from
+`NativePreviewRegistry::multi_segment_source`, not from browser fields.
+
+The desktop checks the complete rational cut against the selected 48 kHz
+stereo source take and performs source-manifest preflight *before* consuming
+the grant. It derives a stable identity from project generation/revision,
+all ordered source fingerprints/scene IDs/frame counts and original voice
+digest, stages the verified CAS WAV using the existing exclusive-create
+helper, then calls the new Semwright video-only semantic MLT assembler and
+the trusted native `av.mux` path.
+
+A successful verified MP4 mints a **session-only export token** in the
+existing NativeMasterDeliveryRegistry. Studio receives only the current
+revision, segment/frame counts, H.264/AAC/48kHz profile, MP4 SHA-256 and
+opaque token: not provider job IDs, filesystem paths, private intermediate
+receipts, arbitrary FFmpeg parameters or executable handles. The same
+previously verified read-only review and create-new export mechanism is
+reused. The UI requires a saved output profile, measured voice, current
+multi-segment render and successful source-readiness preflight before
+requesting an actual output. Product acceptance/human creative review are
+**not** automatically passed by these technical media checks.
+
 ## Output and remaining limits
 
 This method returns **`MltVerifiedLosslessTimeline`** with the actual owner-root FFV1 + PCM Matroska SHA-256, source frame count, nullable provider-observed frame count, current creative version, FFV1 source receipts and explicit scope:
