@@ -3,7 +3,7 @@
 
 CI only. Provisions a 33-scene application-owned project and pinned Semwright
 Broker/Driver Host, renders 32+1 real Motion Canvas segments, and assembles
-video-only Matroska FFV1 through the semantic MLT timeline, not an AAC master.
+FFV1/PCM Matroska lossless intermediary through semantic MLT, not an AAC master.
 """
 from __future__ import annotations
 
@@ -474,7 +474,7 @@ def main() -> None:
                 raise AssertionError("Real source-bound MLT timeline was not successful: " + repr(result))
             if result.get("frame_count") != 33 or result.get("segment_count") != 2:
                 raise AssertionError("Native timeline lost the 32+1 source partition")
-            if result.get("evidence_scope") != "actual-native-mlt-ffv1-video-only-no-audio-master":
+            if result.get("evidence_scope") != "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master":
                 raise AssertionError("MLT result falsely claimed final H.264/AAC master")
 
             evidence_path = EVIDENCE / "native-multisegment-timeline-evidence.json"
@@ -509,8 +509,15 @@ def main() -> None:
             streams = json.loads(meta_result.stdout)["streams"]
             videos = [item for item in streams if item.get("codec_type") == "video"]
             audios = [item for item in streams if item.get("codec_type") == "audio"]
-            if len(videos) != 1 or audios:
-                raise AssertionError("Native MLT lossless timeline is not video-only")
+            if len(videos) != 1 or len(audios) != 1:
+                raise AssertionError("Native MLT lossless intermediary requires exact FFV1 and PCM streams")
+            audio = audios[0]
+            if audio.get("codec_name") != "pcm_s16le":
+                raise AssertionError("Native MLT transport audio is not expected PCM s16le")
+            if result.get("transport_pcm_audio") is not True or evidence.get("transport_pcm_audio") is not True:
+                raise AssertionError("Lossless receipt denied its actual mandatory PCM transport audio")
+            if evidence.get("native_frame_count_observed") not in (None, 33):
+                raise AssertionError("MLT native frame count observation contradicted source")
             video = videos[0]
             if (video.get("codec_name") != "ffv1"
                 or (video.get("width"), video.get("height")) != (1280, 720)
@@ -518,7 +525,7 @@ def main() -> None:
                 or video.get("nb_read_frames") != "33"):
                 raise AssertionError("Native actual MLT video codec/frame provenance failed: " + repr(video))
 
-            shutil.copyfile(video_path, EVIDENCE / "native-two-segment-video.mkv")
+            shutil.copyfile(video_path, EVIDENCE / "native-two-segment-lossless.mkv")
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -535,7 +542,8 @@ def main() -> None:
                     "rendered_source_frames": [32, 1],
                     "assembled_video_frames": 33,
                     "assembled_video_codec": "ffv1",
-                    "assembled_video_has_audio": False,
+                    "assembled_video_has_audio": True,
+                    "transport_audio_codec": "pcm_s16le",
                     "video_bytes": video_path.stat().st_size,
                     "video_sha256": digest(video_path),
                 },

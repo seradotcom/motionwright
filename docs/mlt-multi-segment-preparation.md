@@ -22,7 +22,7 @@ The receipt `MltPreparedMezzanines` returns the exact segment index, output star
 
 `real-source-ffv1-segments-not-composited`
 
-**That is not an H.264/AAC master**. The stage does not itself create a Semwright semantic MLT project or output a finished video. A separate [experimental owner-only timeline runner](mlt-native-timeline.md) is being validated to import these FFV1 sources, create a track, insert exact clips and render a real lossless video-only Matroska. Neither stage attaches the 48kHz stereo WAV or publishes a final MP4. These operations require a separate authorized end-to-end MLT job, deterministic revision-bound reference updates, actual media inspection and a real multi-segment E2E before the desktop may claim completed output.
+**That is not an H.264/AAC master**. The stage does not itself create a Semwright semantic MLT project or output a finished video. A separate [experimental owner-only timeline runner](mlt-native-timeline.md) is being validated to import these FFV1 sources, create a track, insert exact clips and render a real FFV1+PCM lossless Matroska intermediate. The pinned provider adds PCM transport audio to its lossless render even when the input semantic timeline has no voice/music source; this is not approved audio or a master. Neither stage attaches the measured 48kHz stereo WAV or publishes a final MP4. These operations require a separate authorized end-to-end MLT job, deterministic revision-bound reference updates, actual media inspection and a real multi-segment E2E before the desktop may claim completed output.
 
 ## Verification
 

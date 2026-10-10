@@ -231,10 +231,17 @@ async fn assemble(
         )
         .await?;
     if evidence.frame_count != 33
+        || !evidence.transport_pcm_audio
+        || evidence
+            .native_frame_count_observed
+            .is_some_and(|observed| observed != 33)
         || evidence.source.verified_video_segments.len() != 2
-        || evidence.evidence_scope != "actual-native-mlt-ffv1-video-only-no-audio-master"
+        || evidence.evidence_scope
+            != "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master"
     {
-        return Err("Native MLT timeline did not return the expected two-segment video".into());
+        return Err(
+            "Native MLT timeline did not return the two-segment lossless intermediary".into(),
+        );
     }
     let body = serde_json::to_vec_pretty(&evidence)?;
     let mut output = OpenOptions::new()
@@ -256,6 +263,8 @@ async fn assemble(
             "artifact_path":evidence.artifact_path,
             "artifact_sha256":evidence.artifact_sha256,
             "artifact_bytes":evidence.artifact_bytes,
+            "transport_pcm_audio":evidence.transport_pcm_audio,
+            "native_frame_count_observed":evidence.native_frame_count_observed,
             "evidence_scope":evidence.evidence_scope,
         }))?
     );

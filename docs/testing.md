@@ -92,7 +92,7 @@ The pinned MLT project constructor supplies a default Main sequence in addition 
 
 ## Contiguous editorial scenes as source-bound native shots
 
-A new exact-time Film unit gate reproduces 33 authored 1/30-second scenes and requires two complete native render segments of 32+1 frames. For a multi-scene segment, each source scene maps to an independent authored beat/shot under one Semwright Motion Canvas run Sequence; the original time spans stay constrained, each shot interval remains exact, and no editorial scene is dropped. The pinned provider supplies precise per-shot visibility within that Sequence. The strict native MLT E2E (not a synthetic acceptance) is still required to verify every actual PNG, observation, FFV1 intermediary and resulting 33-frame video-only Matroska before approval. This change is a candidate repair for observed short renders, not a CI shortcut or product-acceptance mark.
+A new exact-time Film unit gate reproduces 33 authored 1/30-second scenes and requires two complete native render segments of 32+1 frames. For a multi-scene segment, each source scene maps to an independent authored beat/shot under one Semwright Motion Canvas run Sequence; the original time spans stay constrained, each shot interval remains exact, and no editorial scene is dropped. The pinned provider supplies precise per-shot visibility within that Sequence. The strict native MLT E2E (not a synthetic acceptance) is still required to verify every actual PNG, observation, FFV1 intermediary and resulting 33-frame FFV1 + mandatory PCM transport Matroska before approval. This change is a candidate repair for observed short renders, not a CI shortcut or product-acceptance mark.
 
 ## Multi-segment native renderer diagnostics
 
