@@ -15,6 +15,8 @@ use uuid::Uuid;
 
 pub mod assembly;
 pub mod canonical;
+mod component_text;
+mod expressive;
 pub mod film;
 pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
@@ -566,10 +568,45 @@ impl ObservationProvider for MotionwrightObserver {
         // pages. The prior take(limit)+complete:true pattern silently hid
         // every scene/object/review past the first page from native agents.
         let page = match query.scope.as_str() {
+            "creative-patches" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.patches.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.patches[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
+            "production-plan" => paginate_project_observation(
+                query,
+                &version,
+                usize::from(project.production_design.plan.is_some()),
+                |_| serde_json::to_value(&project.production_design.plan).unwrap_or(Value::Null),
+            )?,
+            "components" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.heroes.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.heroes[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
+            "native-capsules" => paginate_project_observation(
+                query,
+                &version,
+                project.production_design.capsules.len(),
+                |index| {
+                    serde_json::to_value(&project.production_design.capsules[index])
+                        .unwrap_or(Value::Null)
+                },
+            )?,
             "summary" => paginate_project_observation(query, &version, 1, |_| {
                 json!({
                     "id": project.id.to_string(),
                     "title": project.title,
+                    "project_schema": project.schema_version,
+                    "write_schema": motionwright_domain::PROJECT_SCHEMA_VERSION,
                     "state": project.state,
                     "revision": project.revision.to_string(),
                     "active_branch": project.active_branch.to_string(),
@@ -678,6 +715,12 @@ struct ApplyHandler {
 
 #[derive(Clone, Copy)]
 enum OperationKind {
+    UndoCreativePatch,
+    UpsertProductHero,
+    DetachProductHero,
+    SetProductionPlan,
+    UpsertNativeCapsule,
+    ApplyCreativePatch,
     RenameProject,
     SetBrief,
     SetNarrativePremise,
@@ -829,6 +872,46 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
     }
 
     match kind {
+        OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
+            patch_id: uuid(args, "patch_id")?,
+        }),
+        OperationKind::UpsertProductHero => Ok(Change::UpsertProductHero {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid ProductHeroReveal config"))?,
+        }),
+        OperationKind::DetachProductHero => Ok(Change::DetachProductHero {
+            instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
+            plan: serde_json::from_value(
+                args.get("plan")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("plan is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid ProductionPlan"))?,
+        }),
+        OperationKind::UpsertNativeCapsule => Ok(Change::UpsertNativeCapsule {
+            capsule: serde_json::from_value(
+                args.get("capsule")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("capsule is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid native source capsule"))?,
+        }),
+        OperationKind::ApplyCreativePatch => Ok(Change::ApplyCreativePatch {
+            patch: serde_json::from_value(
+                args.get("patch")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("patch is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid scoped creative patch"))?,
+        }),
         OperationKind::RenameProject => Ok(Change::RenameProject {
             title: string(args, "title", 200)?,
         }),
@@ -2072,6 +2155,72 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertProductHero,
+            descriptor(
+                "product-hero.upsert",
+                "Create or three-way update an editable ProductHeroReveal",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "instance_id": {"type": "string", "format": "uuid", "maxLength": 64}, "scene_id": {"type": "string", "format": "uuid", "maxLength": 64}, "config": {"type": "object", "properties": {"eyebrow": {"type": "string", "minLength": 1, "maxLength": 48}, "headline": {"type": "string", "minLength": 1, "maxLength": 64}, "body": {"type": "string", "minLength": 1, "maxLength": 150}, "wordmark": {"type": "string", "minLength": 1, "maxLength": 8}, "foreground": {"type": "string", "minLength": 1, "maxLength": 7}, "accent": {"type": "string", "minLength": 1, "maxLength": 7}, "motion": {"type": "boolean"}}, "required": ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], "additionalProperties": false}}),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProductHero,
+            descriptor(
+                "product-hero.detach",
+                "Detach component ownership without deleting authored nodes",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "instance_id": {"type": "string", "format": "uuid", "maxLength": 64}}),
+                    &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetProductionPlan,
+            descriptor(
+                "production-plan.set",
+                "Store or clear the revisioned narrative and evidence plan",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "plan": {"anyOf": [{"type": "null"}, {"type": "object"}]}}),
+                    &["ref", "plan"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertNativeCapsule,
+            descriptor(
+                "native-capsule.upsert",
+                "Preserve an immutable native source attachment",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "capsule": {"type": "object"}}),
+                    &["ref", "capsule"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ApplyCreativePatch,
+            descriptor(
+                "creative.patch.apply",
+                "Atomically apply a bounded scene-scoped patch against the observed revision",
+                schema(
+                    json!({"ref": {"type": "string", "maxLength": 512}, "patch": {"type": "object"}}),
+                    &["ref", "patch"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UndoCreativePatch,
+            descriptor(
+                "creative.patch.undo",
+                "Revert a stored scoped patch as a new revision, preserving compatible later edits",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},"patch_id":{"type":"string","format":"uuid","maxLength":64}}),
+                    &["ref", "patch_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetVisualLanguage,
             descriptor(
                 "visual-language.set",
@@ -2328,7 +2477,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.transcript.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
-        assert_eq!(capabilities.len(), 46);
+        assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
+        assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
+        assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
+        assert_eq!(capabilities.len(), 52);
     }
 
     #[tokio::test]

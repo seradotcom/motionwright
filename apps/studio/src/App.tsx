@@ -1,3 +1,4 @@
+import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import {
   Activity,
   AlignLeft,
@@ -94,6 +95,7 @@ type Workspace =
   | "Audio"
   | "Storyboard"
   | "Canvas"
+  | "Production"
   | "Timeline"
   | "Jobs"
   | "Workflows"
@@ -125,6 +127,7 @@ const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Audio", icon: AudioLines },
   { name: "Storyboard", icon: Columns3 },
   { name: "Canvas", icon: Box },
+  { name: "Production", icon: Layers3 },
   { name: "Timeline", icon: Film },
   { name: "Jobs", icon: Activity },
   { name: "Workflows", icon: Wand2 },
@@ -1917,7 +1920,7 @@ export default function App() {
     try {
       const next = await applyChange(boot.project, change);
       setBoot({ ...boot, project: next });
-      if (selectedSceneId && !next.scenes.some((scene) => scene.id === selectedSceneId)) {
+      if (!selectedSceneId || !next.scenes.some((scene) => scene.id === selectedSceneId)) {
         setSelectedSceneId(next.scenes[0]?.id ?? null);
       }
     } catch (reason) {
@@ -1987,6 +1990,8 @@ export default function App() {
         );
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
+      case "Production":
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
           playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
@@ -2108,7 +2113,8 @@ export default function App() {
         </div>
       )}
 
-      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "")}>
+      {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
+      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "") + (workspace === "Production" ? " production-layout" : "")}>
         <ProjectRail
           project={project}
           selectedSceneId={selectedSceneId}
@@ -2122,7 +2128,7 @@ export default function App() {
         <div className="center-stack">
           <div className="workspace-stage">{renderWorkspace()}</div>
         </div>
-        <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />
+        {workspace !== "Production" && <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />}
       </div>
 
       <Timeline

@@ -62,6 +62,33 @@ class NativeMediaProbeTests(unittest.TestCase):
             self.assertEqual((wav.getframerate(), wav.getnchannels(), wav.getnframes()),
                              (48_000, 2, 96_000))
 
+    def test_six_second_hero_stereo_source_and_portrait_profile(self):
+        six_seconds = Path(self.temp.name) / "hero-six-seconds.wav"
+        probe.write_two_channel_tone_wav(six_seconds, seconds=6.0)
+        with wave.open(str(six_seconds), "rb") as wav:
+            self.assertEqual(wav.getnframes(), 288_000)
+            measured = probe.inspect_decoded_audio(
+                wav.readframes(wav.getnframes()), expected_seconds=6.0,
+            )
+        self.assertEqual(measured["stereo_channel_identity"], "confirmed_distinct_source_tones")
+        metadata = real_metadata()
+        metadata["format"]["duration"] = "6.024"
+        metadata["streams"][0].update(
+            width=1080, height=1920, nb_read_frames="180",
+        )
+        reviewed = probe.inspect_streams(
+            metadata, expected_frames=180, expected_size=(1080, 1920),
+        )
+        self.assertEqual((reviewed["video_width"], reviewed["video_height"]), (1080, 1920))
+        self.assertEqual(reviewed["video_frames_decoded"], 180)
+        metadata["streams"][0]["nb_read_frames"] = "179"
+        with self.assertRaisesRegex(probe.MediaProbeError, "exactly 180"):
+            probe.inspect_streams(metadata, expected_frames=180, expected_size=(1080, 1920))
+        with self.assertRaisesRegex(probe.MediaProbeError, "pinned CI fixtures"):
+            probe.inspect_streams(metadata, expected_frames=179, expected_size=(1080, 1920))
+        with self.assertRaisesRegex(probe.MediaProbeError, "duration"):
+            probe.inspect_decoded_audio(self.pcm, expected_seconds=6.0)
+
     def test_swapped_channels_are_rejected(self):
         swapped = b"".join(struct.pack("<hh", r, l)
                            for l, r in struct.iter_unpack("<hh", self.pcm))

@@ -30,7 +30,16 @@ SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_BIN = ROOT / "target" / "debug" / "examples" / "native-render-e2e"
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
-EVIDENCE = ROOT / "verification" / "native-av-master-e2e" / GITHUB_SHA
+FIXTURE = os.environ.get("MOTIONWRIGHT_E2E_FIXTURE", "baseline")
+HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (1080, 1080)}
+if FIXTURE not in {"baseline", *HERO_ASPECTS}:
+    raise SystemExit("unknown bounded E2E fixture")
+IS_HERO = FIXTURE != "baseline"
+EXPECTED_FRAMES = 180 if IS_HERO else 60
+EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
+EVIDENCE = ROOT / "verification" / ("product-hero-e2e" if IS_HERO else "native-av-master-e2e") / GITHUB_SHA
+if IS_HERO:
+    EVIDENCE = EVIDENCE / FIXTURE
 
 
 def digest(path: Path) -> str:
@@ -148,8 +157,11 @@ def main() -> None:
         )
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if (seeded["width"], seeded["height"]) != (1920, 1080):
+        seed_command = [str(MW_BIN), "seed", str(database)]
+        if IS_HERO:
+            seed_command = [str(MW_BIN), "seed-hero", str(database), FIXTURE, str(EVIDENCE / "editable-project.json")]
+        seeded = run_json(seed_command, env=env)
+        if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
@@ -439,18 +451,30 @@ def main() -> None:
                 },
             )
 
-            result = run_json(
-                [
-                    str(MW_BIN),
-                    "render",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "motionwright-render-evidence.json"),
-                ],
-                env=env,
-                timeout=420,
-            )
-            if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
+            try:
+                result = run_json(
+                    [
+                        str(MW_BIN),
+                        "render",
+                        str(database),
+                        str(connection_path),
+                        str(EVIDENCE / "motionwright-render-evidence.json"),
+                    ],
+                    env=env,
+                    timeout=420,
+                )
+            except Exception:
+                if IS_HERO:
+                    # Failed native evidence is retained as explicitly unverified
+                    # diagnostic imagery, never promoted to a delivery receipt.
+                    candidates = list(paths["output"].glob("*/frames/*.png"))
+                    if len(candidates) <= 36000:
+                        for index, frame in enumerate(sorted(candidates)):
+                            if index in (0, 20, 44, 60, 179) and frame.is_file() and not frame.is_symlink() and frame.stat().st_size <= 16*1024*1024:
+                                if frame.resolve().is_relative_to(paths["output"].resolve()):
+                                    shutil.copyfile(frame, EVIDENCE / f"UNVERIFIED-native-frame-{index:06d}.png")
+                raise
+            if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 
             artifact = result["artifact"]
@@ -460,7 +484,7 @@ def main() -> None:
             artifact_root = paths["output"] / directory
             manifest_file = artifact_root / "artifact-manifest.json"
             frames = sorted((artifact_root / "frames").glob("*.png"))
-            if not manifest_file.is_file() or len(frames) != 60:
+            if not manifest_file.is_file() or len(frames) != EXPECTED_FRAMES:
                 raise AssertionError(
                     f"native artifact is incomplete: manifest={manifest_file.is_file()} "
                     f"frames={len(frames)}"
@@ -480,11 +504,16 @@ def main() -> None:
             ]:
                 shutil.copyfile(source, EVIDENCE / name)
 
+            if IS_HERO:
+                from creative_frame_evidence import inspect_native_frames
+                inspect_native_frames(frames, EVIDENCE, EXPECTED_SIZE, project=seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
+
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
-            # Distinct non-silent L440Hz/R660Hz tones are an actual decoded
-            # content test. A silent or channel-swapped AAC mux must not PASS.
-            write_two_channel_tone_wav(audio_path)
+            # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
+            # design. Use exact 2s baseline or 6s hero duration; the full
+            # native AV decode must check actual samples for both.
+            write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
 
@@ -516,11 +545,14 @@ def main() -> None:
                 raise AssertionError("AV master bytes do not match the reported artifact digest")
             shutil.copyfile(master_path, EVIDENCE / "motionwright-master.mp4")
 
-            # The canonical receipts/byte digests above prove source identity.
-            # An independent ffmpeg/ffprobe decode probes content: actual 60
-            # moving H.264 frames and separated non-silent stereo AAC tones.
-            # This uses CI-pinned command dependencies, never a product shell.
-            decoded = probe_native_mp4(master_path, audio_path, ffmpeg, ffprobe)
+            # Canonical receipts prove bytes; independent ffmpeg/ffprobe
+            # decodes the exact 60-frame baseline or 180-frame hero profile.
+            # Both require measured non-silent, distinct stereo channel tones
+            # and native pixel movement. No decoder runs in the shipped app.
+            decoded = probe_native_mp4(
+                master_path, audio_path, ffmpeg, ffprobe,
+                expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
+            )
             if decoded["master_sha256"] != master_sha256:
                 raise AssertionError("Decoded-media sample came from a different MP4 digest")
             if decoded["source_wav_sha256"] != audio_sha256:
@@ -545,6 +577,9 @@ def main() -> None:
                     "artifact_directory": directory,
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
+                    "fixture": FIXTURE,
+                    "creative_approval": "required" if IS_HERO else "not_assessed",
+                    "audio_kind": "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design",
                     "audio_sha256": audio_sha256,
                     "master_path": master_relative,
                     "master_sha256": master_sha256,

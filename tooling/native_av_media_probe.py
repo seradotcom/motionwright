@@ -25,7 +25,7 @@ HEIGHT = 1080
 AUDIO_RATE = 48_000
 EXPECTED_SECONDS = 2.0
 MAX_MP4_BYTES = 512 * 1024 * 1024
-MAX_DECODED_PCM_BYTES = 2 * 1024 * 1024  # 2s stereo s16le + bounded AAC tail
+MAX_DECODED_PCM_BYTES = 2 * 1024 * 1024  # up to 6s stereo s16le + bounded AAC tail
 FRAME_WIDTH = 160
 FRAME_HEIGHT = 90
 FRAMES_TO_COMPARE = (0, 30)
@@ -33,6 +33,8 @@ LEFT_TONE_HZ = 440
 RIGHT_TONE_HZ = 660
 VIDEO_DIFF_THRESHOLD = 17
 MIN_CHANGED_CHANNEL_BYTES = 85
+# Closed CI fixtures only: baseline 2s or one of the 6s ProductHero profiles.
+ALLOWED_PROFILES = {(60, 1920, 1080), (180, 1920, 1080), (180, 1080, 1920), (180, 1080, 1080)}
 
 
 class MediaProbeError(ValueError):
@@ -83,8 +85,12 @@ def _rate(value: object) -> tuple[int, int]:
     return n, den
 
 
-def inspect_streams(probed: dict) -> dict:
-    """Validate the actually decodable container/stream metadata."""
+def inspect_streams(probed: dict, *, expected_frames: int = FRAME_COUNT,
+                    expected_size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict:
+    """Validate the exact bounded native AV profile, never guess dimensions."""
+    _require((expected_frames, *expected_size) in ALLOWED_PROFILES,
+             "Native AV probe profile is not one of the pinned CI fixtures")
+    expected_seconds = expected_frames / FPS_NUM
     _require(isinstance(probed, dict), "FFprobe result must be JSON")
     streams = probed.get("streams")
     _require(isinstance(streams, list), "FFprobe did not report streams")
@@ -93,11 +99,12 @@ def inspect_streams(probed: dict) -> dict:
     _require(len(video) == 1 and len(audio) == 1, "Native MP4 must contain exactly one video and audio stream")
     v, a = video[0], audio[0]
     _require(v.get("codec_name") == "h264", "Native AV video is not decoded as H.264")
-    _require((v.get("width"), v.get("height")) == (WIDTH, HEIGHT), "Decoded master dimensions differ from the 1920x1080 profile")
+    _require((v.get("width"), v.get("height")) == expected_size,
+             f"Decoded master dimensions differ from the {expected_size[0]}x{expected_size[1]} profile")
     _require(_rate(v.get("avg_frame_rate")) == (FPS_NUM, FPS_DEN), "Decoded master frame rate differs from the native profile")
     observed_frames = str(v.get("nb_read_frames", ""))
-    _require(observed_frames.isdecimal() and int(observed_frames) == FRAME_COUNT,
-             "Decoded MP4 video does not contain exactly 60 frames")
+    _require(observed_frames.isdecimal() and int(observed_frames) == expected_frames,
+             f"Decoded MP4 video does not contain exactly {expected_frames} frames")
     _require(a.get("codec_name") == "aac", "Native AV audio is not decoded as AAC")
     _require(str(a.get("sample_rate")) == str(AUDIO_RATE), "Decoded AAC sample rate is not 48000 Hz")
     _require(str(a.get("channels", "")) == "2", "Decoded AAC is not stereo")
@@ -105,14 +112,14 @@ def inspect_streams(probed: dict) -> dict:
         duration = float(probed["format"]["duration"])
     except (ValueError, TypeError, KeyError) as error:
         raise MediaProbeError("Native MP4 has no measured duration") from error
-    _require(math.isfinite(duration) and abs(duration - EXPECTED_SECONDS) <= 0.09,
-             "Native MP4 duration is not consistent with its 60-frame editorial cut")
+    _require(math.isfinite(duration) and abs(duration - expected_seconds) <= 0.09,
+             f"Native MP4 duration is not consistent with its {expected_frames}-frame editorial cut")
     return {
         "container_seconds": duration,
         "video_codec": "h264",
-        "video_frames_decoded": FRAME_COUNT,
-        "video_width": WIDTH,
-        "video_height": HEIGHT,
+        "video_frames_decoded": expected_frames,
+        "video_width": expected_size[0],
+        "video_height": expected_size[1],
         "video_fps": "30/1",
         "audio_codec": "aac",
         "audio_sample_rate": AUDIO_RATE,
@@ -137,12 +144,14 @@ def _harmonic_amplitude(samples: list[int], frequency: int) -> float:
     return 2.0 * math.hypot(sine, cosine) / count
 
 
-def inspect_decoded_audio(pcm: bytes) -> dict:
-    """Prove meaningful separate L440Hz/R660Hz PCM, not just an AAC header."""
+def inspect_decoded_audio(pcm: bytes, *, expected_seconds: float = EXPECTED_SECONDS) -> dict:
+    """Prove actual L440Hz/R660Hz content and exact bounded source duration."""
+    _require(expected_seconds in (2.0, 6.0), "Audio probe supports only pinned 2s or 6s fixtures")
     _require(len(pcm) % 4 == 0, "Decoded stereo s16le PCM has a partial sample")
     frames = len(pcm) // 4
-    _require(93_600 <= frames <= 100_800,
-             "Decoded 48k AAC duration differs materially from the 2-second voice source")
+    expected_samples = int(expected_seconds * AUDIO_RATE)
+    _require(expected_samples - 2_400 <= frames <= expected_samples + 4_800,
+             "Decoded 48k AAC duration differs materially from the voice source")
     import struct
 
     left: list[int] = []
@@ -191,11 +200,12 @@ def inspect_decoded_video(pixels: bytes) -> dict:
     }
 
 
-def write_two_channel_tone_wav(destination: Path) -> None:
-    """Create deterministic non-silent 2s/48k stereo source, with distinct channels."""
+def write_two_channel_tone_wav(destination: Path, *, seconds: float = EXPECTED_SECONDS) -> None:
+    """Create deterministic, distinct-channel 2s/6s stereo fixture (not sound design)."""
+    _require(seconds in (2.0, 6.0), "Only the pinned native AV test durations are supported")
     import struct
 
-    sample_count = int(EXPECTED_SECONDS * AUDIO_RATE)
+    sample_count = int(seconds * AUDIO_RATE)
     frames = bytearray()
     for index in range(sample_count):
         taper = min(1.0, index / 960, (sample_count - 1 - index) / 960)
@@ -207,7 +217,7 @@ def write_two_channel_tone_wav(destination: Path) -> None:
         wav.setsampwidth(2)
         wav.setframerate(AUDIO_RATE)
         wav.writeframes(frames)
-    verify_generated_tone_wav(destination)
+    verify_generated_tone_wav(destination, seconds=seconds)
 
 
 def hash_file(path: Path) -> str:
@@ -219,21 +229,28 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_generated_tone_wav(source: Path) -> None:
-    """Fail if the authored test WAV itself is silent/mono/wrong duration."""
+def verify_generated_tone_wav(source: Path, *, seconds: float = EXPECTED_SECONDS) -> None:
+    """Fail if the authored test WAV is silent, mono, or has a wrong duration."""
+    _require(seconds in (2.0, 6.0), "Unsupported pinned native WAV duration")
     with wave.open(str(source), "rb") as audio:
         _require(audio.getnchannels() == 2 and audio.getsampwidth() == 2
-                 and audio.getframerate() == AUDIO_RATE and audio.getnframes() == 96_000,
-                 "Generated source WAV is not exact 2s/48k/stereo/s16le")
-        observed = inspect_decoded_audio(audio.readframes(audio.getnframes()))
+                 and audio.getframerate() == AUDIO_RATE
+                 and audio.getnframes() == int(AUDIO_RATE * seconds),
+                 f"Generated source WAV is not exact {seconds:g}s/48k/stereo/s16le")
+        observed = inspect_decoded_audio(audio.readframes(audio.getnframes()), expected_seconds=seconds)
     _require(observed["stereo_channel_identity"] == "confirmed_distinct_source_tones",
              "Generated source WAV has wrong stereo tone mapping")
 
 
-def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path) -> dict:
+def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path,
+                     *, expected_frames: int = FRAME_COUNT,
+                     expected_size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict:
+    _require((expected_frames, *expected_size) in ALLOWED_PROFILES,
+             "Native AV probe profile is outside the fixed CI fixtures")
+    seconds = expected_frames / FPS_NUM
     _require(master.is_file() and not master.is_symlink(), "Native master is not a regular MP4 file")
     _require(1024 < master.stat().st_size <= MAX_MP4_BYTES, "Native master is missing or exceeds the bounded media budget")
-    verify_generated_tone_wav(source_wav)
+    verify_generated_tone_wav(source_wav, seconds=seconds)
 
     metadata = _run_decoder([
         str(ffprobe), "-v", "error", "-count_frames", "-show_entries",
@@ -244,13 +261,14 @@ def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path
         json_data = json.loads(metadata)
     except json.JSONDecodeError as error:
         raise MediaProbeError("FFprobe did not return structured video/audio metadata") from error
-    stream_report = inspect_streams(json_data)
+    stream_report = inspect_streams(json_data, expected_frames=expected_frames,
+                                    expected_size=expected_size)
     pcm = _run_decoder([
         str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
         "-i", str(master), "-map", "0:a:0", "-ac", "2", "-ar", str(AUDIO_RATE),
         "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
     ], max_bytes=MAX_DECODED_PCM_BYTES)
-    audio_report = inspect_decoded_audio(pcm)
+    audio_report = inspect_decoded_audio(pcm, expected_seconds=seconds)
     pixels = _run_decoder([
         str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
         "-i", str(master), "-map", "0:v:0",
@@ -259,7 +277,8 @@ def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path
     ], max_bytes=2 * FRAME_WIDTH * FRAME_HEIGHT * 3)
     video_report = inspect_decoded_video(pixels)
     return {
-        "evidence_scope": "actual_decoded_h264_aac_two_second_fixture_only",
+        "evidence_scope": ("actual_decoded_h264_aac_two_second_fixture_only"
+                           if expected_frames == 60 else "actual_decoded_h264_aac_six_second_hero_fixture"),
         "source_wav_sha256": hash_file(source_wav),
         "master_sha256": hash_file(master),
         **stream_report,

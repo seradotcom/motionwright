@@ -25,6 +25,10 @@ jobs:
         run: python3 tooling/source_policy.py
       - name: Verify acceptance ledger invariants
         run: python3 tooling/acceptance_policy.py
+      - name: Verify creative expansion traceability without promoting acceptance
+        run: |
+          python3 tooling/creative_status_policy.py
+          python3 -m unittest discover -s tooling/tests -p 'test_creative_status_policy.py' -v
       - name: Exercise independent acceptance evidence intake guardrails
         run: python3 -m unittest discover -s tooling/tests -p 'test_acceptance_session.py' -v
       - name: Reject silent, swapped or static decoded native AV fixtures

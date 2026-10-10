@@ -1,3 +1,6 @@
+import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
+import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
+import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
 import type {
@@ -74,6 +77,7 @@ function captureBranchState(project: Project): BranchState {
     visual_language: project.visual_language,
     proposal_sets: project.proposal_sets,
     model_invocations: project.model_invocations,
+    production_design: project.production_design ?? emptyProductionDesign(),
   });
 }
 
@@ -88,6 +92,7 @@ function restoreBranchState(project: Project, state: BranchState) {
   project.visual_language = structuredClone(state.visual_language);
   project.proposal_sets = structuredClone(state.proposal_sets);
   project.model_invocations = structuredClone(state.model_invocations);
+  project.production_design = structuredClone(state.production_design ?? emptyProductionDesign());
 }
 
 function saveActiveWorkspace(project: Project) {
@@ -114,7 +119,7 @@ function branchStateEqual(left: unknown, right: unknown) {
 function mergeBranchState(base: BranchState, target: BranchState, source: BranchState): BranchState {
   const fields: Array<keyof BranchState> = [
     "scenes", "markers", "locks", "deliverables", "brief", "narrative",
-    "audio", "visual_language", "proposal_sets", "model_invocations",
+    "audio", "visual_language", "proposal_sets", "model_invocations", "production_design",
   ];
   const result = structuredClone(target);
   const conflicts: string[] = [];
@@ -833,11 +838,40 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     });
   }
 
+  return simulateChange(project, change, requestId, true);
+}
+
+async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
+  if (![1,2].includes(project.schema_version)) throw new Error("Unsupported project schema.");
+  if (project.schema_version===1 && (!sameValue({...emptyProductionDesign(),...project.production_design},emptyProductionDesign()) || project.branch_workspaces.some(workspace=>!sameValue({...emptyProductionDesign(),...workspace.base_state.production_design},emptyProductionDesign()) || !sameValue({...emptyProductionDesign(),...workspace.current_state.production_design},emptyProductionDesign())))) throw new Error("Creative production state requires project schema 2.");
   const next = structuredClone(project);
+  next.schema_version = 2;
   next.branch_workspaces ??= [];
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "upsert_product_hero":
+    case "detach_product_hero":
+    case "set_production_plan":
+    case "upsert_native_capsule":
+      await applyProductionDesignChange(next, change);
+      break;
+    case "undo_creative_patch": {
+      const preview=previewCreativePatchUndo(next,change.patch_id);
+      appendCreativePatchRecord(next,preview,"Revert creative patch "+change.patch_id,change.patch_id);
+      const scene=next.scenes.find(s=>s.id===preview.scene_id)!;
+      for(const updated of preview.after) scene.nodes[scene.nodes.findIndex(n=>n.id===updated.id)]=updated;
+      scene.status="draft";
+      break;
+    }
+    case "apply_creative_patch": {
+      const preview = await previewCreativePatch(next, change.patch);
+      appendCreativePatchRecord(next,preview,change.patch.rationale,null);
+      const scene = next.scenes.find(s => s.id === change.patch.scene_id)!;
+      for (const updated of preview.after) scene.nodes[scene.nodes.findIndex(n => n.id === updated.id)] = updated;
+      scene.status = "draft";
+      break;
+    }
     case "rename_project":
       assertUnlocked(next, projectResource(next), ["content"]);
       next.title = change.title;
@@ -1714,11 +1748,40 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
   }
 
   next.updated_at = new Date().toISOString();
-  browserEvents.push({
-    revision: next.revision,
-    change: structuredClone(change),
-    created_at: next.updated_at,
-  });
-  browserState.project = structuredClone(next);
+  if (record) {
+    browserEvents.push({ revision: next.revision, change: structuredClone(change), created_at: next.updated_at });
+    browserState.project = structuredClone(next);
+  }
   return next;
+}
+
+function scopedEditChange(scene_id: string, edit: ScopedCanvasEdit): Change {
+  switch (edit.kind) {
+    case "text": return { type:"update_canvas_text", scene_id, node_id:edit.node_id, text:edit.text };
+    case "style": return { type:"update_canvas_style", scene_id, node_id:edit.node_id, style:edit.style };
+    case "transform": return { type:"transform_canvas_node", scene_id, node_id:edit.node_id, transform:edit.transform };
+    case "keyframe": return { type:"set_canvas_keyframe", scene_id, node_id:edit.node_id, keyframe:edit.keyframe };
+  }
+}
+
+/** Pure editorial A/B: no journal writes, persistence or renderer evidence. */
+export async function previewCreativePatch(project: Project, patch: CreativePatch) {
+  assertUnlocked(project, projectResource(project), ["content","style","position","timing"]);
+  if (patch.base_revision !== project.revision || !patch.rationale.trim() || new TextEncoder().encode(patch.rationale).length > 4000
+    || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(patch.rationale) || !patch.edits.length || patch.edits.length > 128) throw new Error("Creative patch is stale or outside its bounded scope.");
+  const source = project.scenes.find(s => s.id === patch.scene_id);
+  const ids = new Set(patch.edits.map(edit => edit.node_id));
+  if (!source || [...ids].some(id => !source.nodes.some(n => n.id === id))) throw new Error("Patch target is outside the selected scene.");
+  let candidate = structuredClone(project);
+  for (const edit of patch.edits) candidate = await simulateChange(candidate, scopedEditChange(patch.scene_id,edit), "editorial-preview", false);
+  const after = candidate.scenes.find(s => s.id === patch.scene_id)!;
+  let num = BigInt(source.start.num)*BigInt(source.duration.den)+BigInt(source.duration.num)*BigInt(source.start.den);
+  let den = BigInt(source.start.den)*BigInt(source.duration.den);
+  let a = num < 0n ? -num : num, b = den;
+  while (b !== 0n) { const r = a%b; a=b; b=r; }
+  num /= a || 1n; den /= a || 1n;
+  return { source_revision:project.revision, scene_id:source.id,
+    before:source.nodes.filter(n => ids.has(n.id)), after:after.nodes.filter(n => ids.has(n.id)),
+    dirty_start:source.start, dirty_end:{num:String(num),den:String(den)},
+    kind:"semantic_diff_full_scene_invalidation_not_pixel_verification" as const };
 }
