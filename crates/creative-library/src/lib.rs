@@ -3,6 +3,7 @@
 mod catalog;
 mod clock;
 mod data;
+mod distillation;
 mod fidelity;
 mod instance;
 mod procedural;
@@ -16,6 +17,7 @@ mod wav;
 pub use catalog::*;
 pub use clock::*;
 pub use data::*;
+pub use distillation::*;
 pub use fidelity::*;
 pub use instance::*;
 pub use motionwright_hyperframes_profile as native;

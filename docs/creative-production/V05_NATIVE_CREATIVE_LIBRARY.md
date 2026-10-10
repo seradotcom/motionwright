@@ -300,9 +300,9 @@ gates or modify runtime grants. Release review still requires the
 `docs/creative-production/V05_DELTA_REQUIREMENTS.json` preserves the
 **64 numbered additions/deepening tasks and 16 epics** from the supplied
 v0.5 SRS delta, but never treats source presence as release acceptance.
-The isolated branch inventory currently records 29 **PARTIAL code
+The isolated branch inventory currently records 30 **PARTIAL code
 candidates**, 1 **BLOCKED** canonical Broker/HyperFrames integration,
-and 34 **NOT_VERIFIED** requirements. These are conservative per-ID
+and 33 **NOT_VERIFIED** requirements. These are conservative per-ID
 bookkeeping states, not completion percentages, and do not replace the
 required reconciliation against the **208 original product IDs and 60
 acceptance tests** assigned to the legacy-product workstream. All 64
@@ -310,3 +310,21 @@ retain `release_acceptance: NOT_CLOSED` and
 `human_review: NOT_PERFORMED` until a same-SHA acceptance record is
 linked. The Python contract tests reject any absent source path or
 implicit promotion from a Rust file to an approved product claim.
+
+
+## Distillation: positive+negative evidence does not create install trust
+
+`crates/creative-library/src/distillation.rs` now provides a *source-only*
+`DistillationDraft` and `experiment_source_variants` contract to start
+`MW05-E05-04`. The draft requires at least two independently digest-bound
+positive and two negative example studies (maximum 32), owner-attested rights
+for every source, explicit strengths/failures and an unchanged Brand/Taste/
+ComponentRequest fingerprint. The experiment produces nine distinct typed
+sources (16:9, 9:16, 1:1 by English/Spanish/German), rejects duplicated
+instance identities, unreviewed template edits and silently reshaped
+formats, and reports each original source SHA without claiming renderer
+execution. Its result explicitly records `NOT_PERFORMED` pixel verification,
+`NOT_REVIEWED` human quality, and `NOT_REQUESTED` owner installation.
+It cannot install a plugin, execute imported source code, promote a recipe
+or grant an agent rights. A future owner-verified disposable-code admission
+procedure is still required for `MW05-E13-02` and is **NOT VERIFIED**.
