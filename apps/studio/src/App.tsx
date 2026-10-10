@@ -1,3 +1,5 @@
+import CommandPalette, { type EditorCommand } from "./CommandPalette";
+import { isPaletteShortcut } from "./editorCommandSearch";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import {
   Activity,
@@ -1763,6 +1765,7 @@ function Timeline({
 export default function App() {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -1884,6 +1887,13 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isPaletteShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        setPaletteOpen((open) => !open);
+        return;
+      }
+      if (paletteOpen || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (
         target &&
@@ -1911,7 +1921,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [stepFrame]);
+  }, [stepFrame, paletteOpen]);
 
   const commit = useCallback(async (change: Change) => {
     if (!boot || busy) return;
@@ -2056,6 +2066,62 @@ export default function App() {
     }
   };
 
+  // These commands only navigate or control the editorial view. They never
+  // bypass Studio's CAS, approval, Native SDK or export permissions.
+  const editorCommands: EditorCommand[] = [
+    ...workspaces.map(({ name, icon }) => ({
+      id: "workspace-" + name.toLowerCase(),
+      group: "Navigate",
+      label: "Go to " + name,
+      description: name + " workspace · view only",
+      keywords: name.toLowerCase() + " open page switch",
+      icon,
+      run: () => setWorkspace(name),
+    })),
+    {
+      id: "transport-toggle", group: "Transport",
+      label: playing ? "Pause design preview" : "Play design preview",
+      description: "Local editorial transport · no render or project edit",
+      keywords: "play pause space video",
+      shortcut: "Space",
+      disabled: project.scenes.length === 0,
+      icon: playing ? Pause : Play,
+      run: () => setPlaying((current) => !current),
+    },
+    {
+      id: "transport-back", group: "Transport", label: "Step back one frame",
+      description: "Move shared playhead to the previous frame",
+      keywords: "left previous frame seek",
+      shortcut: "←", icon: SkipBack,
+      disabled: project.scenes.length === 0,
+      run: () => stepFrame(-1),
+    },
+    {
+      id: "transport-forward", group: "Transport", label: "Step forward one frame",
+      description: "Move shared playhead to the next frame",
+      keywords: "right next frame seek",
+      shortcut: "→", icon: SkipForward,
+      disabled: project.scenes.length === 0,
+      run: () => stepFrame(1),
+    },
+    {
+      id: "view-theme", group: "View",
+      label: theme === "dark" ? "Use light theme" : "Use dark theme",
+      description: "Editor appearance · project revision unchanged",
+      keywords: "dark light color appearance",
+      icon: theme === "dark" ? Sun : Moon,
+      run: () => setTheme((current) => current === "dark" ? "light" : "dark"),
+    },
+    {
+      id: "view-rail", group: "View",
+      label: railCollapsed ? "Show project rail" : "Hide project rail",
+      description: "Adjust editing space · project revision unchanged",
+      keywords: "sidebar asset rail collapse show hide",
+      icon: PanelLeftClose,
+      run: () => setRailCollapsed((current) => !current),
+    },
+  ];
+
   return (
     <main className="app-shell">
       <header className="command-bar">
@@ -2081,6 +2147,12 @@ export default function App() {
           <span className="sdk-chip" title={boot.native_sdk.pinned_revision}>
             Native SDK · {boot.native_sdk.mode === "tauri" ? "connected" : "browser demo"}
           </span>
+          <button type="button" className="quick-command-trigger" aria-label="Open command palette"
+            title="Search workspaces and editor actions" onClick={() => setPaletteOpen(true)}>
+            <Search size={15} aria-hidden="true" />
+            <span className="quick-command-label">Commands</span>
+            <kbd>⌘ / Ctrl K</kbd>
+          </button>
           <IconButton label={theme === "dark" ? "Use light theme" : "Use dark theme"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </IconButton>
@@ -2089,6 +2161,8 @@ export default function App() {
           </IconButton>
         </div>
       </header>
+
+      {paletteOpen && <CommandPalette commands={editorCommands} onClose={() => setPaletteOpen(false)} />}
 
       <nav className="workspace-bar" aria-label="Workspaces">
         {workspaces.map(({ name, icon: Icon }) => (
