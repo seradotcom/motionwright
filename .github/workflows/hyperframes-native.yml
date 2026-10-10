@@ -47,6 +47,35 @@ jobs:
           cargo test --locked -p motionwright-creative-library --all-targets
           cargo clippy --locked -p motionwright-creative-library --all-targets -- -D warnings
 
+  sealed-browser-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: runtime/hyperframes/package-lock.json
+      - name: Verify exact built-in Playwright browser sizes against sealed Host limit
+        run: |
+          set -euo pipefail
+          cd runtime/hyperframes
+          npm ci --ignore-scripts --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" npx playwright install chromium
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" node prepare-runtime.mjs
+          cd ../..
+          node tooling/hyperframes/sealed_browser_probe.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: exact-browser-sealed-tool-admission-${{ github.sha }}
+          path: verification/browser-tool-profile/
+          if-no-files-found: warn
+          retention-days: 7
+
   native-blender-stage-preview:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -99,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
           cargo build --locked -p motionwright-creative-library --example original_sound_fixture
           python3 tooling/hyperframes/original_sound_e2e.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

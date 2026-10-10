@@ -9,7 +9,7 @@ FIXTURE=ROOT/'target/debug/examples/native_catalog_fixture'
 BUILDER=ROOT/'runtime/blender-stage/fixed_render.py'
 INSPECT=ROOT/'runtime/blender-stage/inspect_scene.py'
 FULL=ROOT/'runtime/blender-stage/render_clip.py'
-RECIPES=('device-stage','arc-reveal','dolly-focus')
+RECIPES=('device-stage','arc-reveal','dolly-focus','detail-return','group-reframe')
 def digest(path:Path)->str:
  with path.open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
 def command(args:list[str],log:Path,timeout:int=360)->bytes:
@@ -101,7 +101,7 @@ def main()->None:
  sheet.save(output/'stage-review-strip.png')
  receipt={'schema':'motionwright.blender-stage-direct-native-e2e/1',
           'motionwright_sha':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-          'native_blender_version':version,'native_editable_stages':'PASS','coverage':'three_sampled_stages_plus_one_90_frame_review_clip',
+          'native_blender_version':version,'native_editable_stages':'PASS','coverage':'five_sampled_stages_plus_one_90_frame_review_clip',
           'human_art_direction_review':'required','camera_motion_truth':'verified_through_native_blend_and_pixels',
           'rows':summaries}
  (output/'result.json').write_text(json.dumps(receipt,indent=2)+'\n')
