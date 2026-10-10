@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             duration_seconds: 1,
         })?;
     }
-    let asset_id = Uuid::from_u128(0xfeed_51);
+    let asset_id = Uuid::from_u128(0x00fe_ed51);
     project.assets.push(Asset {
         id: asset_id,
         name: "First-party original H.264 test video".into(),
