@@ -65,7 +65,7 @@ fn stable_identity_seeded_coordinates_and_canvas_wire_shape() {
         realize_procedural_field(instance_id(), &config).unwrap()
     );
     assert!(nodes.iter().all(|node| node.kind == "rectangle"
-        && node.opacity == 0.85
+        && node.opacity == 1.0
         && node.coordinate_space == CoordinateSpace::ProjectPixels
         && node.style.fill.as_deref() == Some("#A5C8DF")
         && node.keyframes.is_empty()));
@@ -177,7 +177,7 @@ fn shrink_refuses_to_remove_modified_or_deleted_nodes() {
             width: 32.0,
             height: 32.0,
             rotation_deg: 0.0,
-            opacity: 0.85,
+            opacity: 1.0,
         },
     })
     .unwrap();
@@ -234,15 +234,19 @@ fn ordered_frame_reveals_are_editable_and_half_open_scene_bounded() {
     };
     let nodes = realize_procedural_field(instance_id(), &sequence).unwrap();
     assert_eq!(nodes.len(), 5);
-    assert_eq!(nodes[0].keyframes.len(), 2);
+    assert_eq!(nodes[0].keyframes.len(), 4);
     assert_eq!(nodes[0].keyframes[0].at, RationalTime::ZERO);
     assert_eq!(nodes[0].keyframes[1].at, RationalTime::new(2, 5).unwrap());
-    assert_eq!(nodes[1].keyframes.len(), 3);
+    assert_eq!(nodes[0].keyframes[2].at, RationalTime::ZERO);
+    assert_eq!(nodes[0].keyframes[3].at, RationalTime::new(2, 5).unwrap());
+    assert_eq!(nodes[1].keyframes.len(), 6);
     assert_eq!(nodes[1].keyframes[1].at, RationalTime::new(1, 10).unwrap());
     assert_eq!(nodes[1].keyframes[2].at, RationalTime::new(1, 2).unwrap());
+    assert_eq!(nodes[1].keyframes[4].at, RationalTime::new(1, 10).unwrap());
+    assert_eq!(nodes[1].keyframes[5].value, 1.0);
     assert_eq!(
-        nodes[1].keyframes[2].interpolation,
-        MotionInterpolation::Linear
+        nodes[1].keyframes[5].interpolation,
+        MotionInterpolation::EaseOutCubic
     );
     upsert(&mut p, sequence).unwrap();
     assert_eq!(p.scenes[0].nodes.len(), 5);

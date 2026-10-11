@@ -718,6 +718,8 @@ enum OperationKind {
     UndoCreativePatch,
     UpsertProductHero,
     DetachProductHero,
+    UpsertProceduralField,
+    DetachProceduralField,
     SetProductionPlan,
     UpsertNativeCapsule,
     ApplyCreativePatch,
@@ -886,6 +888,19 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             .map_err(|_| Error::invalid("invalid ProductHeroReveal config"))?,
         }),
         OperationKind::DetachProductHero => Ok(Change::DetachProductHero {
+            instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid procedural field config"))?,
+        }),
+        OperationKind::DetachProceduralField => Ok(Change::DetachProceduralField {
             instance_id: uuid(args, "instance_id")?,
         }),
         OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
@@ -2177,6 +2192,54 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertProceduralField,
+            descriptor(
+                "procedural-field.upsert",
+                "Create or revise a bounded, deterministically seeded editable Canvas field via project CAS",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64},
+                        "scene_id":{"type":"string","format":"uuid","maxLength":64},
+                        "config":{
+                            "type":"object",
+                            "properties":{
+                                "seed":{"type":"integer","minimum":0,"maximum":4294967295u64},
+                                "count":{"type":"integer","minimum":1,"maximum":64},
+                                "columns":{"type":"integer","minimum":1,"maximum":16},
+                                "distribution":{"type":"string","enum":["grid","staggered","scatter"]},
+                                "origin_x":{"type":"integer","minimum":0,"maximum":1920},
+                                "origin_y":{"type":"integer","minimum":0,"maximum":1080},
+                                "area_width":{"type":"integer","minimum":0,"maximum":1920},
+                                "area_height":{"type":"integer","minimum":0,"maximum":1080},
+                                "size":{"type":"integer","minimum":4,"maximum":128},
+                                "opacity_percent":{"type":"integer","minimum":1,"maximum":100},
+                                "fill":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "reveal_step_frames":{"type":"integer","minimum":0,"maximum":10},
+                                "reveal_duration_frames":{"type":"integer","minimum":1,"maximum":60}
+                            },
+                            "required":["seed","count","columns","distribution","origin_x","origin_y",
+                                "area_width","area_height","size","opacity_percent","fill"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProceduralField,
+            descriptor(
+                "procedural-field.detach",
+                "Detach an editable generator without deleting its authored Canvas objects",
+                schema(json!({
+                    "ref":{"type":"string","maxLength":512},
+                    "instance_id":{"type":"string","format":"uuid","maxLength":64}
+                })),
+                &["ref", "instance_id"],
+            ),
+        ),
+        (
             OperationKind::SetProductionPlan,
             descriptor(
                 "production-plan.set",
@@ -2478,9 +2541,43 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
+        assert!(names.contains(&"driver.motionwright.procedural-field.upsert"));
+        assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
-        assert_eq!(capabilities.len(), 52);
+        assert_eq!(capabilities.len(), 54);
+    }
+
+    #[test]
+    fn procedural_sdk_arguments_are_typed_and_reject_opaque_extensions() {
+        let id = Uuid::new_v4();
+        let scene = Uuid::new_v4();
+        let mut arguments = json!({
+            "ref":"project:scope-from-native-sdk",
+            "instance_id": id.to_string(),
+            "scene_id": scene.to_string(),
+            "config": {
+                "seed":41,"count":12,"columns":4,"distribution":"scatter",
+                "origin_x":180,"origin_y":170,"area_width":900,"area_height":560,
+                "size":32,"opacity_percent":100,"fill":"#A5C8DF",
+                "reveal_step_frames":3,"reveal_duration_frames":12
+            }
+        });
+        assert!(matches!(
+            change_from_args(OperationKind::UpsertProceduralField, &arguments).unwrap(),
+            Change::UpsertProceduralField { .. }
+        ));
+        let config = arguments["config"].as_object_mut().unwrap();
+        config.insert("arbitrary_code".into(), json!("untrusted expression"));
+        assert!(change_from_args(OperationKind::UpsertProceduralField, &arguments).is_err());
+        assert!(matches!(
+            change_from_args(
+                OperationKind::DetachProceduralField,
+                &json!({"ref":"project:test","instance_id":id.to_string()})
+            )
+            .unwrap(),
+            Change::DetachProceduralField { .. }
+        ));
     }
 
     #[tokio::test]

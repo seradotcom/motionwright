@@ -31,7 +31,7 @@ describe("procedural fields / deterministic Canvas generation",()=>{
     expect(nodes[11].id).toBe("3bea5c37-80c3-819f-8bf9-b6d8a54f88c2");
     expect(nodes[0].id).toBe(await proceduralNodeId(ID,0));
     expect(nodes.every(n=>n.kind==="rectangle"&&n.style.fill==="#A5C8DF"
-      &&n.opacity===.85 &&n.keyframes.length===0)).toBe(true);
+      &&n.opacity===1 &&n.keyframes.length===0)).toBe(true);
     const grid=await realizeProceduralField(ID,{...defaultProceduralConfig(),distribution:"grid"});
     expect(grid.map(n=>n.id)).toEqual(nodes.map(n=>n.id));
     expect(grid[0].x).not.toBe(nodes[0].x);
@@ -91,12 +91,15 @@ describe("procedural 30fps entrance sequencing",()=>{
     const config={...defaultProceduralConfig(),count:5,
       reveal_step_frames:3,reveal_duration_frames:12};
     const nodes=await realizeProceduralField(ID,config);
-    expect(nodes[0].keyframes.map(k=>k.at)).toEqual([{num:"0",den:"1"},{num:"2",den:"5"}]);
-    expect(nodes[1].keyframes.map(k=>k.at)).toEqual([
+    expect(nodes[0].keyframes.filter(k=>k.property==="opacity").map(k=>k.at)).toEqual([{num:"0",den:"1"},{num:"2",den:"5"}]);
+    expect(nodes[1].keyframes.filter(k=>k.property==="opacity").map(k=>k.at)).toEqual([
       {num:"0",den:"1"},{num:"1",den:"10"},{num:"1",den:"2"},
     ]);
-    expect(nodes[1].keyframes.at(-1)?.interpolation).toBe("linear");
-    expect(nodes[4].keyframes.at(-1)?.value).toBe(.85);
+    expect(nodes[1].keyframes.filter(k=>k.property==="y").map(k=>k.at)).toEqual([
+      {num:"0",den:"1"},{num:"1",den:"10"},{num:"1",den:"2"},
+    ]);
+    expect(nodes[1].keyframes.at(-1)?.interpolation).toBe("ease_out_cubic");
+    expect(nodes[4].keyframes.at(-1)?.value).toBe(1);
     let p=await upsert(project(),config);
     expect(p.scenes[0].nodes[1].keyframes).toEqual(nodes[1].keyframes);
     const prior=structuredClone(p);

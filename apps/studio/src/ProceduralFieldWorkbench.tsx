@@ -17,7 +17,7 @@ const dimensions=[
   ["area_width","Field width",1,1920],
   ["area_height","Field height",1,1080],
   ["size","Square size",4,128],
-  ["opacity_percent","Opacity (%)",1,100],
+  ["opacity_percent","Opacity (%) · Native Film requires 100",1,100],
   ["reveal_step_frames","Entrance interval (frames; 0 disables)",0,10],
   ["reveal_duration_frames","Entrance fade length (frames)",1,60],
 ] as const;

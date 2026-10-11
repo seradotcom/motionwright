@@ -17,7 +17,7 @@ export interface ProceduralFieldInstance {
 export const defaultProceduralConfig=():ProceduralConfig=>({
   seed:41,count:12,columns:4,distribution:"scatter",
   origin_x:180,origin_y:170,area_width:900,area_height:560,
-  size:32,opacity_percent:85,fill:"#A5C8DF",
+  size:32,opacity_percent:100,fill:"#A5C8DF",
   reveal_step_frames:0,reveal_duration_frames:12,
 });
 const hex=/^#[0-9a-f]{6}$/i;
@@ -33,6 +33,7 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
     c.count<1 || c.count>64 || c.columns<1 || c.columns>16 ||
     c.origin_x<0 || c.origin_y<0 || c.area_width<1 || c.area_height<1 ||
     c.size<4 || c.size>128 || c.opacity_percent<1 || c.opacity_percent>100 ||
+    (c.reveal_step_frames>0 && c.opacity_percent!==100) ||
     c.reveal_step_frames<0 || c.reveal_step_frames>10 || c.reveal_duration_frames<1 || c.reveal_duration_frames>60 ||
     !hex.test(c.fill) || !["grid","staggered","scatter"].includes(c.distribution)) {
     throw new Error("Procedural item, style or CPU budget exceeded.");
@@ -88,19 +89,24 @@ export async function realizeProceduralField(id:string,input:ProceduralConfig):P
       dx=proceduralHash(c.seed,index,0x71a5029b)%(freeX+1);
       dy=proceduralHash(c.seed,index,0xda39c617)%(freeY+1);
     }
+    const x=c.origin_x+col*cellW+dx,y=c.origin_y+row*cellH+dy;
     nodes.push({
       id:await proceduralNodeId(id,index),
       name:`ProceduralField / item ${String(index).padStart(3,"0")}`,
       kind:"rectangle",parent_id:null,
-      x:c.origin_x+col*cellW+dx,y:c.origin_y+row*cellH+dy,
+      x,y,
       width:c.size,height:c.size,rotation_deg:0,opacity:c.opacity_percent/100,text:null,
-      coordinate_space:"project_pixels",z_index:-64+index,
+      coordinate_space:"project_pixels",z_index:-32,
       style:{fill:c.fill,stroke:null,stroke_width:0,font_family:null,font_size:null,font_weight:null,line_height:null,blend_mode:"normal"},
       relations:[],property_locks:[],keyframes: c.reveal_step_frames===0?[]:(()=>{
         const start=index*c.reveal_step_frames,end=start+c.reveal_duration_frames;
-        const keys:CanvasNode["keyframes"]=[{at:{num:"0",den:"1"},property:"opacity",value:0,interpolation:"hold"}];
-        if(start>0)keys.push({at:frameTime(start),property:"opacity",value:0,interpolation:"hold"});
-        keys.push({at:frameTime(end),property:"opacity",value:c.opacity_percent/100,interpolation:"linear"});
+        const keys:CanvasNode["keyframes"]=[];
+        for(const property of ["y","opacity"] as const){
+          const initial=property==="y"?y+12:0,terminal=property==="y"?y:1;
+          keys.push({at:{num:"0",den:"1"},property,value:initial,interpolation:"hold"});
+          if(start>0)keys.push({at:frameTime(start),property,value:initial,interpolation:"hold"});
+          keys.push({at:frameTime(end),property,value:terminal,interpolation:"ease_out_cubic"});
+        }
         return keys;
       })(),
     });

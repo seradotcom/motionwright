@@ -50,7 +50,7 @@ impl Default for ProceduralConfig {
             area_width: 900,
             area_height: 560,
             size: 32,
-            opacity_percent: 85,
+            opacity_percent: 100,
             fill: "#A5C8DF".into(),
             reveal_step_frames: 0,
             reveal_duration_frames: default_reveal_duration(),
@@ -67,6 +67,7 @@ impl ProceduralConfig {
             || self.size > 128
             || self.opacity_percent == 0
             || self.opacity_percent > 100
+            || (self.reveal_step_frames > 0 && self.opacity_percent != 100)
             || self.reveal_step_frames > 10
             || self.reveal_duration_frames == 0
             || self.reveal_duration_frames > 60
@@ -168,7 +169,8 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
             opacity: f64::from(config.opacity_percent) / 100.0,
             text: None,
             coordinate_space: CoordinateSpace::ProjectPixels,
-            z_index: -64 + index as i32,
+            // Native Film admits up to 32 layers: repetition shares one underlying layer.
+            z_index: -32,
             style: NodeStyle {
                 fill: Some(config.fill.clone()),
                 ..Default::default()
@@ -180,28 +182,41 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
             } else {
                 let start = index * u32::from(config.reveal_step_frames);
                 let end = start + u32::from(config.reveal_duration_frames);
-                let mut keys = vec![CanvasKeyframe {
-                    at: RationalTime::ZERO,
-                    property: MotionProperty::Opacity,
-                    value: 0.0,
-                    interpolation: MotionInterpolation::Hold,
-                }];
-                if start > 0 {
+                // Mirror the admitted Hero entrance grammar: synchronized hold
+                // then OutCubic Y+opacity, rather than a silently unsupported
+                // opacity-only linear motion. Fixed position is retained.
+                let mut keys = vec![];
+                for property in [MotionProperty::Y, MotionProperty::Opacity] {
+                    let value = if property == MotionProperty::Y {
+                        f64::from(y) + 12.0
+                    } else {
+                        0.0
+                    };
                     keys.push(CanvasKeyframe {
-                        at: RationalTime::new(i64::from(start), 30)
-                            .expect("bounded procedural frame time"),
-                        property: MotionProperty::Opacity,
-                        value: 0.0,
+                        at: RationalTime::ZERO,
+                        property,
+                        value,
                         interpolation: MotionInterpolation::Hold,
                     });
+                    if start > 0 {
+                        keys.push(CanvasKeyframe {
+                            at: RationalTime::new(i64::from(start), 30).expect("bounded timeline"),
+                            property,
+                            value,
+                            interpolation: MotionInterpolation::Hold,
+                        });
+                    }
+                    keys.push(CanvasKeyframe {
+                        at: RationalTime::new(i64::from(end), 30).expect("bounded timeline"),
+                        property,
+                        value: if property == MotionProperty::Y {
+                            f64::from(y)
+                        } else {
+                            1.0
+                        },
+                        interpolation: MotionInterpolation::EaseOutCubic,
+                    });
                 }
-                keys.push(CanvasKeyframe {
-                    at: RationalTime::new(i64::from(end), 30)
-                        .expect("bounded procedural frame time"),
-                    property: MotionProperty::Opacity,
-                    value: f64::from(config.opacity_percent) / 100.0,
-                    interpolation: MotionInterpolation::Linear,
-                });
                 keys
             },
         };

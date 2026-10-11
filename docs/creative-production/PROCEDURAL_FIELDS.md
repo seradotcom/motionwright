@@ -7,7 +7,7 @@ generated SVG/video, extra renderer, scheduler, Core or Platform dependency.
 
 The versioned `ProceduralConfig` defines an integer `seed`, `count`, `columns`,
 `distribution` (`grid`, `staggered`, `scatter`), origin, extent, square size,
-opacity percentage, #RRGGBB fill, and optional 30-fps opacity entrance sequencing
+opacity percentage, #RRGGBB fill, and optional 30-fps synchronized Y/opacity entrance sequencing
 (`reveal_step_frames` 0–10; 0 disables, `reveal_duration_frames` 1–60).
 Every generated item is a real, persistent,
 separately editable Canvas `rectangle` with a stable UUID, a source baseline,
@@ -28,12 +28,17 @@ style, z-index and coordinate-space metadata.
 - Generated UUID = SHA-256 of `motionwright.procedural.v1\0`, the field UUID,
   then the four-byte **little-endian** index, with version-8 and RFC variant
   bits set. The same index retains its identity across seed/layout/count changes.
-- Optional entrance keys are native editable opacity keyframes: HOLD at frame 0,
-  HOLD at `index × step` when positive, then LINEAR to authored opacity at
-  `start + duration`. Rational times are canonicalized to 30-fps fractions.
-  The last keyframe must remain inside the half-open scene interval; otherwise
-  the entire operation fails before mutating the project. This is an original
-  Canvas timeline, not a separate audio or compositor clock.
+- Optional entrance keys use the native-admitted synchronized Y/opacity grammar:
+  HOLD at frame 0, optional HOLD at `index × step`, then EASE_OUT_CUBIC
+  to the original Y position and 100% opacity at `start + duration`.
+  Initial Y is displaced +12 project pixels to create a visible SlideIn.
+  Rational time is canonicalized in 30fps fractions. Animated fields with
+  opacity below 100% fail closed, because Film cannot preserve terminal alpha.
+  The last key must remain inside the half-open scene interval; otherwise
+  the command fails before allocating any authored nodes.
+- All generated items share one z-index, -32, rather than exceeding the
+  native Film limit of 32 distinct layer orders. Static alpha below 100%
+  remains editable but is explicitly rejected by native Film.
 - Rust and TypeScript independently implement this specification. Tests in both
   languages assert identical expected coordinates and IDs for a 12-node seeded
   fixture. The generator does not access global RNG, system time or cloud APIs.
@@ -61,7 +66,7 @@ validation must still be run for any quality or fidelity claim.
 ## Current boundary
 
 This slice implements editable repetition, two-dimensional spatial distributions,
-and a bounded linear opacity entrance sequence. **More expressive temporal fields,
+and a bounded native-admitted Y/opacity OutCubic entrance sequence. **More expressive temporal fields,
 velocity/forces, 3D instancing, multishot orchestration, masks,
 GPU acceleration and independently reviewed native rendering fidelity
 remain out of scope.** Even when CI passes, MW05-E06-04 stays
@@ -70,6 +75,9 @@ delivered. No accelerated GPU/CPU performance claim is implied by the object
 count limits.
 
 Tests: `crates/domain/tests/procedural_fields.rs`,
+`crates/native/tests/procedural_fields.rs`,
 `apps/studio/src/proceduralField.test.ts` and
 `apps/studio/tests/procedural-field.spec.ts`. Resource-heavy tests, native
 rendering and packaging run on GitHub Actions, not the author's workstation.
+
+The Semwright Native SDK application driver exposes typed, revision-bound `procedural-field.upsert` and `procedural-field.detach` operations. No parallel backend is added.
