@@ -594,7 +594,7 @@ export async function productionJobsHistory(
     throw new Error("Historical production receipts require the desktop runtime.");
   }
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) {
-    throw new Error("Historical production jobs page size is outside the 1–64 limit.");
+    throw new Error("Historical production jobs page size is outside the 1â€“64 limit.");
   }
   return invoke<ProductionJobsHistoryPage>("production_jobs_history", {
     request: {
@@ -1398,7 +1398,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       assertUnlocked(next, projectResource(next), ["content"]);
       if(next.production_design?.captures?.some(record=>
         record.screenshot_asset_id===change.asset_id ||
-        record.manifest_asset_id===change.asset_id))
+        record.manifest_asset_id===change.asset_id ||
+        record.fixture_state_asset_id===change.asset_id))
         throw new Error("Asset is referenced by an immutable capture provenance record.");
       if (
         next.audio.voice_tracks.some((track) => track.asset_id === change.asset_id) ||
