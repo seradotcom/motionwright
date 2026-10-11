@@ -33,6 +33,10 @@ fn non_negative(value: RationalTime) -> bool {
     value.validate().is_ok() && value >= RationalTime::ZERO
 }
 
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectState {
@@ -253,12 +257,34 @@ pub struct Marker {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Asset {
     pub id: Uuid,
     pub name: String,
     pub media_type: String,
     pub content_sha256: Option<String>,
     pub source_revision: Option<String>,
+}
+
+impl Asset {
+    fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty()
+            || self.name.len() > 512
+            || self.media_type.trim().is_empty()
+            || self.media_type.len() > 256
+            || self
+                .content_sha256
+                .as_ref()
+                .is_some_and(|hash| !valid_sha256(hash))
+            || self
+                .source_revision
+                .as_ref()
+                .is_some_and(|revision| revision.len() > 512)
+        {
+            return Err(DomainError::Invalid("invalid asset metadata".into()));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +432,13 @@ impl Project {
                 return Err(DomainError::Invalid("invalid marker".into()));
             }
         }
+        let mut asset_ids = HashSet::new();
+        for asset in &self.assets {
+            asset.validate()?;
+            if !asset_ids.insert(asset.id) {
+                return Err(DomainError::Invalid("duplicate asset id".into()));
+            }
+        }
         let mut lock_ids = BTreeSet::new();
         for lock in &self.locks {
             if !lock_ids.insert(lock.id) || lock.resource.is_empty() || lock.note.len() > 500 {
@@ -437,7 +470,36 @@ impl Project {
                 "narrative beat references an unknown claim".into(),
             ));
         }
+        for claim in &self.brief.claims {
+            match &claim.source {
+                Some(SourceReference::Asset { asset_id }) if !asset_ids.contains(asset_id) => {
+                    return Err(DomainError::Invalid(
+                        "claim references an unknown asset".into(),
+                    ));
+                }
+                Some(SourceReference::ProjectRevision { revision }) if *revision > self.revision => {
+                    return Err(DomainError::Invalid(
+                        "claim references a future project revision".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         self.audio.validate()?;
+        for track in &self.audio.voice_tracks {
+            let asset = self
+                .assets
+                .iter()
+                .find(|asset| asset.id == track.asset_id)
+                .ok_or_else(|| DomainError::Invalid("voice track references an unknown asset".into()))?;
+            if !asset.media_type.starts_with("audio/")
+                || asset.content_sha256.as_deref() != Some(track.source_sha256.as_str())
+            {
+                return Err(DomainError::Invalid(
+                    "voice measurement does not match the registered audio asset".into(),
+                ));
+            }
+        }
         self.visual_language.validate()?;
         if self.proposal_sets.len() > 512 || self.model_invocations.len() > 10_000 {
             return Err(DomainError::Invalid(
