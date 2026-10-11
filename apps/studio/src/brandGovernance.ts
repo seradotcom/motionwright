@@ -20,8 +20,21 @@ const encoder=new TextEncoder();
 function required(value:string, max:number, name:string) {
   if (!value.trim() || encoder.encode(value).length>max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid "+name);
 }
+/** Match Rust serde_json struct + internally tagged BrandRule field order.
+ * The hash is content-bound, never dependent on JavaScript insertion order.
+ * Rule ARRAY order still participates in the authoritative policy digest.
+ */
 export async function brandDigest(profile:BrandProfile):Promise<string> {
-  const digest=await crypto.subtle.digest("SHA-256",encoder.encode(JSON.stringify(profile)));
+  const rules=profile.rules.map(rule=>{
+    switch(rule.kind) {
+      case "forbidden_phrase": return {kind:rule.kind,id:rule.id,phrase:rule.phrase};
+      case "allowed_accents": return {kind:rule.kind,id:rule.id,colors:rule.colors};
+      case "required_wordmark": return {kind:rule.kind,id:rule.id,text:rule.text};
+      default: throw new Error("Unsupported BrandProfile rule kind.");
+    }
+  });
+  const canonical={id:profile.id,label:profile.label,version:profile.version,rules};
+  const digest=await crypto.subtle.digest("SHA-256",encoder.encode(JSON.stringify(canonical)));
   return Array.from(new Uint8Array(digest), b=>b.toString(16).padStart(2,"0")).join("");
 }
 export function validateBrandProfile(profile:BrandProfile) {

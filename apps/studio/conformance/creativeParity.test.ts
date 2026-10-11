@@ -1,6 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { heroNodeId, mergeComponentNodes, planContentDigest, realizeProductHero } from "../src/creativeProduction";
+import { brandDigest } from "../src/brandGovernance";
+import type { BrandProfile } from "../src/brandGovernance";
 import type { HeroConfig, ProductionPlan } from "../src/creativeProduction";
 import type { CanvasNode } from "../src/types";
 
@@ -12,8 +14,9 @@ const fixture=JSON.parse(readFileSync(path,"utf8")) as {
   hero_cases:Array<{id:string;config:HeroConfig;width:number;height:number;nodes:CanvasNode[]}>;
   three_way_merge:{base:CanvasNode[];current:CanvasNode[];incoming:CanvasNode[];expected:CanvasNode[]};
   plan_digest_cases:Array<{plan:ProductionPlan;content_sha256:string}>;
+  brand_profile_cases:Array<{profile:BrandProfile;content_sha256:string}>;
 };
-if(fixture.schema!=="motionwright.rust-studio-creative-parity/1" || fixture.hero_cases.length!==15 || fixture.plan_digest_cases.length!==3) throw new Error("Unexpected Rust fixture schema or coverage.");
+if(fixture.schema!=="motionwright.rust-studio-creative-parity/1" || fixture.hero_cases.length!==15 || fixture.plan_digest_cases.length!==3 || fixture.brand_profile_cases.length!==2) throw new Error("Unexpected Rust fixture schema or coverage.");
 
 describe("current Rust implementation and Studio are the same editorial contract",()=>{
   it.each(fixture.hero_cases)("matches every generated property at $width x $height",async(row)=>{
@@ -27,6 +30,14 @@ describe("current Rust implementation and Studio are the same editorial contract
     const conflict=structuredClone(row.incoming),body=conflict.find(n=>n.name.endsWith("body"))!;
     body.text="A conflicting generated replacement.";
     expect(()=>mergeComponentNodes(row.base,row.current,conflict)).toThrow("override conflict");
+  });
+  it.each(fixture.brand_profile_cases)("matches Rust mandatory BrandProfile digest at version $profile.version",async(row)=>{
+    expect(await brandDigest(row.profile)).toBe(row.content_sha256);
+    // Reordered transport objects must not change the approval authority.
+    const reordered=JSON.parse(JSON.stringify(row.profile,(_key,value)=>value && typeof value==="object" && !Array.isArray(value)?Object.fromEntries(Object.entries(value).reverse()):value)) as BrandProfile;
+    expect(await brandDigest(reordered)).toBe(row.content_sha256);
+    const reorderedRules={...row.profile,rules:[...row.profile.rules].reverse()};
+    expect(await brandDigest(reorderedRules)).not.toBe(row.content_sha256);
   });
   it.each(fixture.plan_digest_cases)("matches the backend content digest for $plan.clock.kind",async(row)=>{
     expect(await planContentDigest(row.plan)).toBe(row.content_sha256);

@@ -17,6 +17,10 @@ project and Production Studio. It is not an organization-wide policy service.
 - **BrandException** is bound to one rule UUID, one existing scene UUID and the
   SHA-256 digest of the exact current profile. Each records a campaign,
   rationale and declared author. Updating the policy invalidates old waivers.
+  Rust and Studio derive the SHA-256 from the exact versioned serde field order,
+  independent of JavaScript/JSON object insertion order. The actual order of
+  rule array entries remains part of the profile content. CI compares Studio
+  against fixtures generated from the current Rust implementation.
   There is no global/unscoped waiver operation.
 
 The validator checks *both* current human-edited scene node text/styles and
