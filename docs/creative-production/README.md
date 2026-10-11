@@ -45,6 +45,23 @@ browser/handset H264 masters and checks original PNG, decoded MP4, semantic
 text, motion, portable source and disclosure. Exact-head technical proof and
 human aesthetic review are still pending.
 
+## First-party reproducible screen capture (MW05-E07-02)
+
+An isolated source-pinned Chromium workflow captures the actual
+first-party Studio interface using a synthetic local project state, a
+versioned navigation scenario, pinned viewport, explicit revision-chip
+redaction and repeated PNG SHA-256. The separate Production ? Capture sources
+workstation supports append-only, metadata-bound registration of previously
+imported redacted PNG and JSON evidence against an authored project claim;
+it never creates or certifies a raw screenshot. A separate byte/pixel verifier checks
+the masked image, its claim/source linkage, allowed loopback origin and
+absence of private credentials or external requests.
+
+See [Capture Evidence](CAPTURE_EVIDENCE.md). The captured artifact is
+first-party test evidence **only**, not a third-party customer interaction,
+general-purpose desktop recording, ProductStage media ingest or creative
+approval. The v0.5 requirement remains partially implemented.
+
 ## Data and migration contracts
 
 Format 1 is read without changing revision or generation. Its first successful edit writes format 2 in the same existing transaction. A failed operation does not upgrade or alter the stored project. New creative state cannot be labeled format 1, and unknown future formats are rejected. The UI exposes the upgrade boundary before editing. This is not an implementation of cross-product legacy import.

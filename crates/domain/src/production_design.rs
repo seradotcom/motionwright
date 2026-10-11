@@ -24,6 +24,9 @@ pub struct ProductionDesign {
     /// Generic rights-attested original UI stages, never third-party devices.
     #[serde(default)]
     pub stages: Vec<ProductStageInstance>,
+    /// Append-only source records, not certified screenshots or client evidence.
+    #[serde(default)]
+    pub captures: Vec<CaptureSourceRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

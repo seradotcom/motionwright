@@ -398,10 +398,28 @@
     },
     {
       "id": "MW05-E07-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "No reproducible real software capture added",
-      "remaining_scope": "Versioned scenarios, data state and redactions required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA; typed append-only Project CaptureSourceRecord referencing imported immutable PNG/JSON asset IDs/hashes, synthetic fixture-data hash, source project generation/revision and existing linked brief claim, with Native SDK CAS operation and Rust/Studio/SQLite negative tests; Production Capture sources panel for explicit project-source claim, existing immutable PNG/JSON selection and typed metadata registration with revision/staleness and rights safeguards; first-party evidence claim creation is exposed in Studio and Native SDK through the preexisting versioned Claim model; SQLite admission re-reads immutable source blobs after CAS authorization, strictly compares imported JSON receipt app/claim/scenario/mask/repeated digest with recorded provenance, checks bounded PNG SHA/IHDR dimensions and rejects forged source bytes; triple immutable PNG/manifest/original fixture-state JSON binding, with independent actual byte verification and project generation/revision/claim text parity at SQLite admission; portable project-bundle roundtrip acceptance preserves immutable triple-blob source references and original historical generation (pending exact-HEAD CI)",
+      "remaining_scope": "New source triple-binding needs exact-HEAD CI verification; no verified third-party app/window capture, rights/privacy clearance, arbitrarily scripted scenarios, timeline media playback or human creative approval",
+      "source_paths": [
+        "apps/studio/tests/reproducible-capture.spec.ts",
+        "tooling/capture_evidence.py",
+        "tooling/tests/test_capture_evidence.py",
+        ".github/workflows/capture-evidence.yml",
+        "docs/creative-production/CAPTURE_EVIDENCE.md",
+        "crates/domain/src/capture_source.rs",
+        "crates/domain/tests/capture_source.rs",
+        "crates/service/tests/capture_source.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/captureSource.ts",
+        "apps/studio/src/captureSource.test.ts",
+        "apps/studio/src/CaptureSourceWorkbench.tsx",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/capture-source.spec.ts",
+        "crates/storage/src/capture_evidence.rs",
+        "crates/storage/src/lib.rs",
+        "tooling/testdata/synthetic-first-party-viewport.png"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

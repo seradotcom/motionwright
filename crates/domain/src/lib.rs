@@ -1,5 +1,6 @@
 mod brand_governance;
 mod canvas;
+mod capture_source;
 mod creative;
 mod creative_revisions;
 mod delivery;
@@ -11,6 +12,7 @@ mod product_stage;
 mod production_design;
 pub use brand_governance::*;
 pub use canvas::*;
+pub use capture_source::*;
 pub use creative::*;
 pub use creative_revisions::*;
 pub use delivery::*;
@@ -645,6 +647,7 @@ impl Project {
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+        self.production_design.validate_capture_sources(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1066,6 +1069,7 @@ impl Project {
                     .project_decisions
                     .push(decision.clone());
             }
+            Change::RegisterCaptureSource { record } => self.register_capture_source(record)?,
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.ensure_unlocked(&format!("scene:{}", capsule.scene_id), &[LockKind::Content])?;
@@ -1916,6 +1920,16 @@ impl Project {
             }
             Change::RemoveAsset { asset_id } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self.production_design.captures.iter().any(|record| {
+                    record.screenshot_asset_id == *asset_id
+                        || record.manifest_asset_id == *asset_id
+                        || record.fixture_state_asset_id == *asset_id
+                }) {
+                    return Err(DomainError::Invalid(
+                        "asset remains referenced by a source capture; retain its provenance"
+                            .into(),
+                    ));
+                }
                 if self
                     .audio
                     .voice_tracks
@@ -2313,6 +2327,9 @@ pub enum Change {
     },
     RecordCreativeDecision {
         decision: CreativeDecision,
+    },
+    RegisterCaptureSource {
+        record: CaptureSourceRecord,
     },
     UpsertNativeCapsule {
         capsule: NativeCapsule,

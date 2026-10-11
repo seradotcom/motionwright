@@ -1,0 +1,107 @@
+name: Reproducible first-party capture evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/studio/src/**"
+      - "crates/domain/src/capture_source.rs"
+      - "crates/domain/src/production_design.rs"
+      - "crates/storage/src/capture_evidence.rs"
+      - "crates/storage/src/lib.rs"
+      - "crates/native/src/lib.rs"
+      - "crates/service/tests/capture_source.rs"
+      - "apps/studio/tests/reproducible-capture.spec.ts"
+      - "tooling/capture_evidence.py"
+      - "tooling/tests/test_capture_evidence.py"
+      - ".github/workflows/capture-evidence.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/studio/tests/reproducible-capture.spec.ts"
+      - "tooling/capture_evidence.py"
+      - "tooling/tests/test_capture_evidence.py"
+      - ".github/workflows/capture-evidence.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capture-evidence-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  first-party-capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Source identity preflight
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+
+      - name: Install pinned Studio and Chromium runtime
+        working-directory: apps/studio
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Adversarial source and PNG verifier tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tooling/tests -p test_capture_evidence.py -v
+
+      - name: Capture the actual first-party app twice with exact masking
+        working-directory: apps/studio
+        run: |
+          set -euo pipefail
+          npx playwright test tests/reproducible-capture.spec.ts --project=chromium --reporter=line
+
+      - name: Independently validate exact-source receipt and decoded redacted PNG pixels
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path("tooling").resolve()))
+          from capture_evidence import verify_bundle
+          captures=list(Path("apps/studio/test-results").rglob("capture-evidence.json"))
+          assert len(captures)==1, f"Expected one first-party capture receipt, got {len(captures)}"
+          result=verify_bundle(captures[0].parent, expected_commit=os.environ["GITHUB_SHA"])
+          assert result["technical_evidence"]=="PASS"
+          assert result["scope"]=="first-party-synthetic-fixture-only"
+          assert result["human_review"]=="required"
+          dest=Path("verification/first-party-capture")
+          dest.mkdir(parents=True,exist_ok=True)
+          (dest/"verification.json").write_text(
+              json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          print("First-party redacted screenshot verified for this exact source SHA; "
+                "NOT an external-customer capture or human creative approval")
+          PY
+
+      - name: Upload reviewed first-party capture and source identity
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: first-party-capture-${{ github.sha }}
+          path: |
+            apps/studio/test-results/
+            apps/studio/playwright-report/
+            verification/first-party-capture/
+          if-no-files-found: ignore
+          retention-days: 7
