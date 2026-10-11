@@ -1,7 +1,7 @@
 use motionwright_storage::ProductionReceipt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +227,26 @@ pub(crate) fn derive_production_jobs_all(
             .then_with(|| left.id.cmp(&right.id))
     });
 
+    // Only an acknowledged native render.start receipt can establish the
+    // existence/identity of a started Motion Canvas job. A partial receipt
+    // window or orphan result is still observable, never proof of success.
+    let acknowledged_motion_starts: BTreeSet<(String, Uuid, u64)> = ordered
+        .iter()
+        .filter(|receipt| {
+            receipt.stage == "completed" && receipt.command == "driver.motion-canvas.render.start"
+        })
+        .filter_map(|receipt| {
+            let ref_id = completed_wrapper(receipt)
+                .map(driver_data)
+                .and_then(|data| data.get("job_ref"))
+                .and_then(Value::as_str)?;
+            if ref_id.is_empty() {
+                return None;
+            }
+            Some((ref_id.to_owned(), receipt.generation, receipt.revision))
+        })
+        .collect();
+
     let mut jobs: BTreeMap<String, ProductionJobProjection> = BTreeMap::new();
     for receipt in &ordered {
         let Some((provider, kind)) = classify(&receipt.command) else {
@@ -246,6 +266,13 @@ pub(crate) fn derive_production_jobs_all(
         // the request's job_ref independently of the returned native JobView.
         // A foreign/missing response must not make the *original* job appear
         // succeeded (or advertise its unverified artifact) in Studio/SDK.
+        let orphan_motion_observation = provider == "driver:motion-canvas"
+            && !matches!(kind, RenderCommand::Start)
+            && !acknowledged_motion_starts.contains(&(
+                job_ref.clone(),
+                receipt.generation,
+                receipt.revision,
+            ));
         let unbound_motion_observation = provider == "driver:motion-canvas"
             && receipt.stage == "completed"
             && matches!(kind, RenderCommand::Status | RenderCommand::Result)
@@ -256,6 +283,7 @@ pub(crate) fn derive_production_jobs_all(
                 ),
                 (Some(expected), Some(observed)) if expected == observed
             );
+        let unbound_motion_observation = unbound_motion_observation || orphan_motion_observation;
         let cancellation_requested = !unbound_motion_observation
             && data
                 .and_then(|value| value.get("cancellation_requested"))
@@ -588,6 +616,95 @@ mod tests {
         assert_eq!(jobs[0].applicability, ProductionJobApplicability::Stale);
         assert!(jobs[0].result_available);
         assert!(jobs[0].artifact_available);
+    }
+
+    #[test]
+    fn orphan_motion_result_cannot_prove_success_without_acknowledged_start() {
+        let generation = Uuid::now_v7();
+        let result = receipt(
+            generation,
+            8,
+            "orphan-result",
+            "driver.motion-canvas.render.result",
+            "completed",
+            json!({"job_ref":"mc:orphan","result":{"data":{
+                "job_ref":"mc:orphan","state":"succeeded",
+                "artifact":{"manifest":"unbound-source"},
+                "progress":{"completed":60,"total":60}
+            }}}),
+            "2026-10-09T01:00:03Z",
+        );
+        let orphan = derive_production_jobs(&[result.clone()], generation, 8, 10);
+        assert_eq!(orphan.len(), 1, "retain visibility of partial history");
+        assert_eq!(orphan[0].state, ProductionJobState::OutcomeUnknown);
+        assert_eq!(
+            orphan[0].last_observation,
+            ProductionObservationState::OutcomeUnknown
+        );
+        assert_eq!(orphan[0].local_observations, 1);
+        assert!(!orphan[0].artifact_available);
+        assert!(!orphan[0].result_available);
+        assert!(orphan[0].progress.is_none());
+
+        for unrelated in [
+            receipt(
+                generation,
+                9,
+                "wrong-revision",
+                "driver.motion-canvas.render.start",
+                "completed",
+                json!({"result":{"data":{"job_ref":"mc:orphan","state":"queued"}}}),
+                "2026-10-09T01:00:00Z",
+            ),
+            receipt(
+                Uuid::now_v7(),
+                8,
+                "wrong-generation",
+                "driver.motion-canvas.render.start",
+                "completed",
+                json!({"result":{"data":{"job_ref":"mc:orphan","state":"queued"}}}),
+                "2026-10-09T01:00:00Z",
+            ),
+            receipt(
+                generation,
+                8,
+                "never-acknowledged",
+                "driver.motion-canvas.render.start",
+                "outcome_unknown",
+                json!({"job_ref":"mc:orphan"}),
+                "2026-10-09T01:00:00Z",
+            ),
+            receipt(
+                generation,
+                8,
+                "different-job",
+                "driver.motion-canvas.render.start",
+                "completed",
+                json!({"result":{"data":{"job_ref":"mc:other","state":"queued"}}}),
+                "2026-10-09T01:00:00Z",
+            ),
+        ] {
+            let jobs = derive_production_jobs(&[unrelated, result.clone()], generation, 8, 10);
+            let orphan = jobs.iter().find(|job| job.job_ref == "mc:orphan").unwrap();
+            assert_eq!(orphan.state, ProductionJobState::OutcomeUnknown);
+            assert!(!orphan.artifact_available);
+            assert!(!orphan.result_available);
+        }
+
+        let start = receipt(
+            generation,
+            8,
+            "real-start",
+            "driver.motion-canvas.render.start",
+            "completed",
+            json!({"result":{"data":{"job_ref":"mc:orphan","state":"queued"}}}),
+            "2026-10-09T01:00:00Z",
+        );
+        let valid = derive_production_jobs(&[start, result], generation, 8, 10);
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].state, ProductionJobState::Succeeded);
+        assert!(valid[0].artifact_available);
+        assert!(valid[0].result_available);
     }
 
     #[test]
