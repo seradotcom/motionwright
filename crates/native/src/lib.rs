@@ -2507,6 +2507,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.canvas.node.reparent"));
         assert!(names.contains(&"driver.motionwright.canvas.node.relations.set"));
         assert!(names.contains(&"driver.motionwright.scene.duration.set"));
+        assert!(names.contains(&"driver.motionwright.scene.music.cut.snap"));
         assert!(names.contains(&"driver.motionwright.asset.register"));
         assert!(names.contains(&"driver.motionwright.asset.remove"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
@@ -2524,7 +2525,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
-        assert_eq!(capabilities.len(), 52);
+        // 52 retained contracts plus one scoped musical cut operation.
+        assert_eq!(capabilities.len(), 53);
     }
 
     #[tokio::test]
