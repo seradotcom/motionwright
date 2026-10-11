@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyChange } from "./api";
 import { emptyProductionDesign } from "./creativeProduction";
 import { fixtureProject } from "./fixture";
-import { measuredOutput, validateMeasuredTable } from "./measuredData";
+import { measuredOutput, validateMeasuredTable, parseMeasuredSource } from "./measuredData";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { Asset, Project } from "./types";
 
@@ -44,6 +44,14 @@ function seeded(){
 }
 const barView:MeasuredView={kind:"bar",axis_min_milli:0,axis_max_milli:100000,max_width_px:800};
 describe("measured data and explicit units",()=>{
+  it("parses only exact JSON rows or narrow four-column CSV, never fills missing units",()=>{
+    const rows=[{key:"orders",label:"Orders",milli:123000,unit:"count" as const}];
+    expect(parseMeasuredSource(JSON.stringify(rows))).toEqual(rows);
+    expect(parseMeasuredSource("key,label,milli,unit\norders,Orders,123000,count\n")).toEqual(rows);
+    expect(()=>parseMeasuredSource("key,label,milli,unit\norders,Orders,12,count,extra\n")).toThrow(/CSV/);
+    expect(()=>parseMeasuredSource('{"rows":[]}')).toThrow(/CSV|array/);
+    expect(()=>parseMeasuredSource("x".repeat(70_000))).toThrow(/64 KiB/);
+  });
   it("formats count, units and negative integer fixed-point without float inference",()=>{
     const value={key:"growth",label:"Measured growth",milli:-12505,unit:"percent" as const};
     expect(measuredOutput(value,{kind:"counter",decimals:2})).toEqual({kind:"text",value:"-12.51%"});

@@ -36,10 +36,11 @@ or axis values are invented. Updating a table flags only scenes and output
 profiles whose actual bound results changed, preserving the others. The
 operations share the existing Semwright Native SDK CAS and project journal.
 
-See [Measured data and units](MEASURED_DATA_UNITS.md) for the distinction
-between declared source-asset identity and independently verified measurements.
-Full source ingestion, render-cache invalidation and creative approval remain
-open.
+See [Measured data and units](MEASURED_DATA_UNITS.md) for the boundary
+between **independently verified JSON/CSV blob bytes** and unverified
+measurement truth/rights. The SQLite CAS re-parses the exact imported bytes
+before committing declared rows; Studio requires the same file SHA-256.
+General ETL/series, cache regeneration and creative approval remain open.
 
 ## Data and migration contracts
 

@@ -11,19 +11,29 @@ The source asset ID, digest, versioned schema and numeric data are persisted
 as ordinary project state. Missing assets, hash mismatches, unsupported MIME
 types, duplicate keys and unknown source formats are rejected.
 
-**This checks the imported Asset metadata identity only.** It does **not**
-independently read, parse and compare the raw uploaded CSV/JSON bytes to every
-declared measurement. That import is not evidence that its values were measured
-correctly or that its author was authorized. The UI labels the rows as
-**declared**, and requires independent source/rights/methodology review.
-No verified-source or creative-approval claim is fabricated.
+**The SQLite CAS verifies original content-addressed bytes independently.**
+Before accepting a table, Storage retrieves at most 64 KiB from the existing
+immutable blob and checks its SHA-256; it parses either an exact JSON array of
+typed rows or a deliberately narrow unquoted CSV with the header
+key,label,milli,unit. The declared rows must equal the parsed source rows,
+including order and units. An SDK request containing a fabricated metric fails
+even if it references a valid imported digest. The Studio UI additionally
+requires reselecting the matching source file, computes its SHA-256 locally,
+and displays only read-only parsed rows.
+
+This attests **byte identity and exact parsed values**, not the scientific
+accuracy of the observations, measurement methodology, authorship, licensing
+rights or independent quality certification. The UI consequently still
+labels values as source-declared and requires human source/rights/methodology
+review. No creative-approval or factual-truth claim is fabricated.
 
 Tables use versioned schema motionwright.measured-table/1 with 1–64 rows.
 Every row specifies a lower-case key, a bounded label, a signed integer
 milli (thousandths), and one typed unit: count, percent, seconds,
 milliseconds or bytes. Values are bounded to ±1,000,000 actual units.
-No floating-point CSV parsing, LLM data cleaning, implicit unit conversion,
-or automatic chart fitting occurs. Limits: 16 tables/project and 64
+The importer deliberately rejects quoted commas, locale-dependent decimals,
+unbounded files and arbitrary CSV dialects. No floating-point CSV parsing,
+LLM data cleaning, implicit unit conversion, or automatic chart fitting occurs. Limits: 16 tables/project and 64
 bindings/project. Extra keys are rejected by the Rust serde source schema.
 
 Replacing a table requires a new asset digest and exactly the next dataset
@@ -50,9 +60,10 @@ update until the user detaches/rebinds; styling and independent geometry
 remain editable. Detach retains the last authored Canvas object.
 
 A single row drives one bounded graphic primitive, not a fabricated axis.
-Live external feeds, full graph/chart construction, source-file ingestion,
+Live external feeds, full graph/chart construction, general CSV dialects,
 time-series alignment, uncertainty labels and measurements made by an LLM
-remain out of scope.
+remain out of scope. Bounded JSON-array/CSV-four-column byte ingestion is
+implemented as a source-identity gate, not as a general ETL system.
 
 ## Targeted invalidation
 
@@ -91,7 +102,12 @@ fail closed instead of fabricating replacements.
   measured-table.upsert, measured-binding.upsert and
   measured-binding.detach.
 
-All acceptance remains pending until CI passes the exact pushed revision.
+The source-byte verification has a further negative SQLite CAS test proving
+that a request whose values disagree with a genuine stored JSON file is
+rejected without changing the durable project or revision. This is part of
+the existing Storage transaction admission path, not a second data service.
+
+All new acceptance remains pending until CI passes the exact pushed revision.
 No extra Core, scheduler, privileged execution route or spreadsheet backend
-is introduced. Full verified ingest and real creative acceptance are still
-open work.
+is introduced. Broader externally audited measurement ingestion and real
+creative acceptance are still open work.

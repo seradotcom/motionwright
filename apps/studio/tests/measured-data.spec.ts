@@ -7,6 +7,8 @@ test("Measured-data editor never generates unverifiable demo metrics or inferred
   await expect(page.getByRole("heading",{name:"Measured data / source-bound graphics"})).toBeVisible();
   await expect(page.getByLabel("Measured source asset")).toBeVisible();
   await expect(page.getByLabel("Measured numeric rows JSON")).toHaveValue("[]");
+  await expect(page.getByLabel("Measured numeric rows JSON")).toHaveAttribute("readonly","");
+  await expect(page.getByLabel("Measured source file verification")).toBeVisible();
   await expect(page.getByRole("button",{name:"Register measured source"})).toBeDisabled();
   await page.getByLabel("Measured output kind").selectOption("bar");
   await expect(page.getByLabel("Measured axis minimum")).toHaveValue("");

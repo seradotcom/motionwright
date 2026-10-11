@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, RefreshCw, Save, Unlink } from "lucide-react";
 import type { Change, Project, Scene } from "./types";
 import {
-  measuredOutput, validateMeasuredTable
+  measuredOutput, validateMeasuredTable, parseMeasuredSource
 } from "./measuredData";
 import type { MeasuredTable, MeasuredDatum, MeasuredView } from "./measuredData";
 
@@ -28,6 +28,9 @@ export default function MeasuredDataWorkbench({project,scene,busy,commit,onOpenC
   const [label,setLabel]=useState("");
   const [assetId,setAssetId]=useState("");
   const [rowsText,setRowsText]=useState("[]");
+  const [verifiedDigest,setVerifiedDigest]=useState("");
+  const [verifiedRows,setVerifiedRows]=useState<MeasuredDatum[]|null>(null);
+  const [fileError,setFileError]=useState<string|null>(null);
   const [base,setBase]=useState(project.revision);
   const [error,setError]=useState<string|null>(null);
   const [selectedNode,setSelectedNode]=useState("");
@@ -45,17 +48,19 @@ export default function MeasuredDataWorkbench({project,scene,busy,commit,onOpenC
   const sceneBindings=bindings.filter(binding=>binding.scene_id===scene?.id);
   const reset=()=>{
     setDraftId(crypto.randomUUID());setSelectedTable("new");setLabel("");setRowsText("[]");
-    setAssetId("");setBase(project.revision);setError(null);
+    setAssetId("");setVerifiedDigest("");setVerifiedRows(null);setFileError(null);
+    setBase(project.revision);setError(null);
   };
   const load=()=>{
     setLabel(stored?.label??"");
     setRowsText(JSON.stringify(stored?.rows??[],null,2));
-    setAssetId(stored?.source_asset_id??"");
+    setAssetId(stored?.source_asset_id??"");setVerifiedDigest("");setVerifiedRows(null);setFileError(null);
     setBase(project.revision);setError(null);
   };
   useEffect(()=>{
     setSelectedTable("new");setDraftId(crypto.randomUUID());setLabel("");setRowsText("[]");
-    setAssetId("");setBase(project.revision);setError(null);
+    setAssetId("");setVerifiedDigest("");setVerifiedRows(null);setFileError(null);
+    setBase(project.revision);setError(null);
     // A different Project generation must not reuse an earlier source draft.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[project.generation]);
@@ -78,8 +83,29 @@ export default function MeasuredDataWorkbench({project,scene,busy,commit,onOpenC
     // Inputs and source metadata are the only prerequisites.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[parsed,label,stored,draftId,assetId,currentAsset,project.assets]);
+  const sourceBytesMatch=!!table && !!verifiedRows &&
+    verifiedDigest===currentAsset?.content_sha256 &&
+    JSON.stringify(parsed.rows)===JSON.stringify(verifiedRows);
+  const verifyLocalFile=async(file:File|undefined)=>{
+    setVerifiedDigest("");setVerifiedRows(null);setFileError(null);
+    if(!file)return;
+    try{
+      if(!currentAsset?.content_sha256)throw new Error("Choose an imported JSON/CSV source asset first.");
+      if(file.size>64*1024)throw new Error("Measured source exceeds 64 KiB.");
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),
+        b=>b.toString(16).padStart(2,"0")).join("");
+      if(digest!==currentAsset.content_sha256)
+        throw new Error("Selected file SHA-256 differs from imported asset. No data is admitted.");
+      const text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);
+      const rows=parseMeasuredSource(text);
+      validateMeasuredTable({...tableDraft(),rows},project);
+      setRowsText(JSON.stringify(rows,null,2));
+      setVerifiedRows(rows);setVerifiedDigest(digest);
+    }catch(e){setFileError(errorMessage(e));}
+  };
   const submitTable=async()=>{
-    if(!table || stale || busy)return;
+    if(!table || !sourceBytesMatch || stale || busy)return;
     setError(null);
     try{
       await commit({type:"upsert_measured_table",table});
@@ -146,12 +172,15 @@ export default function MeasuredDataWorkbench({project,scene,busy,commit,onOpenC
           const id=e.target.value;setSelectedTable(id);
           const found=tables.find(t=>t.id===id);
           setLabel(found?.label??"");setRowsText(JSON.stringify(found?.rows??[],null,2));
-          setAssetId(found?.source_asset_id??"");setBase(project.revision);setError(null);setSelectedKey("");
+          setAssetId(found?.source_asset_id??"");setVerifiedDigest("");setVerifiedRows(null);setFileError(null);
+          setBase(project.revision);setError(null);setSelectedKey("");
         }}><option value="new">New measured table</option>{tables.map(t=>
           <option key={t.id} value={t.id}>{t.label} · v{t.version}</option>)}</select>
       </label>
       <label className="production-field"><span>Imported source asset</span>
-        <select aria-label="Measured source asset" value={assetId} onChange={e=>setAssetId(e.target.value)}>
+        <select aria-label="Measured source asset" value={assetId} onChange={e=>{
+          setAssetId(e.target.value);setVerifiedDigest("");setVerifiedRows(null);setFileError(null);
+        }}>
           <option value="">Choose an imported JSON/CSV asset</option>
           {assets.map(a=><option key={a.id} value={a.id}>{a.name} · {a.content_sha256?.slice(0,12)}…</option>)}
         </select>
@@ -160,15 +189,25 @@ export default function MeasuredDataWorkbench({project,scene,busy,commit,onOpenC
         <input aria-label="Measured dataset label" value={label} maxLength={160} onChange={e=>setLabel(e.target.value)}
           placeholder="Descriptive name of actual source"/></label>
     </div>
-    <label className="production-field"><span>Declared numeric rows (JSON)</span>
-      <textarea aria-label="Measured numeric rows JSON" rows={8} value={rowsText}
-        onChange={e=>setRowsText(e.target.value)} spellCheck={false}/>
-      <small>Each row requires key, label, integer milli and unit (count, percent, seconds, milliseconds or bytes).
-        Example structure: one object per row; no example numbers are inserted.</small>
+    <label className="production-field"><span>Confirm the exact imported source file</span>
+      <input aria-label="Measured source file verification" type="file" accept=".json,.csv,application/json,text/csv"
+        onChange={e=>void verifyLocalFile(e.target.files?.[0])}/>
+      <small>Re-select the actual source bytes. Client SHA-256 and strict row parsing are
+        checked before submission; the existing SQLite CAS re-reads the immutable blob independently.</small>
     </label>
+    <label className="production-field"><span>Declared numeric rows (read-only source preview)</span>
+      <textarea aria-label="Measured numeric rows JSON" rows={8} value={rowsText}
+        readOnly spellCheck={false}/>
+      <small>Rows are extracted from the matching source file; they cannot be invented or
+        silently changed in this form. Allowed units: count, percent, seconds, milliseconds, bytes.</small>
+    </label>
+    {fileError && <p className="production-error" role="alert">{fileError}</p>}
+    {sourceBytesMatch && <p className="production-help" role="status">
+      Selected file digest and parsed numeric rows match the imported asset metadata.
+      Native Storage will independently verify the exact SHA-256 bytes again.</p>}
     {sourceValid && <p className="mono">SHA-256: {currentAsset!.content_sha256} · Version to save: {stored?stored.version+1:1}</p>}
     {tableError && <p className="production-help" role="status">Source preflight: {tableError}</p>}
-    <button className="primary-button" disabled={!table || busy || stale} onClick={submitTable}>
+    <button className="primary-button" disabled={!table || !sourceBytesMatch || busy || stale} onClick={submitTable}>
       <Save size={14}/>{stored?"Commit next measured source revision":"Register measured source"}</button>
     <div className="production-section-title"><h3>2. Bind an existing Canvas node</h3></div>
     <p className="production-help">Counters and labels update only text. Bars update only rectangle width;

@@ -168,3 +168,80 @@ orders,Orders,123000,count
     );
     assert!(detached.production_design.measured_bindings.is_empty());
 }
+
+#[test]
+fn forged_numeric_rows_are_rejected_even_with_correct_imported_blob_sha() {
+    let tmp = tempfile::tempdir().unwrap();
+    let service = StudioService::open(tmp.path().join("digest-guard.sqlite3")).unwrap();
+    let mut project = service.create_project("Source bytes gate").unwrap();
+    let source = tmp.path().join("source.json");
+    std::fs::write(
+        &source,
+        br#"[{"key":"rate","label":"Observed rate","milli":12500,"unit":"percent"}]"#,
+    )
+    .unwrap();
+    let blob = service.ingest_blob_file(&source).unwrap();
+    let asset = Asset {
+        id: Uuid::new_v4(),
+        name: "Imported measured JSON".into(),
+        media_type: "application/json".into(),
+        content_sha256: Some(blob.sha256.clone()),
+        source_revision: Some("genuine-import".into()),
+    };
+    project = apply(
+        &service,
+        &project,
+        "asset",
+        Change::AddAsset {
+            asset: asset.clone(),
+        },
+    );
+    let table = MeasuredTable {
+        schema: MEASURED_DATA_SCHEMA.into(),
+        id: Uuid::new_v4(),
+        label: "Reported measurements".into(),
+        version: 1,
+        source_asset_id: asset.id,
+        source_sha256: blob.sha256.clone(),
+        rows: vec![MeasuredDatum {
+            key: "rate".into(),
+            label: "Observed rate".into(),
+            milli: 12500,
+            unit: MeasuredUnit::Percent,
+        }],
+    };
+    let wrong = MeasuredTable {
+        rows: vec![MeasuredDatum {
+            milli: 99000,
+            ..table.rows[0].clone()
+        }],
+        ..table.clone()
+    };
+    let denied = service.apply(
+        project.id,
+        &project.stamp(),
+        "forged",
+        &Change::UpsertMeasuredTable { table: wrong },
+    );
+    assert!(
+        denied
+            .unwrap_err()
+            .to_string()
+            .contains("declared measurements differ")
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+    let committed = apply(
+        &service,
+        &project,
+        "exact-source",
+        Change::UpsertMeasuredTable {
+            table: table.clone(),
+        },
+    );
+    assert_eq!(committed.production_design.measured_tables, vec![table]);
+    let mut modified_bytes = std::fs::read(&source).unwrap();
+    modified_bytes.push(b' ');
+    std::fs::write(&source, modified_bytes).unwrap();
+    // The imported CAS blob remains unchanged, even though the original file did.
+    assert_eq!(service.project(committed.id).unwrap(), committed);
+}

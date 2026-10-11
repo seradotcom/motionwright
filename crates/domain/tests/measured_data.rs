@@ -103,6 +103,16 @@ fn seed() -> (Project, Uuid, [Asset; 3], [Uuid; 2], [Uuid; 2]) {
         })
         .unwrap();
     }
+    // Default delivery profiles include every scene when the selection
+    // is empty. Explicitly scope the other default profiles to B so this
+    // fixture proves *only* the affected profile is invalidated.
+    for mut independent in p.deliverables.clone().into_iter().skip(1) {
+        independent.included_scene_ids = vec![scenes[1]];
+        p.apply_change(&Change::UpsertDeliverable {
+            profile: independent,
+        })
+        .unwrap();
+    }
     let profile = p.deliverables[0].clone();
     let mut a = profile.clone();
     a.included_scene_ids = vec![scenes[0]];

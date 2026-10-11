@@ -24,6 +24,27 @@ export interface MeasuredDataImpact {
   scene_ids:string[];deliverable_ids:string[];
 }
 const schema="motionwright.measured-table/1";
+/** Exactly the narrow grammar admitted by Storage, before dataset metadata is persisted. */
+export function parseMeasuredSource(text:string):MeasuredDatum[] {
+  if(new TextEncoder().encode(text).length>64*1024)
+    invalid("Measured source exceeds the 64 KiB verified-ingest budget.");
+  const trimmed=text.trimStart();
+  if(trimmed.startsWith("[")){
+    let rows:unknown;
+    try{rows=JSON.parse(text);}catch{invalid("Imported source is not strict JSON rows.");}
+    if(!Array.isArray(rows))invalid("Measured JSON requires an array of rows.");
+    return rows as MeasuredDatum[];
+  }
+  const lines=text.trimEnd().split(/\r?\n/u);
+  if(lines.shift()!=="key,label,milli,unit")
+    invalid("Measured CSV requires key,label,milli,unit header.");
+  return lines.map(line=>{
+    const cells=line.split(",");
+    if(cells.length!==4 || !/^-?[0-9]+$/u.test(cells[2]))
+      invalid("Measured CSV row is outside its strict four-column subset.");
+    return {key:cells[0],label:cells[1],milli:Number(cells[2]),unit:cells[3] as MeasuredUnit};
+  });
+}
 const units=["count","percent","seconds","milliseconds","bytes"] as const;
 const bounded=1_000_000_000;
 const keyPattern=/^[a-z][a-z0-9_]{0,47}$/;
