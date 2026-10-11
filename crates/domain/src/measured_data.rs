@@ -416,6 +416,20 @@ impl Project {
                 ));
             }
         }
+        // A bound datum's *meaning* can change even if a particular
+        // presentation omits its label or unit (notably a bare counter or
+        // proportional bar). Such revisions still require scene/profile
+        // re-review, without changing the existing visual geometry.
+        let changed_semantic_keys: BTreeSet<String> = found
+            .map(|index| {
+                next.production_design.measured_tables[index]
+                    .rows
+                    .iter()
+                    .filter(|old| table.rows.iter().find(|new| new.key == old.key) != Some(*old))
+                    .map(|old| old.key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut keys = BTreeSet::new();
         let mut scenes = BTreeSet::new();
         for old_binding in next
@@ -429,7 +443,9 @@ impl Project {
             old_binding.ensure_writable(&next)?;
             old_binding.ensure_output(old_binding.current_node(&next.scenes)?)?;
             let incoming = measured_output(table.row(&old_binding.datum_key)?, &old_binding.view)?;
-            if incoming != old_binding.baseline {
+            if incoming != old_binding.baseline
+                || changed_semantic_keys.contains(&old_binding.datum_key)
+            {
                 keys.insert(old_binding.datum_key.clone());
                 scenes.insert(old_binding.scene_id);
             }
@@ -445,6 +461,13 @@ impl Project {
             let updated = measured_output(table.row(&binding.datum_key)?, &binding.view)?;
             if updated != binding.baseline {
                 apply_output(binding, &mut next.scenes, &updated)?;
+            } else if changed_semantic_keys.contains(&binding.datum_key) {
+                let scene = next
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == binding.scene_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("scene:{}", binding.scene_id)))?;
+                scene.status = SceneStatus::Draft;
             }
         }
         for binding in next

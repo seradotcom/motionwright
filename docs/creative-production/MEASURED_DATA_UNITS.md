@@ -67,10 +67,12 @@ implemented as a source-identity gate, not as a general ETL system.
 
 ## Targeted invalidation
 
-On table update the stored output is compared to the new derived output of
-each matching binding. **Only changed projected outputs** rewrite their
-respective node and mark that scene as draft. Unrelated scenes retain
-their content and scene status. The persisted last_measured_impact records
+On table update the stored output and its semantic row (label, unit and
+physical value) are compared against the new record for each bound datum.
+A changed projection updates the bound Canvas property; a semantic-only
+change (for example, an unchanged-width bar whose unit or meaning changed)
+does **not** alter pixels but still marks that dependent scene as draft for
+review. Unrelated scenes retain their content and scene status. The persisted last_measured_impact records
 changed datum keys, affected scene IDs and deliverable IDs. An empty
 included_scene_ids list means a profile includes all scenes; an explicitly
 scoped profile is marked only if one of its scenes actually changed. A
@@ -141,6 +143,14 @@ established fixed-typography container + semantic text-line projection, with
 a new regression assertion proving the child text and native constraints
 exist before rendering. This corrective change must pass a new source-pinned
 CI run; it does not retroactively make the original absent-label video PASS.
+
+The corrected pinned CI run for the missing-label defect
+(https://github.com/seradotcom/motionwright/actions/runs/38111676631)
+**passed**, including original PNG label occupancy, independently decoded
+H.264 label pixels, exact source data, and portable project bundle. This
+constitutes bounded native *technical* evidence for the clearly synthetic
+fixture, not scientific truth or human creative approval. Any later source
+revision requires a new CI run before its equivalent quality claim.
 
 The storage CAS source gate also runs only *after* canonical project
 generation/revision authorization and durable request-key replay handling.

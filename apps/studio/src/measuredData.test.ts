@@ -94,6 +94,14 @@ describe("measured data and explicit units",()=>{
     expect(()=>validateMeasuredTable({...t,source_sha256:shaB},project)).toThrow(/SHA-256/);
     expect(()=>validateMeasuredTable({...t,schema:"motionwright.measured-table/2"},project)).toThrow(/schema/);
     expect(()=>validateMeasuredTable({...t,rows:[t.rows[0],t.rows[0]]},project)).toThrow(/Duplicate|duplicate/);
+    expect(()=>validateMeasuredTable({...t,source_asset_id:"not-a-uuid"},project)).toThrow(/schema/);
+    expect(()=>validateMeasuredTable({...t,label:"Control\u0085sequence"},project)).toThrow(/schema/);
+    expect(()=>validateMeasuredTable({...t,untrusted_expression:"alert(1)"} as MeasuredTable,project))
+      .toThrow(/Unknown or missing/);
+    expect(()=>validateMeasuredTable({...t,rows:[{...t.rows[0],extra_source_claim:true}]} as MeasuredTable,project))
+      .toThrow(/Unknown or missing/);
+    expect(()=>measuredOutput(t.rows[0],{...barView,unapproved_axis:"fake"} as MeasuredView))
+      .toThrow(/Unknown or missing/);
     let p=await applyChange(project,{type:"upsert_measured_table",table:t});
     p=await applyChange(p,{type:"upsert_measured_binding",binding_id:counterId,
       scene_id:sceneA.id,node_id:nodeIds[0],table_id:tableId,datum_key:"conversion",
@@ -111,6 +119,39 @@ describe("measured data and explicit units",()=>{
     await expect(applyChange(edited,{type:"upsert_measured_table",table:report(assets[1],2,22000)})).rejects.toThrow(/detach/);
     const locked=structuredClone(p);locked.scenes[0].nodes[0].property_locks.push("text");
     await expect(applyChange(locked,{type:"upsert_measured_table",table:report(assets[1],2,22000)})).rejects.toThrow(/locked/);
+  });
+  it("marks semantic-only label/unit changes for review even when visual outputs are unchanged",async()=>{
+    const {project,assets,sceneA,sceneB,nodeIds}=seeded();
+    let p=await applyChange(project,{type:"upsert_measured_table",table:report(assets[0],1,12500)});
+    p=await applyChange(p,{type:"upsert_measured_binding",binding_id:counterId,
+      scene_id:sceneA.id,node_id:nodeIds[0],table_id:tableId,datum_key:"conversion",
+      view:{kind:"counter",decimals:1}});
+    p=await applyChange(p,{type:"upsert_measured_binding",binding_id:barId,
+      scene_id:sceneA.id,node_id:nodeIds[1],table_id:tableId,datum_key:"conversion",view:barView});
+    const unchangedNodes=structuredClone(p.scenes[0].nodes);
+    p.scenes[0].status="approved";p.scenes[1].status="approved";
+    const untouched=structuredClone(p.scenes[1]);
+    const semantic=report(assets[1],2,12500);
+    semantic.rows[0].label="Meaning of the observation changed";
+    p=await applyChange(p,{type:"upsert_measured_table",table:semantic});
+    expect(p.scenes[0].nodes).toEqual(unchangedNodes);
+    expect(p.scenes[0].status).toBe("draft");
+    expect(p.scenes[1]).toEqual(untouched);
+    expect(p.production_design?.last_measured_impact?.changed_keys).toEqual(["conversion"]);
+    expect(p.production_design?.last_measured_impact?.deliverable_ids).toEqual([p.deliverables[0].id]);
+
+    const next=seeded();
+    let barOnly=await applyChange(next.project,{type:"upsert_measured_table",table:report(next.assets[0],1,12500)});
+    barOnly=await applyChange(barOnly,{type:"upsert_measured_binding",binding_id:barId,
+      scene_id:next.sceneA.id,node_id:next.nodeIds[1],table_id:tableId,datum_key:"conversion",view:barView});
+    const width=barOnly.scenes[0].nodes[1].width;
+    barOnly.scenes[0].status="approved";
+    const changedUnit=report(next.assets[1],2,12500);
+    changedUnit.rows[0].unit="seconds";
+    barOnly=await applyChange(barOnly,{type:"upsert_measured_table",table:changedUnit});
+    expect(barOnly.scenes[0].nodes[1].width).toBe(width);
+    expect(barOnly.scenes[0].status).toBe("draft");
+    expect(barOnly.production_design?.last_measured_impact?.scene_ids).toEqual([next.sceneA.id]);
   });
   it("detach retains prior content and old projects remain valid without data fields",async()=>{
     const {project,assets,sceneA,nodeIds}=seeded();

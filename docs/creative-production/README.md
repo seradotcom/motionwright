@@ -32,8 +32,9 @@ In **Native inspection**, select the output profile matching a current native re
 
 **Production → Measured data** adds bounded, source-identified tables and
 editable Canvas counter, label and explicitly ranged bar outputs. No metric
-or axis values are invented. Updating a table flags only scenes and output
-profiles whose actual bound results changed, preserving the others. The
+or axis values are invented. Updating a table flags only dependent scenes
+and profiles whose displayed values **or underlying measurement labels/units**
+changed, preserving unrelated scenes and independent object styles. The
 operations share the existing Semwright Native SDK CAS and project journal.
 
 See [Measured data and units](MEASURED_DATA_UNITS.md) for the boundary

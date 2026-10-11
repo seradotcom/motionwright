@@ -49,11 +49,22 @@ const units=["count","percent","seconds","milliseconds","bytes"] as const;
 const bounded=1_000_000_000;
 const keyPattern=/^[a-z][a-z0-9_]{0,47}$/;
 const sha=/^[0-9a-f]{64}$/;
+const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const prohibitedControl=/\p{Cc}/u;
 function invalid(message:string):never{throw new Error(message);}
+function strictKeys(value:object,keys:readonly string[]):void{
+  const actual=Object.keys(value).sort(),expected=[...keys].sort();
+  if(actual.length!==expected.length || actual.some((key,i)=>key!==expected[i]))
+    invalid("Unknown or missing measured-data schema fields.");
+}
 export function validateMeasuredTable(table:MeasuredTable,project:Project):void{
-  if(table.schema!==schema || !Number.isInteger(table.version) || table.version<1 ||
-    !table.label.trim() || table.label.length>160 || /[\x00-\x1f\x7f]/.test(table.label) ||
-    table.rows.length<1 || table.rows.length>64 || !sha.test(table.source_sha256))
+  strictKeys(table,["schema","id","label","version","source_asset_id","source_sha256","rows"]);
+  if(table.schema!==schema || !uuidPattern.test(table.id) ||
+    !uuidPattern.test(table.source_asset_id) ||
+    !Number.isInteger(table.version) || table.version<1 ||
+    !table.label.trim() || table.label.length>160 || prohibitedControl.test(table.label) ||
+    !Array.isArray(table.rows) || table.rows.length<1 ||
+    table.rows.length>64 || !sha.test(table.source_sha256))
     invalid("Measured source/schema/budget invalid.");
   const asset=project.assets.find(a=>a.id===table.source_asset_id);
   if(!asset || !["application/json","text/csv"].includes(asset.media_type) ||
@@ -61,8 +72,11 @@ export function validateMeasuredTable(table:MeasuredTable,project:Project):void{
     invalid("Measured table SHA-256 must match an imported JSON/CSV asset.");
   const keys=new Set<string>();
   for(const row of table.rows){
+    if(row===null || typeof row!=="object" || Array.isArray(row))
+      invalid("Invalid measured datum.");
+    strictKeys(row,["key","label","milli","unit"]);
     if(!keyPattern.test(row.key) || keys.has(row.key) || !row.label.trim() ||
-      row.label.length>120 || /[\x00-\x1f\x7f]/.test(row.label) ||
+      row.label.length>120 || prohibitedControl.test(row.label) ||
       !Number.isInteger(row.milli) || Math.abs(row.milli)>bounded ||
       !units.includes(row.unit))
       invalid("Invalid or duplicate measured datum.");
@@ -71,9 +85,11 @@ export function validateMeasuredTable(table:MeasuredTable,project:Project):void{
 }
 export function validateMeasuredView(view:MeasuredView):void{
   if(view.kind==="counter" || view.kind==="label"){
+    strictKeys(view,["kind","decimals"]);
     if(!Number.isInteger(view.decimals) || view.decimals<0 || view.decimals>3)
       invalid("Invalid measured precision.");
   }else if(view.kind==="bar"){
+    strictKeys(view,["kind","axis_min_milli","axis_max_milli","max_width_px"]);
     if(!Number.isInteger(view.axis_min_milli)||!Number.isInteger(view.axis_max_milli)||
        !Number.isInteger(view.max_width_px)||view.axis_min_milli < -bounded ||
        view.axis_max_milli > bounded || view.axis_min_milli>=view.axis_max_milli ||
@@ -182,6 +198,9 @@ export function applyMeasuredTable(project:Project,table:MeasuredTable):void{
       invalid("Measured update requires new source hash and next version.");
   }else if(table.version!==1 || design.measured_tables.length>=16)
     invalid("New measured table requires version 1 and available capacity.");
+  const semanticChanges=new Set((old?.rows??[])
+    .filter(previous=>!sameValue(previous,table.rows.find(row=>row.key===previous.key)))
+    .map(previous=>previous.key));
   const affected=new Set<string>(),keys=new Set<string>();
   const updates:{binding:MeasuredBinding;output:MeasuredOutput}[]=[];
   for(const binding of design.measured_bindings.filter(b=>b.table_id===table.id)){
@@ -190,13 +209,14 @@ export function applyMeasuredTable(project:Project,table:MeasuredTable):void{
     const datum=table.rows.find(row=>row.key===binding.datum_key);
     if(!datum)invalid("Bound datum cannot disappear on measured update.");
     const output=measuredOutput(datum,binding.view);
-    if(!sameValue(output,binding.baseline)){
+    if(!sameValue(output,binding.baseline) || semanticChanges.has(binding.datum_key)){
       keys.add(binding.datum_key);affected.add(binding.scene_id);
     }
     updates.push({binding,output});
   }
   for(const {binding,output} of updates){
     if(!sameValue(output,binding.baseline))writeOutput(project,binding,output);
+    else if(semanticChanges.has(binding.datum_key))nodeFor(project,binding).scene.status="draft";
     binding.baseline=output;
   }
   if(old)design.measured_tables[design.measured_tables.findIndex(d=>d.id===table.id)]=structuredClone(table);

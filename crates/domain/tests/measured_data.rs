@@ -414,3 +414,94 @@ fn detach_retains_editable_canvas_and_legacy_serialization_keeps_empty_state() {
     let design: ProductionDesign = serde_json::from_value(legacy).unwrap();
     assert!(design.measured_tables.is_empty() && design.measured_bindings.is_empty());
 }
+
+#[test]
+fn changed_metric_meaning_invalidates_dependents_even_if_bar_and_counter_pixels_are_unchanged() {
+    let (mut p, id, assets, scenes, nodes) = seed();
+    p.apply_change(&Change::UpsertMeasuredTable {
+        table: table(&assets[0], id, 1, 12500),
+    })
+    .unwrap();
+    bind(
+        &mut p,
+        Uuid::new_v4(),
+        scenes[0],
+        nodes[0],
+        id,
+        "conversion",
+        MeasuredView::Counter { decimals: 1 },
+    )
+    .unwrap();
+    bind(
+        &mut p,
+        Uuid::new_v4(),
+        scenes[0],
+        nodes[1],
+        id,
+        "conversion",
+        MeasuredView::Bar {
+            axis_min_milli: 0,
+            axis_max_milli: 100000,
+            max_width_px: 800,
+        },
+    )
+    .unwrap();
+    let same_pixels = p.scenes[0].nodes.clone();
+    p.scenes[0].status = SceneStatus::Approved;
+    p.scenes[1].status = SceneStatus::Approved;
+    let independent = p.scenes[1].clone();
+    let mut changed = table(&assets[1], id, 2, 12500);
+    changed.rows[0].label = "The underlying measurement definition changed".into();
+    p.apply_change(&Change::UpsertMeasuredTable { table: changed })
+        .unwrap();
+    assert_eq!(
+        p.scenes[0].nodes, same_pixels,
+        "a semantic-only change must not fabricate a new visual rendering"
+    );
+    assert_eq!(p.scenes[0].status, SceneStatus::Draft);
+    assert_eq!(p.scenes[1], independent);
+    let impact = p.production_design.last_measured_impact.as_ref().unwrap();
+    assert_eq!(impact.changed_keys, vec!["conversion"]);
+    assert_eq!(impact.scene_ids, vec![scenes[0]]);
+    assert_eq!(impact.deliverable_ids, vec![p.deliverables[0].id]);
+
+    // Preserve a separately reviewed unit-only change, even though the
+    // explicit bar's normalized width cannot convey unit semantics visually.
+    let (mut q, id, assets, scenes, nodes) = seed();
+    q.apply_change(&Change::UpsertMeasuredTable {
+        table: table(&assets[0], id, 1, 12500),
+    })
+    .unwrap();
+    bind(
+        &mut q,
+        Uuid::new_v4(),
+        scenes[0],
+        nodes[1],
+        id,
+        "conversion",
+        MeasuredView::Bar {
+            axis_min_milli: 0,
+            axis_max_milli: 100000,
+            max_width_px: 800,
+        },
+    )
+    .unwrap();
+    q.scenes[0].status = SceneStatus::Approved;
+    let original_width = q.scenes[0].nodes[1].width;
+    let mut changed_unit = table(&assets[1], id, 2, 12500);
+    changed_unit.rows[0].unit = MeasuredUnit::Seconds;
+    q.apply_change(&Change::UpsertMeasuredTable {
+        table: changed_unit,
+    })
+    .unwrap();
+    assert_eq!(q.scenes[0].nodes[1].width, original_width);
+    assert_eq!(q.scenes[0].status, SceneStatus::Draft);
+    assert_eq!(
+        q.production_design
+            .last_measured_impact
+            .as_ref()
+            .unwrap()
+            .changed_keys,
+        vec!["conversion"]
+    );
+}
