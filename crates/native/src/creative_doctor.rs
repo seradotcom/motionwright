@@ -459,7 +459,7 @@ mod tests {
             "session_file",
             "socket",
             "connection_file",
-            "effect_grant",
+            "effect_grant_token",
             "C:\\",
             "/home/",
         ] {
