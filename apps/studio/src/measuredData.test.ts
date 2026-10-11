@@ -98,9 +98,11 @@ describe("measured data and explicit units",()=>{
     expect(()=>validateMeasuredTable({...t,label:"Control\u0085sequence"},project)).toThrow(/schema/);
     expect(()=>validateMeasuredTable({...t,untrusted_expression:"alert(1)"} as MeasuredTable,project))
       .toThrow(/Unknown or missing/);
-    expect(()=>validateMeasuredTable({...t,rows:[{...t.rows[0],extra_source_claim:true}]} as MeasuredTable,project))
+    // Intentional malformed wire payload: the test must bypass static typing,
+    // while runtime validation still rejects the extra source field.
+    expect(()=>validateMeasuredTable({...t,rows:[{...t.rows[0],extra_source_claim:true}]} as unknown as MeasuredTable,project))
       .toThrow(/Unknown or missing/);
-    expect(()=>measuredOutput(t.rows[0],{...barView,unapproved_axis:"fake"} as MeasuredView))
+    expect(()=>measuredOutput(t.rows[0],{...barView,unapproved_axis:"fake"} as unknown as MeasuredView))
       .toThrow(/Unknown or missing/);
     let p=await applyChange(project,{type:"upsert_measured_table",table:t});
     p=await applyChange(p,{type:"upsert_measured_binding",binding_id:counterId,
