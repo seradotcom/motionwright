@@ -452,3 +452,48 @@ fn fixture_state_claim_tampering_is_rejected_even_with_matching_imported_digests
         assert!(project.production_design.captures.is_empty());
     }
 }
+
+#[test]
+fn registered_capture_portable_bundle_keeps_source_assets_and_historical_generation() {
+    let folder = tempfile::tempdir().unwrap();
+    let service = StudioService::open(folder.path().join("capture-origin.sqlite3")).unwrap();
+    let (project, record) = prepare(&service, folder.path());
+    let recorded = apply(
+        &service,
+        &project,
+        "capture-source-for-bundle",
+        Change::RegisterCaptureSource {
+            record: record.clone(),
+        },
+    );
+    let bundle = folder.path().join("capture-portable.motionwright");
+    let exported = service.export_project_bundle(recorded.id, &bundle).unwrap();
+    assert_eq!(exported.blobs.len(), recorded.assets.len());
+    let imported_service =
+        StudioService::open(folder.path().join("capture-import.sqlite3")).unwrap();
+    let plan = imported_service.inspect_project_bundle(&bundle).unwrap();
+    assert!(plan.project.rotates_generation);
+    let imported = imported_service.import_project_bundle(&bundle).unwrap();
+    assert_eq!(imported.id, recorded.id);
+    assert_ne!(imported.generation, recorded.generation);
+    assert_eq!(imported.revision, recorded.revision);
+    assert_eq!(imported.production_design.captures, vec![record]);
+    assert_eq!(imported.assets, recorded.assets);
+    assert_eq!(imported.brief, recorded.brief);
+    imported.validate().unwrap();
+    let old_capture = imported.production_design.captures[0].clone();
+    assert_ne!(old_capture.source_generation, imported.generation);
+    assert!(
+        imported_service
+            .apply(
+                imported.id,
+                &imported.stamp(),
+                "no-duplicate-after-import",
+                &Change::RegisterCaptureSource {
+                    record: old_capture
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(imported_service.project(imported.id).unwrap(), imported);
+}

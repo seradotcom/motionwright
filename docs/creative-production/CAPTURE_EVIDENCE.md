@@ -120,6 +120,14 @@ the persisted project. These tests do not modify the durable project state. The
 tests use an explicitly synthetic 1440 ? 940 PNG raster under tooling/testdata,
 not a claimed real browser capture.
 
+Portable .motionwright bundle acceptance exports all three imported source
+Assets, their immutable capture-source registry entry, and the exact authored
+claim. Import into a fresh project rotates the current generation but retains
+the historical capture generation and original blob digests without rewriting
+source provenance. Duplicate admission after import remains rejected. This
+is a portability contract, not external window capture or media playback.
+
+
 New source-contract tests exercise source-identity mismatch, future or
 foreign revision, incorrect digest, missing evidence asset, redaction
 tampering, project locks, source removal and durable SQLite replay.
