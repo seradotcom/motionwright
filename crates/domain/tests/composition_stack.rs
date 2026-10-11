@@ -55,6 +55,9 @@ struct Suite {
 }
 fn integrated() -> Suite {
     let mut p = Project::new("Multiple bounded original creative sources").unwrap();
+    // Source revision is explicit in this in-memory domain model. Content
+    // byte verification belongs to SQLite Store and its independent tests.
+    p.revision = 7;
     let stage_scene = add_scene(&mut p, "ProductStage");
     let procedural_scene = add_scene(&mut p, "Procedural");
     let measured_scene = add_scene(&mut p, "Measured");
@@ -117,6 +120,69 @@ fn integrated() -> Suite {
         view: MeasuredView::Label { decimals: 1 },
     })
     .unwrap();
+    // Capture is the fourth independent source domain in this project.
+    // Domain tests use declared hashes only; SQLite tests verify actual blobs.
+    let observed = p.revision;
+    p.apply_change(&Change::AddClaim {
+        text: "The original first-party Studio fixture contains a visible screen.".into(),
+        context: "synthetic-first-party-capture-validation".into(),
+        source: Some(SourceReference::ProjectRevision { revision: observed }),
+        source_revision: Some("fixture-studio-v1".into()),
+    })
+    .unwrap();
+    for (index, mime, digest) in [
+        (1, "image/png", "c"),
+        (2, "application/json", "d"),
+        (3, "application/json", "e"),
+    ] {
+        p.apply_change(&Change::AddAsset {
+            asset: Asset {
+                id: Uuid::parse_str(&format!("00000000-0000-4000-8000-{index:012}")).unwrap(),
+                name: format!("Declared synthetic capture source {index}"),
+                media_type: mime.into(),
+                content_sha256: Some(digest.repeat(64)),
+                source_revision: Some("synthetic in-memory fixture, not byte validated".into()),
+            },
+        })
+        .unwrap();
+    }
+    let capture = CaptureSourceRecord {
+        schema: CAPTURE_RECORD_SCHEMA.into(),
+        id: Uuid::new_v4(),
+        screenshot_asset_id: Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap(),
+        screenshot_sha256: "c".repeat(64),
+        manifest_asset_id: Uuid::parse_str("00000000-0000-4000-8000-000000000002").unwrap(),
+        manifest_sha256: "d".repeat(64),
+        fixture_state_asset_id: Uuid::parse_str("00000000-0000-4000-8000-000000000003").unwrap(),
+        fixture_state_sha256: "e".repeat(64),
+        claim_id: p.brief.claims.last().unwrap().id,
+        source_project_id: p.id,
+        source_generation: p.generation,
+        source_revision: observed,
+        app_id: "motionwright-studio".into(),
+        app_version: "0.1.0".into(),
+        source_commit: "f".repeat(40),
+        scenario_id: "production-original-ui-local-v1".into(),
+        origin: "http://127.0.0.1:1420".into(),
+        route: "/".into(),
+        viewport_width: 1440,
+        viewport_height: 940,
+        device_scale_factor: 1,
+        screenshot_repeat_sha256: "c".repeat(64),
+        redaction: CaptureMask {
+            selector: ".revision-chip".into(),
+            x: 100,
+            y: 40,
+            width: 80,
+            height: 24,
+            mask_color: "#0B0B0B".into(),
+        },
+        external_requests: 0,
+        credential_fields: 0,
+        declared_scope: "first-party-synthetic-fixture-only".into(),
+    };
+    p.apply_change(&Change::RegisterCaptureSource { record: capture })
+        .unwrap();
     p.validate().unwrap();
     Suite {
         project: p,
@@ -171,6 +237,9 @@ fn source_bound_stage_measurement_and_procedural_objects_can_share_project_witho
             .contains("12.5%")
     );
     assert_eq!(p.production_design.measured_bindings.len(), 1);
+    let original_capture = p.production_design.captures[0].clone();
+    let original_claim = p.brief.claims.last().unwrap().clone();
+    assert_eq!(p.production_design.captures.len(), 1);
     assert_eq!(p.production_design.stages[0].id, stage_instance);
     assert_eq!(
         p.production_design.procedural_fields[0].id,
@@ -232,6 +301,8 @@ fn source_bound_stage_measurement_and_procedural_objects_can_share_project_witho
     let impact = p.production_design.last_measured_impact.as_ref().unwrap();
     assert_eq!(impact.scene_ids, vec![measured_scene]);
     assert_eq!(impact.changed_keys, vec!["rate"]);
+    assert_eq!(p.production_design.captures, vec![original_capture.clone()]);
+    assert_eq!(p.brief.claims.last(), Some(&original_claim));
 
     let mut new_stage = stage_config();
     new_stage.screen_heading = "The new original workflow".into();
@@ -249,6 +320,8 @@ fn source_bound_stage_measurement_and_procedural_objects_can_share_project_witho
         p.scenes.iter().find(|s| s.id == measured_scene).unwrap(),
         &updated
     );
+    assert_eq!(p.production_design.captures, vec![original_capture]);
+    assert_eq!(p.brief.claims.last(), Some(&original_claim));
     p.validate().unwrap();
     let restored: Project = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
     assert_eq!(restored, p);

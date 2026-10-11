@@ -1,4 +1,4 @@
-# Integrated creative composition — Motionwright v0.5
+# Integrated creative composition â€” Motionwright v0.5
 
 Status: **bounded integration, not complete v0.5 acceptance**.
 
@@ -21,15 +21,21 @@ Semwright Native SDK application and Studio Production workstation:
 
 ## Integrated technical acceptance
 
-Rust domain integration tests construct three independent scenes within one
-project. A revised metric must leave the generic product stage and procedural
-objects/camera unchanged; an authored stage copy change must preserve
-procedural and metric output. The source project must round-trip through
-serialization. A mandatory shared BrandProfile blocks colors not allowed for
-both stage and procedural original components.
+Rust domain integration tests construct three independent creative scenes
+within one project, plus an immutable first-party capture source registry and
+its original authored claim. A revised metric must leave the generic product
+stage, procedural objects/camera and capture record unchanged; an authored
+stage copy change must preserve procedural, metric and capture source state.
+The source project must round-trip through serialization, retaining all four
+source families. A mandatory shared BrandProfile blocks unauthorized colors
+for both stage and procedural original components.
 
-Studio TypeScript integration tests reproduce the same independent project
-changes and mandatory BrandProfile refusals.
+Studio TypeScript integration tests reproduce all four source families, the
+independent project changes, immutable claim provenance and BrandProfile
+refusals. These domain/unit fixtures use declared source hashes only:
+actual imported JSON/PNG byte equality and mask-pixel coverage are separately
+proved by canonical SQLite and browser/native CI. The in-memory test is not
+misrepresented as physical screenshot evidence.
 
 Independent exact-SHA workflows produce actual native Film H.264/AAC masters
 for the original Stage, procedural generator and measured source, plus actual
