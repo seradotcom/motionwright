@@ -181,14 +181,26 @@ def inspect_decoded_audio(pcm: bytes, *, expected_seconds: float = EXPECTED_SECO
     }
 
 
-def inspect_decoded_video(pixels: bytes) -> dict:
-    """Reject a static/blank encode of an actually moving canonical Film tile."""
+def inspect_decoded_video(pixels: bytes, *, expect_movement: bool = True) -> dict:
+    """Distinguish moving/still *actual* MP4 frames; no fallback synthetic pixels.
+
+    The static test is opt-in and requires nonblank content plus a stable
+    between-frame decode. Existing moving-film contracts remain unchanged.
+    """
     size = FRAME_WIDTH * FRAME_HEIGHT * 3
     _require(len(pixels) == 2 * size, "Decoded MP4 does not expose the requested frames 0 and 30")
     first, middle = pixels[:size], pixels[size:]
     changed = sum(abs(a - b) >= VIDEO_DIFF_THRESHOLD for a, b in zip(first, middle))
-    _require(changed >= MIN_CHANGED_CHANNEL_BYTES,
-             "Decoded native master has no meaningful pixel movement between frame 0 and frame 30")
+    if expect_movement:
+        _require(changed >= MIN_CHANGED_CHANNEL_BYTES,
+                 "Decoded native master has no meaningful pixel movement between frame 0 and frame 30")
+    else:
+        _require(changed < MIN_CHANGED_CHANNEL_BYTES,
+                 "Declared static procedural film unexpectedly changes between frames")
+        # Independently checked at native/source-object positions by
+        # procedural_native_evidence; this is only a nonblank decoder check.
+        _require(max(first) - min(first) >= 45,
+                 "Static decoded native master is visually blank/monochromatic")
     return {
         "compared_frames": list(FRAMES_TO_COMPARE),
         "decoded_sample_width": FRAME_WIDTH,
@@ -196,7 +208,8 @@ def inspect_decoded_video(pixels: bytes) -> dict:
         "changed_channel_bytes": changed,
         "first_frame_rgb_sha256": hashlib.sha256(first).hexdigest(),
         "middle_frame_rgb_sha256": hashlib.sha256(middle).hexdigest(),
-        "video_movement_decoded": True,
+        "video_movement_decoded": expect_movement,
+        "video_stable_nonblank": not expect_movement,
     }
 
 
@@ -244,7 +257,8 @@ def verify_generated_tone_wav(source: Path, *, seconds: float = EXPECTED_SECONDS
 
 def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path,
                      *, expected_frames: int = FRAME_COUNT,
-                     expected_size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict:
+                     expected_size: tuple[int, int] = (WIDTH, HEIGHT),
+                     expect_movement: bool = True) -> dict:
     _require((expected_frames, *expected_size) in ALLOWED_PROFILES,
              "Native AV probe profile is outside the fixed CI fixtures")
     seconds = expected_frames / FPS_NUM
@@ -275,10 +289,13 @@ def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path
         "-vf", r"select=eq(n\,0)+eq(n\,30),scale=160:90:flags=bicubic,format=rgb24",
         "-vsync", "0", "-f", "rawvideo", "pipe:1",
     ], max_bytes=2 * FRAME_WIDTH * FRAME_HEIGHT * 3)
-    video_report = inspect_decoded_video(pixels)
+    video_report = inspect_decoded_video(pixels, expect_movement=expect_movement)
     return {
-        "evidence_scope": ("actual_decoded_h264_aac_two_second_fixture_only"
-                           if expected_frames == 60 else "actual_decoded_h264_aac_six_second_hero_fixture"),
+        "evidence_scope": (
+            "actual_decoded_h264_aac_two_second_fixture_only" if expected_frames == 60
+            else "actual_decoded_h264_aac_six_second_hero_fixture" if expect_movement
+            else "actual_decoded_h264_aac_six_second_static_procedural_fixture"
+        ),
         "source_wav_sha256": hash_file(source_wav),
         "master_sha256": hash_file(master),
         **stream_report,

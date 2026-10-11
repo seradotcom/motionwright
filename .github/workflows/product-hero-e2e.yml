@@ -5,13 +5,18 @@ on:
   pull_request:
     paths:
       - 'crates/domain/**'
+      - 'crates/native/src/lib.rs'
       - 'crates/native/src/component_text.rs'
       - 'crates/native/src/expressive.rs'
       - 'crates/native/src/film.rs'
       - 'crates/native/examples/native-render-e2e.rs'
       - 'tooling/native_av_master_e2e.py'
       - 'tooling/creative_frame_evidence.py'
+      - 'tooling/procedural_native_evidence.py'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
       - 'tooling/native_tests/test_creative_frame_evidence.py'
+      - 'tooling/native_tests/test_procedural_native_evidence.py'
       - '.github/workflows/product-hero-e2e.yml'
   push:
     branches: ['main', 'feat/v05-creative-production']
@@ -150,6 +155,9 @@ jobs:
       - name: Exercise spatial regression guardrails against synthetic failures
         run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
 
+      - name: Reject blank and deceptive procedural PNG studies
+        run: python3 -m unittest discover -s tooling/native_tests -p 'test_procedural_native_evidence.py' -v
+
       - name: Render and inspect nine native semantic composition variants
         run: |
           set -euo pipefail
@@ -157,6 +165,15 @@ jobs:
           for aspect in landscape portrait square split-landscape split-portrait split-square metric-landscape metric-portrait metric-square; do
             MOTIONWRIGHT_E2E_FIXTURE="$aspect" python3 tooling/native_av_master_e2e.py \
               | tee "verification/product-hero-e2e/$aspect.log"
+          done
+
+      - name: Render original procedural static and motion masters
+        run: |
+          set -euo pipefail
+          mkdir -p verification/procedural-field-e2e
+          for mode in procedural-static procedural-motion; do
+            MOTIONWRIGHT_E2E_FIXTURE="$mode" python3 tooling/native_av_master_e2e.py |
+              tee "verification/procedural-field-e2e/$mode.log"
           done
 
       - name: Check exact-SHA native evidence, editable source and technical master
@@ -197,6 +214,53 @@ jobs:
               assert result["decoded_stereo_channel_identity"] == "confirmed_distinct_source_tones"
               print(aspect, "native source, timing, decoded master and spatial proof verified; human creative review still required")
           PY_VERIFY
+
+      - name: Verify procedural native source, contact sheet and decoded MP4 proof
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_PROCEDURAL'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/procedural-field-e2e") / os.environ["GITHUB_SHA"]
+          for mode in ("procedural-static", "procedural-motion"):
+              folder = root / mode
+              result = json.loads((folder / "result.json").read_text())
+              inspection = json.loads((folder / "procedural-native-inspection.json").read_text())
+              seed = result["project"]
+              assert result["native_av_master_e2e"] == "PASS"
+              assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+              assert seed["fixture"] == f"procedural-field-{mode.removeprefix('procedural-')}/1"
+              assert result["frame_count"] == result["decoded_video_frames"] == 180
+              assert (seed["width"], seed["height"]) == (1920, 1080)
+              assert inspection["revision"] == seed["revision"]
+              assert inspection["generation"] == seed["generation"]
+              assert inspection["source_sha"] == os.environ["GITHUB_SHA"]
+              assert inspection["semwright_sha"] == result["semwright_sha"]
+              assert inspection["technical_sampling"] == "PASS"
+              assert inspection["creative_approval"] == "required"
+              assert seed["source_generation_rotated"] is True
+              assert (folder / "procedural.motionwright" / "manifest.json").is_file()
+              source_hash = hashlib.sha256((folder / "editable-project.json").read_bytes()).hexdigest()
+              assert inspection["source_project_sha256"] == source_hash
+              sheet = inspection["contact_sheet"]
+              assert hashlib.sha256((folder / sheet["path"]).read_bytes()).hexdigest() == sheet["sha256"]
+              master_digest = hashlib.sha256((folder / "motionwright-master.mp4").read_bytes()).hexdigest()
+              assert result["master_sha256"] == inspection["decoded_master"]["mp4_sha256"] == master_digest
+              assert inspection["decoded_master"]["technical_sampling"] == "PASS"
+              assert result["procedural_native_pixel_evidence"] == hashlib.sha256(
+                  (folder / "procedural-native-inspection.json").read_bytes()
+              ).hexdigest()
+              print(mode, "original native render and decoded MP4 verified; creative review required")
+          PY_PROCEDURAL
+
+      - name: Upload procedural native design-review artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: procedural-native-${{ github.sha }}
+          path: verification/procedural-field-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload native design-review artifacts
         if: always()

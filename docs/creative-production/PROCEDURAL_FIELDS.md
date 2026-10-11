@@ -60,8 +60,30 @@ subsequent generator update fail until the node is restored or generator detache
 link and retains all already generated Canvas nodes for manual authorship.
 
 The panel shows an explicitly labeled **editorial preview**, not a native
-renderer acceptance receipt. Motionwright's ordinary native render and video
-validation must still be run for any quality or fidelity claim.
+renderer acceptance receipt.
+
+### CI-only native design evidence
+
+The pinned Semwright/Motion Canvas/MLT pipeline now authors two additional
+six-second 1920x1080 project fixtures: `procedural-static` and
+`procedural-motion`. Each uses the real Driver Host and produces H.264/AAC
+MP4 (synthetic distinct-channel stereo tones only, **not sound design**),
+180 native PNG frames, `editable-project.json` and portable
+`procedural.motionwright`. Import rotates the generation and rejects
+writes using the previous generation.
+
+`tooling/procedural_native_evidence.py` inspects original native frames at
+12 exact authored object positions, rejects blank/unchanged animated frames,
+detects missing static objects and produces a four-frame contact sheet.
+It independently decodes frames 0 and 120 from the **delivered MP4**.
+Existing decoded AV acceptance still requires motion by default, allowing
+non-moving video only when explicitly declared static, nonblank and stable.
+The MP4, pixel evidence and source are commit/digest-bound in a separate
+`procedural-native-<SHA>` GitHub Actions artifact.
+
+**This is a technical design test, not aesthetic approval.** The new CI
+work must pass for its exact commit; final creative review of the MP4 by a
+human remains required.
 
 ## Current boundary
 
@@ -81,3 +103,10 @@ Tests: `crates/domain/tests/procedural_fields.rs`,
 rendering and packaging run on GitHub Actions, not the author's workstation.
 
 The Semwright Native SDK application driver exposes typed, revision-bound `procedural-field.upsert` and `procedural-field.detach` operations. No parallel backend is added.
+
+Evidence modules: tooling/native_av_master_e2e.py,
+tooling/procedural_native_evidence.py,
+tooling/native_tests/test_procedural_native_evidence.py,
+tooling/tests/test_native_av_media_probe.py and
+.github/workflows/product-hero-e2e.yml (shared pinned runner, additional
+procedural evidence artifact).

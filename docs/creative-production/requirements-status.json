@@ -341,7 +341,7 @@
       "id": "MW05-E06-04",
       "implementation": "partial",
       "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E",
-      "remaining_scope": "Advanced temporal fields/forces, GPU/nonnative renderer benchmarking, creative production proof and real artistic review",
+      "remaining_scope": "Actual procedural MP4 and pixel-evidence CI must pass for the exact HEAD, human creative review is outstanding; richer temporal fields, native performance benchmarking and additional procedural families remain open",
       "source_paths": [
         "crates/domain/src/procedural.rs",
         "crates/domain/tests/procedural_fields.rs",
@@ -349,7 +349,12 @@
         "apps/studio/src/proceduralField.test.ts",
         "apps/studio/src/ProceduralFieldWorkbench.tsx",
         "apps/studio/tests/procedural-field.spec.ts",
-        "docs/creative-production/PROCEDURAL_FIELDS.md"
+        "docs/creative-production/PROCEDURAL_FIELDS.md",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/procedural_native_evidence.py",
+        "tooling/native_tests/test_procedural_native_evidence.py",
+        ".github/workflows/product-hero-e2e.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
