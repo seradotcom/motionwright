@@ -40,7 +40,7 @@ See [Measured data and units](MEASURED_DATA_UNITS.md) for the boundary
 between **independently verified JSON/CSV blob bytes** and unverified
 measurement truth/rights. The SQLite CAS re-parses the exact imported bytes
 before committing declared rows; Studio requires the same file SHA-256.
-General ETL/series, cache regeneration and creative approval remain open.
+A separate pinned native CI experiment renders an explicitly synthetic two-version JSON source into editable measured Canvas primitives and decodes a six-second H.264/AAC MP4; this proof is not admitted until the exact branch SHA passes. General ETL/series, cache regeneration and creative approval remain open.
 
 ## Data and migration contracts
 

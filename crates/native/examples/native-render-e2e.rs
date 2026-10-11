@@ -577,6 +577,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "seed-measured" => {
+            let database = path_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_measured(&database, &project_json)
+        }
         "seed-hero" => {
             let database = path_arg(&mut args);
             let aspect = text_arg(&mut args);
@@ -793,9 +801,308 @@ fn seed_hero(
     Ok(())
 }
 
+/// The source values here are plainly synthetic technical test fixtures,
+/// not real product metrics, measured conversions, or marketing claims.
+/// Actual versioned JSON source files are ingested into the owner-local CAS.
+fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use motionwright_domain::{
+        MEASURED_DATA_SCHEMA, MeasuredDatum, MeasuredTable, MeasuredUnit, MeasuredView,
+    };
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("measured native fixture requires empty database".into());
+    }
+    let mut project = service.create_project("SYNTHETIC measured-data native E2E")?;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-native-scene",
+            &Change::AddScene {
+                name: "Synthetic figures / technical fixture".into(),
+                objective:
+                    "Render source-bound native Canvas shapes, not certified campaign statistics"
+                        .into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = project.scenes[0].id;
+
+    // The underlying file and its exact digest are owned by the existing
+    // StudioService asset importer, not by a new data execution path.
+    let source_one = project_json.with_file_name("synthetic-measured-v1.json");
+    let source_two = project_json.with_file_name("synthetic-measured-v2.json");
+    let input = |milli: i64| -> Vec<MeasuredDatum> {
+        vec![MeasuredDatum {
+            key: "rate".into(),
+            label: "Synthetic rate".into(),
+            milli,
+            unit: MeasuredUnit::Percent,
+        }]
+    };
+    fs::write(&source_one, serde_json::to_vec(&input(12500))?)?;
+    fs::write(&source_two, serde_json::to_vec(&input(37500))?)?;
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "measured-source-v1",
+            &source_one,
+            "SYNTHETIC numeric data v1.json".into(),
+            "application/json".into(),
+        )?
+        .project;
+    let asset_one = project
+        .assets
+        .last()
+        .ok_or("missing imported source v1")?
+        .clone();
+    let table_id = Uuid::parse_str("00000000-0000-4000-8000-000000000092")?;
+    let table = |version: u32, asset: &motionwright_domain::Asset, milli: i64| MeasuredTable {
+        schema: MEASURED_DATA_SCHEMA.into(),
+        id: table_id,
+        label: "Synthetic data verification".into(),
+        version,
+        source_asset_id: asset.id,
+        source_sha256: asset.content_sha256.clone().unwrap_or_default(),
+        rows: input(milli),
+    };
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-table-v1",
+            &Change::UpsertMeasuredTable {
+                table: table(1, &asset_one, 12500),
+            },
+        )?
+        .project;
+
+    let label_id = Uuid::parse_str("00000000-0000-4000-8000-000000000093")?;
+    let bar_id = Uuid::parse_str("00000000-0000-4000-8000-000000000094")?;
+    let label = CanvasNode {
+        id: label_id,
+        name: "Source-bound synthetic metric".into(),
+        kind: "text".into(),
+        parent_id: None,
+        x: 340.0,
+        y: 240.0,
+        width: 1250.0,
+        height: 150.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: Some("Before source binding".into()),
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 0,
+        style: NodeStyle {
+            fill: Some("#F2F4F3".into()),
+            font_family: Some("Instrument Sans Variable".into()),
+            font_size: Some(56.0),
+            font_weight: Some(600),
+            line_height: Some(1.1),
+            ..Default::default()
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    let bar = CanvasNode {
+        id: bar_id,
+        name: "Explicit 0–100% synthetic bar".into(),
+        kind: "rectangle".into(),
+        parent_id: None,
+        x: 340.0,
+        y: 480.0,
+        width: 800.0,
+        height: 72.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: None,
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 0,
+        style: NodeStyle {
+            fill: Some("#A5C8DF".into()),
+            ..Default::default()
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    for (index, node) in [label, bar, real_linear_motion_tile()]
+        .into_iter()
+        .enumerate()
+    {
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("measured-native-canvas-{index}"),
+                &Change::AddCanvasNode { scene_id, node },
+            )?
+            .project;
+    }
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-native-label",
+            &Change::UpsertMeasuredBinding {
+                binding_id: Uuid::parse_str("00000000-0000-4000-8000-000000000096")?,
+                scene_id,
+                node_id: label_id,
+                table_id,
+                datum_key: "rate".into(),
+                view: MeasuredView::Label { decimals: 1 },
+            },
+        )?
+        .project;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-native-bar",
+            &Change::UpsertMeasuredBinding {
+                binding_id: Uuid::parse_str("00000000-0000-4000-8000-000000000097")?,
+                scene_id,
+                node_id: bar_id,
+                table_id,
+                datum_key: "rate".into(),
+                view: MeasuredView::Bar {
+                    axis_min_milli: 0,
+                    axis_max_milli: 100000,
+                    max_width_px: 800,
+                },
+            },
+        )?
+        .project;
+    let expected_initial = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == bar_id)
+        .ok_or("missing initial measured bar")?
+        .width;
+    if expected_initial != 100.0 {
+        return Err("source v1 projection did not produce 100 pixels".into());
+    }
+
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "measured-source-v2",
+            &source_two,
+            "SYNTHETIC numeric data v2.json".into(),
+            "application/json".into(),
+        )?
+        .project;
+    let asset_two = project
+        .assets
+        .last()
+        .ok_or("missing imported source v2")?
+        .clone();
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-table-v2",
+            &Change::UpsertMeasuredTable {
+                table: table(2, &asset_two, 37500),
+            },
+        )?
+        .project;
+    let projected_label = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == label_id)
+        .ok_or("missing projected label")?;
+    let projected_bar = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == bar_id)
+        .ok_or("missing projected bar")?;
+    if projected_label.text.as_deref() != Some("Synthetic rate · 37.5%")
+        || projected_bar.width != 300.0
+        || project
+            .production_design
+            .last_measured_impact
+            .as_ref()
+            .is_none_or(|impact| {
+                impact.scene_ids != vec![scene_id] || impact.changed_keys != vec!["rate"]
+            })
+    {
+        return Err("real source change was not projected or invalidated deterministically".into());
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    file.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    let bundle = project_json.with_file_name("measured.motionwright");
+    service.export_project_bundle(project.id, &bundle)?;
+    let temp = tempfile::tempdir()?;
+    let restored = StudioService::open(temp.path().join("import.sqlite3"))?;
+    let inspected = restored.inspect_project_bundle(&bundle)?;
+    let imported = restored.import_project_bundle(&bundle)?;
+    if !inspected.project.rotates_generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.generation == project.generation
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err(
+            "measured native portable bundle changed sourced Canvas or revision authority".into(),
+        );
+    }
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture":"measured-data/1",
+            "project_id":project.id,"resource":project.resource_key(),
+            "generation":project.generation,"revision":project.revision,
+            "scene_id":scene_id,"deliverable_id":deliverable.id,
+            "width":deliverable.width,"height":deliverable.height,
+            "frame_count":180,
+            "bar_x":projected_bar.x,"bar_y":projected_bar.y,
+            "bar_width_px":300,
+            "source_v1_sha256":asset_one.content_sha256,
+            "source_v2_sha256":asset_two.content_sha256,
+            "measured_table_id":table_id,
+            "portable_bundle":"measured.motionwright",
+            "source_generation_rotated":true,
+            "creative_approval":"required",
+            "source_truth":"synthetic_fixture_not_real_world_measurement"
+        }))?
+    );
+    Ok(())
+}
+
 fn expected_fixture_frames(
     project: &motionwright_domain::Project,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    if let [table] = project.production_design.measured_tables.as_slice() {
+        let bindings = &project.production_design.measured_bindings;
+        if table.version != 2
+            || bindings.len() != 2
+            || project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != 3
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err(
+                "measured data native fixture drifted from its exact six-second contract".into(),
+            );
+        }
+        return Ok(180);
+    }
     if project.production_design.heroes.is_empty() {
         return Ok(60);
     }

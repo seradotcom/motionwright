@@ -339,8 +339,8 @@
     {
       "id": "MW05-E06-03",
       "implementation": "partial",
-      "implemented_scope": "Versioned source-bound numeric JSON-array or exact four-column CSV table snapshots admitted only after SQLite CAS reads and hashes the actual imported bytes and compares every typed row; fixed-point units and precision, editable Canvas counter/label/explicit-axis-bar bindings, human-edit protection, targeted scene/profile dependency notices, Studio exact-file SHA256 source selector and Native SDK operations",
-      "remaining_scope": "General CSV/ETL and live feeds, scientific accuracy/provenance/rights attestation, multi-row time series and chart library, actual derived render-cache invalidation and independently approved native MP4/creative review remain open",
+      "implemented_scope": "Versioned source-bound numeric JSON-array or exact four-column CSV table snapshots admitted only after SQLite CAS reads and hashes the actual imported bytes and compares every typed row; fixed-point units and precision, editable Canvas counter/label/explicit-axis-bar bindings, human-edit protection, targeted scene/profile dependency notices, Studio exact-file SHA256 source selector and Native SDK operations; dedicated source-pinned Semwright real MP4 acceptance workflow for synthetic imported JSON revisions, original PNG and independently decoded H.264 pixel gates (pending exact-HEAD CI)",
+      "remaining_scope": "New six-second native measured video still needs exact-HEAD CI and human creative review; external measurement truth/method/rights, general CSV/ETL, temporal data series/advanced charts and real derived-cache purge remain unimplemented",
       "source_paths": [
         "crates/domain/src/measured_data.rs",
         "crates/domain/tests/measured_data.rs",
@@ -352,7 +352,12 @@
         "apps/studio/src/MeasuredDataWorkbench.tsx",
         "apps/studio/tests/measured-data.spec.ts",
         "docs/creative-production/MEASURED_DATA_UNITS.md",
-        "crates/storage/src/lib.rs"
+        "crates/storage/src/lib.rs",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/measured_native_evidence.py",
+        "tooling/native_tests/test_measured_native_evidence.py",
+        ".github/workflows/measured-data-native-e2e.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

@@ -107,6 +107,35 @@ that a request whose values disagree with a genuine stored JSON file is
 rejected without changing the durable project or revision. This is part of
 the existing Storage transaction admission path, not a second data service.
 
+## CI-only native measured graphic proof (not real-world measurements)
+
+An isolated GitHub Actions workflow, measured-data-native-e2e.yml, uses
+the exact pinned Semwright Broker, Motion Canvas and MLT render providers.
+Its seed imports two genuine, immutable JSON source files containing explicitly
+**SYNTHETIC numeric fixture values**. The first version projects a label and a
+100-pixel bounded bar; the second verified source revision projects the label
+as “Synthetic rate · 37.5%” and a 300-pixel bar, preserving object IDs.
+A separate known decorative rectangle moves so the 180-frame H.264/AAC
+decode can demonstrate actual non-static native video without pretending the
+counter is an observed dynamic time series.
+
+The sample is a real owner-local StudioService/CAS project with versioned
+measured tables, two bindings and a portable measured.motionwright bundle.
+The workflow verifies its source SHA-256 bytes, generation rotation, JSON
+row version, exact source Canvas text and bar width, and independently decodes
+the rendered MP4. Original Motion Canvas PNG regions are checked for
+nonblank label, visible bar and bounded width. The resulting evidence includes
+four sampled native frames, a contact sheet, decoded MP4 samples, SHA-256
+identities and an unambiguous synthetic-source label. No OCR, chart-data
+fabrication or external render path is substituted.
+
+Five adversarial Python tests exercise the negative pixel gate using explicitly
+synthetic images. Synthetic negative tests are **never** promoted to
+positive render evidence. The pinned workflow output remains technically
+**NOT VERIFIED** until the exact HEAD completes successfully. Even a green
+workflow requires separate human creative approval and does not certify
+scientific truth, licenses or rights.
+
 All new acceptance remains pending until CI passes the exact pushed revision.
 No extra Core, scheduler, privileged execution route or spreadsheet backend
 is introduced. Broader externally audited measurement ingestion and real
