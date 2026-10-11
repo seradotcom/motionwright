@@ -594,6 +594,7 @@ export type Change =
   | { type: "set_scene_renderer"; scene_id: string; renderer: RendererKind }
   | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
   | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
+  | { type: "snap_scene_cut_to_music"; scene_id: string; beat_index: number; source_sha256: string; base_revision: number; acknowledge_absolute_anchors: boolean }
   | { type: "upsert_scene_beat"; scene_id: string; beat: Beat }
   | { type: "remove_scene_beat"; scene_id: string; beat_id: string }
   | { type: "add_canvas_node"; scene_id: string; node: CanvasNode }

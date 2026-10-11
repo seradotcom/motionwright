@@ -1,0 +1,99 @@
+name: Musical Clock and Cut Conformance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/domain/**"
+      - "crates/service/**"
+      - "crates/native/**"
+      - "apps/studio/src/MusicClockWorkbench.tsx"
+      - "apps/studio/src/musicClock*"
+      - "apps/studio/src/ProductionDesignWorkspace.tsx"
+      - "apps/studio/tests/music-clock.spec.ts"
+      - "docs/creative-production/**"
+      - ".github/workflows/music-clock.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "crates/domain/**"
+      - "crates/service/**"
+      - "crates/native/**"
+      - "apps/studio/src/musicClock*"
+      - "apps/studio/src/MusicClockWorkbench.tsx"
+      - "apps/studio/src/ProductionDesignWorkspace.tsx"
+      - ".github/workflows/music-clock.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python3 tooling/source_policy.py
+      - run: python3 tooling/creative_status_policy.py
+
+  rust-contracts:
+    needs: source-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p motionwright-domain --test music_clock -- --nocapture
+      - run: cargo test -p motionwright-service --test music_cut_persistence -- --nocapture
+      - run: cargo test -p motionwright-native --lib music_clock_contract_tests -- --nocapture
+      - run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+
+  studio-contracts:
+    needs: source-contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/musicClock.test.ts
+      - run: npm run build
+
+  browser-acceptance:
+    needs: studio-contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/music-clock.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: music-clock-browser-evidence
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore

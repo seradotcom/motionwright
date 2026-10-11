@@ -730,6 +730,7 @@ enum OperationKind {
     SetSceneRenderer,
     SetSceneStatus,
     SetSceneDuration,
+    SnapSceneCutToMusic,
     AddCanvasNode,
     RemoveCanvasNode,
     TransformCanvasNode,
@@ -978,6 +979,24 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 status,
             })
         }
+        OperationKind::SnapSceneCutToMusic => Ok(Change::SnapSceneCutToMusic {
+            scene_id: uuid(args, "scene_id")?,
+            beat_index: args
+                .get("beat_index")
+                .and_then(Value::as_u64)
+                .filter(|index| *index < 20_000)
+                .and_then(|index| usize::try_from(index).ok())
+                .ok_or_else(|| Error::invalid("beat_index must be within the music grid"))?,
+            source_sha256: string(args, "source_sha256", 64)?,
+            base_revision: args
+                .get("base_revision")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| Error::invalid("base_revision is required"))?,
+            acknowledge_absolute_anchors: args
+                .get("acknowledge_absolute_anchors")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| Error::invalid("explicit acknowledgement is required"))?,
+        }),
         OperationKind::SetSceneDuration => {
             let duration = serde_json::from_value(
                 args.get("duration")
@@ -1587,6 +1606,31 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         }
                     }),
                     &["ref", "scene_id", "duration"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SnapSceneCutToMusic,
+            descriptor(
+                "scene.music.cut.snap",
+                "Snap one editorial scene end to a saved author-marked musical beat; preserve absolute cues and require scoped impact acknowledgement",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "scene_id": {"type":"string","format":"uuid","maxLength":64},
+                        "beat_index": {"type":"integer","minimum":0,"maximum":19999},
+                        "source_sha256": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+                        "base_revision": {"type":"integer","minimum":0},
+                        "acknowledge_absolute_anchors": {"type":"boolean"}
+                    }),
+                    &[
+                        "ref",
+                        "scene_id",
+                        "beat_index",
+                        "source_sha256",
+                        "base_revision",
+                        "acknowledge_absolute_anchors",
+                    ],
                 ),
             ),
         ),
@@ -3429,5 +3473,76 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod music_clock_contract_tests {
+    use super::*;
+
+    #[test]
+    fn native_sdk_parses_exact_source_and_revision_bound_cut_intent() {
+        let scene_id = Uuid::new_v4();
+        let digest = "a".repeat(64);
+        let arguments = json!({
+            "ref": "opaque-application-ref",
+            "scene_id": scene_id.to_string(),
+            "beat_index": 3,
+            "source_sha256": digest,
+            "base_revision": 8,
+            "acknowledge_absolute_anchors": false,
+        });
+        match change_from_args(OperationKind::SnapSceneCutToMusic, &arguments).unwrap() {
+            Change::SnapSceneCutToMusic {
+                scene_id: actual,
+                beat_index,
+                source_sha256,
+                base_revision,
+                acknowledge_absolute_anchors,
+            } => {
+                assert_eq!(actual, scene_id);
+                assert_eq!(beat_index, 3);
+                assert_eq!(source_sha256, "a".repeat(64));
+                assert_eq!(base_revision, 8);
+                assert!(!acknowledge_absolute_anchors);
+            }
+            _ => panic!("the Native SDK mapped the wrong semantic mutation"),
+        }
+    }
+
+    #[test]
+    fn native_sdk_requires_explicit_impact_acknowledgement_and_bounded_indices() {
+        let valid = json!({
+            "ref": "opaque-application-ref",
+            "scene_id": Uuid::new_v4().to_string(),
+            "beat_index": 0,
+            "source_sha256": "a".repeat(64),
+            "base_revision": 0,
+            "acknowledge_absolute_anchors": false,
+        });
+        for key in [
+            "scene_id",
+            "beat_index",
+            "source_sha256",
+            "base_revision",
+            "acknowledge_absolute_anchors",
+        ] {
+            let mut changed = valid.clone();
+            changed.as_object_mut().unwrap().remove(key);
+            assert!(
+                change_from_args(OperationKind::SnapSceneCutToMusic, &changed).is_err(),
+                "{key} cannot be omitted"
+            );
+        }
+        let mut changed = valid.clone();
+        changed["beat_index"] = json!(20_000);
+        assert!(change_from_args(OperationKind::SnapSceneCutToMusic, &changed).is_err());
+        changed["beat_index"] = json!(-1);
+        assert!(change_from_args(OperationKind::SnapSceneCutToMusic, &changed).is_err());
+        changed["beat_index"] = json!(3.5);
+        assert!(change_from_args(OperationKind::SnapSceneCutToMusic, &changed).is_err());
+        changed["beat_index"] = json!(0);
+        changed["acknowledge_absolute_anchors"] = json!("yes");
+        assert!(change_from_args(OperationKind::SnapSceneCutToMusic, &changed).is_err());
     }
 }

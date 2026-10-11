@@ -9,6 +9,7 @@ import { defaultHeroConfig, emptyProductionDesign, realizeProductHero, sameValue
 import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind, NativeCapsule } from "./creativeProduction";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import BrandTasteWorkbench from "./BrandTasteWorkbench";
+import MusicClockWorkbench from "./MusicClockWorkbench";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import "./production-design.css";
 
@@ -106,7 +107,7 @@ function defaultPlan(project:Project):ProductionPlan {
   return {objective:project.brief.objective || "",audience:project.brief.audience || "",concept:project.narrative.premise || "",reference_constraints:[],exclusions:["Do not present a graphic study as observed product behavior."],
     shots:project.scenes.map(scene => ({scene_id:scene.id,purpose:scene.objective || scene.name,claim_ids:[],asset_ids:[],evidence_kind:"graphic_study"})),clock:{kind:"timeline"},approval:null};
 }
-function PlanWorkbench({project,commit,busy}:{project:Project;commit:Commit;busy:boolean}) {
+function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Commit;busy:boolean;onSeek:(time:number)=>void}) {
   const stored = project.production_design?.plan;
   const [draft,setDraft] = useState<ProductionPlan>(() => structuredClone(stored ?? defaultPlan(project)));
   const [base,setBase] = useState(project.revision);
@@ -127,9 +128,23 @@ function PlanWorkbench({project,commit,busy}:{project:Project;commit:Commit;busy
     <label className="production-field"><span>Creative concept</span><textarea rows={4} value={draft.concept} onChange={e => patch({concept:e.target.value})}/></label>
     <div className="production-plan-grid"><label className="production-field"><span>Reference-derived constraints · one per line</span><textarea rows={4} value={draft.reference_constraints.join("\n")} onChange={e => patch({reference_constraints:e.target.value.split("\n")})}/></label>
       <label className="production-field"><span>Exclusions · one per line</span><textarea rows={4} value={draft.exclusions.join("\n")} onChange={e => patch({exclusions:e.target.value.split("\n")})}/></label></div>
-    <label className="production-field"><span>Governing clock</span><select value={draft.clock.kind === "voice" ? draft.clock.voice_track_id : draft.clock.kind} onChange={e => patch({clock:e.target.value === "timeline" ? {kind:"timeline"} : {kind:"voice",voice_track_id:e.target.value}})}>
-      <option value="timeline">Timeline</option>{project.audio.voice_tracks.map(track => <option key={track.id} value={track.id}>Measured voice · {track.id.slice(0,8)}</option>)}
-      {draft.clock.kind === "music" && <option value="music" disabled>Measured music clock · retained</option>}</select></label>
+    <label className="production-field"><span>Governing clock</span><select aria-label="Production governing clock" value={draft.clock.kind === "voice" ? draft.clock.voice_track_id : draft.clock.kind} onChange={e => {
+      const selection=e.target.value;
+      if (selection==="timeline") patch({clock:{kind:"timeline"}});
+      else if (selection==="music") {
+        const source=project.assets.find(asset=>asset.media_type.startsWith("audio/") && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""));
+        if (!source) {setError("Import a SHA-256 verified audio asset before selecting the music clock.");return;}
+        patch({clock:{kind:"music",asset_id:source.id,beats:[{num:"0",den:"1"}]}});
+      } else patch({clock:{kind:"voice",voice_track_id:selection}});
+    }}>
+      <option value="timeline">Editorial timeline</option>
+      {project.audio.voice_tracks.map(track => <option key={track.id} value={track.id}>Measured voice · {track.label}</option>)}
+      <option value="music" disabled={!project.assets.some(asset=>asset.media_type.startsWith("audio/") && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""))}>Music · author-marked beat grid</option>
+    </select></label>
+    {draft.clock.kind==="music" && <MusicClockWorkbench project={project} draftClock={draft.clock} storedPlan={stored}
+      draftMatchesSaved={sameValue(draft,stored)} baseRevision={base} busy={busy} onSeek={onSeek} commit={commit}
+      onClockChange={clock=>patch({clock})}/>}
+
     <div className="production-shot-list"><h3>Shot and evidence plan</h3>{draft.shots.map((shot,i) => <div className="production-shot" key={shot.scene_id}>
       <strong>{String(i+1).padStart(2,"0")} / {project.scenes.find(s => s.id===shot.scene_id)?.name ?? "Missing scene"}</strong>
       <label className="production-field"><span>Purpose</span><textarea rows={2} value={shot.purpose} onChange={e => patch({shots:draft.shots.map((s,j)=>j===i?{...s,purpose:e.target.value}:s)})}/></label>

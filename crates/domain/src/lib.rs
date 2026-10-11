@@ -7,6 +7,7 @@ mod extensions;
 mod hero;
 mod history;
 mod integrations;
+mod music_clock;
 mod production_design;
 pub use brand_governance::*;
 pub use canvas::*;
@@ -17,6 +18,7 @@ pub use extensions::*;
 pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use music_clock::*;
 pub use production_design::*;
 
 use chrono::{DateTime, Utc};
@@ -1313,6 +1315,19 @@ impl Project {
                     return Err(DomainError::NotFound(format!("beat:{beat_id}")));
                 }
             }
+            Change::SnapSceneCutToMusic {
+                scene_id,
+                beat_index,
+                source_sha256,
+                base_revision,
+                acknowledge_absolute_anchors,
+            } => self.snap_scene_cut_to_music(
+                *scene_id,
+                *beat_index,
+                source_sha256,
+                *base_revision,
+                *acknowledge_absolute_anchors,
+            )?,
             Change::SetSceneDuration { scene_id, duration } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Timing])?;
@@ -2351,6 +2366,15 @@ pub enum Change {
     SetSceneDuration {
         scene_id: Uuid,
         duration: RationalTime,
+    },
+    /// Explicit edit of a single cut against the persisted, owner-marked
+    /// music grid; never move existing absolute audio/marker timestamps.
+    SnapSceneCutToMusic {
+        scene_id: Uuid,
+        beat_index: usize,
+        source_sha256: String,
+        base_revision: u64,
+        acknowledge_absolute_anchors: bool,
     },
     UpsertSceneBeat {
         scene_id: Uuid,
