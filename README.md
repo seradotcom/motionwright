@@ -31,7 +31,7 @@ The desktop editor is organized around:
 
 ## Product acceptance and independent evidence
 
-The public repository tracks 208 requirement IDs and 60 independent product acceptance IDs without publishing the private specification. Automated implementation tests do **not** promote acceptance cases to PASS. The [private review intake](docs/acceptance/REVIEW_INTAKE.md) creates source-SHA-bound, separately reviewed evidence records outside the public checkout, validates actual file SHA-256 and never self-certifies a result. Current independent acceptance remains `NOT_RUN` until executed and reviewed.
+The public repository tracks 208 requirement IDs and 60 independent product acceptance IDs without publishing the private specification. Automated implementation tests do **not** promote acceptance cases to PASS. The [private review intake](docs/acceptance/REVIEW_INTAKE.md) creates source-SHA-bound, separately reviewed evidence records outside the public checkout, validates actual file SHA-256 and never self-certifies a result. Current independent acceptance remains `NOT_RUN` until executed and reviewed. The [source-bound v0.1.0 release-readiness report](docs/v01-release-readiness.md) assembles open implementation, security, signing and external evaluation gates without converting successful CI into publication authority.
 
 ## Native SDK
 

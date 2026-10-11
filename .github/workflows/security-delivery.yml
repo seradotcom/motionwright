@@ -10,6 +10,10 @@ on:
       - "crates/service/**"
       - "tooling/source_policy.py"
       - "tooling/release_manifest.py"
+      - "tooling/v01_release_readiness.py"
+      - "docs/v01-release-readiness.md"
+      - "docs/acceptance/**"
+      - "docs/security/known-rustsec-advisories.json"
       - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
       - "tooling/tests/**"
@@ -31,6 +35,10 @@ on:
       - "crates/service/**"
       - "tooling/source_policy.py"
       - "tooling/release_manifest.py"
+      - "tooling/v01_release_readiness.py"
+      - "docs/v01-release-readiness.md"
+      - "docs/acceptance/**"
+      - "docs/security/known-rustsec-advisories.json"
       - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
       - "tooling/tests/**"
@@ -76,6 +84,18 @@ jobs:
         with:
           name: motionwright-delivery-manifest
           path: ci-evidence/delivery-manifest.json
+          if-no-files-found: error
+      - name: Produce exact-source v0.1.0 release-blocker assessment
+        run: |
+          python3 tooling/v01_release_readiness.py \
+            --source-sha "$(git rev-parse HEAD)" \
+            --expect-blocked \
+            --output ci-evidence/v01-release-readiness.json
+          python3 -m json.tool ci-evidence/v01-release-readiness.json > /dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-v01-release-readiness
+          path: ci-evidence/v01-release-readiness.json
           if-no-files-found: error
 
   dependency-advisories:
