@@ -1068,12 +1068,22 @@ fn build_segment(
     let (text_style, type_scale) =
         text_styles(&scene_refs, &options.font_family, projection.object_scale)?;
     let stroke = global_stroke(&scene_refs, projection.object_scale)?;
-    let component_texts = project
+    // Bound ProductStage text must remain within authored screen-anchor
+    // glyph boxes. Reuse the proven native fixed-component text grammar
+    // rather than allowing provider auto-layout to shift or drop text.
+    let mut component_texts = project
         .production_design
         .heroes
         .iter()
         .flat_map(|hero| hero.baseline.iter().map(|node| node.id))
         .collect::<BTreeSet<_>>();
+    component_texts.extend(project.production_design.stages.iter().flat_map(|stage| {
+        stage
+            .baseline
+            .iter()
+            .filter(|node| node.kind == "text")
+            .map(|node| node.id)
+    }));
     let shot_context = ShotProjectionContext {
         component_texts: &component_texts,
         profile,

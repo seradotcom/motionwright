@@ -718,6 +718,8 @@ enum OperationKind {
     UndoCreativePatch,
     UpsertProductHero,
     DetachProductHero,
+    UpsertProductStage,
+    DetachProductStage,
     SetProductionPlan,
     UpsertNativeCapsule,
     ApplyCreativePatch,
@@ -886,6 +888,19 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             .map_err(|_| Error::invalid("invalid ProductHeroReveal config"))?,
         }),
         OperationKind::DetachProductHero => Ok(Change::DetachProductHero {
+            instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::UpsertProductStage => Ok(Change::UpsertProductStage {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid owned ProductStage configuration"))?,
+        }),
+        OperationKind::DetachProductStage => Ok(Change::DetachProductStage {
             instance_id: uuid(args, "instance_id")?,
         }),
         OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
@@ -2177,6 +2192,53 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertProductStage,
+            descriptor(
+                "product-stage.upsert",
+                "Author or replace a rights-attested original UI study on generic browser/panel/handset anchors",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64},
+                        "scene_id":{"type":"string","format":"uuid","maxLength":64},
+                        "config":{
+                            "type":"object",
+                            "properties":{
+                                "frame":{"type":"string","enum":["browser","flat_panel","generic_handset"]},
+                                "screen_heading":{"type":"string","minLength":1,"maxLength":40},
+                                "screen_detail":{"type":"string","minLength":1,"maxLength":80},
+                                "action_label":{"type":"string","minLength":1,"maxLength":20},
+                                "author_attestation":{"type":"string","minLength":1,"maxLength":160},
+                                "screen_surface":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "foreground":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "accent":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "focus_x_permille":{"type":"integer","minimum":150,"maximum":850},
+                                "focus_y_permille":{"type":"integer","minimum":200,"maximum":800},
+                                "animate_focus":{"type":"boolean"}
+                            },
+                            "required":["frame","screen_heading","screen_detail","action_label","author_attestation",
+                                "screen_surface","foreground","accent","focus_x_permille",
+                                "focus_y_permille","animate_focus"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProductStage,
+            descriptor(
+                "product-stage.detach",
+                "Release generic stage ownership without deleting or flattening its editable Canvas objects",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64}}),
+                    &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetProductionPlan,
             descriptor(
                 "production-plan.set",
@@ -2478,9 +2540,11 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
+        assert!(names.contains(&"driver.motionwright.product-stage.upsert"));
+        assert!(names.contains(&"driver.motionwright.product-stage.detach"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
-        assert_eq!(capabilities.len(), 52);
+        assert_eq!(capabilities.len(), 54);
     }
 
     #[tokio::test]

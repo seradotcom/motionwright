@@ -1,6 +1,7 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
+import { applyProductStageChange, validateProductStages } from "./productStage";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
@@ -910,6 +911,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "upsert_product_stage":
+    case "detach_product_stage":
+      await applyProductStageChange(next,change);
+      break;
     case "upsert_product_hero":
     case "detach_product_hero":
     case "set_production_plan":
@@ -1796,6 +1801,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  await validateProductStages(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");

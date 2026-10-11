@@ -366,10 +366,23 @@
     },
     {
       "id": "MW05-E07-01",
-      "implementation": "not_implemented",
-      "implemented_scope": "Typographic graphic study is not ProductStage",
-      "remaining_scope": "Real screen/device anchors and authorized replacement content required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations",
+      "remaining_scope": "Rights-cleared original screenshot/visual asset binding, reproducible authorized real capture, textured 3D devices, native cinematic camera/light, independent MP4 acceptance and human creative review remain open",
+      "source_paths": [
+        "crates/domain/src/product_stage.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/src/production_design.rs",
+        "crates/domain/tests/product_stage.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/src/film.rs",
+        "crates/native/tests/product_stage.rs",
+        "apps/studio/src/productStage.ts",
+        "apps/studio/src/productStage.test.ts",
+        "apps/studio/src/ProductStageWorkbench.tsx",
+        "apps/studio/tests/product-stage.spec.ts",
+        "docs/creative-production/PRODUCT_STAGE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
