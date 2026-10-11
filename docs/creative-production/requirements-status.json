@@ -285,7 +285,7 @@
     {
       "id": "MW05-E05-03",
       "implementation": "partial",
-      "implemented_scope": "Two exact editable first-party composition families: ProductHeroReveal and SplitExplanation, three reflowed aspects, stable roles, native Film projection and source-derived Rust/Studio parity",
+      "implemented_scope": "Three bounded editable first-party composition families: ProductHeroReveal, SplitExplanation and MetricEvidence, three reflowed aspects, stable roles, native Film projection and source-derived Rust/Studio parity; MetricEvidence source claims remain explicitly unverified and its CI evidence pending",
       "remaining_scope": "The remaining candidate component families, real client use and individually reviewed aesthetic/render evidence are not implemented or certified",
       "source_paths": [
         "crates/domain/src/hero.rs",
@@ -293,6 +293,8 @@
         "apps/studio/src/creativeProduction.ts",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
         "apps/studio/tests/split-explanation.spec.ts",
+        "apps/studio/tests/metric-evidence.spec.ts",
+        "crates/domain/tests/production_design.rs",
         "apps/studio/conformance/creativeParity.test.ts"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"

@@ -3,7 +3,7 @@ import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } fro
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
-export type HeroLayout = "product_hero_reveal" | "split_explanation";
+export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence";
 export interface HeroConfig {
   /** Optional for legacy format-2 projects. Rust defaults absent layouts to ProductHeroReveal. */
   layout?: HeroLayout;
@@ -53,7 +53,7 @@ function textBudget(value: string, max: number, label: string) {
   if (!value.trim() || new TextEncoder().encode(value).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid " + label);
 }
 export function validateHero(config: HeroConfig) {
-  if (config.layout !== undefined && config.layout !== "product_hero_reveal" && config.layout !== "split_explanation") throw new Error("Unsupported semantic component layout.");
+  if (config.layout !== undefined && config.layout !== "product_hero_reveal" && config.layout !== "split_explanation" && config.layout !== "metric_evidence") throw new Error("Unsupported semantic component layout.");
   for (const [key, max] of [["eyebrow", 48], ["headline", 64], ["body", 150], ["wordmark", 8]] as const) {
     if (!config[key].trim() || Array.from(config[key]).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(config[key])) throw new Error("Hero " + key + " exceeds the layout budget or contains control characters.");
   }
@@ -99,6 +99,7 @@ function entryKeys(node: CanvasNode, start: number, end: number, offset: number,
 export async function realizeProductHero(id: string, config: HeroConfig, w = 1920, h = 1080): Promise<CanvasNode[]> {
   validateHero(config);
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 320 || h < 320 || w > 7680 || h > 7680) throw new Error("Hero output dimensions are out of bounds.");
+  if (config.layout === "metric_evidence") return realizeMetricEvidence(id,config,w,h);
   const portrait = h > w, square = h === w, split = config.layout === "split_explanation", scale = Math.min(w,h) / 1080, left = w * .09;
   const [headlineY, bodyY, markX, markY, markW, markH] = split && portrait ? [h*.20,h*.67,left,h*.565,w*.60,h*.045]
     : split && square ? [h*.17,h*.65,left,h*.55,w*.65,h*.07]
@@ -252,4 +253,43 @@ export async function applyProductionDesignChange(project: Project, change: Prod
     case "apply_creative_patch": throw new Error("Use previewCreativePatch and the shared atomic patch handler.");
   }
   project.production_design = design;
+}
+
+
+/** Rust-mirrored editorial MetricEvidence. User-authored facts are not verified
+ * measurements; the disclosure remains visible in native output and revisions. */
+async function realizeMetricEvidence(id: string, config: HeroConfig, w: number, h: number): Promise<CanvasNode[]> {
+  const portrait = h > w, square = h === w, wide = !portrait && !square;
+  const scale = Math.min(w,h)/1080, left = w*.085;
+  const fact = wrapCopy(config.headline, wide ? 11 : square ? 15 : 13, 3);
+  const explanation = wrapCopy(config.body, wide ? 29 : square ? 32 : 30, 4);
+  const factY = wide ? h*.255 : square ? h*.22 : h*.23;
+  const factH = wide ? h*.43 : square ? h*.30 : h*.25;
+  const factFont = wide ? 120 : square ? 94 : 118;
+  const wordmarkY = wide ? h*.285 : square ? h*.565 : h*.54;
+  const ruleY = wide ? h*.22 : square ? h*.615 : h*.605;
+  const bodyY = wide ? h*.42 : square ? h*.68 : h*.65;
+  const entries: Array<[string,string,number,number,number,number,number,number,number,number,number]> = [
+    ["eyebrow",config.eyebrow,left,h*.085,w*.82,40*scale,23*scale,500,0,500,14*scale],
+    ["headline",fact,left,factY,wide?w*.40:w*.82,factH,factFont*scale,700,120,1060,54*scale],
+    ["body",explanation,wide?w*.62:left,bodyY,wide?w*.30:w*.82,wide?h*.28:h*.16,(wide?34:30)*scale,400,460,1260,24*scale],
+    ["wordmark",config.wordmark,wide?w*.62:left,wordmarkY,wide?w*.30:w*.50,wide?h*.065:square?h*.050:h*.045,(wide?40:square?35:40)*scale,600,160,1460,26*scale],
+    ["rule","",wide?w*.55:left,ruleY,wide?3*scale:w*.82,wide?h*.48:3*scale,0,400,600,1360,10*scale],
+    ["disclosure","METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED",left,h*.905,w*.83,28*scale,17*scale,400,740,1500,10*scale],
+  ];
+  return Promise.all(entries.map(async ([role,text,x,y,width,height,fontSize,weight,start,end,offset],index) => {
+    const isText = role !== "rule";
+    const node: CanvasNode = {
+      id:await heroNodeId(id,role), name:"MetricEvidence / " + role,
+      kind:isText?"text":"rectangle", parent_id:null, x,y,width,height,rotation_deg:0,opacity:1,
+      text:isText?text:null, coordinate_space:"project_pixels", z_index:10+index,
+      style:{fill:role==="headline"||role==="wordmark"||role==="rule"?config.accent:config.foreground,
+        stroke:null,stroke_width:0,font_family:isText?"Instrument Sans Variable":null,
+        font_size:isText?fontSize:null,font_weight:isText?weight:null,
+        line_height:isText?1.12:null,blend_mode:"normal"},
+      relations:[],property_locks:[],keyframes:[],
+    };
+    if (config.motion) node.keyframes = entryKeys(node,start,end,offset,0);
+    return node;
+  }));
 }
