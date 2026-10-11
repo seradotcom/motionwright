@@ -21,7 +21,9 @@ review could establish that. This change does not add such checks.
 ## Historical projects and explicit authorship
 
 Previously persisted projects are still **readable**; no on-disk data is
-deleted, silently migrated or rewritten. A historical attached component whose
+deleted, silently migrated or rewritten. Canonical Native SDK Motion Canvas
+film preflight nevertheless refuses to render an attached study with a
+tampered source notice. A historical attached component whose
 caption was altered needs deliberate source restoration or an explicit
 **Detach, keep objects** operation before any new revision. Detachment retains
 the original canvas objects but removes the semantic-component integrity
@@ -42,8 +44,9 @@ requirements.
 - Studio browser-simulation tests preserve original project state on rejection
 - SQLite service tests confirm that rejected edits cannot change durable
   project/revision, even after re-opening the database
-- Existing source-pinned Native SDK real-render E2Es remain the authority for
-  frame transport, source IDs and actual decoded media
+- Canonical Native Film rejects historical imported tampering even before
+  provider execution; source-pinned Native SDK real-render E2Es remain the
+  authority for frame transport, source IDs and actual decoded media
 
 All of these are engineering conformance checks; 60 independent human creative
 acceptance scenarios remain **NOT_RUN**.

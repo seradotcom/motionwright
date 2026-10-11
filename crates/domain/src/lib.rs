@@ -2262,7 +2262,7 @@ impl Project {
     /// while it remains a managed semantic component. This runs on writes,
     /// not on historical reads, so an older project is never erased on load.
     /// Explicit detachment remains a separate human authoring choice.
-    fn validate_metric_source_notices(&self) -> Result<()> {
+    pub fn validate_metric_source_notices(&self) -> Result<()> {
         for hero in &self.production_design.heroes {
             if hero.config.layout != HeroLayout::MetricEvidence {
                 continue;
