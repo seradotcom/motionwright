@@ -1,6 +1,7 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
+import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
@@ -887,6 +888,18 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
       break;
+    case "upsert_measured_table":
+      next.production_design ??= emptyProductionDesign();
+      applyMeasuredTable(next,change.table);
+      break;
+    case "upsert_measured_binding":
+      next.production_design ??= emptyProductionDesign();
+      applyMeasuredBinding(next,change);
+      break;
+    case "detach_measured_binding":
+      next.production_design ??= emptyProductionDesign();
+      detachMeasuredBinding(next,change.binding_id);
+      break;
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();
@@ -1342,6 +1355,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     case "remove_asset": {
       assertUnlocked(next, projectResource(next), ["content"]);
+      if(next.production_design?.measured_tables?.some(table=>table.source_asset_id===change.asset_id))
+        throw new Error("Asset remains bound to a measured table; relink data before deleting source.");
       if (
         next.audio.voice_tracks.some((track) => track.asset_id === change.asset_id) ||
         next.brief.claims.some((claim) => claim.source?.kind === "asset" && claim.source.asset_id === change.asset_id)
@@ -1767,6 +1782,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  validateMeasuredData(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");

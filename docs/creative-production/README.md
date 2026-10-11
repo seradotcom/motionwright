@@ -28,6 +28,19 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## Source-bound measured graphics (MW05-E06-03)
+
+**Production → Measured data** adds bounded, source-identified tables and
+editable Canvas counter, label and explicitly ranged bar outputs. No metric
+or axis values are invented. Updating a table flags only scenes and output
+profiles whose actual bound results changed, preserving the others. The
+operations share the existing Semwright Native SDK CAS and project journal.
+
+See [Measured data and units](MEASURED_DATA_UNITS.md) for the distinction
+between declared source-asset identity and independently verified measurements.
+Full source ingestion, render-cache invalidation and creative approval remain
+open.
+
 ## Data and migration contracts
 
 Format 1 is read without changing revision or generation. Its first successful edit writes format 2 in the same existing transaction. A failed operation does not upgrade or alter the stored project. New creative state cannot be labeled format 1, and unknown future formats are rejected. The UI exposes the upgrade boundary before editing. This is not an implementation of cross-product legacy import.

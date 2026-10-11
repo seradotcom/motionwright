@@ -338,10 +338,21 @@
     },
     {
       "id": "MW05-E06-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new unit-aware data binding contract",
-      "remaining_scope": "Measured data, formats and dependent invalidation required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Versioned numeric table metadata bound to imported JSON/CSV SHA-256 assets, fixed-point units, editable Canvas counter/label/bar projections with explicit axes and human-edit protection, scoped scene/profile dependency notices on changed values, Studio and Native SDK operations",
+      "remaining_scope": "Actual source-file bytes/row verification and ingestion, measurement methodology/rights review, multi-row time series and general chart library, render-cache invalidation and human creative/native MP4 acceptance remain open",
+      "source_paths": [
+        "crates/domain/src/measured_data.rs",
+        "crates/domain/tests/measured_data.rs",
+        "crates/service/tests/measured_data.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/tests/measured_data.rs",
+        "apps/studio/src/measuredData.ts",
+        "apps/studio/src/measuredData.test.ts",
+        "apps/studio/src/MeasuredDataWorkbench.tsx",
+        "apps/studio/tests/measured-data.spec.ts",
+        "docs/creative-production/MEASURED_DATA_UNITS.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
