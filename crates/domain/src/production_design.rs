@@ -21,6 +21,9 @@ pub struct ProductionDesign {
     pub brand_exceptions: Vec<BrandException>,
     #[serde(default)]
     pub project_decisions: Vec<CreativeDecision>,
+    /// Append-only source records, not certified screenshots or client evidence.
+    #[serde(default)]
+    pub captures: Vec<CaptureSourceRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
