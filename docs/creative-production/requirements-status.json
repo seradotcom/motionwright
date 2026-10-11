@@ -84,10 +84,17 @@
     },
     {
       "id": "MW05-E01-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "Rich mask, blend and effect profiles are not added",
-      "remaining_scope": "Direct-versus-mediated property fixtures remain required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Narrow exact-SHA native Motion Canvas direct-Broker versus Motionwright-mediated frame comparison implemented for one identical source Film (text, geometry, linear X/Y position, linear opacity); result depends on passing real CI, not source code alone",
+      "remaining_scope": "Rich masks, blend/effect profiles, broader property/media fixtures, cross-editor independently realized baselines and human visual comparison remain unimplemented",
+      "source_paths": [
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_render_e2e.py",
+        "tooling/native_direct_mediated_parity.py",
+        "tooling/tests/test_native_direct_mediated_parity.py",
+        ".github/workflows/native-render-e2e.yml",
+        "docs/native-direct-mediated-parity.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

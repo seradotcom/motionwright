@@ -19,6 +19,10 @@ import tomllib
 from pathlib import Path
 
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
+from native_direct_mediated_parity import (
+    DirectParityError, checked_direct_artifact, compare_native_pngs,
+    run_direct_native_film,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -212,6 +216,20 @@ def main() -> None:
         seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
         if (seeded["width"], seeded["height"]) != (1920, 1080):
             raise AssertionError(f"unexpected master profile: {seeded}")
+        # Non-mutating app-owned Film export, exactly the same source fixture
+        # that ProductionCoordinator projects during the mediated render.
+        film_source = EVIDENCE / "motionwright-direct-parity-film.json"
+        canonical_film = run_json(
+            [str(MW_BIN), "film", str(database), str(film_source)], env=env,
+        )
+        if (
+            canonical_film.get("direct_parity_source") != "PASS"
+            or canonical_film.get("project_id") != seeded["project_id"]
+            or canonical_film.get("generation") != seeded["generation"]
+            or canonical_film.get("revision") != seeded["revision"]
+            or canonical_film.get("frame_count") != 60
+        ):
+            raise AssertionError("app-owned direct parity Film is not the pinned project revision")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -455,6 +473,92 @@ def main() -> None:
                     "native opacity tile ROI does not show a bounded progressive 0-to-1 fade across native frames 0/15/30"
                 )
 
+            # A SECOND, DISTINCT, explicitly requested CI-only render follows
+            # the direct Semwright Broker/Driver Host path, using precisely the
+            # Film exported from the same Motionwright project/generation/
+            # revision. This is a separate conformance run, never an automatic
+            # retry of the original mediated render. Any uncertain observation
+            # fails closed and preserves the original job identity.
+            direct = run_direct_native_film(
+                film_file=film_source,
+                executable=SW_BINS / "semwright",
+                socket=socket,
+                session=session,
+                env=env,
+                mediated_job_ref=result["job_ref"],
+                expected_frames=60,
+            )
+            direct_root = checked_direct_artifact(paths["output"], direct["artifact"])
+            if direct_root == artifact_root:
+                raise AssertionError("direct native conformance reused the mediated artifact")
+            direct_manifest_sha = digest(direct_root / "artifact-manifest.json")
+            claimed_direct_sha = direct["artifact"].get("manifest_sha256")
+            if claimed_direct_sha is not None and claimed_direct_sha != direct_manifest_sha:
+                raise AssertionError("direct native manifest digest was not source-bound")
+            # Preserve a few separately inspectable, manifest-bound native
+            # frame pairs even if the *pixel* gate fails. They are genuine
+            # same-fixture source PNGs, not generated diagnostics.
+            for frame_index in [0, 15, 30, 59]:
+                frame_file = f"{frame_index:06}.png"
+                shutil.copyfile(
+                    artifact_root / "frames" / frame_file,
+                    EVIDENCE / f"mediated-native-frame-{frame_index:06}.png",
+                )
+                shutil.copyfile(
+                    direct_root / "frames" / frame_file,
+                    EVIDENCE / f"direct-native-frame-{frame_index:06}.png",
+                )
+            try:
+                parity = compare_native_pngs(artifact_root, direct_root, expected_frames=60)
+            except DirectParityError as error:
+                write_private_json(
+                    EVIDENCE / "native-direct-mediated-diagnostic.json",
+                    {
+                        "schema": "motionwright.native-direct-mediated-diagnostic/1",
+                        "result": "FAIL",
+                        "source_sha": GITHUB_SHA,
+                        "semwright_sha": PIN,
+                        "film_sha256": direct["film_sha256"],
+                        "native_manifest_sha256": {
+                            "mediated": manifest_digest,
+                            "direct": direct_manifest_sha,
+                        },
+                        "reason": str(error),
+                        "native_job_retry": "FORBIDDEN",
+                        "source_pixel_equivalence": "NOT_PROVEN",
+                        "human_visual_acceptance": "NOT_RUN",
+                    },
+                )
+                raise
+            write_private_json(
+                EVIDENCE / "native-direct-mediated-parity.json",
+                {
+                    "schema": "motionwright-native-direct-mediated-parity/1",
+                    "motionwright_sha": GITHUB_SHA,
+                    "semwright_sha": PIN,
+                    "project_generation": seeded["generation"],
+                    "project_revision": seeded["revision"],
+                    "source_film_sha256": direct["film_sha256"],
+                    "direct_mode": direct["scope"],
+                    "mediated_mode": "motionwright_studio_service_native_sdk_coordinator",
+                    "direct_job_distinct_from_mediated": direct["independent_job_confirmed"],
+                    "direct_native_validation_checks": direct["native_validation_checks"],
+                    "direct_status_read_count": direct["status_reads"],
+                    "native_manifest_sha256": {
+                        "direct": direct_manifest_sha,
+                        "mediated": manifest_digest,
+                    },
+                    "compared_properties": [
+                        "exact_linear_xy_position",
+                        "exact_linear_opacity_fade",
+                        "static_geometry_and_native_text",
+                    ],
+                    "pixels": parity,
+                    "human_visual_acceptance": "NOT_RUN",
+                    "arbitrary_renderer_property_parity": "NOT_PROVEN",
+                },
+            )
+
             shutil.copyfile(manifest_file, EVIDENCE / "artifact-manifest.json")
             for source, name in [
                 (frames[0], "frame-first.png"),
@@ -478,6 +582,8 @@ def main() -> None:
                     "frame_count": len(frames),
                     "linear_position_motion_sampled": True,
                     "linear_opacity_motion_sampled": True,
+                    "direct_mediated_native_frame_parity": "PASS",
+                    "direct_mediated_same_film_sha256": direct["film_sha256"],
                     "native_linear_opacity_region": {
                         "scope": "actual_pinned_motion_canvas_png_rgb24_region_only",
                         "rect": [1150, 750, 180, 90],
