@@ -61,3 +61,5 @@ Human design approval is still required. The automated ten-revision tests exerci
 Actual HyperFrames Broker/Driver execution and direct-vs-mediated equivalence, experimental fframes evaluation, the remaining component library, organization-wide BrandProfile/TasteProfile authority and complete property coverage, real app-capture scenarios, ProductStage/3D cinematography, semantic SFX/ducking/mix production, external-project relink/OTIO import, paid generation, dynamic code/skill admission and competitive human pilots remain open work. The existing handoff and Platform boundaries are retained, not declared complete by adding new UI.
 
 See `OWNERSHIP.md` for integration boundaries and `DESIGN_REVIEW.md` for the design-test protocol.
+
+MW05-E06-04 adds bounded, deterministic editable procedural fields in Production. See [PROCEDURAL_FIELDS.md](PROCEDURAL_FIELDS.md) for seeded integer contracts, safe reconfiguration, and remaining limitations; full E06 acceptance is not claimed.

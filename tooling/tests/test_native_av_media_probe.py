@@ -158,6 +158,22 @@ class NativeMediaProbeTests(unittest.TestCase):
         self.assertGreaterEqual(report["changed_channel_bytes"], 85)
         self.assertNotEqual(report["first_frame_rgb_sha256"], report["middle_frame_rgb_sha256"])
 
+    def test_explicit_static_graphic_requires_nonblank_stable_decoded_frames(self):
+        size = probe.FRAME_WIDTH * probe.FRAME_HEIGHT * 3
+        visible = bytearray([15] * size)
+        for position in range(900, 2400):
+            visible[position] = 200
+        report = probe.inspect_decoded_video(bytes(visible + visible), expect_movement=False)
+        self.assertFalse(report["video_movement_decoded"])
+        self.assertTrue(report["video_stable_nonblank"])
+        with self.assertRaisesRegex(probe.MediaProbeError, "monochromatic"):
+            probe.inspect_decoded_video(bytes([15] * (2 * size)), expect_movement=False)
+        changed = bytearray(visible)
+        for position in range(5_000, 6_000):
+            changed[position] = 240
+        with self.assertRaisesRegex(probe.MediaProbeError, "unexpectedly changes"):
+            probe.inspect_decoded_video(bytes(visible + changed), expect_movement=False)
+
     def test_static_or_corrupt_decoded_video_is_rejected(self):
         size = probe.FRAME_WIDTH * probe.FRAME_HEIGHT * 3
         static = bytes([15] * (2 * size))

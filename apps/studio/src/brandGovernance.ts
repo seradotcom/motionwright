@@ -104,14 +104,21 @@ export async function validateBrandGovernance(project:Project):Promise<void> {
         const needle=rule.phrase.toLowerCase();
         violation=scene.nodes.some(n=>n.text?.toLowerCase().includes(needle)) ||
           (!!hero && [hero.config.eyebrow,hero.config.headline,hero.config.body,hero.config.wordmark].some(v=>v.toLowerCase().includes(needle)));
-      } else if (hero && rule.kind==="allowed_accents") {
+      } else if (rule.kind==="allowed_accents") {
         const allowed=(v:string)=>rule.colors.some(c=>c.toLowerCase()===v.toLowerCase());
-        violation=!allowed(hero.config.accent) ||
+        violation=!!hero && (!allowed(hero.config.accent) ||
           scene.nodes.filter(n=>n.id===hero.baseline.find(b=>b.name.endsWith(" / wordmark"))?.id ||
                                 n.id===hero.baseline.find(b=>b.name.endsWith(" / rule"))?.id ||
                                 (hero.config.layout==="metric_evidence" &&
                                  n.id===hero.baseline.find(b=>b.name.endsWith(" / headline"))?.id))
-            .some(n=>n.style.fill===null || !allowed(n.style.fill));
+            .some(n=>n.style.fill===null || !allowed(n.style.fill)));
+        const field=design?.procedural_fields?.find(f=>f.scene_id===scene.id);
+        if(field) {
+          violation ||= !allowed(field.config.fill) || field.baseline.some(base=>{
+            const live=scene.nodes.find(n=>n.id===base.id);
+            return !!live && (live.style.fill===null || !allowed(live.style.fill));
+          });
+        }
       } else if (hero && rule.kind==="required_wordmark") {
         const wordmark=hero.baseline.find(n=>n.name.endsWith(" / wordmark"));
         violation=hero.config.wordmark!==rule.text ||
