@@ -929,22 +929,25 @@ fn projected_shot(
 /// The existing canonical Film render path moves every semantic subject by
 /// the same exact scene-camera displacement. All source objects, text groups,
 /// source IDs and layers stay editable. This is not a 3D or optical dolly.
+struct CameraFilmContext<'a> {
+    scene_start: RationalTime,
+    shot_span: &'a str,
+    frame_rate: Rate,
+    projection: LayoutProjection,
+    output: &'a OutputProfile,
+}
 fn attach_camera_reframe(
     shot: &mut Shot,
     scene: &Scene,
     reframe: &CameraReframe,
-    scene_start: RationalTime,
-    shot_span: &str,
-    frame_rate: Rate,
-    projection: LayoutProjection,
-    output: &OutputProfile,
+    context: &CameraFilmContext<'_>,
     spans: &mut Vec<TemporalSpan>,
     constraints: &mut Vec<TemporalConstraint>,
 ) -> NativeResult<()> {
     reframe
         .validate(scene)
         .map_err(|err| invalid(err.to_string()))?;
-    if frame_rate.num != 30 || frame_rate.den != 1 {
+    if context.frame_rate.num != 30 || context.frame_rate.den != 1 {
         return Err(unsupported(
             "Bounded canonical camera reframe supports exact 30fps deliverables only",
         ));
@@ -957,14 +960,14 @@ fn attach_camera_reframe(
     let mut initial = scene.clone();
     initial.camera.center_x = reframe.start_center_x;
     initial.camera.center_y = reframe.start_center_y;
-    let first_projection = scene_layout_projection(&initial, projection);
-    let last_projection = scene_layout_projection(scene, projection);
+    let first_projection = scene_layout_projection(&initial, context.projection);
+    let last_projection = scene_layout_projection(scene, context.projection);
     for node in &scene.nodes {
         // The original and terminal layouts must be independently valid for
         // this exact output profile. A linear camera translation is a convex
         // path between safe endpoints and thus cannot crop in between.
-        validate_static_safe_area(node, first_projection, output)?;
-        validate_static_safe_area(node, last_projection, output)?;
+        validate_static_safe_area(node, first_projection, context.output)?;
+        validate_static_safe_area(node, last_projection, context.output)?;
     }
     let span = format!("camera-reframe-{}", reframe.id.simple());
     let duration = RationalTime::new(i64::from(reframe.duration_frames), 30)
@@ -974,17 +977,19 @@ fn attach_camera_reframe(
         minimum: duration,
         preferred: duration,
         maximum: duration,
-        anchor: StartAnchor::Absolute { time: scene_start },
+        anchor: StartAnchor::Absolute {
+            time: context.scene_start,
+        },
         preference_priority: 0,
     });
     constraints.push(TemporalConstraint::Contains {
         id: format!("camera-shot-contains-{}", reframe.id.simple()),
-        parent: shot_span.to_owned(),
+        parent: context.shot_span.to_owned(),
         child: span.clone(),
     });
     let shift = Point {
-        x: (reframe.end_center_x - reframe.start_center_x) * projection.position_scale_x,
-        y: (reframe.end_center_y - reframe.start_center_y) * projection.position_scale_y,
+        x: (reframe.end_center_x - reframe.start_center_x) * context.projection.position_scale_x,
+        y: (reframe.end_center_y - reframe.start_center_y) * context.projection.position_scale_y,
     };
     for node in &scene.nodes {
         shot.motion.push(Invocation {
@@ -1315,15 +1320,18 @@ fn build_segment(
                 .iter()
                 .find(|reframe| reframe.scene_id == scene.id)
             {
+                let camera = CameraFilmContext {
+                    scene_start: local_start,
+                    shot_span: &shot_span,
+                    frame_rate: options.frame_rate,
+                    projection,
+                    output: &output,
+                };
                 attach_camera_reframe(
                     &mut shot,
                     scene,
                     reframe,
-                    local_start,
-                    &shot_span,
-                    options.frame_rate,
-                    projection,
-                    &output,
+                    &camera,
                     &mut spans,
                     &mut constraints,
                 )?;
