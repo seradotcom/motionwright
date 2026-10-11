@@ -307,10 +307,17 @@
     },
     {
       "id": "MW05-E06-01",
-      "implementation": "not_implemented",
-      "implemented_scope": "No separate BrandProfile and TasteProfile governance",
-      "remaining_scope": "Organizational rules and scoped campaign exceptions remain open",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Project-local mandatory brand rules, non-authoritative taste, scene/rule/policy-SHA256 campaign exceptions and revisioned creative decisions; Rust/Studio validation",
+      "remaining_scope": "Organization-wide policy distribution and IAM/owner authorization, more properties/formats, full legacy nonconformance migration, human brand review",
+      "source_paths": [
+        "crates/domain/src/brand_governance.rs",
+        "crates/domain/tests/brand_governance.rs",
+        "apps/studio/src/brandGovernance.ts",
+        "apps/studio/src/BrandTasteWorkbench.tsx",
+        "apps/studio/src/brandGovernance.test.ts",
+        "docs/creative-production/BRAND_TASTE_GOVERNANCE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
