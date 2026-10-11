@@ -772,14 +772,21 @@
     {
       "id": "MW05-E14-02",
       "implementation": "partial",
-      "implemented_scope": "Hero hierarchies reflow across three native aspect outputs",
-      "remaining_scope": "Medium-specific narrative cuts, duration and human rhythm review remain open",
+      "implemented_scope": "Hero hierarchies reflow across three native aspect outputs. Delivery now performs source-bound, read-only narrative cut continuity review for omitted scenes, protected content, lost/unsupported claims, localization and exact rational duration before native export.",
+      "remaining_scope": "Independent source authenticity and rights checks, medium-specific human-authored rhythm and complete post-render visual/audible acceptance remain open. A clean editorial preflight is not creative approval.",
       "source_paths": [
         "crates/domain/src/hero.rs",
         "crates/native/src/expressive.rs",
         "crates/native/src/component_text.rs",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
-        "crates/native/tests/product_hero.rs"
+        "crates/native/tests/product_hero.rs",
+        "apps/studio/src/variantContinuity.ts",
+        "apps/studio/src/VariantContinuityReview.tsx",
+        "apps/studio/src/variantContinuity.test.ts",
+        "apps/studio/tests/variant-continuity.spec.ts",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "docs/creative-production/VARIANT_NARRATIVE_CONTINUITY.md",
+        ".github/workflows/variant-continuity.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
