@@ -486,12 +486,21 @@
     {
       "id": "MW05-E08-01",
       "implementation": "partial",
-      "implemented_scope": "Explicit plan clock kinds and rational music beat data",
-      "remaining_scope": "Clock resolution, retiming and cue conflict propagation remain open",
+      "implemented_scope": "Source-digest and revision-bound authored music beat grids, exact rational single-scene cut snapping via Semwright Native SDK, persistence, downstream timing/lock checks and explicit fixed-anchor impact acknowledgement. No automatic music beat detection or audio retiming is claimed.",
+      "remaining_scope": "Measured and rights-admitted music analysis, multi-scene/whole-film retiming, actual mix/cue propagation and independently reviewed audiovisual synchronization remain open.",
       "source_paths": [
         "crates/domain/src/production_design.rs",
+        "crates/domain/src/music_clock.rs",
+        "crates/domain/tests/music_clock.rs",
+        "crates/service/tests/music_cut_persistence.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/MusicClockWorkbench.tsx",
+        "apps/studio/src/musicClock.ts",
+        "apps/studio/src/musicClock.test.ts",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
-        "crates/domain/tests/production_design.rs"
+        "apps/studio/tests/music-clock.spec.ts",
+        "docs/creative-production/MUSIC_BEAT_CUT.md",
+        ".github/workflows/music-clock.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
