@@ -354,10 +354,27 @@
     },
     {
       "id": "MW05-E06-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new unit-aware data binding contract",
-      "remaining_scope": "Measured data, formats and dependent invalidation required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Versioned source-bound numeric JSON-array or exact four-column CSV table snapshots admitted only after SQLite CAS reads and hashes the actual imported bytes and compares every typed row; fixed-point units and precision, editable Canvas counter/label/explicit-axis-bar bindings, human-edit protection, targeted scene/profile dependency notices, Studio exact-file SHA256 source selector and Native SDK operations; dedicated source-pinned Semwright real MP4 acceptance workflow for synthetic imported JSON revisions, original PNG and independently decoded H.264 pixel gates (pending exact-HEAD CI); native Film measured text fixed-container pixel-fidelity correction and semantic-only label/unit changes mark only bound scenes/profiles for review without modifying their Canvas pixels",
+      "remaining_scope": "The previous source-pinned native measured master is technically verified (run 38111676631), but every new commit needs its own exact-HEAD CI; broad CSV/ETL, scientific truth/rights attestation, temporal graphs, physical derived-cache purging and human creative approval remain open",
+      "source_paths": [
+        "crates/domain/src/measured_data.rs",
+        "crates/domain/tests/measured_data.rs",
+        "crates/service/tests/measured_data.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/tests/measured_data.rs",
+        "apps/studio/src/measuredData.ts",
+        "apps/studio/src/measuredData.test.ts",
+        "apps/studio/src/MeasuredDataWorkbench.tsx",
+        "apps/studio/tests/measured-data.spec.ts",
+        "docs/creative-production/MEASURED_DATA_UNITS.md",
+        "crates/storage/src/lib.rs",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/measured_native_evidence.py",
+        "tooling/native_tests/test_measured_native_evidence.py",
+        ".github/workflows/measured-data-native-e2e.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

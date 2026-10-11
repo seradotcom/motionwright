@@ -21,6 +21,15 @@ pub struct ProductionDesign {
     pub brand_exceptions: Vec<BrandException>,
     #[serde(default)]
     pub project_decisions: Vec<CreativeDecision>,
+    /// Versioned, source-bound measured JSON/CSV tables (not live external feeds).
+    #[serde(default)]
+    pub measured_tables: Vec<MeasuredTable>,
+    /// Exact scene+node dependency graph with persisted projection baseline.
+    #[serde(default)]
+    pub measured_bindings: Vec<MeasuredBinding>,
+    /// Latest scoped invalidation notice, not a completed render-cache purge.
+    #[serde(default)]
+    pub last_measured_impact: Option<MeasuredDataImpact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +330,7 @@ impl ProductionDesign {
             scenes,
             &self.heroes,
         )?;
+        self.validate_measured_data(scenes, assets)?;
         if self.heroes.len() > 64 || self.capsules.len() > 256 {
             return Err(DomainError::Invalid(
                 "production design collection is too large".into(),

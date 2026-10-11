@@ -263,6 +263,118 @@ pub struct ProjectEvent {
     pub created_at: String,
 }
 
+/// Check every blob-path component before opening any source file. The
+/// source directory and the shard must be regular non-symlink directories.
+fn checked_existing_blob_path_from_root(blob_root: &Path, digest: &str) -> Result<PathBuf> {
+    validate_digest(digest)?;
+    let dirs = [
+        blob_root.to_path_buf(),
+        blob_root.join("sha256"),
+        blob_root.join("sha256").join(&digest[..2]),
+    ];
+    for directory in &dirs {
+        match ensure_regular_directory(directory, "content-addressed source directory") {
+            Ok(_) => {}
+            Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StorageError::BlobMissing {
+                    digest: digest.to_owned(),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let path = blob_root.join("sha256").join(&digest[..2]).join(digest);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+            Err(StorageError::UnsafeSourcePath(
+                "content-addressed blob leaf must be a regular non-symlink file".into(),
+            ))
+        }
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(StorageError::BlobMissing {
+                digest: digest.to_owned(),
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
+    let path = checked_existing_blob_path_from_root(blob_root, digest)?;
+    let size = ensure_regular_file(&path, "content-addressed blob")?.len();
+    if size > limit {
+        return Err(StorageError::BlobTooLarge { size, limit });
+    }
+    let bytes = fs::read(path)?;
+    if hex::encode(Sha256::digest(&bytes)) != digest {
+        return Err(StorageError::InvalidBackup(
+            "content-addressed blob failed digest verification".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Compare the actual content-addressed source bytes against the declared,
+/// bounded measurement snapshot. This is deliberately stricter than ordinary
+/// document metadata validation: no Native SDK or Studio client can author
+/// values that the referenced JSON/CSV does not contain.
+///
+/// Only a narrow, unambiguous four-column CSV subset is admitted (no quoted
+/// commas/newlines) until a versioned general CSV grammar is introduced.
+/// The caller already verified blob path, max byte budget, and SHA-256.
+fn parse_measured_source_rows(source: &[u8]) -> Result<Vec<motionwright_domain::MeasuredDatum>> {
+    use motionwright_domain::{DomainError, MeasuredDatum, MeasuredUnit};
+    let invalid = || {
+        StorageError::Domain(DomainError::Invalid(
+            "imported measured source must be a bounded exact JSON array or four-column CSV".into(),
+        ))
+    };
+    // The imported Asset MIME is checked against the project in the same
+    // transaction; require unambiguous byte grammar here. JSON is an array,
+    // while CSV starts with the exact versioned four-column header.
+    let rows: Vec<MeasuredDatum> = if source
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .copied()
+        == Some(b'[')
+    {
+        serde_json::from_slice(source).map_err(|_| invalid())?
+    } else {
+        let text = std::str::from_utf8(source).map_err(|_| invalid())?;
+        let mut lines = text.lines();
+        if lines.next() != Some("key,label,milli,unit") {
+            return Err(invalid());
+        }
+        let mut rows = Vec::new();
+        for line in lines {
+            let cells: Vec<_> = line.trim_end_matches('\r').split(',').collect();
+            if cells.len() != 4 || rows.len() >= 64 {
+                return Err(invalid());
+            }
+            let unit = match cells[3] {
+                "count" => MeasuredUnit::Count,
+                "percent" => MeasuredUnit::Percent,
+                "seconds" => MeasuredUnit::Seconds,
+                "milliseconds" => MeasuredUnit::Milliseconds,
+                "bytes" => MeasuredUnit::Bytes,
+                _ => return Err(invalid()),
+            };
+            let milli = cells[2].parse::<i64>().map_err(|_| invalid())?;
+            rows.push(MeasuredDatum {
+                key: cells[0].to_owned(),
+                label: cells[1].to_owned(),
+                milli,
+                unit,
+            });
+        }
+        rows
+    };
+    if rows.is_empty() || rows.len() > 64 {
+        return Err(invalid());
+    }
+    Ok(rows)
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -452,19 +564,7 @@ impl Store {
     }
 
     pub fn read_blob(&self, digest: &str, limit: u64) -> Result<Vec<u8>> {
-        let path = self.checked_existing_blob_path(digest)?;
-        let size = ensure_regular_file(&path, "content-addressed blob")?.len();
-        if size > limit {
-            return Err(StorageError::BlobTooLarge { size, limit });
-        }
-        let bytes = fs::read(path)?;
-        let actual = hex::encode(Sha256::digest(&bytes));
-        if actual != digest {
-            return Err(StorageError::InvalidBackup(
-                "content-addressed blob failed digest verification".into(),
-            ));
-        }
-        Ok(bytes)
+        read_verified_blob_from_root(&self.blob_root, digest, limit)
     }
 
     pub fn export_project_bundle(
@@ -653,41 +753,9 @@ impl Store {
             .join(digest))
     }
 
-    /// CAS readers must not follow symlinked staging/root/shard directories.
-    /// Checking only the final digest-named leaf misses a replaced shard.
+    /// Identical symlink-resistant path check for reads and native imports.
     fn checked_existing_blob_path(&self, digest: &str) -> Result<PathBuf> {
-        validate_digest(digest)?;
-        let dirs = [
-            self.blob_root.clone(),
-            self.blob_root.join("sha256"),
-            self.blob_root.join("sha256").join(&digest[..2]),
-        ];
-        for directory in &dirs {
-            match ensure_regular_directory(directory, "content-addressed source directory") {
-                Ok(_) => {}
-                Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(StorageError::BlobMissing {
-                        digest: digest.to_owned(),
-                    });
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let path = self.blob_path(digest)?;
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-                Err(StorageError::UnsafeSourcePath(
-                    "content-addressed blob leaf must be a regular non-symlink file".into(),
-                ))
-            }
-            Ok(_) => Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(StorageError::BlobMissing {
-                    digest: digest.to_owned(),
-                })
-            }
-            Err(error) => Err(error.into()),
-        }
+        checked_existing_blob_path_from_root(&self.blob_root, digest)
     }
 
     pub fn create_project(&mut self, project: &Project) -> Result<()> {
@@ -1048,6 +1116,28 @@ impl Store {
             });
         }
 
+        if let Change::UpsertMeasuredTable { table } = change {
+            // These checks run *after* receipt replay and the canonical
+            // project generation/revision gate. A successful repeat of the
+            // same durable request returns its original receipt, while a
+            // stale/foreign request cannot learn blob existence or metadata.
+            if !project.assets.iter().any(|asset| {
+                asset.id == table.source_asset_id
+                    && asset.content_sha256.as_deref() == Some(table.source_sha256.as_str())
+                    && ["application/json", "text/csv"].contains(&asset.media_type.as_str())
+            }) {
+                return Err(StorageError::Domain(DomainError::Invalid(
+                    "the project does not own the exact imported measured source asset".into(),
+                )));
+            }
+            let bytes =
+                read_verified_blob_from_root(&self.blob_root, &table.source_sha256, 64 * 1024)?;
+            if parse_measured_source_rows(&bytes)? != table.rows {
+                return Err(StorageError::Domain(DomainError::Invalid(
+                    "declared measurements differ from the imported SHA-256 source bytes".into(),
+                )));
+            }
+        }
         if let Some((digest, path)) = required_blob {
             let descriptor = hash_file(&path)?;
             if descriptor.sha256 != digest {
