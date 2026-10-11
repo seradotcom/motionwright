@@ -21,9 +21,9 @@ type Props={
 };
 export default function ProductStageWorkbench({project,scene,commit,busy,playhead,onSeek,onOpenCanvas}:Props){
   const stored=project.production_design?.stages?.find(stage=>stage.scene_id===scene?.id);
-  const [draft,setDraft]=useState<ProductStageConfig>(()=>{
+  const [draft,setDraft]=useState<ProductStageConfig>(()=>
     structuredClone(stored?.config??defaultProductStageConfig())
-  });
+  );
   const [base,setBase]=useState(project.revision);
   const [aspect,setAspect]=useState<(typeof aspects)[number]>(aspects[0]);
   const [preview,setPreview]=useState<CanvasNode[]>([]);

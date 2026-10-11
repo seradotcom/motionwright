@@ -583,7 +583,8 @@ impl Project {
             .position(|scene| scene.id == scene_id)
             .ok_or_else(|| DomainError::NotFound(format!("scene:{scene_id}")))?;
         let scene = &self.scenes[index];
-        if scene.renderer != RendererKind::MotionCanvas || scene.duration < RationalTime::new(2, 1)?
+        if scene.renderer != RendererKind::MotionCanvas
+            || scene.duration < RationalTime::new(2, 1).expect("exact two-second stage duration")
         {
             return Err(DomainError::Invalid(
                 "ProductStage needs a Motion Canvas scene of at least two seconds".into(),
