@@ -309,10 +309,17 @@
     },
     {
       "id": "MW05-E06-01",
-      "implementation": "not_implemented",
-      "implemented_scope": "No separate BrandProfile and TasteProfile governance",
-      "remaining_scope": "Organizational rules and scoped campaign exceptions remain open",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Project-local mandatory brand rules, non-authoritative taste, scene/rule/policy-SHA256 campaign exceptions and revisioned creative decisions; Rust/Studio validation; mandatory palette also applies to procedural field configs and live node fills",
+      "remaining_scope": "Organization-wide policy distribution and IAM/owner authorization, more properties/formats, full legacy nonconformance migration, human brand review",
+      "source_paths": [
+        "crates/domain/src/brand_governance.rs",
+        "crates/domain/tests/brand_governance.rs",
+        "apps/studio/src/brandGovernance.ts",
+        "apps/studio/src/BrandTasteWorkbench.tsx",
+        "apps/studio/src/brandGovernance.test.ts",
+        "docs/creative-production/BRAND_TASTE_GOVERNANCE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
@@ -340,7 +347,7 @@
     {
       "id": "MW05-E06-04",
       "implementation": "partial",
-      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E",
+      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E; honors BrandProfile palettes and per-scene exceptions",
       "remaining_scope": "Actual procedural MP4 and pixel-evidence CI must pass for the exact HEAD, human creative review is outstanding; richer temporal fields, native performance benchmarking and additional procedural families remain open",
       "source_paths": [
         "crates/domain/src/procedural.rs",
@@ -354,7 +361,7 @@
         "tooling/native_av_master_e2e.py",
         "tooling/procedural_native_evidence.py",
         "tooling/native_tests/test_procedural_native_evidence.py",
-        ".github/workflows/product-hero-e2e.yml"
+        ".github/workflows/procedural-native-e2e.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

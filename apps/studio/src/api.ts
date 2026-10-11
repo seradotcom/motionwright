@@ -1,5 +1,6 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
+import { validateBrandGovernance } from "./brandGovernance";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
@@ -888,6 +889,30 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
       break;
+    case "set_brand_governance": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      next.production_design ??= emptyProductionDesign();
+      const previous=next.production_design.brand_profile;
+      if (previous && change.profile && previous.id===change.profile.id &&
+          !sameValue(previous,change.profile) && change.profile.version<=previous.version)
+        throw new Error("Changed brand policy must increase version.");
+      next.production_design.brand_profile=structuredClone(change.profile);
+      next.production_design.brand_exceptions=structuredClone(change.exceptions);
+      break;
+    }
+    case "set_taste_profile": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      next.production_design ??= emptyProductionDesign();
+      next.production_design.taste_profile=structuredClone(change.profile);
+      break;
+    }
+    case "record_creative_decision": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      next.production_design ??= emptyProductionDesign();
+      next.production_design.project_decisions ??= [];
+      next.production_design.project_decisions.push(structuredClone(change.decision));
+      break;
+    }
     case "undo_creative_patch": {
       const preview=previewCreativePatchUndo(next,change.patch_id);
       appendCreativePatchRecord(next,preview,"Revert creative patch "+change.patch_id,change.patch_id);
@@ -1743,6 +1768,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.locks = next.locks.filter((lock) => lock.id !== change.lock_id);
       break;
   }
+  await validateBrandGovernance(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");

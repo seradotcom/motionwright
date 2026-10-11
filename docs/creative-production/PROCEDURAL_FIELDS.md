@@ -36,6 +36,10 @@ style, z-index and coordinate-space metadata.
   opacity below 100% fail closed, because Film cannot preserve terminal alpha.
   The last key must remain inside the half-open scene interval; otherwise
   the command fails before allocating any authored nodes.
+- With active BrandProfile governance, allowed accent colors constrain
+  both the declared procedural field fill and the current editable
+  node fills. Only exact rule, scene and policy-digest campaign
+  exceptions can authorize an alternative.
 - All generated items share one z-index, -32, rather than exceeding the
   native Film limit of 32 distinct layer orders. Static alpha below 100%
   remains editable but is explicitly rejected by native Film.
@@ -108,5 +112,5 @@ Evidence modules: tooling/native_av_master_e2e.py,
 tooling/procedural_native_evidence.py,
 tooling/native_tests/test_procedural_native_evidence.py,
 tooling/tests/test_native_av_media_probe.py and
-.github/workflows/product-hero-e2e.yml (shared pinned runner, additional
-procedural evidence artifact).
+.github/workflows/procedural-native-e2e.yml (standalone pinned
+procedural CI with an independent evidence artifact).

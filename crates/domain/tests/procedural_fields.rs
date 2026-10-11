@@ -266,3 +266,90 @@ fn ordered_frame_reveals_are_editable_and_half_open_scene_bounded() {
     );
     assert_eq!(p, before);
 }
+
+#[test]
+fn brand_palette_applies_to_procedural_configuration_and_human_nodes() {
+    let mut p = project();
+    let rule = Uuid::new_v4();
+    let policy = BrandProfile {
+        id: Uuid::new_v4(),
+        label: "Procedural design authority".into(),
+        version: 1,
+        rules: vec![BrandRule::AllowedAccents {
+            id: rule,
+            colors: vec!["#A5C8DF".into()],
+        }],
+    };
+    p.apply_change(&Change::SetBrandGovernance {
+        profile: Some(policy.clone()),
+        exceptions: vec![],
+    })
+    .unwrap();
+    upsert(&mut p, ProceduralConfig::default()).unwrap();
+    let before = p.clone();
+
+    let mut forbidden_config = p.clone();
+    let wrong = ProceduralConfig {
+        fill: "#F00000".into(),
+        ..Default::default()
+    };
+    assert!(
+        upsert(&mut forbidden_config, wrong.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    assert_eq!(p, before, "invalid authored config must not persist");
+
+    let mut forbidden_node = p.clone();
+    let original = forbidden_node.scenes[0].nodes[0].style.clone();
+    let mut changed_style = original;
+    changed_style.fill = Some("#F00000".into());
+    assert!(
+        forbidden_node
+            .apply_change(&Change::UpdateCanvasStyle {
+                scene_id: p.scenes[0].id,
+                node_id: procedural_node_id(instance_id(), 0),
+                style: changed_style,
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+
+    let waiver = BrandException {
+        id: Uuid::new_v4(),
+        rule_id: rule,
+        scene_id: p.scenes[0].id,
+        brand_sha256: policy.content_digest().unwrap(),
+        campaign: "One-shot palette departure".into(),
+        author: "Design owner / declared".into(),
+        rationale: "An explicitly reviewed exception on only the first scene".into(),
+    };
+    p.apply_change(&Change::SetBrandGovernance {
+        profile: Some(policy),
+        exceptions: vec![waiver],
+    })
+    .unwrap();
+    upsert(&mut p, wrong.clone()).unwrap();
+    p.apply_change(&Change::AddScene {
+        name: "Second, non-waived scene".into(),
+        objective: "Policy scope cannot escape an approved scene".into(),
+        duration_seconds: 6,
+    })
+    .unwrap();
+    let second = p.scenes[1].id;
+    let mut bad_other = p.clone();
+    assert!(
+        bad_other
+            .apply_change(&Change::UpsertProceduralField {
+                instance_id: Uuid::new_v4(),
+                scene_id: second,
+                config: wrong,
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    p.validate().unwrap();
+}

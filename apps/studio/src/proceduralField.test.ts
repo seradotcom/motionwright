@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
+import { brandDigest } from "./brandGovernance";
 import { defaultProceduralConfig, proceduralNodeId, realizeProceduralField } from "./proceduralField";
 import type { Project } from "./types";
 import { rationalSeconds } from "./types";
@@ -115,5 +116,31 @@ describe("procedural 30fps entrance sequencing",()=>{
     const nodes=await realizeProceduralField(ID,old as typeof original);
     expect(nodes).toEqual(await realizeProceduralField(ID,original));
     expect(nodes.every(n=>n.keyframes.length===0)).toBe(true);
+  });
+});
+
+
+describe("governed procedural authoring",()=>{
+  it("checks field config and live overrides, preserving scene-specific waivers",async()=>{
+    let p=project();
+    const rule=crypto.randomUUID();
+    const brand={id:crypto.randomUUID(),label:"Governed field",version:1,
+      rules:[{kind:"allowed_accents" as const,id:rule,colors:["#A5C8DF"]}]};
+    p=await applyChange(p,{type:"set_brand_governance",profile:brand,exceptions:[]});
+    p=await upsert(p);
+    const wrong={...defaultProceduralConfig(),fill:"#FF2200"};
+    await expect(upsert(p,wrong)).rejects.toThrow("Brand rule");
+    const node=p.scenes[0].nodes[0];
+    await expect(applyChange(p,{type:"update_canvas_style",scene_id:p.scenes[0].id,
+      node_id:node.id,style:{...node.style,fill:"#FF2200"}})).rejects.toThrow("Brand rule");
+    const digest=await brandDigest(brand);
+    p=await applyChange(p,{type:"set_brand_governance",profile:brand,exceptions:[{
+      id:crypto.randomUUID(),rule_id:rule,scene_id:p.scenes[0].id,
+      brand_sha256:digest,campaign:"One campaign",author:"Declared editor",
+      rationale:"Bounded palette waiver on this scene only",
+    }]});
+    p=await upsert(p,wrong);
+    expect(p.production_design?.procedural_fields?.[0].config.fill).toBe("#FF2200");
+    expect(p.production_design?.brand_exceptions?.[0].scene_id).toBe(p.scenes[0].id);
   });
 });

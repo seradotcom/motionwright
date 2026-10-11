@@ -15,6 +15,14 @@ pub struct ProductionDesign {
     pub patches: Vec<CreativePatchRecord>,
     #[serde(default)]
     pub procedural_fields: Vec<ProceduralFieldInstance>,
+    #[serde(default)]
+    pub brand_profile: Option<BrandProfile>,
+    #[serde(default)]
+    pub taste_profile: Option<TasteProfile>,
+    #[serde(default)]
+    pub brand_exceptions: Vec<BrandException>,
+    #[serde(default)]
+    pub project_decisions: Vec<CreativeDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,6 +315,15 @@ impl ProductionDesign {
         audio: &AudioState,
     ) -> Result<()> {
         crate::creative_revisions::validate_creative_patch_records(&self.patches)?;
+        validate_brand_governance(
+            &self.brand_profile,
+            &self.brand_exceptions,
+            &self.taste_profile,
+            &self.project_decisions,
+            scenes,
+            &self.heroes,
+            &self.procedural_fields,
+        )?;
         if self.heroes.len() > 64 || self.capsules.len() > 256 {
             return Err(DomainError::Invalid(
                 "production design collection is too large".into(),
