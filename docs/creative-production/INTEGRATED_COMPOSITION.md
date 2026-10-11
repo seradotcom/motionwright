@@ -32,7 +32,13 @@ for both stage and procedural original components.
 
 Studio TypeScript integration tests reproduce all four source families, the
 independent project changes, immutable claim provenance and BrandProfile
-refusals. These domain/unit fixtures use declared source hashes only:
+refusals. A native Film cross-feature test also creates three contiguous
+source-owned scenes (original ProductStage, seeded geometry and an authored
+fixed-point source label) and projects their timeline to one editable Film
+with 540 exact 30-fps frames, three shots and actual semantic text subjects.
+It does not replace the actual source-pinned H.264 render evidence per family.
+
+These domain/unit fixtures use declared source hashes only:
 actual imported JSON/PNG byte equality and mask-pixel coverage are separately
 proved by canonical SQLite and browser/native CI. The in-memory test is not
 misrepresented as physical screenshot evidence.
