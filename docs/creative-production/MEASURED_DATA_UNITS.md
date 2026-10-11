@@ -131,7 +131,24 @@ fabrication or external render path is substituted.
 
 Five adversarial Python tests exercise the negative pixel gate using explicitly
 synthetic images. Synthetic negative tests are **never** promoted to
-positive render evidence. The pinned workflow output remains technically
+positive render evidence.
+
+The first exact native run failed: its real PNGs showed the bound bar and
+a moving rectangle but **no visible measured label**, despite valid editable
+source text. The failure is preserved in that immutable CI run. The native
+Film adapter now explicitly realizes bound counter/label text through its
+established fixed-typography container + semantic text-line projection, with
+a new regression assertion proving the child text and native constraints
+exist before rendering. This corrective change must pass a new source-pinned
+CI run; it does not retroactively make the original absent-label video PASS.
+
+The storage CAS source gate also runs only *after* canonical project
+generation/revision authorization and durable request-key replay handling.
+Unauthorized or stale callers cannot probe the referenced blob's existence.
+Repeated authorized requests return the same receipt without re-reading
+the source blob. A real SQLite service regression checks foreign ownership,
+stale revisions, and idempotent replay; the symlink-resistant blob reader is
+shared by both public blob reads and in-transaction verification. The pinned workflow output remains technically
 **NOT VERIFIED** until the exact HEAD completes successfully. Even a green
 workflow requires separate human creative approval and does not certify
 scientific truth, licenses or rights.

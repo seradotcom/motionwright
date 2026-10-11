@@ -245,3 +245,110 @@ fn forged_numeric_rows_are_rejected_even_with_correct_imported_blob_sha() {
     // The imported CAS blob remains unchanged, even though the original file did.
     assert_eq!(service.project(committed.id).unwrap(), committed);
 }
+
+#[test]
+fn measured_source_bytes_are_hidden_from_stale_and_foreign_project_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = StudioService::open(temp.path().join("access.sqlite3")).unwrap();
+    let current = service
+        .create_project("Project with no data sources")
+        .unwrap();
+    let foreign = service
+        .create_project("Other owner's source collection")
+        .unwrap();
+
+    // A fake hash has no blob, but must produce an ownership error before a
+    // content-addressed existence probe. The source belongs to another scope.
+    let foreign_source = Asset {
+        id: Uuid::new_v4(),
+        name: "Foreign source identity".into(),
+        media_type: "application/json".into(),
+        content_sha256: Some("d".repeat(64)),
+        source_revision: None,
+    };
+    let foreign_table = MeasuredTable {
+        schema: MEASURED_DATA_SCHEMA.into(),
+        id: Uuid::new_v4(),
+        label: "Forbidden cross-project data source".into(),
+        version: 1,
+        source_asset_id: foreign_source.id,
+        source_sha256: foreign_source.content_sha256.clone().unwrap(),
+        rows: vec![MeasuredDatum {
+            key: "value".into(),
+            label: "Foreign value".into(),
+            milli: 2_000,
+            unit: MeasuredUnit::Count,
+        }],
+    };
+    let denied = service.apply(
+        current.id,
+        &current.stamp(),
+        "foreign-data-probe",
+        &Change::UpsertMeasuredTable {
+            table: foreign_table.clone(),
+        },
+    );
+    assert!(denied.unwrap_err().to_string().contains("does not own"));
+
+    let source_file = temp.path().join("authorized.json");
+    std::fs::write(
+        &source_file,
+        br#"[{"key":"value","label":"Foreign value","milli":2000,"unit":"count"}]"#,
+    )
+    .unwrap();
+    let blob = service.ingest_blob_file(&source_file).unwrap();
+    let genuine_asset = Asset {
+        content_sha256: Some(blob.sha256.clone()),
+        ..foreign_source
+    };
+    let updated_foreign = apply(
+        &service,
+        &foreign,
+        "foreign-owned-asset",
+        Change::AddAsset {
+            asset: genuine_asset.clone(),
+        },
+    );
+    let stale = foreign.stamp(); // valid project/resource, stale revision
+    let table = MeasuredTable {
+        source_sha256: blob.sha256,
+        ..foreign_table
+    };
+    let stale_denial = service.apply(
+        foreign.id,
+        &stale,
+        "stale-data-probe",
+        &Change::UpsertMeasuredTable {
+            table: table.clone(),
+        },
+    );
+    assert!(stale_denial.unwrap_err().to_string().contains("stale"));
+    assert_eq!(service.project(foreign.id).unwrap(), updated_foreign);
+
+    let approved = Change::UpsertMeasuredTable { table };
+    let result = service
+        .apply(
+            foreign.id,
+            &updated_foreign.stamp(),
+            "authorized-data",
+            &approved,
+        )
+        .unwrap();
+    assert!(!result.replayed);
+    let success = result.project.clone();
+    assert_eq!(success.production_design.measured_tables.len(), 1);
+    let replay = service
+        .apply(
+            foreign.id,
+            &updated_foreign.stamp(),
+            "authorized-data",
+            &approved,
+        )
+        .unwrap();
+    assert!(
+        replay.replayed,
+        "durable request replay must bypass stale source re-verification"
+    );
+    assert_eq!(replay.project, success);
+    assert_eq!(service.project(foreign.id).unwrap(), success);
+}

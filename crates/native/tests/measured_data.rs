@@ -138,7 +138,24 @@ fn source_bound_metrics_project_as_editable_native_text_and_rectangle() {
     };
     let segments = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
     let shot = &segments[0].film.sequences[0].beats[0].shots[0];
-    assert_eq!(shot.subjects.len(), 2);
+    assert_eq!(
+        shot.subjects.len(),
+        3,
+        "measured label must realize as fixed glyph container + independently renderable text line"
+    );
+    assert!(
+        shot.subjects
+            .iter()
+            .any(|node| node.role == "component-text-container"
+                && node.id.ends_with(&text.id.simple().to_string()))
+    );
+    assert!(shot.subjects.iter().any(|node| {
+        node.role == "component-text-line"
+            && node
+                .parent
+                .as_deref()
+                .is_some_and(|id| id.ends_with(&text.id.simple().to_string()))
+    }));
     assert_eq!(shot.layers.len(), 1);
     assert_eq!(segments[0].frame_count, 180);
     assert!(realize(&segments[0].film).is_ok());
