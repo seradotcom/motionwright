@@ -37,19 +37,22 @@ HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (
                 "metric-landscape": (1920, 1080), "metric-portrait": (1080, 1920),
                 "metric-square": (1080, 1080)}
 STAGE_MODES = {"stage-browser", "stage-handset"}
+PROCEDURAL_MODES = {"procedural-static", "procedural-motion", "procedural-orbit"}
 IS_STAGE = FIXTURE in STAGE_MODES
 IS_MEASURED = FIXTURE == "measured-data"
+IS_PROCEDURAL = FIXTURE in PROCEDURAL_MODES
 IS_HERO = FIXTURE in HERO_ASPECTS
-if FIXTURE not in {"baseline", "measured-data", *HERO_ASPECTS, *STAGE_MODES}:
+if FIXTURE not in {"baseline", "measured-data", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
     raise SystemExit("unknown bounded E2E fixture")
-EXPECTED_FRAMES = 180 if IS_HERO or IS_STAGE or IS_MEASURED else 60
+EXPECTED_FRAMES = 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL else 60
 EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
 EVIDENCE = ROOT / "verification" / (
     "product-stage-e2e" if IS_STAGE else
     "measured-data-native-e2e" if IS_MEASURED else
+    "procedural-field-e2e" if IS_PROCEDURAL else
     "product-hero-e2e" if IS_HERO else "native-av-master-e2e"
 ) / GITHUB_SHA
-if IS_HERO or IS_STAGE or IS_MEASURED:
+if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL:
     EVIDENCE = EVIDENCE / FIXTURE
 
 
@@ -175,6 +178,9 @@ def main() -> None:
             seed_command = [str(MW_BIN), "seed-stage", str(database), FIXTURE.removeprefix("stage-"), str(EVIDENCE / "editable-project.json")]
         elif IS_MEASURED:
             seed_command = [str(MW_BIN), "seed-measured", str(database), str(EVIDENCE / "editable-project.json")]
+        elif IS_PROCEDURAL:
+            mode = FIXTURE.removeprefix("procedural-")
+            seed_command = [str(MW_BIN), "seed-procedural", str(database), mode, str(EVIDENCE / "editable-project.json")]
         seeded = run_json(seed_command, env=env)
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
@@ -189,6 +195,8 @@ def main() -> None:
             raise AssertionError("ProductStage native fixture must be an original generic graphic, not a capture")
         if IS_MEASURED and seeded.get("fixture") != "measured-data/1":
             raise AssertionError("Native measured fixture did not bind a versioned source table")
+        if IS_PROCEDURAL and seeded.get("fixture") != f"procedural-field-{mode}/1":
+            raise AssertionError("Native procedural fixture does not match the requested authored field")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -490,7 +498,7 @@ def main() -> None:
                     timeout=420,
                 )
             except Exception:
-                if IS_HERO or IS_STAGE or IS_MEASURED:
+                if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL:
                     # Failed native evidence is retained as explicitly unverified
                     # diagnostic imagery, never promoted to a delivery receipt.
                     candidates = list(paths["output"].glob("*/frames/*.png"))
@@ -539,6 +547,9 @@ def main() -> None:
             if IS_MEASURED:
                 from measured_native_evidence import inspect_measured_native_frames
                 inspect_measured_native_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, semwright_sha=PIN)
+            if IS_PROCEDURAL:
+                from procedural_native_evidence import inspect_procedural_frames
+                inspect_procedural_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
 
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
@@ -584,6 +595,7 @@ def main() -> None:
             decoded = probe_native_mp4(
                 master_path, audio_path, ffmpeg, ffprobe,
                 expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
+                expect_movement=FIXTURE != "procedural-static",
             )
             if decoded["master_sha256"] != master_sha256:
                 raise AssertionError("Decoded-media sample came from a different MP4 digest")
@@ -596,6 +608,9 @@ def main() -> None:
             if IS_MEASURED:
                 from measured_native_evidence import inspect_measured_master
                 inspect_measured_master(master_path, EVIDENCE, seeded, ffmpeg)
+            if IS_PROCEDURAL:
+                from procedural_native_evidence import inspect_procedural_mp4
+                inspect_procedural_mp4(master_path, EVIDENCE, seeded, ffmpeg)
 
             write_private_json(
                 EVIDENCE / "result.json",
@@ -616,12 +631,16 @@ def main() -> None:
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
                     "fixture": FIXTURE,
-                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED else "not_assessed",
+                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL else "not_assessed",
                     "original_product_stage_evidence_sha256": (
                         digest(EVIDENCE / "stage-native-inspection.json") if IS_STAGE else None
                     ),
                     "measured_pixel_evidence_sha256": (
                         digest(EVIDENCE / "measured-native-inspection.json") if IS_MEASURED else None
+                    ),
+                    "procedural_native_pixel_evidence": (
+                        digest(EVIDENCE / "procedural-native-inspection.json")
+                        if IS_PROCEDURAL else None
                     ),
                     "audio_kind": "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design",
                     "audio_sha256": audio_sha256,

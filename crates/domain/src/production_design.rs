@@ -14,6 +14,8 @@ pub struct ProductionDesign {
     #[serde(default)]
     pub patches: Vec<CreativePatchRecord>,
     #[serde(default)]
+    pub procedural_fields: Vec<ProceduralFieldInstance>,
+    #[serde(default)]
     pub brand_profile: Option<BrandProfile>,
     #[serde(default)]
     pub taste_profile: Option<TasteProfile>,
@@ -336,6 +338,7 @@ impl ProductionDesign {
             scenes,
             &self.heroes,
             &self.stages,
+            &self.procedural_fields,
         )?;
         self.validate_measured_data(scenes, assets)?;
         if self.heroes.len() > 64 || self.capsules.len() > 256 || self.stages.len() > 16 {
@@ -374,6 +377,27 @@ impl ProductionDesign {
             capsule.validate(scenes, assets)?;
             if !ids.insert(capsule.id) {
                 return Err(DomainError::Invalid("duplicate native capsule".into()));
+            }
+        }
+        if self.procedural_fields.len() > PROCEDURAL_MAX_FIELDS {
+            return Err(DomainError::Invalid(
+                "procedural field budget exceeded".into(),
+            ));
+        }
+        let mut procedural_ids = BTreeSet::new();
+        let mut procedural_scenes = BTreeSet::new();
+        for field in &self.procedural_fields {
+            field.validate()?;
+            if !procedural_ids.insert(field.id)
+                || !procedural_scenes.insert(field.scene_id)
+                || !scenes.iter().any(|scene| {
+                    scene.id == field.scene_id && scene.renderer == RendererKind::MotionCanvas
+                })
+            {
+                return Err(DomainError::Invalid(
+                    "procedural fields require unique identities, one per Motion Canvas scene"
+                        .into(),
+                ));
             }
         }
         if let Some(plan) = &self.plan {

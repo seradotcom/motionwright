@@ -1,5 +1,6 @@
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
+import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 import type { ProductStageConfig } from "./productStage";
 import type { CaptureSourceRecord } from "./captureSource";
@@ -589,6 +590,8 @@ export type Change =
   | { type: "upsert_measured_table"; table: MeasuredTable }
   | { type: "upsert_measured_binding"; binding_id: string; scene_id: string; node_id: string; table_id: string; datum_key: string; view: MeasuredView }
   | { type: "detach_measured_binding"; binding_id: string }
+  | { type: "upsert_procedural_field"; instance_id: string; scene_id: string; config: ProceduralConfig }
+  | { type: "detach_procedural_field"; instance_id: string }
   | { type: "set_brand_governance"; profile: BrandProfile | null; exceptions: BrandException[] }
   | { type: "set_taste_profile"; profile: TasteProfile | null }
   | { type: "record_creative_decision"; decision: CreativeDecision }

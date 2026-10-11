@@ -122,10 +122,16 @@ export async function validateBrandGovernance(project:Project):Promise<void> {
             const live=scene.nodes.find(n=>n.id===authored?.id);
             return !live || live.style.fill===null || !allowed(live.style.fill);
           }));
-        violation=heroViolation||stageViolation;
+        const field=design?.procedural_fields?.find(f=>f.scene_id===scene.id);
+        const fieldViolation=!!field && (!allowed(field.config.fill) ||
+          field.baseline.some(base=>{
+            const live=scene.nodes.find(n=>n.id===base.id);
+            return !!live && (live.style.fill===null || !allowed(live.style.fill));
+          }));
+        violation=heroViolation||stageViolation||fieldViolation;
       } else if (rule.kind==="required_wordmark") {
         const wordmark=hero?.baseline.find(n=>n.name.endsWith(" / wordmark"));
-        violation=!!stage || (!!hero && (hero.config.wordmark!==rule.text ||
+        violation=!!stage || !!design?.procedural_fields?.some(f=>f.scene_id===scene.id) || (!!hero && (hero.config.wordmark!==rule.text ||
           (!wordmark || !scene.nodes.some(n=>n.id===wordmark.id && n.text===rule.text))));
       }
       if (violation) throw new Error(`Brand rule ${rule.id} violated in scene ${scene.id}; scoped campaign exception required.`);

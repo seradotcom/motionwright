@@ -9,6 +9,7 @@ mod hero;
 mod history;
 mod integrations;
 mod measured_data;
+mod procedural;
 mod product_stage;
 mod production_design;
 pub use brand_governance::*;
@@ -22,6 +23,7 @@ pub use hero::*;
 pub use history::*;
 pub use integrations::*;
 pub use measured_data::*;
+pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
 
@@ -1031,6 +1033,16 @@ impl Project {
             } => self.upsert_product_stage(*instance_id, *scene_id, config)?,
             Change::DetachProductStage { instance_id } => {
                 self.detach_product_stage(*instance_id)?
+            }
+            Change::UpsertProceduralField {
+                instance_id,
+                scene_id,
+                config,
+            } => {
+                self.upsert_procedural_field(*instance_id, *scene_id, config)?;
+            }
+            Change::DetachProceduralField { instance_id } => {
+                self.detach_procedural_field(*instance_id)?;
             }
             Change::SetProductionPlan { plan } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -2360,6 +2372,14 @@ pub enum Change {
     },
     DetachMeasuredBinding {
         binding_id: Uuid,
+    },
+    UpsertProceduralField {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        config: ProceduralConfig,
+    },
+    DetachProceduralField {
+        instance_id: Uuid,
     },
     SetBrandGovernance {
         profile: Option<BrandProfile>,

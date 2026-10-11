@@ -720,6 +720,8 @@ enum OperationKind {
     DetachProductHero,
     UpsertProductStage,
     DetachProductStage,
+    UpsertProceduralField,
+    DetachProceduralField,
     SetProductionPlan,
     UpsertMeasuredTable,
     UpsertMeasuredBinding,
@@ -906,6 +908,19 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             .map_err(|_| Error::invalid("invalid owned ProductStage configuration"))?,
         }),
         OperationKind::DetachProductStage => Ok(Change::DetachProductStage {
+            instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid procedural field config"))?,
+        }),
+        OperationKind::DetachProceduralField => Ok(Change::DetachProceduralField {
             instance_id: uuid(args, "instance_id")?,
         }),
         OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
@@ -2303,6 +2318,57 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertProceduralField,
+            descriptor(
+                "procedural-field.upsert",
+                "Create or revise a bounded, deterministically seeded editable Canvas field via project CAS",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64},
+                        "scene_id":{"type":"string","format":"uuid","maxLength":64},
+                        "config":{
+                            "type":"object",
+                            "properties":{
+                                "seed":{"type":"integer","minimum":0,"maximum":4294967295u64},
+                                "count":{"type":"integer","minimum":1,"maximum":64},
+                                "columns":{"type":"integer","minimum":1,"maximum":16},
+                                "distribution":{"type":"string","enum":["grid","staggered","scatter","radial","spiral"]},
+                                "shape":{"type":"string","enum":["square","circle"]},
+                                "origin_x":{"type":"integer","minimum":0,"maximum":1920},
+                                "origin_y":{"type":"integer","minimum":0,"maximum":1080},
+                                "area_width":{"type":"integer","minimum":0,"maximum":1920},
+                                "area_height":{"type":"integer","minimum":0,"maximum":1080},
+                                "size":{"type":"integer","minimum":4,"maximum":128},
+                                "opacity_percent":{"type":"integer","minimum":1,"maximum":100},
+                                "fill":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "reveal_step_frames":{"type":"integer","minimum":0,"maximum":10},
+                                "reveal_duration_frames":{"type":"integer","minimum":1,"maximum":60}
+                            },
+                            "required":["seed","count","columns","distribution","origin_x","origin_y",
+                                "area_width","area_height","size","opacity_percent","fill"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProceduralField,
+            descriptor(
+                "procedural-field.detach",
+                "Detach an editable generator without deleting its authored Canvas objects",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetProductionPlan,
             descriptor(
                 "production-plan.set",
@@ -2748,7 +2814,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.measured-table.upsert"));
         assert!(names.contains(&"driver.motionwright.measured-binding.upsert"));
         assert!(names.contains(&"driver.motionwright.measured-binding.detach"));
-        assert_eq!(capabilities.len(), 59);
+        assert!(names.contains(&"driver.motionwright.procedural-field.upsert"));
+        assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
+        assert_eq!(capabilities.len(), 61);
     }
 
     #[tokio::test]

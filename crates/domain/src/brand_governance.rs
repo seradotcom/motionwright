@@ -171,6 +171,7 @@ pub fn validate_brand_governance(
     scenes: &[Scene],
     heroes: &[ProductHeroInstance],
     stages: &[ProductStageInstance],
+    fields: &[ProceduralFieldInstance],
 ) -> Result<()> {
     if let Some(taste) = taste {
         taste.validate()?;
@@ -284,7 +285,25 @@ pub fn validate_brand_governance(
                                     })
                             })
                     });
-                    hero_violation || stage_violation
+                    let field_violation = fields
+                        .iter()
+                        .filter(|field| field.scene_id == scene.id)
+                        .any(|field| {
+                            !allowed(&field.config.fill)
+                                || field.baseline.iter().any(|base| {
+                                    scene
+                                        .nodes
+                                        .iter()
+                                        .find(|node| node.id == base.id)
+                                        .is_some_and(|live| {
+                                            live.style
+                                                .fill
+                                                .as_deref()
+                                                .is_none_or(|fill| !allowed(fill))
+                                        })
+                                })
+                        });
+                    hero_violation || stage_violation || field_violation
                 }
                 BrandRule::RequiredWordmark { text, .. } => {
                     hero.is_some_and(|hero| {
@@ -295,6 +314,7 @@ pub fn validate_brand_governance(
                                 .find(|node| node.id == hero_node_id(hero.id, "wordmark"))
                                 .is_none_or(|node| node.text.as_deref() != Some(text.as_str()))
                     }) || stage.is_some()
+                        || fields.iter().any(|field| field.scene_id == scene.id)
                 }
             };
             if violated {
