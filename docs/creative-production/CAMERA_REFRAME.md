@@ -27,3 +27,16 @@ motion/spans, TypeScript parity, and browser negative controls. Full source-
 pinned MP4 pixel verification, more renderers, frame rates, multi-scene
 camera tracks, authentic optical camera rigs, parallax, lens and light are
 not complete. Human creative approval is still required.
+## Real native camera technical evidence
+
+A separate source-pinned GitHub Actions workflow renders an original
+six-second camera project with the exact Semwright Broker, Motion Canvas,
+MLT and FFmpeg. A 90-frame authored camera pan is verified from native
+PNG edge pixels and independently decoded H264 MP4 samples; the result
+is linked to the original project generation, commit and source SHA-256.
+Five adversarial image tests reject static, opposite-motion, blank, or
+wrong-viewport evidence; no synthetic calibrator is promoted as native proof.
+
+The camera visual acceptance remains pending until the exact branch SHA
+passes the pinned workflow. Even then, a 2D pan is not an optical dolly,
+3D orbit, custom lens, cinematic lighting or human creative approval.

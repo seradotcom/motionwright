@@ -92,7 +92,7 @@ fn text_node(parent_id: Uuid) -> CanvasNode {
 }
 
 /// Visible unparented rectangle: the native Film contract now maps this
-/// exact paired 0→base position transition via a Semwright Settle primitive.
+/// exact paired 0Ã¢â€ â€™base position transition via a Semwright Settle primitive.
 fn real_linear_motion_tile() -> CanvasNode {
     let mut node = CanvasNode {
         id: Uuid::now_v7(),
@@ -914,7 +914,7 @@ fn seed_stage(
         ProductStageConfig, STAGE_ROLES, StageFrame, realize_product_stage, stage_node_id,
     };
     let frame_kind = match frame {
-        "browser" => StageFrame::Browser,
+        "browser" | "camera" => StageFrame::Browser,
         "handset" => StageFrame::GenericHandset,
         _ => return Err("ProductStage native fixture frame must be browser or handset".into()),
     };
@@ -940,7 +940,7 @@ fn seed_stage(
     let first_config=ProductStageConfig {
         frame:frame_kind,
         author_attestation:"I authored the original generic test-only screen design and authorize this technical render.".into(),
-        animate_focus:true,
+        animate_focus:frame != "camera",
         ..ProductStageConfig::default()
     };
     let first = service
@@ -1006,7 +1006,7 @@ fn seed_stage(
     }
     let mut profile = changed.deliverables[0].clone();
     profile.name = format!("ProductStage / original {frame} 16:9");
-    let project = service
+    let profiled = service
         .apply(
             changed.id,
             &changed.stamp(),
@@ -1014,6 +1014,28 @@ fn seed_stage(
             &Change::UpsertDeliverable { profile },
         )?
         .project;
+    let project = if frame == "camera" {
+        let reframe = motionwright_domain::CameraReframe {
+            id: Uuid::parse_str("00000000-0000-4000-8000-000000000203")?,
+            scene_id,
+            component_version: motionwright_domain::CAMERA_REFRAME_VERSION,
+            start_center_x: 960.0,
+            start_center_y: 540.0,
+            end_center_x: 978.0,
+            end_center_y: 540.0,
+            duration_frames: 90,
+        };
+        service
+            .apply(
+                profiled.id,
+                &profiled.stamp(),
+                "camera-original-native",
+                &Change::UpsertCameraReframe { reframe },
+            )?
+            .project
+    } else {
+        profiled
+    };
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1092,7 +1114,11 @@ fn seed_stage(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "fixture":"product-stage-original/1","stage_frame":frame,
+            "fixture":if frame=="camera" {"camera-reframe/1"} else {"product-stage-original/1"},
+            "camera_reframe_id": if frame=="camera" {
+                Some(Uuid::parse_str("00000000-0000-4000-8000-000000000203")?)
+            } else { None },
+            "stage_frame":frame,
             "project_id":project.id,"resource":project.resource_key(),
             "generation":project.generation,"revision":project.revision,
             "scene_id":scene_id,"deliverable_id":deliverable.id,
@@ -1214,7 +1240,7 @@ fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std
     };
     let bar = CanvasNode {
         id: bar_id,
-        name: "Explicit 0–100% synthetic bar".into(),
+        name: "Explicit 0Ã¢â‚¬â€œ100% synthetic bar".into(),
         kind: "rectangle".into(),
         parent_id: None,
         x: 340.0,
@@ -1326,7 +1352,7 @@ fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std
         .iter()
         .find(|node| node.id == bar_id)
         .ok_or("missing projected bar")?;
-    if projected_label.text.as_deref() != Some("Synthetic rate · 37.5%")
+    if projected_label.text.as_deref() != Some("Synthetic rate Ã‚Â· 37.5%")
         || projected_bar.width != 300.0
         || project
             .production_design
@@ -1545,6 +1571,22 @@ fn expected_fixture_frames(
                 "measured data native fixture drifted from its exact six-second contract".into(),
             );
         }
+        return Ok(180);
+    }
+    if !project.production_design.camera_reframes.is_empty() {
+        if project.production_design.camera_reframes.len() != 1
+            || project.production_design.stages.len() != 1
+            || project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != motionwright_domain::STAGE_ROLES.len()
+            || project.scenes[0].camera.center_x != 978.0
+            || project.production_design.stages[0].config.animate_focus
+        {
+            return Err(
+                "Original native camera fixture drifted from fixed, six-second source".into(),
+            );
+        }
+        project.production_design.camera_reframes[0].validate(&project.scenes[0])?;
         return Ok(180);
     }
     if !project.production_design.stages.is_empty() {
