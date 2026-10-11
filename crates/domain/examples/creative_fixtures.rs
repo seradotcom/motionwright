@@ -82,12 +82,44 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         };
         plans.push(json!({"plan":variant,"content_sha256":variant.content_digest()?}));
     }
+    let brand = BrandProfile {
+        id: Uuid::parse_str("00000000-0000-4000-8000-000000000041")?,
+        label: "Editorial evidence brand".into(),
+        version: 3,
+        rules: vec![
+            BrandRule::ForbiddenPhrase {
+                id: Uuid::parse_str("00000000-0000-4000-8000-000000000042")?,
+                phrase: "fabricated metrics".into(),
+            },
+            BrandRule::AllowedAccents {
+                id: Uuid::parse_str("00000000-0000-4000-8000-000000000043")?,
+                colors: vec!["#D9A46E".into(), "#A5C8DF".into()],
+            },
+            BrandRule::RequiredWordmark {
+                id: Uuid::parse_str("00000000-0000-4000-8000-000000000044")?,
+                text: "DATA".into(),
+            },
+        ],
+    };
+    let mut brand_cases = Vec::new();
+    for profile in [
+        brand.clone(),
+        BrandProfile {
+            version: 4,
+            ..brand
+        },
+    ] {
+        profile.validate()?;
+        let content_sha256 = profile.content_digest()?;
+        brand_cases.push(json!({"profile":profile,"content_sha256":content_sha256}));
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "schema":"motionwright.rust-studio-creative-parity/1","hero_cases":heroes,
             "three_way_merge":{"base":base,"current":current,"incoming":incoming,"expected":merged},
-            "plan_digest_cases":plans,"scope":"interchange and deterministic realization; not asset or execution admission"
+            "plan_digest_cases":plans,"brand_profile_cases":brand_cases,
+            "scope":"interchange and deterministic realization; not asset or execution admission"
         }))?
     );
     Ok(())

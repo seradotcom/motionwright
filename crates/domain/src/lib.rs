@@ -1,3 +1,4 @@
+mod brand_governance;
 mod canvas;
 mod creative;
 mod creative_revisions;
@@ -7,6 +8,7 @@ mod hero;
 mod history;
 mod integrations;
 mod production_design;
+pub use brand_governance::*;
 pub use canvas::*;
 pub use creative::*;
 pub use creative_revisions::*;
@@ -1021,6 +1023,38 @@ impl Project {
                     plan.validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
                 }
                 self.production_design.plan = plan.clone();
+            }
+            Change::SetBrandGovernance {
+                profile,
+                exceptions,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if matches!(
+                    (&self.production_design.brand_profile, profile),
+                    (Some(old), Some(new))
+                        if old.id == new.id && old != new && new.version <= old.version
+                ) {
+                    return Err(DomainError::Invalid(
+                        "changed brand policy must increase version".into(),
+                    ));
+                }
+                self.production_design.brand_profile = profile.clone();
+                self.production_design.brand_exceptions = exceptions.clone();
+            }
+            Change::SetTasteProfile { profile } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                self.production_design.taste_profile = profile.clone();
+            }
+            Change::RecordCreativeDecision { decision } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self.production_design.project_decisions.len() >= 256 {
+                    return Err(DomainError::Invalid(
+                        "creative decision budget exceeded".into(),
+                    ));
+                }
+                self.production_design
+                    .project_decisions
+                    .push(decision.clone());
             }
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -2251,6 +2285,16 @@ pub enum Change {
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
+    },
+    SetBrandGovernance {
+        profile: Option<BrandProfile>,
+        exceptions: Vec<BrandException>,
+    },
+    SetTasteProfile {
+        profile: Option<TasteProfile>,
+    },
+    RecordCreativeDecision {
+        decision: CreativeDecision,
     },
     UpsertNativeCapsule {
         capsule: NativeCapsule,

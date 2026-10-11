@@ -1,4 +1,5 @@
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
+import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
 export type RendererKind =
@@ -579,6 +580,9 @@ export type Change =
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
+  | { type: "set_brand_governance"; profile: BrandProfile | null; exceptions: BrandException[] }
+  | { type: "set_taste_profile"; profile: TasteProfile | null }
+  | { type: "record_creative_decision"; decision: CreativeDecision }
   | { type: "upsert_native_capsule"; capsule: NativeCapsule }
   | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }
