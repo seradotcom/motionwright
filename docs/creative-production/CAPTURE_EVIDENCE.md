@@ -61,7 +61,9 @@ required".
 
 An admitted first-party capture may also be registered in the existing
 project-local StudioService journal with Change::RegisterCaptureSource
-(capture-source.register through the same Semwright Native SDK app). It does
+(capture-source.register through the same Semwright Native SDK app). The
+first-party source-revision claim itself uses the existing append-only
+Change::AddClaim, surfaced as claim.add in the same SDK app. It does
 **not** execute or ingest screenshots by itself. The caller must first
 import the redacted PNG and JSON capture receipt through the ordinary
 immutable Asset store, then reference those asset IDs with exact SHA-256

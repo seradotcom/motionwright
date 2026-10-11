@@ -52,6 +52,31 @@ function source():{project:Project,record:CaptureSourceRecord}{
 }
 
 describe("first-party capture source registry",()=>{
+  it("authors an actual project-revision claim before registering its source evidence",async()=>{
+    const {project,record}=source();
+    project.brief.claims=[];
+    const withClaim=await applyChange(project,{
+      type:"add_claim",
+      text:"The isolated local Studio Production workstation is visible in this fixture.",
+      source:{kind:"project_revision",revision:project.revision},
+      context:"synthetic-first-party-capture-validation",
+      source_revision:"fixture-7",
+    });
+    expect(withClaim.brief.claims).toHaveLength(1);
+    expect(withClaim.brief.claims[0].source).toEqual({kind:"project_revision",revision:7});
+    const admitted=await applyChange(withClaim,{
+      type:"register_capture_source",
+      record:{...record,claim_id:withClaim.brief.claims[0].id},
+    });
+    expect(admitted.production_design?.captures).toHaveLength(1);
+    await expect(applyChange(project,{
+      type:"add_claim",text:"  ",source:null,context:"",source_revision:null,
+    })).rejects.toThrow(/Invalid/);
+    await expect(applyChange(project,{
+      type:"add_claim",text:"Future claim",source:{kind:"project_revision",revision:19},
+      context:"synthetic-first-party-capture-validation",source_revision:null,
+    })).rejects.toThrow(/source revision/);
+  });
   it("stores a content-bound capture receipt without modifying its imported source assets or claim",async()=>{
     const {project,record}=source();
     const beforeAssets=structuredClone(project.assets);

@@ -589,6 +589,7 @@ export type Change =
   | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }
   | { type: "set_brief"; objective: string; audience: string; constraints: string[]; exclusions: string[] }
+  | { type: "add_claim"; text: string; source: SourceReference | null; context: string; source_revision: string | null }
   | { type: "set_narrative_premise"; premise: string }
   | { type: "add_scene"; name: string; objective: string; duration_seconds: number }
   | { type: "move_scene"; scene_id: string; to_index: number }

@@ -917,6 +917,25 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
       break;
+    case "add_claim": {
+      assertUnlocked(next,projectResource(next),["content"]);
+      if(!change.text.trim() || new TextEncoder().encode(change.text).length>4000 ||
+        change.context.length>4000 || (change.source_revision?.length??0)>256 ||
+        next.brief.claims.length>=512)
+        throw new Error("Invalid or excessive capture source claim.");
+      if(change.source?.kind==="project_revision" &&
+        (!Number.isSafeInteger(change.source.revision) ||
+         change.source.revision<0 || change.source.revision>project.revision))
+        throw new Error("Claim source revision must exist in the authored project.");
+      next.brief.claims.push({
+        id:crypto.randomUUID(),
+        text:change.text,
+        source:structuredClone(change.source),
+        context:change.context,
+        source_revision:change.source_revision,
+      });
+      break;
+    }
     case "register_capture_source": {
       assertUnlocked(next, projectResource(next), ["content"]);
       registerCaptureRecord(next,change.record);

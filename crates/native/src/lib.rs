@@ -724,6 +724,7 @@ enum OperationKind {
     ApplyCreativePatch,
     RenameProject,
     SetBrief,
+    AddClaim,
     SetNarrativePremise,
     AddScene,
     MoveScene,
@@ -929,6 +930,16 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             audience: bounded_string(args, "audience", 2_000)?,
             constraints: strings(args, "constraints", 128, 1_000)?,
             exclusions: strings(args, "exclusions", 128, 1_000)?,
+        }),
+        OperationKind::AddClaim => Ok(Change::AddClaim {
+            text: bounded_string(args, "text", 4_000)?,
+            source: serde_json::from_value(args.get("source").cloned().unwrap_or(Value::Null))
+                .map_err(|_| Error::invalid("invalid versioned claim source reference"))?,
+            context: bounded_string(args, "context", 4_000)?,
+            source_revision: serde_json::from_value(
+                args.get("source_revision").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|_| Error::invalid("claim source revision must be a string or null"))?,
         }),
         OperationKind::SetNarrativePremise => Ok(Change::SetNarrativePremise {
             premise: bounded_string(args, "premise", 12_000)?,
@@ -1483,6 +1494,23 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "exclusions": {"type":"array","maxItems":128,"items":{"type":"string","maxLength":1000}}
                     }),
                     &["ref", "objective", "audience", "constraints", "exclusions"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::AddClaim,
+            descriptor(
+                "claim.add",
+                "Append an authored first-party project evidence claim without granting external capture or verification",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "text":{"type":"string","minLength":1,"maxLength":4000},
+                        "source":{"anyOf":[{"type":"null"},{"type":"object"}]},
+                        "context":{"type":"string","maxLength":4000},
+                        "source_revision":{"anyOf":[{"type":"null"},{"type":"string","maxLength":256}]}
+                    }),
+                    &["ref", "text", "source", "context", "source_revision"],
                 ),
             ),
         ),
@@ -2548,7 +2576,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
         assert!(names.contains(&"driver.motionwright.capture-source.register"));
-        assert_eq!(capabilities.len(), 53);
+        assert!(names.contains(&"driver.motionwright.claim.add"));
+        assert_eq!(capabilities.len(), 54);
     }
 
     #[tokio::test]
