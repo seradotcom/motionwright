@@ -98,6 +98,12 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
   await expect(add).toBeDisabled();
   await page.getByLabel("Patch replacement text").fill("Human-entered replacement text");
   await expect(add).toBeEnabled();
+  await page.getByLabel("Editor preview timebase").selectOption(boot.project.deliverables[1].id);
+  await expect(page.locator(".production-patch [role=alert]")).toContainText("selected output profile");
+  await expect(add).toBeDisabled();
+  await page.getByLabel("Editor preview timebase").selectOption(profile.id);
+  await expect(page.locator(".production-patch [role=alert]")).toHaveCount(0);
+  await expect(add).toBeEnabled();
   await add.click();
   await expect(page.getByRole("region", { name: "Proposed edits" })).toContainText(target!.name);
   await expect(page.locator(".revision-chip")).toHaveText(revision);

@@ -18,7 +18,8 @@ native authorization endpoint.
 4. Production → Scoped changes selects that object and pre-fills the rationale,
    **not** replacement text or geometry. The selected target remains fixed
    for this source-anchored draft; discard the draft to select a different
-   object. Switching the selected output profile also invalidates the draft.
+   object. A mismatched output profile blocks the draft; the operator can
+   reselect the original unchanged profile or start a fresh native inspection.
    The operator must modify the value,
    queue the edit, preview the bounded editorial A/B diff, and explicitly
    commit a fresh project revision.

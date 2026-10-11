@@ -89,10 +89,13 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
   };
   return <div className="production-patch">
     <div className="production-section-title"><Eye size={18}/><div><h2>Scoped changes</h2><p>Stage a bounded proposal, inspect the difference and commit once.</p></div></div>
-    {repairDraft && <div className="production-notice" role="status"><strong>Native frame {repairDraft.frameIndex} · source r{repairDraft.revision} · uncommitted repair</strong><span>PNG SHA-256 {repairDraft.frameSha256}. This handoff is a manual observation, not source authenticity or a quality PASS. The target object is fixed for this draft; discard it to select another. Enter a replacement, preview the scoped diff, then explicitly commit.</span></div>}
+    {repairDraft && <div className="production-notice" role="status"><strong>Native frame {repairDraft.frameIndex} · source r{repairDraft.revision} · uncommitted repair</strong><span>PNG SHA-256 {repairDraft.frameSha256.slice(0,16)}… (full digest retained in the rationale). This handoff is a manual observation, not source authenticity or a quality PASS. The target object is fixed for this draft; discard it to select another. Enter a replacement, preview the scoped diff, then explicitly commit.</span></div>}
     <div className="production-notice"><strong>Revision {base} · one scene · {edits.length} proposed edit{edits.length===1?"":"s"}</strong>
       <span>Scene and property locks are checked in preview and again by the revisioned service at commit. This view is an editorial comparison, not renderer verification.</span></div>
-    {stale && <div className="production-error" role="alert">The project changed to revision {project.revision}. This proposal cannot commit against an old base. <button className="secondary-button" onClick={reset}>Start a new scoped draft</button></div>}
+    {stale && <div className="production-error" role="alert">{sourceStale
+      ? "The native frame repair no longer matches the selected output profile, project revision or scene. Restore the original unchanged profile, or re-inspect current native frames before continuing."
+      : `The project changed to revision ${project.revision}. This proposal cannot commit against an old base.`}
+      <button className="secondary-button" onClick={reset}>Start a new scoped draft</button></div>}
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">
         <label className="production-field"><span>Target object</span><select aria-label="Patch target object" value={nodeId} disabled={repairDraft!==null} onChange={e=>setNodeId(e.target.value)}><option value="" disabled>Select an object</option>{scene?.nodes.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>
