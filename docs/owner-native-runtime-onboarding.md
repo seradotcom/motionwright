@@ -25,3 +25,16 @@ The trusted owner-provisioned connection follows the existing `motionwright-semw
 - Installed Linux/Windows/macOS candidate smoke tests remain separate. Packaging, a passing runtime probe and a configured file do **not** imply first real render, provider lifecycle recovery, human installation sign-off or commercial release readiness. Run independent acceptance intake to prove those.
 
 This is a bounded v0.1.0 onboarding improvement, **not** a complete fresh-machine installation flow. Runtime provisioning and first-person owner acceptance must still be tested on a device with an authorized live Semwright provider. Provider-generation loss issue #49 remains open.
+
+
+## Independent read-only first-use troubleshooting
+
+The separate source-tree [runtime first-use audit](runtime-first-use-audit.md)
+lets owners validate the exact saved reference, scoped connection, existing
+runtime files and digest without exposing private session bytes or running a
+render. It does not add a new Native SDK, provision an owner runtime or give
+the application authorization to perform a Broker operation. The optional
+bounded CLI --version probe requires an explicit owner flag. Results never
+promote independent product acceptance or claim that a real provider is ready.
+On Windows, owner connection replacement now preserves the previous
+reference if promoting a verified candidate fails.

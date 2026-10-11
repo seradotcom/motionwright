@@ -154,15 +154,10 @@ impl RuntimeConnectionRegistry {
             let _ = fs::remove_file(&temporary);
             return Err("Semwright connection reference could not be saved".into());
         }
-        #[cfg(windows)]
-        {
-            // Windows cannot reliably replace an existing file via rename.
-            // A completed staged file exists before removing the old pointer.
-            if destination.exists() {
-                fs::remove_file(&destination)
-                    .map_err(|_| "Existing Semwright connection reference cannot be replaced")?;
-            }
-        }
+        // Rust's fs::rename replaces an existing regular file on supported
+        // platforms, including Windows (MoveFileExW). Never delete the prior
+        // owner-selected reference before promoting the staged replacement:
+        // an AV/ACL/share-mode failure must leave the last valid pointer intact.
         if fs::rename(&temporary, &destination).is_err() {
             let _ = fs::remove_file(&temporary);
             return Err("Semwright connection reference could not be activated".into());
@@ -268,6 +263,52 @@ mod tests {
             .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(registry.resolve(project_id, generation).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_windows_replace_preserves_last_verified_reference() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project_id = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let first = tmp.path().join("existing-owner.json");
+        let replacement = tmp.path().join("replacement-owner.json");
+        registry
+            .remember_verified(project_id, generation, &first)
+            .unwrap();
+        let destination = registry.destination(project_id);
+        let original_bytes = fs::read(&destination).unwrap();
+
+        // Deny FILE_SHARE_DELETE (and all other sharing) so Windows cannot
+        // replace the destination while the handle is held.
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&destination)
+            .unwrap();
+        assert!(
+            registry
+                .remember_verified(project_id, generation, &replacement)
+                .is_err()
+        );
+        drop(locked);
+
+        // The previous registration still works even though activation failed.
+        assert_eq!(fs::read(&destination).unwrap(), original_bytes);
+        assert_eq!(
+            registry.resolve(project_id, generation).unwrap(),
+            Some(first)
+        );
+        registry
+            .remember_verified(project_id, generation, &replacement)
+            .unwrap();
+        assert_eq!(
+            registry.resolve(project_id, generation).unwrap(),
+            Some(replacement)
+        );
     }
 
     #[test]
