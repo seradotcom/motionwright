@@ -11,6 +11,8 @@ on:
       - "tooling/tests/test_package_receipt.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
+      - "tooling/windows_cold_start.py"
+      - "tooling/tests/test_windows_cold_start.py"
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -26,6 +28,8 @@ on:
       - "tooling/tests/test_package_receipt.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
+      - "tooling/windows_cold_start.py"
+      - "tooling/tests/test_windows_cold_start.py"
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -47,7 +51,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Candidate receipt and installed-package smoke policy tests
-        run: python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_smoke.py
+        run: python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py
 
   linux:
     needs: receipt-policy
@@ -231,6 +235,36 @@ jobs:
             --kind nsis --method nsis_silent_current_user `
             --artifact "$installer" --installed-binary "$($binaries[0].FullName)" `
             --output ci-evidence/windows-nsis-smoke.json
+      - name: Cold launch and reopen the real NSIS-installed application
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'
+          $binaries = @(Get-ChildItem $dest -Recurse -File -Filter '*motionwright*.exe' |
+            Where-Object { $_.Name -notmatch '(unins|setup|uninstall)' })
+          if ($binaries.Count -ne 1) {
+            throw 'Cannot uniquely identify the previously validated installed NSIS executable'
+          }
+          $scratch = Join-Path $env:RUNNER_TEMP 'motionwright-windows-cold-relaunch'
+          python tooling/windows_cold_start.py `
+            --installed-binary "$($binaries[0].FullName)" `
+            --candidate-smoke ci-evidence/windows-nsis-smoke.json `
+            --expected-source-sha "$env:GITHUB_SHA" `
+            --scratch "$scratch" `
+            --output ci-evidence/windows-nsis-cold-relaunch.json
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Installed NSIS cold boot or persisted-project relaunch did not pass'
+          }
+          $proof = Get-Content ci-evidence/windows-nsis-cold-relaunch.json -Raw | ConvertFrom-Json
+          if ($proof.source_sha -ne $env:GITHUB_SHA -or
+              $proof.first_launch_real_visible_hwnd -ne $true -or
+              $proof.second_launch_real_visible_hwnd -ne $true -or
+              $proof.same_project_generation_revision_document -ne $true -or
+              $proof.human_install_acceptance -ne 'NOT_RUN' -or
+              $proof.renderer_runtime_acceptance -ne 'NOT_RUN') {
+            throw 'Windows cold-launch proof does not match the exact source or evidence scope'
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-windows-candidate
@@ -238,6 +272,7 @@ jobs:
             target/release/bundle/nsis/*-setup.exe
             ci-evidence/windows-candidate.json
             ci-evidence/windows-nsis-smoke.json
+            ci-evidence/windows-nsis-cold-relaunch.json
           if-no-files-found: error
 
   macos:
