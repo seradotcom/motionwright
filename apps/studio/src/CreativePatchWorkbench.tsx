@@ -36,17 +36,17 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
   },[scene?.id,project.generation]);
   useEffect(()=>{
     if (!repairDraft) return;
-    if (!nativeRepairDraftIsCurrent(project,scene,repairDraft,displayProfile?.id ?? null)) {
-      setError("The native frame repair source is stale, missing or from another scene. Re-inspect current native frames.");
-      return;
-    }
+    // This effect initializes only a new source handoff. Profile changes do
+    // not erase operator input; the derived sourceStale guard below blocks
+    // preview/commit until the original profile is selected again.
+    if (!nativeRepairDraftIsCurrent(project,scene,repairDraft,displayProfile?.id ?? null)) return;
     setEdits([]);setPreview(null);setUndoTarget(null);setError(null);
     setBase(repairDraft.revision);setNodeId(repairDraft.targetNodeId);
     setKind(repairDraft.editKind);setRationale(repairDraft.rationale);
     // This deliberately does not fill replacement values from the review note.
     // The operator must author a change and run a separate preview/commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[repairDraft,project.id,project.generation,scene?.id,displayProfile?.id]);
+  },[repairDraft,project.id,project.generation,scene?.id]);
   useEffect(()=>{
     if (!node) return;
     setText(node.text ?? "");
