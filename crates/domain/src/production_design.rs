@@ -13,6 +13,8 @@ pub struct ProductionDesign {
     pub capsules: Vec<NativeCapsule>,
     #[serde(default)]
     pub patches: Vec<CreativePatchRecord>,
+    #[serde(default)]
+    pub procedural_fields: Vec<ProceduralFieldInstance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +330,27 @@ impl ProductionDesign {
             capsule.validate(scenes, assets)?;
             if !ids.insert(capsule.id) {
                 return Err(DomainError::Invalid("duplicate native capsule".into()));
+            }
+        }
+        if self.procedural_fields.len() > PROCEDURAL_MAX_FIELDS {
+            return Err(DomainError::Invalid(
+                "procedural field budget exceeded".into(),
+            ));
+        }
+        let mut procedural_ids = BTreeSet::new();
+        let mut procedural_scenes = BTreeSet::new();
+        for field in &self.procedural_fields {
+            field.validate()?;
+            if !procedural_ids.insert(field.id)
+                || !procedural_scenes.insert(field.scene_id)
+                || !scenes.iter().any(|scene| {
+                    scene.id == field.scene_id && scene.renderer == RendererKind::MotionCanvas
+                })
+            {
+                return Err(DomainError::Invalid(
+                    "procedural fields require unique identities, one per Motion Canvas scene"
+                        .into(),
+                ));
             }
         }
         if let Some(plan) = &self.plan {

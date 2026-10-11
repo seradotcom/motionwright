@@ -882,6 +882,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   switch (change.type) {
     case "upsert_product_hero":
     case "detach_product_hero":
+    case "upsert_procedural_field":
+    case "detach_procedural_field":
     case "set_production_plan":
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);

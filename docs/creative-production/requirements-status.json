@@ -339,10 +339,18 @@
     },
     {
       "id": "MW05-E06-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new procedural fields or repeat system",
-      "remaining_scope": "Seeded bounded generators and editable controls required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields as real editable Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E",
+      "remaining_scope": "Temporal sequences, advanced fields/forces, GPU/nonnative renderer benchmarking, creative production proof and real artistic review",
+      "source_paths": [
+        "crates/domain/src/procedural.rs",
+        "crates/domain/tests/procedural_fields.rs",
+        "apps/studio/src/proceduralField.ts",
+        "apps/studio/src/proceduralField.test.ts",
+        "apps/studio/src/ProceduralFieldWorkbench.tsx",
+        "apps/studio/tests/procedural-field.spec.ts",
+        "docs/creative-production/PROCEDURAL_FIELDS.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

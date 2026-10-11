@@ -1,4 +1,6 @@
 import type { CreativePatchRecord } from "./creativeUndo";
+import type { ProceduralFieldInstance } from "./proceduralField";
+import { applyProceduralChange } from "./proceduralField";
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
@@ -30,16 +32,16 @@ export interface NativeCapsule {
   id: string; scene_id: string; source_asset_id: string; source_sha256: string; label: string;
   fidelity: FidelityReport; editable_parameters: string[]; native_editor_hint: string;
 }
-export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; }
+export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; procedural_fields?: ProceduralFieldInstance[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
   | { kind: "transform"; node_id: string; transform: CanvasTransform }
   | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe };
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
-export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "apply_creative_patch" }>;
+export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
 
-export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [] });
+export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [], procedural_fields: [] });
 export const defaultHeroConfig = (): HeroConfig => ({
   layout: "product_hero_reveal",
   eyebrow: "MOTIONWRIGHT / CREATIVE PRODUCTION", headline: "Make the work.\nKeep the craft.",
@@ -208,6 +210,10 @@ export async function applyProductionDesignChange(project: Project, change: Prod
   const design = structuredClone(project.production_design ?? emptyProductionDesign());
   unlocked(project,null,["content"]);
   switch (change.type) {
+    case "upsert_procedural_field":
+    case "detach_procedural_field":
+      await applyProceduralChange(project, change);
+      return;
     case "upsert_product_hero": {
       unlocked(project,change.scene_id,["content","position","style","timing","renderer"]);
       const scene = project.scenes.find(s => s.id === change.scene_id);
