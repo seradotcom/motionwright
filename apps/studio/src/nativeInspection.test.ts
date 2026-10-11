@@ -91,7 +91,7 @@ describe("native review -> scoped repair handoff is never an automatic project e
     expect(draft.rationale).toContain("revision " + plan.revision);
     expect(draft.rationale).toContain(finding.proposedRepair);
     expect(draft.rationale).not.toContain("owned-native-frame-grant");
-    expect(nativeRepairDraftIsCurrent(project,scene,draft)).toBe(true);
+    expect(nativeRepairDraftIsCurrent(project,scene,draft,plan.profileId)).toBe(true);
     expect(project).toEqual(before);
   });
   it("refuses stale project generations, wrong sources and unselected objects",()=>{
@@ -101,6 +101,8 @@ describe("native review -> scoped repair handoff is never an automatic project e
     expect(()=>create(project,scene,sample,{...finding,nodeId:null})).toThrow("Select");
     expect(()=>create({...project,revision:project.revision+1})).toThrow("stale");
     expect(()=>create({...project,generation:crypto.randomUUID()})).toThrow("stale");
+    expect(()=>createNativeReviewRepairDraft(project,scene,{...plan,profileId:crypto.randomUUID()},sample,finding)).toThrow("stale");
+    expect(()=>createNativeReviewRepairDraft(project,scene,{...plan,width:plan.width+1},sample,finding)).toThrow("stale");
     expect(()=>create(project,scene,{...sample,pngSha256:"not-a-sha"})).toThrow("outside");
     expect(()=>create(project,scene,{...sample,frameIndex:999})).toThrow("outside");
     expect(()=>create(project,scene,sample,{...finding,nodeId:crypto.randomUUID()})).toThrow("outside");
@@ -109,11 +111,13 @@ describe("native review -> scoped repair handoff is never an automatic project e
   it("invalidates a source-bound draft after a commit, switch, or missing object",()=>{
     const {project,scene,plan,sample,finding}=checked();
     const draft=createNativeReviewRepairDraft(project,scene,plan,sample,finding);
-    expect(nativeRepairDraftIsCurrent({...project,revision:project.revision+1},scene,draft)).toBe(false);
-    expect(nativeRepairDraftIsCurrent({...project,generation:crypto.randomUUID()},scene,draft)).toBe(false);
-    expect(nativeRepairDraftIsCurrent({...project,id:crypto.randomUUID()},scene,draft)).toBe(false);
-    expect(nativeRepairDraftIsCurrent(project,null,draft)).toBe(false);
-    expect(nativeRepairDraftIsCurrent(project,{...scene,nodes:[]},draft)).toBe(false);
-    expect(nativeRepairDraftIsCurrent(project,scene,{...draft,frameSha256:"corrupt"})).toBe(false);
+    expect(nativeRepairDraftIsCurrent({...project,revision:project.revision+1},scene,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent({...project,generation:crypto.randomUUID()},scene,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent({...project,id:crypto.randomUUID()},scene,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,null,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,scene,draft,null)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,scene,draft,crypto.randomUUID())).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,{...scene,nodes:[]},draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,scene,{...draft,frameSha256:"corrupt"},plan.profileId)).toBe(false);
   });
 });

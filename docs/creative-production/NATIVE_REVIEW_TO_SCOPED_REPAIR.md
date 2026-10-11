@@ -18,7 +18,8 @@ native authorization endpoint.
 4. Production → Scoped changes selects that object and pre-fills the rationale,
    **not** replacement text or geometry. The selected target remains fixed
    for this source-anchored draft; discard the draft to select a different
-   object. The operator must modify the value,
+   object. Switching the selected output profile also invalidates the draft.
+   The operator must modify the value,
    queue the edit, preview the bounded editorial A/B diff, and explicitly
    commit a fresh project revision.
 5. All existing CAS, locks, object-scope checks, and independent native

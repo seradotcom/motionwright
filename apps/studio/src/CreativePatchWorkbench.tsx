@@ -6,13 +6,14 @@ import { Check, Eye, Plus, Trash2 } from "lucide-react";
 import { previewCreativePatch } from "./api";
 import CompositionStudy from "./CompositionStudy";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
-import type { CanvasNode, CanvasTransform, Change, Project, Scene } from "./types";
+import type { CanvasNode, CanvasTransform, Change, DeliverableProfile, Project, Scene } from "./types";
 import { seconds } from "./types";
 
 type Preview = Awaited<ReturnType<typeof previewCreativePatch>>;
-export default function CreativePatchWorkbench({project,scene,commit,busy,playhead,onSeek,repairDraft,onDismissRepair}: {
+export default function CreativePatchWorkbench({project,scene,commit,busy,playhead,onSeek,displayProfile,repairDraft,onDismissRepair}: {
   project:Project; scene:Scene|null; commit:(change:Change)=>Promise<void>; busy:boolean;
   playhead:number; onSeek:(time:number)=>void;
+  displayProfile:DeliverableProfile|null;
   repairDraft:NativeReviewRepairDraft|null; onDismissRepair:()=>void;
 }) {
   const [nodeId,setNodeId]=useState(scene?.nodes[0]?.id ?? "");
@@ -35,7 +36,7 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
   },[scene?.id,project.generation]);
   useEffect(()=>{
     if (!repairDraft) return;
-    if (!nativeRepairDraftIsCurrent(project,scene,repairDraft)) {
+    if (!nativeRepairDraftIsCurrent(project,scene,repairDraft,displayProfile?.id ?? null)) {
       setError("The native frame repair source is stale, missing or from another scene. Re-inspect current native frames.");
       return;
     }
@@ -45,13 +46,13 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
     // This deliberately does not fill replacement values from the review note.
     // The operator must author a change and run a separate preview/commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[repairDraft,project.id,project.generation,scene?.id]);
+  },[repairDraft,project.id,project.generation,scene?.id,displayProfile?.id]);
   useEffect(()=>{
     if (!node) return;
     setText(node.text ?? "");
     setTransform({x:node.x,y:node.y,width:node.width,height:node.height,rotation_deg:node.rotation_deg,opacity:node.opacity});
   },[node]);
-  const sourceStale=repairDraft!==null && !nativeRepairDraftIsCurrent(project,scene,repairDraft);
+  const sourceStale=repairDraft!==null && !nativeRepairDraftIsCurrent(project,scene,repairDraft,displayProfile?.id ?? null);
   const stale=base!==project.revision || sourceStale;
   const background=project.visual_language.palette.find(t=>["surface","background"].includes(t.name.toLowerCase()))?.value ?? "#0F1216";
   const time=scene?Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start))):0;

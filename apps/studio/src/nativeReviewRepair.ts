@@ -32,7 +32,9 @@ export function createNativeReviewRepairDraft(
     throw new Error("Select an affected object before preparing a scoped repair.");
   }
   if (project.id !== plan.projectId || project.generation !== plan.generation ||
-      project.revision !== plan.revision || scene.id !== plan.sceneId) {
+      project.revision !== plan.revision || scene.id !== plan.sceneId ||
+      !project.deliverables.some((profile) => profile.id === plan.profileId &&
+        profile.width === plan.width && profile.height === plan.height)) {
     throw new Error("Native review source is stale or belongs to another project/scene.");
   }
   // Validates frame selection and PNG digest, not quality or source authenticity.
@@ -75,11 +77,14 @@ export function nativeRepairDraftIsCurrent(
   project: Project,
   scene: Scene | null,
   draft: NativeReviewRepairDraft,
+  profileId: string | null,
 ): boolean {
   return draft.schema === "motionwright.native-review-repair-draft/1" &&
     project.id === draft.projectId &&
     project.generation === draft.generation &&
     project.revision === draft.revision &&
+    profileId === draft.profileId &&
+    project.deliverables.some((profile) => profile.id === draft.profileId) &&
     scene !== null && scene.id === draft.sceneId &&
     scene.nodes.some((node) => node.id === draft.targetNodeId) &&
     project.scenes.some((current) => current.id === scene.id &&
