@@ -8,6 +8,7 @@ mod extensions;
 mod hero;
 mod history;
 mod integrations;
+mod measured_data;
 mod product_stage;
 mod production_design;
 pub use brand_governance::*;
@@ -20,6 +21,7 @@ pub use extensions::*;
 pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use measured_data::*;
 pub use product_stage::*;
 pub use production_design::*;
 
@@ -1037,6 +1039,25 @@ impl Project {
                 }
                 self.production_design.plan = plan.clone();
             }
+            Change::UpsertMeasuredTable { table } => self.upsert_measured_table(table)?,
+            Change::UpsertMeasuredBinding {
+                binding_id,
+                scene_id,
+                node_id,
+                table_id,
+                datum_key,
+                view,
+            } => self.upsert_measured_binding(
+                *binding_id,
+                *scene_id,
+                *node_id,
+                *table_id,
+                datum_key,
+                view,
+            )?,
+            Change::DetachMeasuredBinding { binding_id } => {
+                self.detach_measured_binding(*binding_id)?
+            }
             Change::SetBrandGovernance {
                 profile,
                 exceptions,
@@ -1931,6 +1952,14 @@ impl Project {
                     ));
                 }
                 if self
+                    .production_design
+                    .measured_tables
+                    .iter()
+                    .any(|table| table.source_asset_id == *asset_id)
+                {
+                    return Err(DomainError::Invalid("asset remains bound to a measured table; relink data before deleting source".into()));
+                }
+                if self
                     .audio
                     .voice_tracks
                     .iter()
@@ -2317,6 +2346,20 @@ pub enum Change {
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
+    },
+    UpsertMeasuredTable {
+        table: MeasuredTable,
+    },
+    UpsertMeasuredBinding {
+        binding_id: Uuid,
+        scene_id: Uuid,
+        node_id: Uuid,
+        table_id: Uuid,
+        datum_key: String,
+        view: MeasuredView,
+    },
+    DetachMeasuredBinding {
+        binding_id: Uuid,
     },
     SetBrandGovernance {
         profile: Option<BrandProfile>,

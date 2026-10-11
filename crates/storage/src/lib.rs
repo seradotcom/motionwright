@@ -264,6 +264,67 @@ pub struct ProjectEvent {
     pub created_at: String,
 }
 
+/// Compare the actual content-addressed source bytes against the declared,
+/// bounded measurement snapshot. This is deliberately stricter than ordinary
+/// document metadata validation: no Native SDK or Studio client can author
+/// values that the referenced JSON/CSV does not contain.
+///
+/// Only a narrow, unambiguous four-column CSV subset is admitted (no quoted
+/// commas/newlines) until a versioned general CSV grammar is introduced.
+/// The caller already verified blob path, max byte budget, and SHA-256.
+fn parse_measured_source_rows(source: &[u8]) -> Result<Vec<motionwright_domain::MeasuredDatum>> {
+    use motionwright_domain::{DomainError, MeasuredDatum, MeasuredUnit};
+    let invalid = || {
+        StorageError::Domain(DomainError::Invalid(
+            "imported measured source must be a bounded exact JSON array or four-column CSV".into(),
+        ))
+    };
+    // The imported Asset MIME is checked against the project in the same
+    // transaction; require unambiguous byte grammar here. JSON is an array,
+    // while CSV starts with the exact versioned four-column header.
+    let rows: Vec<MeasuredDatum> = if source
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .copied()
+        == Some(b'[')
+    {
+        serde_json::from_slice(source).map_err(|_| invalid())?
+    } else {
+        let text = std::str::from_utf8(source).map_err(|_| invalid())?;
+        let mut lines = text.lines();
+        if lines.next() != Some("key,label,milli,unit") {
+            return Err(invalid());
+        }
+        let mut rows = Vec::new();
+        for line in lines {
+            let cells: Vec<_> = line.trim_end_matches('\r').split(',').collect();
+            if cells.len() != 4 || rows.len() >= 64 {
+                return Err(invalid());
+            }
+            let unit = match cells[3] {
+                "count" => MeasuredUnit::Count,
+                "percent" => MeasuredUnit::Percent,
+                "seconds" => MeasuredUnit::Seconds,
+                "milliseconds" => MeasuredUnit::Milliseconds,
+                "bytes" => MeasuredUnit::Bytes,
+                _ => return Err(invalid()),
+            };
+            let milli = cells[2].parse::<i64>().map_err(|_| invalid())?;
+            rows.push(MeasuredDatum {
+                key: cells[0].to_owned(),
+                label: cells[1].to_owned(),
+                milli,
+                unit,
+            });
+        }
+        rows
+    };
+    if rows.is_empty() || rows.len() > 64 {
+        return Err(invalid());
+    }
+    Ok(rows)
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -1011,6 +1072,28 @@ impl Store {
             // Never touch a digest until the receipt-replay, generation and
             // canonical revision checks above have confirmed authority.
             capture_evidence::verify_capture_source(&blob_root, &project, record)?;
+        }
+        if let Change::UpsertMeasuredTable { table } = change {
+            // These checks run *after* receipt replay and the canonical
+            // project generation/revision gate. A successful repeat of the
+            // same durable request returns its original receipt, while a
+            // stale/foreign request cannot learn blob existence or metadata.
+            if !project.assets.iter().any(|asset| {
+                asset.id == table.source_asset_id
+                    && asset.content_sha256.as_deref() == Some(table.source_sha256.as_str())
+                    && ["application/json", "text/csv"].contains(&asset.media_type.as_str())
+            }) {
+                return Err(StorageError::Domain(DomainError::Invalid(
+                    "the project does not own the exact imported measured source asset".into(),
+                )));
+            }
+            let bytes =
+                read_verified_blob_from_root(&self.blob_root, &table.source_sha256, 64 * 1024)?;
+            if parse_measured_source_rows(&bytes)? != table.rows {
+                return Err(StorageError::Domain(DomainError::Invalid(
+                    "declared measurements differ from the imported SHA-256 source bytes".into(),
+                )));
+            }
         }
         if let Some((digest, path)) = required_blob {
             let descriptor = hash_file(&path)?;

@@ -721,6 +721,9 @@ enum OperationKind {
     UpsertProductStage,
     DetachProductStage,
     SetProductionPlan,
+    UpsertMeasuredTable,
+    UpsertMeasuredBinding,
+    DetachMeasuredBinding,
     UpsertNativeCapsule,
     RegisterCaptureSource,
     ApplyCreativePatch,
@@ -920,6 +923,30 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .ok_or_else(|| Error::invalid("capture record is required"))?,
             )
             .map_err(|_| Error::invalid("invalid bounded first-party capture source record"))?,
+        }),
+        OperationKind::UpsertMeasuredTable => Ok(Change::UpsertMeasuredTable {
+            table: serde_json::from_value(
+                args.get("table")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("table is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid versioned source-bound measured table"))?,
+        }),
+        OperationKind::UpsertMeasuredBinding => Ok(Change::UpsertMeasuredBinding {
+            binding_id: uuid(args, "binding_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            node_id: uuid(args, "node_id")?,
+            table_id: uuid(args, "table_id")?,
+            datum_key: string(args, "datum_key", 48)?,
+            view: serde_json::from_value(
+                args.get("view")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("view is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid explicit measurement/axis view"))?,
+        }),
+        OperationKind::DetachMeasuredBinding => Ok(Change::DetachMeasuredBinding {
+            binding_id: uuid(args, "binding_id")?,
         }),
         OperationKind::UpsertNativeCapsule => Ok(Change::UpsertNativeCapsule {
             capsule: serde_json::from_value(
@@ -2346,6 +2373,81 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertMeasuredTable,
+            descriptor(
+                "measured-table.upsert",
+                "Commit a versioned numeric table bound to an imported JSON/CSV SHA-256 asset; no metric inference",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "table":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.measured-table/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "label":{"type":"string","minLength":1,"maxLength":160},
+                                "version":{"type":"integer","minimum":1},
+                                "source_asset_id":{"type":"string","format":"uuid"},
+                                "source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "rows":{"type":"array","minItems":1,"maxItems":64,"items":{
+                                    "type":"object",
+                                    "properties":{
+                                        "key":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,47}$"},
+                                        "label":{"type":"string","minLength":1,"maxLength":120},
+                                        "milli":{"type":"integer","minimum":-1000000000,"maximum":1000000000},
+                                        "unit":{"type":"string","enum":["count","percent","seconds","milliseconds","bytes"]}
+                                    },
+                                    "required":["key","label","milli","unit"],
+                                    "additionalProperties":false
+                                }}
+                            },
+                            "required":["schema","id","label","version","source_asset_id","source_sha256","rows"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "table"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertMeasuredBinding,
+            descriptor(
+                "measured-binding.upsert",
+                "Bind a measured row to existing Canvas text or explicitly bounded bar width",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "binding_id":{"type":"string","format":"uuid"},
+                        "scene_id":{"type":"string","format":"uuid"},
+                        "node_id":{"type":"string","format":"uuid"},
+                        "table_id":{"type":"string","format":"uuid"},
+                        "datum_key":{"type":"string","maxLength":48},
+                        "view":{"type":"object"}
+                    }),
+                    &[
+                        "ref",
+                        "binding_id",
+                        "scene_id",
+                        "node_id",
+                        "table_id",
+                        "datum_key",
+                        "view",
+                    ],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachMeasuredBinding,
+            descriptor(
+                "measured-binding.detach",
+                "Remove source binding only, retaining the existing editable Canvas node",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},"binding_id":{"type":"string","format":"uuid"}}),
+                    &["ref", "binding_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertNativeCapsule,
             descriptor(
                 "native-capsule.upsert",
@@ -2642,7 +2744,11 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
         assert!(names.contains(&"driver.motionwright.capture-source.register"));
         assert!(names.contains(&"driver.motionwright.claim.add"));
-        assert_eq!(capabilities.len(), 56);
+
+        assert!(names.contains(&"driver.motionwright.measured-table.upsert"));
+        assert!(names.contains(&"driver.motionwright.measured-binding.upsert"));
+        assert!(names.contains(&"driver.motionwright.measured-binding.detach"));
+        assert_eq!(capabilities.len(), 59);
     }
 
     #[tokio::test]

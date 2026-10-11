@@ -1,7 +1,7 @@
 use crate::component_text::fixed_component_text;
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
-    BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy,
+    BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy, MeasuredView,
     MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene,
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
@@ -1071,6 +1071,12 @@ fn build_segment(
     // Bound ProductStage text must remain within authored screen-anchor
     // glyph boxes. Reuse the proven native fixed-component text grammar
     // rather than allowing provider auto-layout to shift or drop text.
+    // A measured counter/label is a native, editable text object whose
+    // glyph position must remain inside its *authored* Canvas region.
+    // The generic Motion Canvas Txt automatic layout can silently drop
+    // otherwise valid unparented measured text; the source-pinned Hero
+    // fixed-container grammar already preserves exact typographic regions.
+    // Scope that grammar to bound measured text only, not arbitrary nodes.
     let mut component_texts = project
         .production_design
         .heroes
@@ -1084,6 +1090,19 @@ fn build_segment(
             .filter(|node| node.kind == "text")
             .map(|node| node.id)
     }));
+    component_texts.extend(
+        project
+            .production_design
+            .measured_bindings
+            .iter()
+            .filter(|binding| {
+                matches!(
+                    binding.view,
+                    MeasuredView::Counter { .. } | MeasuredView::Label { .. }
+                )
+            })
+            .map(|binding| binding.node_id),
+    );
     let shot_context = ShotProjectionContext {
         component_texts: &component_texts,
         profile,
