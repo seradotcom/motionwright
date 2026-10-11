@@ -111,7 +111,7 @@ export async function validateBrandGovernance(project:Project):Promise<void> {
                                 n.id===hero.baseline.find(b=>b.name.endsWith(" / rule"))?.id ||
                                 (hero.config.layout==="metric_evidence" &&
                                  n.id===hero.baseline.find(b=>b.name.endsWith(" / headline"))?.id))
-            .some(n=>n.style.fill!==null && !allowed(n.style.fill));
+            .some(n=>n.style.fill===null || !allowed(n.style.fill));
       } else if (hero && rule.kind==="required_wordmark") {
         const wordmark=hero.baseline.find(n=>n.name.endsWith(" / wordmark"));
         violation=hero.config.wordmark!==rule.text ||

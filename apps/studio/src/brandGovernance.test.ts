@@ -93,6 +93,9 @@ describe("MetricEvidence and BrandProfile share the exact accent authority",()=>
     await expect(applyChange(p,{type:"update_canvas_style",scene_id,node_id:targetId,style:changed}))
       .rejects.toThrow("Brand rule");
     expect(p).toEqual(previous);
+    await expect(applyChange(p,{type:"update_canvas_style",scene_id,node_id:targetId,
+      style:{...node.style,fill:null}})).rejects.toThrow("Brand rule");
+    expect(p).toEqual(previous);
 
     const waiver:BrandException={id:crypto.randomUUID(),rule_id:ruleId,scene_id,
       brand_sha256:await brandDigest(profile),campaign:"Specific metric",

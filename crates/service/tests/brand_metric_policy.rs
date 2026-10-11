@@ -100,6 +100,24 @@ fn rejected_human_metric_accent_cannot_change_durable_project_or_revision() {
         "the policy must reject a direct human style edit"
     );
     assert_eq!(service.project(project.id).unwrap(), source);
+    let mut missing_fill = denied_style.clone();
+    missing_fill.fill = None;
+    assert!(
+        service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "denied-missing-accent",
+                &Change::UpdateCanvasStyle {
+                    scene_id,
+                    node_id: headline_id,
+                    style: missing_fill
+                }
+            )
+            .is_err(),
+        "a null fill cannot bypass an enforced brand palette",
+    );
+    assert_eq!(service.project(project.id).unwrap(), source);
     drop(service);
 
     let reopened = StudioService::open(&database).unwrap();

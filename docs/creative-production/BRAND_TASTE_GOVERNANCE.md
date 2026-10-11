@@ -40,7 +40,8 @@ For this vertical slice, palette and wordmark restrictions apply to authored
 first-party hero components; phrase restrictions apply to scene nodes and hero
 copy. In MetricEvidence, the large headline is also an accent-painted semantic
 field: the allowlisted palette governs its current authored fill after human
-style edits, not only the component config, wordmark and graphic rule. Generic fonts, imagery, external-native payloads and audio are not yet
+style edits, not only the component config, wordmark and graphic rule. Clearing
+an accent-painted object's fill is also a violation, not an exception bypass. Generic fonts, imagery, external-native payloads and audio are not yet
 subject to full brand compliance. This does not certify a delivery as brand-safe.
 
 Adding a rule to an already nonconforming scene fails closed until the text is

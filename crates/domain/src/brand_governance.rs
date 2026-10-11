@@ -256,8 +256,9 @@ pub fn validate_brand_governance(
                                     || (hero.config.layout == HeroLayout::MetricEvidence
                                         && node.id == hero_node_id(hero.id, "headline"))
                             })
-                            .filter_map(|node| node.style.fill.as_deref())
-                            .any(|fill| !allowed(fill))
+                            .any(|node| {
+                                node.style.fill.as_deref().is_none_or(|fill| !allowed(fill))
+                            })
                 }),
                 BrandRule::RequiredWordmark { text, .. } => hero.is_some_and(|hero| {
                     hero.config.wordmark != *text
