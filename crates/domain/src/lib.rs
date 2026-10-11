@@ -1029,12 +1029,14 @@ impl Project {
                 exceptions,
             } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
-                if let (Some(old), Some(new)) = (&self.production_design.brand_profile, profile) {
-                    if old.id == new.id && old != new && new.version <= old.version {
-                        return Err(DomainError::Invalid(
-                            "changed brand policy must increase version".into(),
-                        ));
-                    }
+                if matches!(
+                    (&self.production_design.brand_profile, profile),
+                    (Some(old), Some(new))
+                        if old.id == new.id && old != new && new.version <= old.version
+                ) {
+                    return Err(DomainError::Invalid(
+                        "changed brand policy must increase version".into(),
+                    ));
                 }
                 self.production_design.brand_profile = profile.clone();
                 self.production_design.brand_exceptions = exceptions.clone();
