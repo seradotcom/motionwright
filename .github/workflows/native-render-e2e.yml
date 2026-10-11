@@ -88,7 +88,7 @@ jobs:
       - name: Install Semwright daemon build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
+          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang ffmpeg
 
       - name: Install exact Motion Canvas runtime and Firefox
         working-directory: _semwright/integrations/motion-canvas/runtime
@@ -110,6 +110,12 @@ jobs:
           cargo build --locked -p motionwright-native --example native-render-e2e
           cargo test --locked -p motionwright-native \
             motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
+            -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            exact_linear_opacity_keys_preserve_native_fade_in_and_original_canvas \
+            -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            noncanonical_linear_opacity_keys_fail_without_approximation \
             -- --nocapture
 
       - name: Verify bounded provider lifecycle diagnostics
@@ -141,6 +147,17 @@ jobs:
           assert result["frame_count"] == 60
           assert result["linear_position_motion_sampled"] is True
           assert result["native_motion_frame_sha256"]["start"] != result["native_motion_frame_sha256"]["end_of_linear_tween"]
+          assert result["linear_opacity_motion_sampled"] is True
+          region = result["native_linear_opacity_region"]
+          assert region["scope"] == "actual_pinned_motion_canvas_png_rgb24_region_only"
+          assert region["rect"] == [1150, 750, 180, 90]
+          assert region["frames"] == [0, 15, 30]
+          assert len(region["rgb24_sha256"]) == 3
+          assert all(len(value) == 64 for value in region["rgb24_sha256"])
+          distances = region["mean_byte_distance"]
+          assert distances["start_to_end"] >= 18
+          assert distances["start_to_middle"] >= 8
+          assert 5 <= distances["middle_to_end"] < distances["start_to_end"] * 0.85
           assert len(result["artifact_manifest_sha256"]) == 64
           health = json.loads((root / "native-provider-lifecycle.json").read_text())
           assert health["schema"] == "motionwright-ci-provider-lifecycle/1"

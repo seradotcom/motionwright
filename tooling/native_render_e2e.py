@@ -39,6 +39,41 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def native_opacity_tile_rgb(frame: Path) -> bytes:
+    """Decode only the source-authored 180x90 opacity-tile ROI from native PNG.
+
+    FFmpeg is used for acceptance *inspection* of immutable output frames,
+    never as an alternative renderer or image-generation backend.
+    """
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", str(frame),
+        "-vf", "crop=180:90:1150:750",
+        "-frames:v", "1", "-pix_fmt", "rgb24",
+        "-f", "rawvideo", "pipe:1",
+    ]
+    try:
+        process = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AssertionError(
+            "native opacity region decoder is unavailable or timed out"
+        ) from error
+    if process.returncode != 0 or len(process.stdout) != 180 * 90 * 3:
+        raise AssertionError(
+            "native opacity region could not be decoded into exact RGB24 bytes"
+        )
+    return process.stdout
+
+
+def mean_byte_distance(left: bytes, right: bytes) -> float:
+    if len(left) != len(right) or not left:
+        raise AssertionError("decoded native ROI byte dimensions differ")
+    return sum(abs(a - b) for a, b in zip(left, right)) / len(left)
+
+
 def write_private_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     path.chmod(0o600)
@@ -402,6 +437,24 @@ def main() -> None:
                     "native frame 0 and frame 30 are identical: the authored linear position motion may have been lost"
                 )
 
+            # Independent visual proof of the same-source linear opacity
+            # entrance: an isolated ROI is measured across three native
+            # frame-indexed PNGs. No generated preview or synthetic pixels.
+            fade_start = native_opacity_tile_rgb(frames[0])
+            fade_half = native_opacity_tile_rgb(frames[15])
+            fade_end = native_opacity_tile_rgb(frames[30])
+            fade_full_distance = mean_byte_distance(fade_start, fade_end)
+            fade_half_distance = mean_byte_distance(fade_half, fade_end)
+            fade_initial_to_half = mean_byte_distance(fade_start, fade_half)
+            if not (
+                fade_full_distance >= 18.0
+                and fade_initial_to_half >= 8.0
+                and 5.0 <= fade_half_distance < fade_full_distance * 0.85
+            ):
+                raise AssertionError(
+                    "native opacity tile ROI does not show a bounded progressive 0-to-1 fade across native frames 0/15/30"
+                )
+
             shutil.copyfile(manifest_file, EVIDENCE / "artifact-manifest.json")
             for source, name in [
                 (frames[0], "frame-first.png"),
@@ -424,6 +477,21 @@ def main() -> None:
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
                     "linear_position_motion_sampled": True,
+                    "linear_opacity_motion_sampled": True,
+                    "native_linear_opacity_region": {
+                        "scope": "actual_pinned_motion_canvas_png_rgb24_region_only",
+                        "rect": [1150, 750, 180, 90],
+                        "frames": [0, 15, 30],
+                        "rgb24_sha256": [
+                            hashlib.sha256(roi).hexdigest()
+                            for roi in [fade_start, fade_half, fade_end]
+                        ],
+                        "mean_byte_distance": {
+                            "start_to_end": round(fade_full_distance, 6),
+                            "middle_to_end": round(fade_half_distance, 6),
+                            "start_to_middle": round(fade_initial_to_half, 6),
+                        },
+                    },
                     "native_motion_frame_sha256": {
                         "start": first_digest,
                         "end_of_linear_tween": middle_digest,
