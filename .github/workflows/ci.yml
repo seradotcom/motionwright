@@ -35,6 +35,8 @@ jobs:
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_media_probe.py' -v
       - name: Verify portable MP4 integrity checker trust boundaries
         run: python3 -m unittest discover -s tooling/tests -p 'test_verify_delivered_media.py' -v
+      - name: Verify read-only Semwright first-use security guardrails
+        run: python3 -m unittest discover -s tooling/tests -p 'test_runtime_first_use_audit.py' -v
 
   rust-core:
     needs: source-policy

@@ -1,0 +1,77 @@
+name: Owner Runtime First-Use Audit
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "tooling/runtime_first_use_audit.py"
+      - "tooling/tests/test_runtime_first_use_audit.py"
+      - "apps/desktop/src-tauri/src/runtime_setup.rs"
+      - "docs/owner-native-runtime-onboarding.md"
+      - "docs/runtime-first-use-audit.md"
+      - ".github/workflows/runtime-first-use.yml"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "tooling/runtime_first_use_audit.py"
+      - "tooling/tests/test_runtime_first_use_audit.py"
+      - "apps/desktop/src-tauri/src/runtime_setup.rs"
+      - "docs/owner-native-runtime-onboarding.md"
+      - "docs/runtime-first-use-audit.md"
+      - ".github/workflows/runtime-first-use.yml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: first-use-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-preflight:
+    name: First-use preflight (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Unprivileged, synthetic-only first-use adversarial cases
+        run: python -m unittest discover -s tooling/tests -p test_runtime_first_use_audit.py -v
+      - name: Reject unpinned runtime source or leaked project-private files
+        run: python tooling/source_policy.py
+
+  windows-reference-preservation:
+    name: Windows saved reference crash-safety
+    needs: portable-preflight
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Format native registry
+        run: cargo fmt --all -- --check
+      - name: Build trusted desktop frontend for Tauri build script
+        run: |
+          npm --prefix apps/studio ci --no-audit --no-fund
+          npm --prefix apps/studio run build
+      - name: Preserve previous owner reference on denied Windows rename
+        run: cargo test -p motionwright-desktop --bin motionwright-desktop runtime_setup::tests -- --nocapture
