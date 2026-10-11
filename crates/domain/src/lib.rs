@@ -1911,7 +1911,9 @@ impl Project {
             Change::RemoveAsset { asset_id } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if self.production_design.captures.iter().any(|record| {
-                    record.screenshot_asset_id == *asset_id || record.manifest_asset_id == *asset_id
+                    record.screenshot_asset_id == *asset_id
+                        || record.manifest_asset_id == *asset_id
+                        || record.fixture_state_asset_id == *asset_id
                 }) {
                     return Err(DomainError::Invalid(
                         "asset remains referenced by a source capture; retain its provenance"

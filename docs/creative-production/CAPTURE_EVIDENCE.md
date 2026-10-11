@@ -65,9 +65,9 @@ project-local StudioService journal with Change::RegisterCaptureSource
 first-party source-revision claim itself uses the existing append-only
 Change::AddClaim, surfaced as claim.add in the same SDK app. It does
 **not** execute or ingest screenshots by itself. The caller must first
-import the redacted PNG and JSON capture receipt through the ordinary
-immutable Asset store, then reference those asset IDs with exact SHA-256
-digests, the original data-state SHA-256 and an already recorded brief claim
+import the redacted PNG, JSON capture receipt and original fixture-state JSON
+through the ordinary immutable Asset store, then reference all three Asset
+IDs with exact SHA-256 digests and an already recorded brief claim
 bound to that project's source revision. The originating project generation
 must match at registration. For portable project imports, the historical
 generation remains in the record after the application's import procedure
@@ -75,8 +75,9 @@ rotates the current generation.
 
 The Production ? Capture sources workstation now allows the editor to
 author a bounded first-party claim, select previously imported PNG and JSON
-source assets, and supply the actual fixture digest, source revision, app
-version and mask geometry. The panel does not read bytes, capture the desktop,
+source assets, including the separately imported original fixture-state JSON,
+and supply the source revision, app version and mask geometry. The source
+fixture's SHA-256 comes from its imported Asset rather than a typed-in value. The panel does not read bytes, capture the desktop,
 or certify privacy. Native SDK/StudioService and the separate PNG evidence
 verifier remain authoritative.
 
@@ -84,8 +85,8 @@ The record has a fixed first-party origin, app, scenario, versioned viewport,
 mask selector, no external-request or credential-field allowance and a
 strict bounded schema. It cannot carry raw credentials, arbitrary URL/cookies,
 a third-party capture permission or a fabricated verification flag.
-Redacted PNG/JSON source assets cannot be removed while referenced by the
-append-only capture record. Reusing the same registration ID is prohibited;
+The PNG, JSON receipt and original fixture-state Asset cannot be removed
+while referenced by the append-only capture record. Reusing the same registration ID is prohibited;
 replaying an identical durable request should return its prior CAS receipt.
 
 The SQLite admission now checks the actual imported **source bytes** after
@@ -98,18 +99,24 @@ read and SHA-256 verified independently and must contain a valid PNG IHDR
 with the exact admitted viewport and checksum; a different bitmap cannot
 be substituted under the declared identity.
 
-This is **source-file correspondence**, not automatic proof of screenshot
-redaction effectiveness or application behavior. Actual decompressed pixel
-masking and repeatability remain independently inspected by the Chromium
-capture-evidence verifier and source-pinned CI. The separate fixture-data
-SHA-256 stored here is cross-linked to the imported manifest; until the
-original fixture-state bytes are also admitted, it is not a second
-independent hash audit of the dataset. Neither component certifies rights,
-privacy clearance, customer activity, creative approval or factual truth.
+The exact source fixture-state JSON is now the **third independently
+imported immutable Asset**. SQLite reads its actual bytes and checks the
+original project ID, generation, revision, unique claim ID, claim text,
+source reference, source-revision label and editorial context against the
+persisted project and receipt. A captured dataset cannot be silently
+replaced with another file that merely declares the same manifest fields.
 
-SQLite negative tests reject a forged but genuinely imported JSON receipt
-and a genuinely imported PNG with wrong viewport dimensions despite
-matching manifest metadata, without changing durable project state. The
+This establishes bounded **source-file correspondence**, not automatic
+truth, license ownership, or redaction effectiveness. Actual decompressed
+PNG pixels, mask coverage and screenshot repeatability remain independently
+inspected by Chromium and the PNG evidence verifier. Registering these
+assets does not certify rights, privacy clearance, customer activity or
+creative approval.
+
+SQLite negative tests reject a forged but genuinely imported JSON receipt,
+a genuinely imported PNG with wrong viewport dimensions, and forged source
+state whose claim text or original project generation is contradicted by
+the persisted project. These tests do not modify the durable project state. The
 tests use an explicitly synthetic 1440 ? 940 PNG raster under tooling/testdata,
 not a claimed real browser capture.
 

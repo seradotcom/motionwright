@@ -64,6 +64,7 @@ pub struct CaptureSourceRecord {
     pub screenshot_sha256: String,
     pub manifest_asset_id: Uuid,
     pub manifest_sha256: String,
+    pub fixture_state_asset_id: Uuid,
     /// Hash of the exact original fixture-data state, not a claim of factual truth.
     pub fixture_state_sha256: String,
     /// A claim about observable fixture state; NOT a verified product benefit.
@@ -128,6 +129,13 @@ impl CaptureSourceRecord {
         self.redaction
             .validate(self.viewport_width, self.viewport_height)?;
         if self.screenshot_asset_id == self.manifest_asset_id
+            || self.screenshot_asset_id == self.fixture_state_asset_id
+            || self.manifest_asset_id == self.fixture_state_asset_id
+            || !project.assets.iter().any(|asset| {
+                asset.id == self.fixture_state_asset_id
+                    && asset.media_type == "application/json"
+                    && asset.content_sha256.as_deref() == Some(self.fixture_state_sha256.as_str())
+            })
             || !project.assets.iter().any(|asset| {
                 asset.id == self.screenshot_asset_id
                     && asset.media_type == "image/png"

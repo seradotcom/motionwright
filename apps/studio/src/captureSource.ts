@@ -9,7 +9,8 @@ export interface CaptureMask {
 }
 export interface CaptureSourceRecord {
   schema:string; id:string; screenshot_asset_id:string; screenshot_sha256:string;
-  manifest_asset_id:string; manifest_sha256:string; fixture_state_sha256:string; claim_id:string;
+  manifest_asset_id:string; manifest_sha256:string; fixture_state_asset_id:string;
+  fixture_state_sha256:string; claim_id:string;
   source_project_id:string; source_generation:string; source_revision:number;
   app_id:string; app_version:string; source_commit:string;
   scenario_id:string; origin:string; route:string;
@@ -22,7 +23,7 @@ const HEX40=/^[0-9a-f]{40}$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FIELDS=[
   "schema","id","screenshot_asset_id","screenshot_sha256","manifest_asset_id",
-  "manifest_sha256","fixture_state_sha256","claim_id","source_project_id","source_generation",
+  "manifest_sha256","fixture_state_asset_id","fixture_state_sha256","claim_id","source_project_id","source_generation",
   "source_revision","app_id","app_version","source_commit","scenario_id",
   "origin","route","viewport_width","viewport_height","device_scale_factor",
   "screenshot_repeat_sha256","redaction","external_requests","credential_fields",
@@ -39,7 +40,7 @@ export function validateCaptureRecord(project:Project,record:CaptureSourceRecord
   strict(record,FIELDS);
   const viewport=record.viewport_width===1440 && record.viewport_height===940;
   const ids=[record.id,record.screenshot_asset_id,record.manifest_asset_id,
-    record.claim_id,record.source_project_id,record.source_generation];
+    record.fixture_state_asset_id,record.claim_id,record.source_project_id,record.source_generation];
   if(record.schema!=="motionwright.capture-source/1" ||
     ids.some(value=>typeof value!=="string" || !UUID.test(value)) ||
     record.source_project_id!==project.id ||
@@ -72,6 +73,10 @@ export function validateCaptureRecord(project:Project,record:CaptureSourceRecord
     area>=1440*940/10)
     throw new Error("Capture redaction is not a bounded reviewed region.");
   if(record.screenshot_asset_id===record.manifest_asset_id ||
+    record.screenshot_asset_id===record.fixture_state_asset_id ||
+    record.manifest_asset_id===record.fixture_state_asset_id ||
+    !project.assets.some(asset=>asset.id===record.fixture_state_asset_id &&
+      asset.media_type==="application/json" && asset.content_sha256===record.fixture_state_sha256) ||
     !project.assets.some(asset=>asset.id===record.screenshot_asset_id &&
       asset.media_type==="image/png" && asset.content_sha256===record.screenshot_sha256) ||
     !project.assets.some(asset=>asset.id===record.manifest_asset_id &&

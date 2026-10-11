@@ -48,6 +48,34 @@ fn prepare(service: &StudioService, dir: &Path) -> (Project, CaptureSourceRecord
         },
     );
     let claim = p.brief.claims.last().unwrap().clone();
+    // The original data-state JSON is an independently imported immutable
+    // asset, not an unverified digest copied from the browser receipt.
+    let state_file = dir.join("fixture-state.json");
+    let state = serde_json::json!({
+        "id": p.id,
+        "generation": p.generation,
+        "revision": observed,
+        "claims": [{
+            "id": claim.id,
+            "text": claim.text,
+            "source": {"kind": "project_revision", "revision": observed},
+            "context": claim.context,
+            "source_revision": claim.source_revision
+        }]
+    });
+    fs::write(&state_file, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    p = service
+        .import_asset_file(
+            p.id,
+            &p.stamp(),
+            "fixture-state-asset",
+            &state_file,
+            "Exact first-party fixture data state".into(),
+            "application/json".into(),
+        )
+        .unwrap()
+        .project;
+    let state_asset = p.assets.last().unwrap().clone();
     let screenshot_sha = screenshot_asset.content_sha256.clone().unwrap();
     let manifest_file = dir.join("first-party-evidence.json");
     let manifest = serde_json::json!({
@@ -70,7 +98,7 @@ fn prepare(service: &StudioService, dir: &Path) -> (Project, CaptureSourceRecord
             "credential_fields": 0
         },
         "claim_id": claim.id,
-        "fixture_state_sha256": "f".repeat(64),
+        "fixture_state_sha256": state_asset.content_sha256.clone().unwrap(),
         "redactions": [{
             "selector": ".revision-chip",
             "x":100, "y":50, "width":80,"height":24,
@@ -112,7 +140,8 @@ fn prepare(service: &StudioService, dir: &Path) -> (Project, CaptureSourceRecord
         screenshot_sha256: screenshot_asset.content_sha256.clone().unwrap(),
         manifest_asset_id: manifest_asset.id,
         manifest_sha256: manifest_asset.content_sha256.clone().unwrap(),
-        fixture_state_sha256: "f".repeat(64),
+        fixture_state_asset_id: state_asset.id,
+        fixture_state_sha256: state_asset.content_sha256.clone().unwrap(),
         claim_id: claim.id,
         source_project_id: p.id,
         source_generation: p.generation,
@@ -170,7 +199,11 @@ fn registered_first_party_capture_survives_durable_reopen_and_prevents_asset_del
             .apply(p.id, &result.project.stamp(), "duplicate-record", &change)
             .is_err()
     );
-    for asset in [capture.screenshot_asset_id, capture.manifest_asset_id] {
+    for asset in [
+        capture.screenshot_asset_id,
+        capture.manifest_asset_id,
+        capture.fixture_state_asset_id,
+    ] {
         assert!(
             service
                 .apply(
@@ -345,4 +378,77 @@ fn valid_manifest_does_not_authorize_mismatched_png_viewport_bytes() {
         .unwrap_err();
     assert!(denied.to_string().contains("PNG bytes do not match"));
     assert_eq!(service.project(revised.id).unwrap(), revised);
+}
+
+#[test]
+fn fixture_state_claim_tampering_is_rejected_even_with_matching_imported_digests() {
+    let folder = tempfile::tempdir().unwrap();
+    let service = StudioService::open(folder.path().join("forged-data-state.sqlite3")).unwrap();
+    let (mut project, record) = prepare(&service, folder.path());
+    let state_path = folder.path().join("fixture-state.json");
+    let manifest_path = folder.path().join("first-party-evidence.json");
+    for (case, forge) in ["wrong-claim", "wrong-generation"].iter().enumerate() {
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        if *forge == "wrong-claim" {
+            state["claims"][0]["text"] = serde_json::json!("Forged observed claim");
+        } else {
+            state["generation"] = serde_json::json!(Uuid::new_v4());
+        }
+        let new_state = folder.path().join(format!("{case}-fixture-state.json"));
+        fs::write(&new_state, serde_json::to_vec(&state).unwrap()).unwrap();
+        project = service
+            .import_asset_file(
+                project.id,
+                &project.stamp(),
+                &format!("{case}-fixture-import"),
+                &new_state,
+                format!("{forge} authored state"),
+                "application/json".into(),
+            )
+            .unwrap()
+            .project;
+        let new_state_asset = project.assets.last().unwrap().clone();
+
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["fixture_state_sha256"] =
+            serde_json::json!(new_state_asset.content_sha256.clone().unwrap());
+        let new_manifest = folder.path().join(format!("{case}-manifest.json"));
+        fs::write(&new_manifest, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        project = service
+            .import_asset_file(
+                project.id,
+                &project.stamp(),
+                &format!("{case}-receipt-import"),
+                &new_manifest,
+                format!("{forge} evidence receipt"),
+                "application/json".into(),
+            )
+            .unwrap()
+            .project;
+        let new_manifest_asset = project.assets.last().unwrap();
+        let bad = CaptureSourceRecord {
+            id: Uuid::new_v4(),
+            fixture_state_asset_id: new_state_asset.id,
+            fixture_state_sha256: new_state_asset.content_sha256.clone().unwrap(),
+            manifest_asset_id: new_manifest_asset.id,
+            manifest_sha256: new_manifest_asset.content_sha256.clone().unwrap(),
+            ..record.clone()
+        };
+        let rejection = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("{case}-denied"),
+                &Change::RegisterCaptureSource { record: bad },
+            )
+            .unwrap_err();
+        assert!(
+            rejection.to_string().contains("fixture"),
+            "{case}: {rejection}"
+        );
+        assert_eq!(service.project(project.id).unwrap(), project);
+        assert!(project.production_design.captures.is_empty());
+    }
 }

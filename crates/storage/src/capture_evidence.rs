@@ -6,7 +6,9 @@
 //! independent Chromium/PNG evidence suite; this gate does not claim that
 //! a customer application was captured or that visual privacy was approved.
 use super::{Result, StorageError, read_verified_blob_from_root};
-use motionwright_domain::{CaptureMask, CaptureSourceRecord, DomainError, Project};
+use motionwright_domain::{
+    CaptureMask, CaptureSourceRecord, DomainError, Project, SourceReference,
+};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -67,6 +69,24 @@ struct SourceManifest {
     capture: SourcePng,
     review_status: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureStateClaim {
+    id: uuid::Uuid,
+    text: String,
+    source: SourceReference,
+    context: String,
+    source_revision: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureState {
+    id: uuid::Uuid,
+    generation: uuid::Uuid,
+    revision: u64,
+    claims: Vec<FixtureStateClaim>,
+}
+
 fn denied(message: &str) -> StorageError {
     StorageError::Domain(DomainError::Invalid(format!(
         "Capture admission: {message}"
@@ -165,6 +185,44 @@ pub(super) fn verify_capture_source(
     {
         return Err(denied(
             "imported JSON source disagrees with the authored capture, claim, mask or fixture",
+        ));
+    }
+    // Imported fixture-state bytes independently bind the project generation,
+    // source revision, authored claim text and SHA-256 recorded in the manifest.
+    let fixture_bytes = read_verified_blob_from_root(
+        blob_root,
+        &record.fixture_state_sha256,
+        MAX_CAPTURE_MANIFEST_BYTES,
+    )?;
+    let fixture: FixtureState = serde_json::from_slice(&fixture_bytes)
+        .map_err(|_| denied("imported fixture-state JSON has unknown or missing fields"))?;
+    if fixture.id != record.source_project_id
+        || fixture.generation != record.source_generation
+        || fixture.revision != record.source_revision
+        || fixture.claims.len() != 1
+    {
+        return Err(denied(
+            "fixture-state project, generation or revision disagrees",
+        ));
+    }
+    let observed = &fixture.claims[0];
+    if observed.id != record.claim_id
+        || observed.context != "synthetic-first-party-capture-validation"
+        || !matches!(&observed.source,
+            SourceReference::ProjectRevision {revision} if *revision == fixture.revision)
+        || project
+            .brief
+            .claims
+            .iter()
+            .find(|claim| claim.id == observed.id)
+            .is_none_or(|claim| {
+                claim.text != observed.text
+                    || claim.context != observed.context
+                    || claim.source_revision != observed.source_revision
+            })
+    {
+        return Err(denied(
+            "fixture claim differs from the project's authored source claim",
         ));
     }
     let png =

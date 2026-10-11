@@ -38,7 +38,7 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
   const [claimId,setClaimId]=useState("");
   const [screenshotId,setScreenshotId]=useState("");
   const [manifestId,setManifestId]=useState("");
-  const [fixtureSha,setFixtureSha]=useState("");
+  const [fixtureId,setFixtureId]=useState("");
   const [sourceCommit,setSourceCommit]=useState("");
   const [version,setVersion]=useState("0.1.0");
   const [maskX,setMaskX]=useState("");
@@ -51,8 +51,8 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
     lock.resource==="project:"+project.id && lock.kind==="content");
   useEffect(()=>{
     setBase(project.revision);
-    setClaimId("");setScreenshotId("");setManifestId("");
-    setFixtureSha("");setSourceCommit("");setMaskX("");setMaskY("");
+    setClaimId("");setScreenshotId("");setManifestId("");setFixtureId("");
+    setSourceCommit("");setMaskX("");setMaskY("");
     setMaskWidth("");setMaskHeight("");setError(null);
     // The draft is intentionally preserved across same-generation revisions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,11 +60,13 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
 
   const screenshot=images.find(a=>a.id===screenshotId);
   const manifest=manifests.find(a=>a.id===manifestId);
+  const fixture=manifests.find(a=>a.id===fixtureId);
   const claim=claims.find(c=>c.id===claimId);
   const revision=sourceRevision(claim);
   function candidate():CaptureSourceRecord {
-    if(!screenshot?.content_sha256 || !manifest?.content_sha256
-      || revision===null || !sha.test(fixtureSha) || !commitHash.test(sourceCommit)
+    if(!screenshot?.content_sha256 || !manifest?.content_sha256 ||
+      !fixture?.content_sha256 || fixtureId===manifestId ||
+      revision===null || !commitHash.test(sourceCommit)
       || [maskX,maskY,maskWidth,maskHeight].some(value=>value.trim()==="")){
       throw new Error("Choose a source PNG, JSON receipt, pinned claim and SHA-256, plus explicit redaction coordinates.");
     }
@@ -73,7 +75,8 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
       id:crypto.randomUUID(),screenshot_asset_id:screenshot.id,
       screenshot_sha256:screenshot.content_sha256,
       manifest_asset_id:manifest.id,manifest_sha256:manifest.content_sha256,
-      fixture_state_sha256:fixtureSha,claim_id:claim!.id,
+      fixture_state_asset_id:fixture!.id,fixture_state_sha256:fixture!.content_sha256!,
+      claim_id:claim!.id,
       source_project_id:project.id,source_generation:project.generation,
       source_revision:revision,
       app_id:"motionwright-studio",app_version:version,source_commit:sourceCommit,
@@ -124,7 +127,8 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
       browser capture. It cannot take screenshots, import customer sessions, verify content
       truth or substitute media into a deliverable. Import the already-redacted PNG and
       JSON receipt through the project's existing Assets workflow before registering.
-      Verify source bytes and mask pixels using the independent capture evidence test.
+      Import the original fixture-state JSON as a third source and verify
+      the original capture bundle with the independent decoded-pixel test.
     </p>
     {stale && <div className="production-notice" role="status">
       <strong>Draft from revision {base}; project is now revision {project.revision}.</strong>
@@ -134,6 +138,7 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
     </div>}
     {!images.length && <p role="status">No imported SHA-256 PNG source asset is available.</p>}
     {!manifests.length && <p role="status">No imported SHA-256 JSON capture receipt is available.</p>}
+    {!manifests.length && <p role="status">No imported SHA-256 JSON fixture-state asset is available.</p>}
     {!claims.length && <p role="status">No authored synthetic first-party source claim is available.</p>}
     <div className="production-section-title"><h3>1. Author a source-revision claim</h3></div>
     <label className="production-field"><span>Precisely describe an observable first-party screen fact</span>
@@ -166,10 +171,13 @@ export default function CaptureSourceWorkbench({project,busy,commit}:Props){
           {manifests.map(a=><option key={a.id} value={a.id}>{a.name} · {a.content_sha256?.slice(0,12)}…</option>)}
         </select>
       </label>
-      <label className="production-field"><span>Original fixture state SHA-256</span>
-        <input aria-label="Capture fixture SHA-256" value={fixtureSha} maxLength={64}
-          spellCheck={false} onChange={e=>setFixtureSha(e.target.value)}
-          placeholder="Exact 64-digit source state hash"/>
+      <label className="production-field"><span>Original fixture-state JSON from Assets</span>
+        <select aria-label="Capture fixture-state asset" value={fixtureId}
+          onChange={e=>setFixtureId(e.target.value)}>
+          <option value="">Choose an independently imported fixture-state file</option>
+          {manifests.map(a=><option key={a.id} value={a.id}>
+            {a.name} ? {a.content_sha256?.slice(0,12)}?</option>)}
+        </select>
       </label>
       <label className="production-field"><span>Studio source commit</span>
         <input aria-label="Capture source commit" maxLength={40} spellCheck={false}

@@ -2240,6 +2240,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                                 "screenshot_asset_id":{"type":"string","format":"uuid"},
                                 "screenshot_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
                                 "manifest_asset_id":{"type":"string","format":"uuid"},
+                                "fixture_state_asset_id":{"type":"string","format":"uuid"},
                                 "manifest_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
                                 "fixture_state_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
                                 "claim_id":{"type":"string","format":"uuid"},
@@ -2270,7 +2271,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                                 "declared_scope":{"type":"string","const":"first-party-synthetic-fixture-only"}
                             },
                             "required":["schema","id","screenshot_asset_id","screenshot_sha256",
-                                "manifest_asset_id","manifest_sha256","fixture_state_sha256","claim_id","source_project_id",
+                                "manifest_asset_id","manifest_sha256","fixture_state_asset_id","fixture_state_sha256","claim_id","source_project_id",
                                 "source_generation","source_revision","app_id","app_version","source_commit",
                                 "scenario_id","origin","route","viewport_width","viewport_height",
                                 "device_scale_factor","screenshot_repeat_sha256","redaction",

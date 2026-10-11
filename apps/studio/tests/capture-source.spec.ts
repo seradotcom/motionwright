@@ -7,6 +7,8 @@ test("Capture source panel requires imported original evidence and never invents
   await expect(page.getByRole("heading",{name:"First-party capture provenance"})).toBeVisible();
   await expect(page.getByText("No imported SHA-256 PNG source asset is available.")).toBeVisible();
   await expect(page.getByText("No imported SHA-256 JSON capture receipt is available.")).toBeVisible();
+  await expect(page.getByText("No imported SHA-256 JSON fixture-state asset is available.")).toBeVisible();
+  await expect(page.getByLabel("Capture fixture-state asset")).toBeVisible();
   await expect(page.getByText("No authored synthetic first-party source claim is available.")).toBeVisible();
   await expect(page.getByRole("button",{name:"Register first-party capture source"})).toBeDisabled();
   await expect(page.getByRole("button",{name:"Record source-revision claim"})).toBeDisabled();

@@ -19,6 +19,7 @@ fn prepare() -> (Project, CaptureSourceRecord) {
     .unwrap();
     let screenshot = Uuid::new_v4();
     let manifest = Uuid::new_v4();
+    let state = Uuid::new_v4();
     for (id, name, mime, hash) in [
         (screenshot, "source.png", "image/png", SCREEN),
         (
@@ -26,6 +27,12 @@ fn prepare() -> (Project, CaptureSourceRecord) {
             "capture-evidence.json",
             "application/json",
             RECEIPT,
+        ),
+        (
+            state,
+            "fixture-state.json",
+            "application/json",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         ),
     ] {
         p.apply_change(&Change::AddAsset {
@@ -46,6 +53,7 @@ fn prepare() -> (Project, CaptureSourceRecord) {
         screenshot_sha256: SCREEN.into(),
         manifest_asset_id: manifest,
         manifest_sha256: RECEIPT.into(),
+        fixture_state_asset_id: state,
         fixture_state_sha256: "f".repeat(64),
         claim_id: p.brief.claims[0].id,
         source_project_id: p.id,
@@ -110,6 +118,14 @@ fn valid_first_party_capture_record_is_append_only_with_exact_claim_and_portable
     assert!(
         p.apply_change(&Change::RemoveAsset {
             asset_id: record.manifest_asset_id
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("provenance")
+    );
+    assert!(
+        p.apply_change(&Change::RemoveAsset {
+            asset_id: record.fixture_state_asset_id
         })
         .unwrap_err()
         .to_string()

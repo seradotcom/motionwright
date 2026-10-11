@@ -10,6 +10,7 @@ const SCREEN="a".repeat(64),MANIFEST="b".repeat(64);
 const captureId="00000000-0000-4000-8000-0000000000f1";
 const screenshotId="00000000-0000-4000-8000-0000000000f2";
 const manifestId="00000000-0000-4000-8000-0000000000f3";
+const fixtureId="00000000-0000-4000-8000-0000000000f5";
 const claimId="00000000-0000-4000-8000-0000000000f4";
 function source():{project:Project,record:CaptureSourceRecord}{
   const project=structuredClone(fixtureProject);
@@ -23,6 +24,8 @@ function source():{project:Project,record:CaptureSourceRecord}{
       content_sha256:SCREEN,source_revision:"local-import"},
     {id:manifestId,name:"Capture manifest.json",media_type:"application/json",
       content_sha256:MANIFEST,source_revision:"local-import"},
+    {id:fixtureId,name:"Capture data state.json",media_type:"application/json",
+      content_sha256:"f".repeat(64),source_revision:"local-import"},
   ];
   project.brief.claims=[{
     id:claimId,
@@ -35,7 +38,7 @@ function source():{project:Project,record:CaptureSourceRecord}{
     schema:"motionwright.capture-source/1",id:captureId,
     screenshot_asset_id:screenshotId,screenshot_sha256:SCREEN,
     manifest_asset_id:manifestId,manifest_sha256:MANIFEST,
-    fixture_state_sha256:"f".repeat(64),
+    fixture_state_asset_id:fixtureId,fixture_state_sha256:"f".repeat(64),
     claim_id:claimId,source_project_id:project.id,
     source_generation:project.generation,source_revision:7,
     app_id:"motionwright-studio",app_version:"0.1.0",source_commit:"c".repeat(40),
@@ -93,6 +96,8 @@ describe("first-party capture source registry",()=>{
       .rejects.toThrow(/capture provenance/);
     await expect(applyChange(admitted,{type:"remove_asset",asset_id:manifestId}))
       .rejects.toThrow(/capture provenance/);
+    await expect(applyChange(admitted,{type:"remove_asset",asset_id:fixtureId}))
+      .rejects.toThrow(/capture provenance/);
   });
   it("rejects cross-project source ID, mismatched source generation and future project revision",async()=>{
     const {project,record}=source();
@@ -112,6 +117,8 @@ describe("first-party capture source registry",()=>{
     const variants=[
       {...record,screenshot_sha256:"c".repeat(64),screenshot_repeat_sha256:"c".repeat(64)},
       {...record,manifest_asset_id:crypto.randomUUID()},
+      {...record,fixture_state_asset_id:crypto.randomUUID()},
+      {...record,fixture_state_sha256:"e".repeat(64)},
       {...record,claim_id:crypto.randomUUID()},
       {...record,origin:"https://example.org"},
       {...record,external_requests:1},
