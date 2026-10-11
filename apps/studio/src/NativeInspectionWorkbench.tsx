@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, Flag, RefreshCw } from "lucide-react";
 import { readNativePreviewFrame } from "./api";
 import { addFrameOffset, nativeFindingBody, planNativeInspection } from "./nativeInspection";
+import { createNativeReviewRepairDraft } from "./nativeReviewRepair";
+import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import type { ManualCreativeFinding, NativeSampleEvidence } from "./nativeInspection";
 import type { Change, DeliverableProfile, MotionCanvasRenderEvidence, Project, Scene } from "./types";
 import { seconds } from "./types";
@@ -43,9 +45,10 @@ function NativeComparison({first,second,mode}:{first:Sample;second:Sample;mode:"
   },[first.url,second.url,mode]);
   return <div className="native-inspection-comparison">{error?<p role="alert">{error}</p>:<canvas ref={ref} aria-label={mode==="onion"?"Onion overlay of two native-frame thumbnails":"Absolute channel difference of two native-frame thumbnails"}/>}</div>;
 }
-export default function NativeInspectionWorkbench({project,scene,displayProfile,evidence,commit,busy,onSeek,onOpenRender}: {
+export default function NativeInspectionWorkbench({project,scene,displayProfile,evidence,commit,busy,onSeek,onOpenRender,onDraftRepair}: {
   project:Project;scene:Scene|null;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null;
   commit:(change:Change)=>Promise<void>;busy:boolean;onSeek:(time:number)=>void;onOpenRender:()=>void;
+  onDraftRepair:(draft:NativeReviewRepairDraft)=>void;
 }) {
   const plan=useMemo(()=>planNativeInspection(project,scene,displayProfile,evidence),[project,scene,displayProfile,evidence]);
   const [samples,setSamples]=useState<Sample[]>([]);const [loading,setLoading]=useState(false);const [error,setError]=useState<string|null>(null);
@@ -79,6 +82,14 @@ export default function NativeInspectionWorkbench({project,scene,displayProfile,
     finally {if(active===epoch.current)setLoading(false);}
   };
   const first=samples[firstIndex],second=samples[secondIndex];
+  const draftRepair=()=>{
+    if (!plan || !first || !scene) return;
+    try {
+      onDraftRepair(createNativeReviewRepairDraft(project,scene,plan,first,finding));
+    } catch(reason) {
+      setError(reason instanceof Error?reason.message:String(reason));
+    }
+  };
   const record=async()=>{
     if(!plan || !first || !scene) return;
     try {
@@ -97,11 +108,15 @@ export default function NativeInspectionWorkbench({project,scene,displayProfile,
         <img src={sample.url} alt={`Native frame ${sample.frameIndex}, source r${plan.revision}`} draggable={false}/><span>f{sample.frameIndex} · {seconds(sample.timelineTime).toFixed(3)} s</span><small>SHA-256 {sample.pngSha256.slice(0,12)}…</small></button>)}</div>
       {first && second && <><div className="production-button-row"><label className="production-field"><span>Compare with</span><select value={secondIndex} onChange={e=>setSecondIndex(Number(e.target.value))}>{samples.map((sample,index)=><option key={sample.frameIndex} value={index}>Frame {sample.frameIndex} · {seconds(sample.timelineTime).toFixed(3)} s</option>)}</select></label><label className="production-field"><span>Inspection mode</span><select value={mode} onChange={e=>setMode(e.target.value as "onion"|"difference")}><option value="onion">50% onion overlay</option><option value="difference">Channel difference</option></select></label></div>
         <NativeComparison first={first} second={second} mode={mode}/><p className="production-help">Comparison uses downsampled, color-managed browser thumbnails. Source PNG digests are preserved; zero thumbnail difference is not an assertion of full-resolution equivalence.</p>
-        <section className="native-inspection-finding"><h3>Record an actionable finding</h3><p className="production-help">This is a manual interpretation of the selected source frame. Recording it creates a revisioned review thread; it does not declare a technical or creative PASS.</p>
+        <section className="native-inspection-finding"><h3>Record an actionable finding</h3><p className="production-help">This is a manual interpretation of the selected source frame. Recording it creates a revisioned review thread and makes the current frame grant stale. Drafting a repair only opens the scoped editor; neither action declares a technical or creative PASS.</p>
           <div className="production-plan-grid"><label className="production-field"><span>Severity</span><select value={finding.severity} onChange={e=>setFinding({...finding,severity:e.target.value as ManualCreativeFinding["severity"]})}><option value="blocking">Blocking</option><option value="important">Important</option><option value="suggestion">Suggestion</option></select></label><label className="production-field"><span>Confidence</span><select value={finding.confidence} onChange={e=>setFinding({...finding,confidence:e.target.value as ManualCreativeFinding["confidence"]})}><option value="certain">Certain</option><option value="probable">Probable</option><option value="uncertain">Uncertain</option></select></label></div>
           <label className="production-field"><span>Affected object</span><select value={finding.nodeId ?? ""} onChange={e=>setFinding({...finding,nodeId:e.target.value || null})}><option value="">Scene-level finding</option>{scene?.nodes.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>
           {([ ["violatedConstraint","Violated constraint"],["observation","What is visible in this frame"],["proposedRepair","Proposed localized repair"] ] as const).map(([field,label])=><label className="production-field" key={field}><span>{label}</span><textarea rows={3} maxLength={800} value={finding[field]} onChange={e=>setFinding({...finding,[field]:e.target.value})}/></label>)}
-          <button className="primary-button" disabled={busy || !finding.observation.trim() || !finding.violatedConstraint.trim() || !finding.proposedRepair.trim()} onClick={record}><Flag size={14}/> Record source-anchored review</button>
+          <div className="production-button-row">
+            <button className="primary-button" disabled={busy || loading || !finding.observation.trim() || !finding.violatedConstraint.trim() || !finding.proposedRepair.trim()} onClick={record}><Flag size={14}/> Record source-anchored review</button>
+            <button className="secondary-button" disabled={busy || loading || !finding.nodeId || !finding.observation.trim() || !finding.violatedConstraint.trim() || !finding.proposedRepair.trim()} onClick={draftRepair}>Draft scoped repair</button>
+          </div>
+          <p className="production-help">Drafting selects the affected object and cites this frame SHA-256. It does not invent a replacement, create a patch, or bypass the existing commit approval.</p>
         </section></>}
     </>}
   </div>;
