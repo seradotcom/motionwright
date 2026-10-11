@@ -283,6 +283,66 @@ struct NativeLinearPositionMotion {
     start_y: f64,
 }
 
+/// Admit only the exact single-property native FadeIn contract: source opacity
+/// 0 at frame zero to the persisted opacity 1 at an integer output frame.
+/// No silent quantization, mixed channels, hierarchy or beat remapping.
+fn native_linear_opacity_entrance(
+    node: &CanvasNode,
+    scene: &Scene,
+    frame_rate: Rate,
+) -> NativeResult<Option<RationalTime>> {
+    if node.keyframes.is_empty()
+        || node
+            .keyframes
+            .iter()
+            .any(|key| key.property != MotionProperty::Opacity)
+    {
+        return Ok(None);
+    }
+    let fail = || {
+        unsupported(format!(
+            "Canvas node {} has opacity keys outside the exact native 0-to-1 linear FadeIn subset",
+            node.id
+        ))
+    };
+    if !scene.beats.is_empty()
+        || node.parent_id.is_some()
+        || node.kind == "group"
+        || scene
+            .nodes
+            .iter()
+            .any(|candidate| candidate.parent_id == Some(node.id))
+        || node.opacity != 1.0
+        || node.rotation_deg != 0.0
+        || node.keyframes.len() != 2
+    {
+        return Err(fail());
+    }
+    let mut keys = node.keyframes.iter().collect::<Vec<_>>();
+    keys.sort_by_key(|key| key.at);
+    if keys[0].at != RationalTime::ZERO
+        || keys[1].at <= RationalTime::ZERO
+        || keys[1].at >= scene.duration
+        || keys[0].value != 0.0
+        || keys[1].value != 1.0
+        || keys
+            .iter()
+            .any(|key| key.interpolation != MotionInterpolation::Linear)
+    {
+        return Err(fail());
+    }
+    let numerator = i128::from(keys[1].at.num)
+        .checked_mul(i128::from(frame_rate.num))
+        .ok_or_else(&fail)?;
+    let denominator = i128::from(keys[1].at.den)
+        .checked_mul(i128::from(frame_rate.den))
+        .ok_or_else(&fail)?;
+    if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
+        return Err(fail());
+    }
+    Ok(Some(keys[1].at))
+}
+
 /// A deliberately narrow *exact* mapping to Semwright Primitive::Settle:
 /// paired X/Y at scene-local 0, then paired X/Y back to the unchanged base
 /// position at an exact output-frame boundary, all linear, single unparented
@@ -300,7 +360,9 @@ fn native_linear_position_motion(
         .iter()
         .any(|key| key.property == MotionProperty::Opacity)
     {
-        entry_motion(node)?;
+        if native_linear_opacity_entrance(node, scene, frame_rate)?.is_none() {
+            entry_motion(node)?;
+        }
         return Ok(None);
     }
     let fail = || {
@@ -868,6 +930,7 @@ fn attach_entrance_motion(
     scene: &Scene,
     scene_start: RationalTime,
     projection: LayoutProjection,
+    frame_rate: Rate,
     spans: &mut Vec<TemporalSpan>,
 ) -> NativeResult<()> {
     for node in &scene.nodes {
@@ -887,6 +950,26 @@ fn attach_entrance_motion(
             return Err(unsupported(
                 "Authored entrance motion on source hierarchies requires a dedicated mapping",
             ));
+        }
+        if let Some(duration) = native_linear_opacity_entrance(node, scene, frame_rate)? {
+            let span_id = format!("linear-opacity-{}", node.id.simple());
+            spans.push(TemporalSpan {
+                id: span_id.clone(),
+                minimum: duration,
+                preferred: duration,
+                maximum: duration,
+                anchor: StartAnchor::Absolute { time: scene_start },
+                preference_priority: 0,
+            });
+            shot.motion.push(Invocation {
+                id: format!("native-fade-{}", node.id.simple()),
+                span_id,
+                easing: MotionEasing::Linear,
+                primitive: Primitive::FadeIn {
+                    target: subject_id(node.id, None),
+                },
+            });
+            continue;
         }
         let Some(entry) = entry_motion(node)? else {
             continue;
@@ -1107,7 +1190,14 @@ fn build_segment(
                     },
                 });
             }
-            attach_entrance_motion(&mut shot, scene, local_start, projection, &mut spans)?;
+            attach_entrance_motion(
+                &mut shot,
+                scene,
+                local_start,
+                projection,
+                options.frame_rate,
+                &mut spans,
+            )?;
             authoring_beats.push(AuthoringBeat {
                 id: uid("beat", scene.id),
                 role: intent.role,
@@ -1857,6 +1947,124 @@ mod tests {
                 value: y,
                 interpolation: MotionInterpolation::Linear,
             });
+        }
+    }
+
+    fn set_exact_linear_opacity_keys(node: &mut CanvasNode) {
+        for (at, value) in [
+            (RationalTime::ZERO, 0.0),
+            (RationalTime::new(1, 1).unwrap(), 1.0),
+        ] {
+            node.keyframes.push(CanvasKeyframe {
+                at,
+                property: MotionProperty::Opacity,
+                value,
+                interpolation: MotionInterpolation::Linear,
+            });
+        }
+    }
+
+    #[test]
+    fn exact_linear_opacity_keys_preserve_native_fade_in_and_original_canvas() {
+        let mut project = fixture_project();
+        let before = project.scenes[0].nodes[0].clone();
+        set_exact_linear_opacity_keys(&mut project.scenes[0].nodes[0]);
+        let options = fixture_options(&project);
+        let segment = &build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap()[0];
+        let shot = &segment.film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.motion.len(), 1);
+        assert!(!shot.subjects[0].initially_visible);
+        assert_eq!(shot.motion[0].easing, MotionEasing::Linear);
+        assert!(matches!(
+            &shot.motion[0].primitive,
+            Primitive::FadeIn { target } if target == &subject_id(before.id, None)
+        ));
+        let compiled = realize(&segment.film).unwrap();
+        let fade = compiled
+            .instructions
+            .iter()
+            .find(|instruction| {
+                matches!(
+                    &instruction.operation,
+                    semwright_motion_authoring::NativeOp::Tween {
+                        channel: semwright_motion_authoring::Channel::Opacity,
+                        ..
+                    }
+                )
+            })
+            .expect("exact authored opacity must generate a native opacity tween");
+        assert_eq!(fade.start, RationalTime::ZERO);
+        assert_eq!(fade.duration, RationalTime::new(1, 1).unwrap());
+        assert_eq!(fade.easing, MotionEasing::Linear);
+        match &fade.operation {
+            semwright_motion_authoring::NativeOp::Tween { from, to, .. } => {
+                assert_eq!(
+                    from,
+                    &Some(semwright_motion_authoring::Operand::Number(0.0))
+                );
+                assert_eq!(to, &semwright_motion_authoring::Operand::Number(1.0));
+            }
+            _ => unreachable!("filtered to opacity tween"),
+        }
+        assert_eq!(project.scenes[0].nodes[0].x, before.x);
+        assert_eq!(project.scenes[0].nodes[0].y, before.y);
+        assert_eq!(project.scenes[0].nodes[0].opacity, before.opacity);
+        assert_eq!(project.scenes[0].nodes[0].text, before.text);
+    }
+
+    #[test]
+    fn noncanonical_linear_opacity_keys_fail_without_approximation() {
+        let mut baseline = fixture_project();
+        set_exact_linear_opacity_keys(&mut baseline.scenes[0].nodes[0]);
+        let opts = fixture_options(&baseline);
+        let deliverable_id = baseline.deliverables[0].id;
+
+        let mut off_frame = baseline.clone();
+        off_frame.scenes[0].nodes[0].keyframes[1].at = RationalTime::new(1, 7).unwrap();
+        let mut reversed = baseline.clone();
+        reversed.scenes[0].nodes[0].keyframes[0].value = 1.0;
+        reversed.scenes[0].nodes[0].keyframes[1].value = 0.0;
+        let mut wrong_target = baseline.clone();
+        wrong_target.scenes[0].nodes[0].keyframes[1].value = 0.8;
+        let mut wrong_curve = baseline.clone();
+        wrong_curve.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::EaseInOut;
+        let mut mixed = baseline.clone();
+        mixed.scenes[0].nodes[0].keyframes.push(CanvasKeyframe {
+            at: RationalTime::ZERO,
+            property: MotionProperty::X,
+            value: 120.0,
+            interpolation: MotionInterpolation::Linear,
+        });
+        let mut extra_key = baseline.clone();
+        extra_key.scenes[0].nodes[0].keyframes.push(CanvasKeyframe {
+            at: RationalTime::new(1, 2).unwrap(),
+            property: MotionProperty::Opacity,
+            value: 0.5,
+            interpolation: MotionInterpolation::Linear,
+        });
+        let mut incompatible_persisted_opacity = baseline.clone();
+        incompatible_persisted_opacity.scenes[0].nodes[0].opacity = 0.7;
+        let mut parented = baseline.clone();
+        parented.scenes[0].nodes[0].parent_id = Some(Uuid::now_v7());
+        let mut exceeded_scene = baseline.clone();
+        exceeded_scene.scenes[0].nodes[0].keyframes[1].at = exceeded_scene.scenes[0].duration;
+
+        for variant in [
+            off_frame,
+            reversed,
+            wrong_target,
+            wrong_curve,
+            mixed,
+            extra_key,
+            incompatible_persisted_opacity,
+            parented,
+            exceeded_scene,
+        ] {
+            // Project::validate may reject a malformed historical variant
+            // before Film negotiation; both layers must refuse it rather
+            // than silently flattening the authored opacity keys.
+            assert!(build_motion_canvas_segments(&variant, deliverable_id, &opts).is_err());
         }
     }
 
