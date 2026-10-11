@@ -43,8 +43,8 @@
     {
       "id": "MW05-E00-03",
       "implementation": "partial",
-      "implemented_scope": "Native portable samples, CI candidate packages and installed-desktop owner-selected persistent Semwright runtime connection with read-only digest/version/resource validation; a picker is not provisioning or acceptance",
-      "remaining_scope": "Semwright Broker/Driver Host fresh-machine provisioning, physical-device runtime/picker trials, complete first-use journey and independent user acceptance remain open",
+      "implemented_scope": "Native portable samples, CI candidate packages and installed-desktop owner-selected persistent Semwright runtime connection with read-only digest/version/resource validation; new rootless installed Linux AppImage two-launch/SQLite source project persistence gate is added but its outcome is SHA-specific CI evidence, not human acceptance",
+      "remaining_scope": "Semwright Broker/Driver Host fresh-machine provisioning, physical-device runtime/picker trials, user creative journey, Windows/macOS GUI persistence evidence and independent human acceptance remain open",
       "source_paths": [
         "crates/storage/src/lib.rs",
         "crates/storage/tests/creative_migration.rs",
@@ -56,7 +56,11 @@
         "apps/desktop/src-tauri/src/main.rs",
         "apps/studio/src/IntegrationsWorkspace.tsx",
         "apps/studio/tests/runtime-onboarding.spec.ts",
-        "docs/owner-native-runtime-onboarding.md"
+        "docs/owner-native-runtime-onboarding.md",
+        "tooling/linux_cold_start.py",
+        "tooling/tests/test_linux_cold_start.py",
+        ".github/workflows/package-candidate.yml",
+        "docs/installed-candidate-smoke.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
