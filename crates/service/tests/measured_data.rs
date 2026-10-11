@@ -5,8 +5,6 @@ use motionwright_service::StudioService;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
 fn apply(service: &StudioService, p: &Project, key: &str, change: Change) -> Project {
     service
         .apply(p.id, &p.stamp(), key, &change)
@@ -61,12 +59,21 @@ fn native_owner_local_cas_persists_scoped_metrics_and_rejects_stale_source_write
             node: text.clone(),
         },
     );
+    let source_file = tmp.path().join("owner-imported-measurements.csv");
+    std::fs::write(
+        &source_file,
+        b"key,label,milli,unit
+orders,Orders,123000,count
+",
+    )
+    .unwrap();
+    let imported_bytes = service.ingest_blob_file(&source_file).unwrap();
     let asset = Asset {
         id: Uuid::new_v4(),
         name: "User supplied CSV".into(),
         media_type: "text/csv".into(),
-        content_sha256: Some(SHA.into()),
-        source_revision: None,
+        content_sha256: Some(imported_bytes.sha256.clone()),
+        source_revision: Some("test-file-ingest".into()),
     };
     p = apply(
         &service,
@@ -82,7 +89,7 @@ fn native_owner_local_cas_persists_scoped_metrics_and_rejects_stale_source_write
         label: "Owner's measured counts".into(),
         version: 1,
         source_asset_id: asset.id,
-        source_sha256: SHA.into(),
+        source_sha256: imported_bytes.sha256.clone(),
         rows: vec![MeasuredDatum {
             key: "orders".into(),
             label: "Orders".into(),

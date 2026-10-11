@@ -3,7 +3,7 @@
 //! Content SHA-256 is the imported Asset identity; source byte verification is
 //! owned by the existing import/asset pipeline, never claimed by this module.
 use crate::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub const MEASURED_DATA_SCHEMA: &str = "motionwright.measured-table/1";
 const MAX_MILLI: i64 = 1_000_000_000;
@@ -368,8 +368,8 @@ impl ProductionDesign {
             }
             binding.ensure_output(binding.current_node(scenes)?)?;
         }
-        if let Some(impact) = &self.last_measured_impact {
-            if impact.version == 0
+        if let Some(impact) = &self.last_measured_impact
+            && (impact.version == 0
                 || !table_ids.contains(&impact.table_id)
                 || impact.changed_keys.len() > 64
                 || impact.scene_ids.len() > 64
@@ -377,12 +377,11 @@ impl ProductionDesign {
                 || impact
                     .scene_ids
                     .iter()
-                    .any(|id| !scenes.iter().any(|scene| scene.id == *id))
-            {
-                return Err(DomainError::Invalid(
-                    "invalid measured dependency impact".into(),
-                ));
-            }
+                    .any(|id| !scenes.iter().any(|scene| scene.id == *id)))
+        {
+            return Err(DomainError::Invalid(
+                "invalid measured dependency impact".into(),
+            ));
         }
         Ok(())
     }
