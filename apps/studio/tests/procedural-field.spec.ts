@@ -14,7 +14,7 @@ test("Production procedural designer creates and revises real editable Canvas ob
   await count.fill("18");
   await page.getByLabel("Procedural distribution").selectOption("staggered");
   await page.getByLabel("Entrance interval (frames; 0 disables)").fill("3");
-  await page.getByLabel("Procedural preview playhead").fill("2");
+  await expect(page.getByLabel("Procedural preview playhead")).toHaveValue("2");
   const study=page.getByRole("img",{name:/Procedural editorial preview, staggered distribution, 18 editable objects/});
   await expect(study).toBeVisible();
   await page.screenshot({path:testInfo.outputPath("procedural-study-staggered.png"),fullPage:true});

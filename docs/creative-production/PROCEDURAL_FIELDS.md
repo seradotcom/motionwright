@@ -8,7 +8,7 @@ generated SVG/video, extra renderer, scheduler, Core or Platform dependency.
 The versioned `ProceduralConfig` defines an integer `seed`, `count`, `columns`,
 `distribution` (`grid`, `staggered`, `scatter`), origin, extent, square size,
 opacity percentage, #RRGGBB fill, and optional 30-fps opacity entrance sequencing
-(\`reveal_step_frames\` 0–10; 0 disables, \`reveal_duration_frames\` 1–60).
+(`reveal_step_frames` 0–10; 0 disables, `reveal_duration_frames` 1–60).
 Every generated item is a real, persistent,
 separately editable Canvas `rectangle` with a stable UUID, a source baseline,
 style, z-index and coordinate-space metadata.
@@ -29,8 +29,8 @@ style, z-index and coordinate-space metadata.
   then the four-byte **little-endian** index, with version-8 and RFC variant
   bits set. The same index retains its identity across seed/layout/count changes.
 - Optional entrance keys are native editable opacity keyframes: HOLD at frame 0,
-  HOLD at \`index × step\` when positive, then LINEAR to authored opacity at
-  \`start + duration\`. Rational times are canonicalized to 30-fps fractions.
+  HOLD at `index × step` when positive, then LINEAR to authored opacity at
+  `start + duration`. Rational times are canonicalized to 30-fps fractions.
   The last keyframe must remain inside the half-open scene interval; otherwise
   the entire operation fails before mutating the project. This is an original
   Canvas timeline, not a separate audio or compositor clock.
