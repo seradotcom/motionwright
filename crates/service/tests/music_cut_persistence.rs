@@ -1,6 +1,5 @@
 use motionwright_domain::*;
 use motionwright_service::StudioService;
-use uuid::Uuid;
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
