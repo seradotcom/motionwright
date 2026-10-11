@@ -7,6 +7,7 @@ mod extensions;
 mod hero;
 mod history;
 mod integrations;
+mod product_stage;
 mod production_design;
 pub use brand_governance::*;
 pub use canvas::*;
@@ -17,6 +18,7 @@ pub use extensions::*;
 pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use product_stage::*;
 pub use production_design::*;
 
 use chrono::{DateTime, Utc};
@@ -1017,6 +1019,14 @@ impl Project {
                 scene_id,
                 config,
             } => self.upsert_product_hero(*instance_id, *scene_id, config)?,
+            Change::UpsertProductStage {
+                instance_id,
+                scene_id,
+                config,
+            } => self.upsert_product_stage(*instance_id, *scene_id, config)?,
+            Change::DetachProductStage { instance_id } => {
+                self.detach_product_stage(*instance_id)?
+            }
             Change::SetProductionPlan { plan } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if let Some(plan) = plan {
@@ -2281,6 +2291,14 @@ pub enum Change {
         config: HeroConfig,
     },
     DetachProductHero {
+        instance_id: Uuid,
+    },
+    UpsertProductStage {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        config: ProductStageConfig,
+    },
+    DetachProductStage {
         instance_id: Uuid,
     },
     SetProductionPlan {

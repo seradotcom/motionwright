@@ -1,0 +1,214 @@
+name: ProductStage original semantic native design evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/domain/src/product_stage.rs'
+      - 'crates/domain/src/lib.rs'
+      - 'crates/domain/src/production_design.rs'
+      - 'crates/native/src/film.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'crates/native/tests/product_stage.rs'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/product_stage_native_evidence.py'
+      - 'tooling/native_tests/test_product_stage_native_evidence.py'
+      - '.github/workflows/product-stage-e2e.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'crates/domain/src/product_stage.rs'
+      - 'crates/native/src/film.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'tooling/product_stage_native_evidence.py'
+      - '.github/workflows/product-stage-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-stage-native-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+
+jobs:
+  product-stage-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-av-master-1.98.1
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cache-workspace-crates: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install pinned native runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            melt ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/native-av-master-e2e
+          {
+            melt -version | head -5
+            ffmpeg -version | head -3
+            ffprobe -version | head -3
+            bwrap --version
+          } > verification/native-av-master-e2e/native-runtime-versions.txt
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          set -euo pipefail
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-av-master-e2e/sandbox-profile.txt"
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build exact Semwright Broker and native providers
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          test -x target/debug/semwright
+          test -x target/debug/semwrightd
+          test -x target/debug/semwright-sandbox
+          test -x target/debug/semwright-motion-canvas-driver
+          test -x target/debug/semwright-mlt-video-driver
+          test -x target/debug/semwright-mlt-runtime-runner
+
+      - name: Build Motionwright native AV acceptance
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-render-e2e
+          cargo test --locked -p motionwright-native \
+            motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
+            -- --nocapture
+
+      - name: Assert anti-fake-capture and real native-pixel negative gates
+        run: python3 -m unittest discover -s tooling/native_tests -p 'test_product_stage_native_evidence.py' -v
+
+      - name: Render two original editable generic ProductStage silhouettes with pinned Semwright
+        run: |
+          set -euo pipefail
+          mkdir -p verification/product-stage-e2e
+          for form in stage-browser stage-handset; do
+            MOTIONWRIGHT_E2E_FIXTURE="$form" python3 tooling/native_av_master_e2e.py |
+              tee "verification/product-stage-e2e/$form.log"
+          done
+
+      - name: Check exact original source, normalized focus, native source frames and decoded H264
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_STAGE'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path("verification/product-stage-e2e") / os.environ["GITHUB_SHA"]
+          digest=lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          for form in ("stage-browser","stage-handset"):
+              folder=root/form
+              result=json.loads((folder/"result.json").read_text())
+              project=json.loads((folder/"editable-project.json").read_text())
+              report=json.loads((folder/"stage-native-inspection.json").read_text())
+              layout=json.loads((folder/"expected-stage-layout.json").read_text())
+              portable=json.loads((folder/"bundle-import-check.json").read_text())
+              seed=result["project"]
+              assert result["native_av_master_e2e"]=="PASS"
+              assert result["motionwright_sha"]==os.environ["GITHUB_SHA"]
+              assert seed["fixture"]=="product-stage-original/1"
+              assert seed["stage_frame"]==form.removeprefix("stage-")
+              assert seed["real_product_capture"] is False
+              assert seed["original_graphic"] is True
+              assert result["frame_count"]==result["decoded_video_frames"]==180
+              assert result["decoded_stereo_channel_identity"]=="confirmed_distinct_source_tones"
+              assert project["generation"]==layout["generation"]==report["generation"]==seed["generation"]
+              assert project["revision"]==layout["revision"]==report["revision"]==seed["revision"]
+              assert report["technical_sampling"]=="PASS"
+              assert report["authentic_capture"] is False
+              assert report["creative_approval"]=="required"
+              assert len(report["source_samples"])==4
+              assert [entry["frame_index"] for entry in report["source_samples"]]==[0,30,90,179]
+              assert report["project_sha256"]==digest(folder/"editable-project.json")
+              assert report["layout_sha256"]==digest(folder/"expected-stage-layout.json")
+              assert report["contact_sheet"]["sha256"]==digest(folder/report["contact_sheet"]["path"])
+              assert report["decoded_mp4"]["technical_sampling"]=="PASS"
+              assert report["decoded_mp4"]["sample_frame_indices"]==[0,120]
+              assert digest(folder/"motionwright-master.mp4")==result["master_sha256"]==report["decoded_mp4"]["master_sha256"]
+              assert result["original_product_stage_evidence_sha256"]==digest(folder/"stage-native-inspection.json")
+              assert portable["generation_rotated"] is True and portable["old_generation_write_rejected"] is True
+              assert portable["scene_camera_preserved"] is True and portable["screen_focus_preserved"] is True
+              assert portable["renderer_grants_imported"] is False
+              assert (folder/"stage.motionwright"/"manifest.json").is_file()
+              assert all(entry["heading_nonblank_samples"]>20 and entry["disclosure_nonblank_samples"]>25
+                         for entry in report["source_samples"])
+              print(form,"original sourced Canvas, native text, focus, H264 pixels and sound technical proof: PASS; NOT a capture; human review required")
+          PY_STAGE
+
+      - name: Upload original generic ProductStage native evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: product-stage-original-native-${{ github.sha }}
+          path: verification/product-stage-e2e/
+          if-no-files-found: ignore
+          retention-days: 7

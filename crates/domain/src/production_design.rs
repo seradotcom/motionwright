@@ -21,6 +21,9 @@ pub struct ProductionDesign {
     pub brand_exceptions: Vec<BrandException>,
     #[serde(default)]
     pub project_decisions: Vec<CreativeDecision>,
+    /// Generic rights-attested original UI stages, never third-party devices.
+    #[serde(default)]
+    pub stages: Vec<ProductStageInstance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,8 +323,9 @@ impl ProductionDesign {
             &self.project_decisions,
             scenes,
             &self.heroes,
+            &self.stages,
         )?;
-        if self.heroes.len() > 64 || self.capsules.len() > 256 {
+        if self.heroes.len() > 64 || self.capsules.len() > 256 || self.stages.len() > 16 {
             return Err(DomainError::Invalid(
                 "production design collection is too large".into(),
             ));
@@ -336,6 +340,19 @@ impl ProductionDesign {
             {
                 return Err(DomainError::Invalid(
                     "duplicate or orphaned component instance".into(),
+                ));
+            }
+        }
+        ids.clear();
+        let mut stage_scenes = BTreeSet::new();
+        for stage in &self.stages {
+            stage.validate(scenes)?;
+            if !ids.insert(stage.id)
+                || !stage_scenes.insert(stage.scene_id)
+                || hero_scenes.contains(&stage.scene_id)
+            {
+                return Err(DomainError::Invalid(
+                    "duplicate or overlapping ProductStage component".into(),
                 ));
             }
         }
