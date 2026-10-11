@@ -1,6 +1,9 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
+import { applyProductStageChange, validateProductStages } from "./productStage";
+import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
+import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
@@ -593,7 +596,7 @@ export async function productionJobsHistory(
     throw new Error("Historical production receipts require the desktop runtime.");
   }
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) {
-    throw new Error("Historical production jobs page size is outside the 1–64 limit.");
+    throw new Error("Historical production jobs page size is outside the 1â€“64 limit.");
   }
   return invoke<ProductionJobsHistoryPage>("production_jobs_history", {
     request: {
@@ -910,11 +913,53 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "upsert_product_stage":
+    case "detach_product_stage":
+      await applyProductStageChange(next,change);
+      break;
     case "upsert_product_hero":
     case "detach_product_hero":
+    case "upsert_procedural_field":
+    case "detach_procedural_field":
     case "set_production_plan":
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
+      break;
+    case "add_claim": {
+      assertUnlocked(next,projectResource(next),["content"]);
+      if(!change.text.trim() || new TextEncoder().encode(change.text).length>4000 ||
+        change.context.length>4000 || (change.source_revision?.length??0)>256 ||
+        next.brief.claims.length>=512)
+        throw new Error("Invalid or excessive capture source claim.");
+      if(change.source?.kind==="project_revision" &&
+        (!Number.isSafeInteger(change.source.revision) ||
+         change.source.revision<0 || change.source.revision>project.revision))
+        throw new Error("Claim source revision must exist in the authored project.");
+      next.brief.claims.push({
+        id:crypto.randomUUID(),
+        text:change.text,
+        source:structuredClone(change.source),
+        context:change.context,
+        source_revision:change.source_revision,
+      });
+      break;
+    }
+    case "register_capture_source": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      registerCaptureRecord(next,change.record);
+      break;
+    }
+    case "upsert_measured_table":
+      next.production_design ??= emptyProductionDesign();
+      applyMeasuredTable(next,change.table);
+      break;
+    case "upsert_measured_binding":
+      next.production_design ??= emptyProductionDesign();
+      applyMeasuredBinding(next,change);
+      break;
+    case "detach_measured_binding":
+      next.production_design ??= emptyProductionDesign();
+      detachMeasuredBinding(next,change.binding_id);
       break;
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
@@ -1371,6 +1416,13 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     case "remove_asset": {
       assertUnlocked(next, projectResource(next), ["content"]);
+      if(next.production_design?.captures?.some(record=>
+        record.screenshot_asset_id===change.asset_id ||
+        record.manifest_asset_id===change.asset_id ||
+        record.fixture_state_asset_id===change.asset_id))
+        throw new Error("Asset is referenced by an immutable capture provenance record.");
+      if(next.production_design?.measured_tables?.some(table=>table.source_asset_id===change.asset_id))
+        throw new Error("Asset remains bound to a measured table; relink data before deleting source.");
       if (
         next.audio.voice_tracks.some((track) => track.asset_id === change.asset_id) ||
         next.brief.claims.some((claim) => claim.source?.kind === "asset" && claim.source.asset_id === change.asset_id)
@@ -1796,6 +1848,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  await validateProductStages(next);
+  validateCaptureRecords(next);
+  validateMeasuredData(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");

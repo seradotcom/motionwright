@@ -652,6 +652,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "seed-procedural" => {
+            let database = path_arg(&mut args);
+            let mode = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_procedural(&database, &mode, &project_json)
+        }
+        "seed-measured" => {
+            let database = path_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_measured(&database, &project_json)
+        }
+        "seed-stage" => {
+            let database = path_arg(&mut args);
+            let frame = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_stage(&database, &frame, &project_json)
+        }
         "seed-hero" => {
             let database = path_arg(&mut args);
             let aspect = text_arg(&mut args);
@@ -876,9 +902,666 @@ fn seed_hero(
     Ok(())
 }
 
+/// Two independent GENERIC frame silhouettes. The content is a deliberately
+/// original, synthetic semantic UI study, NEVER an authenticated product
+/// screenshot or a third-party device/brand representation.
+fn seed_stage(
+    database: &Path,
+    frame: &str,
+    project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use motionwright_domain::{
+        ProductStageConfig, STAGE_ROLES, StageFrame, realize_product_stage, stage_node_id,
+    };
+    let frame_kind = match frame {
+        "browser" => StageFrame::Browser,
+        "handset" => StageFrame::GenericHandset,
+        _ => return Err("ProductStage native fixture frame must be browser or handset".into()),
+    };
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("ProductStage source fixture must use a fresh owner-local database".into());
+    }
+    let initial = service.create_project("SYNTHETIC original UI / NOT A CAPTURE")?;
+    let scene = service
+        .apply(
+            initial.id,
+            &initial.stamp(),
+            "stage-scene",
+            &Change::AddScene {
+                name: format!("Original generic {frame} graphic"),
+                objective: "Test native semantic original UI, never real screen capture".into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = scene.scenes[0].id;
+    let id = Uuid::parse_str("00000000-0000-4000-8000-000000000005")?;
+    let first_config=ProductStageConfig {
+        frame:frame_kind,
+        author_attestation:"I authored the original generic test-only screen design and authorize this technical render.".into(),
+        animate_focus:true,
+        ..ProductStageConfig::default()
+    };
+    let first = service
+        .apply(
+            scene.id,
+            &scene.stamp(),
+            "stage-first-original",
+            &Change::UpsertProductStage {
+                instance_id: id,
+                scene_id,
+                config: first_config.clone(),
+            },
+        )?
+        .project;
+    let screen_id = stage_node_id(id, "screen");
+    let focus_id = stage_node_id(id, "focus_marker");
+    let original_screen = first.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == screen_id)
+        .ok_or("missing original stage screen")?
+        .clone();
+    let original_focus = first.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == focus_id)
+        .ok_or("missing original focus object")?
+        .clone();
+    let original_camera = first.scenes[0].camera.clone();
+    let config = ProductStageConfig {
+        screen_heading: "Clear original workflow".into(),
+        screen_detail: "Editable original interface".into(),
+        action_label: "Continue".into(),
+        ..first_config
+    };
+    let changed = service
+        .apply(
+            first.id,
+            &first.stamp(),
+            "stage-replace-authored-copy",
+            &Change::UpsertProductStage {
+                instance_id: id,
+                scene_id,
+                config: config.clone(),
+            },
+        )?
+        .project;
+    if changed.scenes[0].nodes.len() != STAGE_ROLES.len()
+        || changed.scenes[0].camera != original_camera
+        || changed.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == screen_id)
+            != Some(&original_screen)
+        || changed.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == focus_id)
+            != Some(&original_focus)
+        || changed.production_design.stages[0].config != config
+    {
+        return Err("ProductStage content replacement changed original camera/screen/focus or instance identity".into());
+    }
+    let mut profile = changed.deliverables[0].clone();
+    profile.name = format!("ProductStage / original {frame} 16:9");
+    let project = service
+        .apply(
+            changed.id,
+            &changed.stamp(),
+            "stage-native-profile",
+            &Change::UpsertDeliverable { profile },
+        )?
+        .project;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    output.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    output.write_all(b"\n")?;
+    output.sync_all()?;
+    let realized = realize_product_stage(id, &config, 1920, 1080)?;
+    if realized != project.production_design.stages[0].baseline {
+        return Err(
+            "ProductStage native source differs from exact deterministic semantic realization"
+                .into(),
+        );
+    }
+    let layout = project_json.with_file_name("expected-stage-layout.json");
+    let mut layout_output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&layout)?;
+    layout_output.write_all(&serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.product-stage-original-layout/1",
+        "project_id":project.id,"generation":project.generation,"revision":project.revision,
+        "frame":frame,"width":1920,"height":1080,"nodes":realized,
+        "creative_approval":"required",
+        "source_rights":"synthetic_original_declared_not_independently_attested",
+    }))?)?;
+    layout_output.sync_all()?;
+
+    let bundle_path = project_json.with_file_name("stage.motionwright");
+    service.export_project_bundle(project.id, &bundle_path)?;
+    let import_folder = tempfile::tempdir()?;
+    let imported_service = StudioService::open(import_folder.path().join("import.sqlite3"))?;
+    let inspected = imported_service.inspect_project_bundle(&bundle_path)?;
+    let imported = imported_service.import_project_bundle(&bundle_path)?;
+    if !inspected.project.rotates_generation
+        || imported.generation == project.generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err(
+            "ProductStage portable bundle changed authored screen or reused generation".into(),
+        );
+    }
+    if imported_service
+        .apply(
+            imported.id,
+            &project.stamp(),
+            "stale-stage-bundle-generation",
+            &Change::RenameProject {
+                title: "Must be rejected".into(),
+            },
+        )
+        .is_ok()
+    {
+        return Err("ProductStage bundle accepted an old generation write".into());
+    }
+    let bundle_receipt = project_json.with_file_name("bundle-import-check.json");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&bundle_receipt)?;
+    file.write_all(&serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.original-product-stage-bundle/1",
+        "source_generation":project.generation,"import_generation":imported.generation,
+        "project_schema":imported.schema_version,
+        "semantic_state_preserved":true,"generation_rotated":true,
+        "old_generation_write_rejected":true,
+        "scene_camera_preserved":true,"screen_focus_preserved":true,
+        "bundle":"stage.motionwright","creative_approval":"required",
+        "renderer_grants_imported":false,
+    }))?)?;
+    file.sync_all()?;
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture":"product-stage-original/1","stage_frame":frame,
+            "project_id":project.id,"resource":project.resource_key(),
+            "generation":project.generation,"revision":project.revision,
+            "scene_id":scene_id,"deliverable_id":deliverable.id,
+            "width":deliverable.width,"height":deliverable.height,"frame_count":180,
+            "stage_instance_id":id,"screen_id":screen_id,"focus_id":focus_id,
+            "original_graphic":true,"real_product_capture":false,
+            "synthetic_source_only":true,"rights_verification":"author_declaration_not_audited",
+            "creative_approval":"required",
+        }))?
+    );
+    Ok(())
+}
+
+/// The source values here are plainly synthetic technical test fixtures,
+/// not real product metrics, measured conversions, or marketing claims.
+/// Actual versioned JSON source files are ingested into the owner-local CAS.
+fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use motionwright_domain::{
+        MEASURED_DATA_SCHEMA, MeasuredDatum, MeasuredTable, MeasuredUnit, MeasuredView,
+    };
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("measured native fixture requires empty database".into());
+    }
+    let mut project = service.create_project("SYNTHETIC measured-data native E2E")?;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-native-scene",
+            &Change::AddScene {
+                name: "Synthetic figures / technical fixture".into(),
+                objective:
+                    "Render source-bound native Canvas shapes, not certified campaign statistics"
+                        .into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = project.scenes[0].id;
+
+    // The underlying file and its exact digest are owned by the existing
+    // StudioService asset importer, not by a new data execution path.
+    let source_one = project_json.with_file_name("synthetic-measured-v1.json");
+    let source_two = project_json.with_file_name("synthetic-measured-v2.json");
+    let input = |milli: i64| -> Vec<MeasuredDatum> {
+        vec![MeasuredDatum {
+            key: "rate".into(),
+            label: "Synthetic rate".into(),
+            milli,
+            unit: MeasuredUnit::Percent,
+        }]
+    };
+    fs::write(&source_one, serde_json::to_vec(&input(12500))?)?;
+    fs::write(&source_two, serde_json::to_vec(&input(37500))?)?;
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "measured-source-v1",
+            &source_one,
+            "SYNTHETIC numeric data v1.json".into(),
+            "application/json".into(),
+        )?
+        .project;
+    let asset_one = project
+        .assets
+        .last()
+        .ok_or("missing imported source v1")?
+        .clone();
+    let table_id = Uuid::parse_str("00000000-0000-4000-8000-000000000092")?;
+    let table = |version: u32, asset: &motionwright_domain::Asset, milli: i64| MeasuredTable {
+        schema: MEASURED_DATA_SCHEMA.into(),
+        id: table_id,
+        label: "Synthetic data verification".into(),
+        version,
+        source_asset_id: asset.id,
+        source_sha256: asset.content_sha256.clone().unwrap_or_default(),
+        rows: input(milli),
+    };
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-table-v1",
+            &Change::UpsertMeasuredTable {
+                table: table(1, &asset_one, 12500),
+            },
+        )?
+        .project;
+
+    let label_id = Uuid::parse_str("00000000-0000-4000-8000-000000000093")?;
+    let bar_id = Uuid::parse_str("00000000-0000-4000-8000-000000000094")?;
+    let label = CanvasNode {
+        id: label_id,
+        name: "Source-bound synthetic metric".into(),
+        kind: "text".into(),
+        parent_id: None,
+        x: 340.0,
+        y: 240.0,
+        width: 1250.0,
+        height: 150.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: Some("Before source binding".into()),
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 0,
+        style: NodeStyle {
+            fill: Some("#F2F4F3".into()),
+            font_family: Some("Instrument Sans Variable".into()),
+            font_size: Some(56.0),
+            font_weight: Some(600),
+            line_height: Some(1.1),
+            ..Default::default()
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    let bar = CanvasNode {
+        id: bar_id,
+        name: "Explicit 0–100% synthetic bar".into(),
+        kind: "rectangle".into(),
+        parent_id: None,
+        x: 340.0,
+        y: 480.0,
+        width: 800.0,
+        height: 72.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: None,
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 0,
+        style: NodeStyle {
+            fill: Some("#A5C8DF".into()),
+            ..Default::default()
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    for (index, node) in [label, bar, real_linear_motion_tile()]
+        .into_iter()
+        .enumerate()
+    {
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("measured-native-canvas-{index}"),
+                &Change::AddCanvasNode { scene_id, node },
+            )?
+            .project;
+    }
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-native-label",
+            &Change::UpsertMeasuredBinding {
+                binding_id: Uuid::parse_str("00000000-0000-4000-8000-000000000096")?,
+                scene_id,
+                node_id: label_id,
+                table_id,
+                datum_key: "rate".into(),
+                view: MeasuredView::Label { decimals: 1 },
+            },
+        )?
+        .project;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-native-bar",
+            &Change::UpsertMeasuredBinding {
+                binding_id: Uuid::parse_str("00000000-0000-4000-8000-000000000097")?,
+                scene_id,
+                node_id: bar_id,
+                table_id,
+                datum_key: "rate".into(),
+                view: MeasuredView::Bar {
+                    axis_min_milli: 0,
+                    axis_max_milli: 100000,
+                    max_width_px: 800,
+                },
+            },
+        )?
+        .project;
+    let expected_initial = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == bar_id)
+        .ok_or("missing initial measured bar")?
+        .width;
+    if expected_initial != 100.0 {
+        return Err("source v1 projection did not produce 100 pixels".into());
+    }
+
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "measured-source-v2",
+            &source_two,
+            "SYNTHETIC numeric data v2.json".into(),
+            "application/json".into(),
+        )?
+        .project;
+    let asset_two = project
+        .assets
+        .last()
+        .ok_or("missing imported source v2")?
+        .clone();
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "measured-table-v2",
+            &Change::UpsertMeasuredTable {
+                table: table(2, &asset_two, 37500),
+            },
+        )?
+        .project;
+    let projected_label = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == label_id)
+        .ok_or("missing projected label")?;
+    let projected_bar = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == bar_id)
+        .ok_or("missing projected bar")?;
+    if projected_label.text.as_deref() != Some("Synthetic rate · 37.5%")
+        || projected_bar.width != 300.0
+        || project
+            .production_design
+            .last_measured_impact
+            .as_ref()
+            .is_none_or(|impact| {
+                impact.scene_ids != vec![scene_id] || impact.changed_keys != vec!["rate"]
+            })
+    {
+        return Err("real source change was not projected or invalidated deterministically".into());
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    file.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    let bundle = project_json.with_file_name("measured.motionwright");
+    service.export_project_bundle(project.id, &bundle)?;
+    let temp = tempfile::tempdir()?;
+    let restored = StudioService::open(temp.path().join("import.sqlite3"))?;
+    let inspected = restored.inspect_project_bundle(&bundle)?;
+    let imported = restored.import_project_bundle(&bundle)?;
+    if !inspected.project.rotates_generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.generation == project.generation
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err(
+            "measured native portable bundle changed sourced Canvas or revision authority".into(),
+        );
+    }
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture":"measured-data/1",
+            "project_id":project.id,"resource":project.resource_key(),
+            "generation":project.generation,"revision":project.revision,
+            "scene_id":scene_id,"deliverable_id":deliverable.id,
+            "width":deliverable.width,"height":deliverable.height,
+            "frame_count":180,
+            "bar_x":projected_bar.x,"bar_y":projected_bar.y,
+            "bar_width_px":300,
+            "source_v1_sha256":asset_one.content_sha256,
+            "source_v2_sha256":asset_two.content_sha256,
+            "measured_table_id":table_id,
+            "portable_bundle":"measured.motionwright",
+            "source_generation_rotated":true,
+            "creative_approval":"required",
+            "source_truth":"synthetic_fixture_not_real_world_measurement"
+        }))?
+    );
+    Ok(())
+}
+
+/// CI-only design evidence: author a real, portable project and render it using
+/// the unchanged owner-owned Semwright Driver Host and Motionwright coordinator.
+fn seed_procedural(
+    database: &Path,
+    mode: &str,
+    project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let animated = match mode {
+        "static" => false,
+        "motion" | "orbit" => true,
+        _ => return Err("procedural fixture mode must be static, motion or orbit".into()),
+    };
+    let orbit = mode == "orbit";
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("procedural native fixture requires empty database".into());
+    }
+    let initial = service.create_project("Procedural native design acceptance")?;
+    let added = service
+        .apply(
+            initial.id,
+            &initial.stamp(),
+            "procedural-acceptance-scene",
+            &Change::AddScene {
+                name: "Bounded geometric motion".into(),
+                objective: "Original generated graphic study, not real software footage".into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = added.scenes[0].id;
+    let config = motionwright_domain::ProceduralConfig {
+        seed: 41,
+        count: 12,
+        columns: 4,
+        distribution: if orbit {
+            motionwright_domain::FieldDistribution::Radial
+        } else {
+            motionwright_domain::FieldDistribution::Scatter
+        },
+        shape: if orbit {
+            motionwright_domain::ProceduralShape::Circle
+        } else {
+            motionwright_domain::ProceduralShape::Square
+        },
+        origin_x: 260,
+        origin_y: 180,
+        area_width: 1240,
+        area_height: 660,
+        size: 88,
+        opacity_percent: 100,
+        fill: "#A5C8DF".into(),
+        reveal_step_frames: if animated { 6 } else { 0 },
+        reveal_duration_frames: 18,
+    };
+    let project = service
+        .apply(
+            added.id,
+            &added.stamp(),
+            "procedural-acceptance-field",
+            &Change::UpsertProceduralField {
+                instance_id: Uuid::parse_str("00000000-0000-4000-8000-000000000095")?,
+                scene_id,
+                config: config.clone(),
+            },
+        )?
+        .project;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    file.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    let bundle = project_json.with_file_name("procedural.motionwright");
+    service.export_project_bundle(project.id, &bundle)?;
+    let temp = tempfile::tempdir()?;
+    let destination = StudioService::open(temp.path().join("import.sqlite3"))?;
+    let inspected = destination.inspect_project_bundle(&bundle)?;
+    let imported = destination.import_project_bundle(&bundle)?;
+    if !inspected.project.rotates_generation
+        || imported.generation == project.generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err("procedural portable round-trip changed authored nodes or authority".into());
+    }
+    if destination
+        .apply(
+            imported.id,
+            &project.stamp(),
+            "procedural-stale-authority",
+            &Change::RenameProject {
+                title: "Forbidden stale write".into(),
+            },
+        )
+        .is_ok()
+    {
+        return Err("procedural portable import reused source-generation authority".into());
+    }
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture": if orbit { "procedural-field-orbit/1" } else if animated { "procedural-field-motion/1" } else { "procedural-field-static/1" },
+            "project_id": project.id, "resource": project.resource_key(),
+            "generation": project.generation, "revision": project.revision,
+            "scene_id": scene_id, "deliverable_id": deliverable.id,
+            "width": deliverable.width, "height": deliverable.height,
+            "frame_count": 180, "procedural_config": config,
+            "generator_version": 1,
+            "portable_bundle": "procedural.motionwright",
+            "source_generation_rotated": true,
+            "creative_approval": "required",
+        }))?
+    );
+    Ok(())
+}
+
 fn expected_fixture_frames(
     project: &motionwright_domain::Project,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    if let [field] = project.production_design.procedural_fields.as_slice() {
+        if project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != usize::from(field.config.count)
+            || !project.production_design.heroes.is_empty()
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err(
+                "procedural native E2E fixture no longer matches its six-second project contract"
+                    .into(),
+            );
+        }
+        field.validate()?;
+        return Ok(180);
+    }
+    if let [table] = project.production_design.measured_tables.as_slice() {
+        let bindings = &project.production_design.measured_bindings;
+        if table.version != 2
+            || bindings.len() != 2
+            || project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != 3
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err(
+                "measured data native fixture drifted from its exact six-second contract".into(),
+            );
+        }
+        return Ok(180);
+    }
+    if !project.production_design.stages.is_empty() {
+        if project.production_design.stages.len() != 1
+            || !project.production_design.heroes.is_empty()
+            || project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != motionwright_domain::STAGE_ROLES.len()
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err("ProductStage source no longer matches the fixed, original six-second semantic fixture".into());
+        }
+        return Ok(180);
+    }
     if project.production_design.heroes.is_empty() {
         return Ok(60);
     }

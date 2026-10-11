@@ -718,11 +718,20 @@ enum OperationKind {
     UndoCreativePatch,
     UpsertProductHero,
     DetachProductHero,
+    UpsertProductStage,
+    DetachProductStage,
+    UpsertProceduralField,
+    DetachProceduralField,
     SetProductionPlan,
+    UpsertMeasuredTable,
+    UpsertMeasuredBinding,
+    DetachMeasuredBinding,
     UpsertNativeCapsule,
+    RegisterCaptureSource,
     ApplyCreativePatch,
     RenameProject,
     SetBrief,
+    AddClaim,
     SetNarrativePremise,
     AddScene,
     MoveScene,
@@ -888,6 +897,32 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         OperationKind::DetachProductHero => Ok(Change::DetachProductHero {
             instance_id: uuid(args, "instance_id")?,
         }),
+        OperationKind::UpsertProductStage => Ok(Change::UpsertProductStage {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid owned ProductStage configuration"))?,
+        }),
+        OperationKind::DetachProductStage => Ok(Change::DetachProductStage {
+            instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
+            instance_id: uuid(args, "instance_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            config: serde_json::from_value(
+                args.get("config")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("config is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid procedural field config"))?,
+        }),
+        OperationKind::DetachProceduralField => Ok(Change::DetachProceduralField {
+            instance_id: uuid(args, "instance_id")?,
+        }),
         OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
             plan: serde_json::from_value(
                 args.get("plan")
@@ -895,6 +930,38 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .ok_or_else(|| Error::invalid("plan is required"))?,
             )
             .map_err(|_| Error::invalid("invalid ProductionPlan"))?,
+        }),
+        OperationKind::RegisterCaptureSource => Ok(Change::RegisterCaptureSource {
+            record: serde_json::from_value(
+                args.get("record")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("capture record is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid bounded first-party capture source record"))?,
+        }),
+        OperationKind::UpsertMeasuredTable => Ok(Change::UpsertMeasuredTable {
+            table: serde_json::from_value(
+                args.get("table")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("table is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid versioned source-bound measured table"))?,
+        }),
+        OperationKind::UpsertMeasuredBinding => Ok(Change::UpsertMeasuredBinding {
+            binding_id: uuid(args, "binding_id")?,
+            scene_id: uuid(args, "scene_id")?,
+            node_id: uuid(args, "node_id")?,
+            table_id: uuid(args, "table_id")?,
+            datum_key: string(args, "datum_key", 48)?,
+            view: serde_json::from_value(
+                args.get("view")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("view is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid explicit measurement/axis view"))?,
+        }),
+        OperationKind::DetachMeasuredBinding => Ok(Change::DetachMeasuredBinding {
+            binding_id: uuid(args, "binding_id")?,
         }),
         OperationKind::UpsertNativeCapsule => Ok(Change::UpsertNativeCapsule {
             capsule: serde_json::from_value(
@@ -920,6 +987,16 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             audience: bounded_string(args, "audience", 2_000)?,
             constraints: strings(args, "constraints", 128, 1_000)?,
             exclusions: strings(args, "exclusions", 128, 1_000)?,
+        }),
+        OperationKind::AddClaim => Ok(Change::AddClaim {
+            text: bounded_string(args, "text", 4_000)?,
+            source: serde_json::from_value(args.get("source").cloned().unwrap_or(Value::Null))
+                .map_err(|_| Error::invalid("invalid versioned claim source reference"))?,
+            context: bounded_string(args, "context", 4_000)?,
+            source_revision: serde_json::from_value(
+                args.get("source_revision").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|_| Error::invalid("claim source revision must be a string or null"))?,
         }),
         OperationKind::SetNarrativePremise => Ok(Change::SetNarrativePremise {
             premise: bounded_string(args, "premise", 12_000)?,
@@ -1474,6 +1551,23 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "exclusions": {"type":"array","maxItems":128,"items":{"type":"string","maxLength":1000}}
                     }),
                     &["ref", "objective", "audience", "constraints", "exclusions"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::AddClaim,
+            descriptor(
+                "claim.add",
+                "Append an authored first-party project evidence claim without granting external capture or verification",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "text":{"type":"string","minLength":1,"maxLength":4000},
+                        "source":{"anyOf":[{"type":"null"},{"type":"object"}]},
+                        "context":{"type":"string","maxLength":4000},
+                        "source_revision":{"anyOf":[{"type":"null"},{"type":"string","maxLength":256}]}
+                    }),
+                    &["ref", "text", "source", "context", "source_revision"],
                 ),
             ),
         ),
@@ -2177,6 +2271,104 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertProductStage,
+            descriptor(
+                "product-stage.upsert",
+                "Author or replace a rights-attested original UI study on generic browser/panel/handset anchors",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64},
+                        "scene_id":{"type":"string","format":"uuid","maxLength":64},
+                        "config":{
+                            "type":"object",
+                            "properties":{
+                                "frame":{"type":"string","enum":["browser","flat_panel","generic_handset"]},
+                                "screen_heading":{"type":"string","minLength":1,"maxLength":40},
+                                "screen_detail":{"type":"string","minLength":1,"maxLength":80},
+                                "action_label":{"type":"string","minLength":1,"maxLength":20},
+                                "author_attestation":{"type":"string","minLength":1,"maxLength":160},
+                                "screen_surface":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "foreground":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "accent":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "focus_x_permille":{"type":"integer","minimum":150,"maximum":850},
+                                "focus_y_permille":{"type":"integer","minimum":200,"maximum":800},
+                                "animate_focus":{"type":"boolean"}
+                            },
+                            "required":["frame","screen_heading","screen_detail","action_label","author_attestation",
+                                "screen_surface","foreground","accent","focus_x_permille",
+                                "focus_y_permille","animate_focus"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProductStage,
+            descriptor(
+                "product-stage.detach",
+                "Release generic stage ownership without deleting or flattening its editable Canvas objects",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64}}),
+                    &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertProceduralField,
+            descriptor(
+                "procedural-field.upsert",
+                "Create or revise a bounded, deterministically seeded editable Canvas field via project CAS",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64},
+                        "scene_id":{"type":"string","format":"uuid","maxLength":64},
+                        "config":{
+                            "type":"object",
+                            "properties":{
+                                "seed":{"type":"integer","minimum":0,"maximum":4294967295u64},
+                                "count":{"type":"integer","minimum":1,"maximum":64},
+                                "columns":{"type":"integer","minimum":1,"maximum":16},
+                                "distribution":{"type":"string","enum":["grid","staggered","scatter","radial","spiral"]},
+                                "shape":{"type":"string","enum":["square","circle"]},
+                                "origin_x":{"type":"integer","minimum":0,"maximum":1920},
+                                "origin_y":{"type":"integer","minimum":0,"maximum":1080},
+                                "area_width":{"type":"integer","minimum":0,"maximum":1920},
+                                "area_height":{"type":"integer","minimum":0,"maximum":1080},
+                                "size":{"type":"integer","minimum":4,"maximum":128},
+                                "opacity_percent":{"type":"integer","minimum":1,"maximum":100},
+                                "fill":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+                                "reveal_step_frames":{"type":"integer","minimum":0,"maximum":10},
+                                "reveal_duration_frames":{"type":"integer","minimum":1,"maximum":60}
+                            },
+                            "required":["seed","count","columns","distribution","origin_x","origin_y",
+                                "area_width","area_height","size","opacity_percent","fill"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "instance_id", "scene_id", "config"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachProceduralField,
+            descriptor(
+                "procedural-field.detach",
+                "Detach an editable generator without deleting its authored Canvas objects",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetProductionPlan,
             descriptor(
                 "production-plan.set",
@@ -2184,6 +2376,140 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                 schema(
                     json!({"ref": {"type": "string", "maxLength": 512}, "plan": {"anyOf": [{"type": "null"}, {"type": "object"}]}}),
                     &["ref", "plan"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RegisterCaptureSource,
+            descriptor(
+                "capture-source.register",
+                "Append an immutable declared first-party PNG/JSON capture source linked to an authored project-revision claim",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "record":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.capture-source/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "screenshot_asset_id":{"type":"string","format":"uuid"},
+                                "screenshot_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "manifest_asset_id":{"type":"string","format":"uuid"},
+                                "fixture_state_asset_id":{"type":"string","format":"uuid"},
+                                "manifest_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "fixture_state_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "claim_id":{"type":"string","format":"uuid"},
+                                "source_project_id":{"type":"string","format":"uuid"},
+                                "source_generation":{"type":"string","format":"uuid"},
+                                "source_revision":{"type":"integer","minimum":1},
+                                "app_id":{"type":"string","const":"motionwright-studio"},
+                                "app_version":{"type":"string","maxLength":17},
+                                "source_commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+                                "scenario_id":{"type":"string","const":"production-original-ui-local-v1"},
+                                "origin":{"type":"string","const":"http://127.0.0.1:1420"},
+                                "route":{"type":"string","const":"/"},
+                                "viewport_width":{"type":"integer","const":1440},
+                                "viewport_height":{"type":"integer","const":940},
+                                "device_scale_factor":{"type":"integer","const":1},
+                                "screenshot_repeat_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "redaction":{"type":"object","properties":{
+                                    "selector":{"type":"string","const":".revision-chip"},
+                                    "x":{"type":"integer","minimum":0,"maximum":1440},
+                                    "y":{"type":"integer","minimum":0,"maximum":940},
+                                    "width":{"type":"integer","minimum":12,"maximum":1440},
+                                    "height":{"type":"integer","minimum":12,"maximum":940},
+                                    "mask_color":{"type":"string","const":"#0B0B0B"}
+                                },"required":["selector","x","y","width","height","mask_color"],
+                                  "additionalProperties":false},
+                                "external_requests":{"type":"integer","const":0},
+                                "credential_fields":{"type":"integer","const":0},
+                                "declared_scope":{"type":"string","const":"first-party-synthetic-fixture-only"}
+                            },
+                            "required":["schema","id","screenshot_asset_id","screenshot_sha256",
+                                "manifest_asset_id","manifest_sha256","fixture_state_asset_id","fixture_state_sha256","claim_id","source_project_id",
+                                "source_generation","source_revision","app_id","app_version","source_commit",
+                                "scenario_id","origin","route","viewport_width","viewport_height",
+                                "device_scale_factor","screenshot_repeat_sha256","redaction",
+                                "external_requests","credential_fields","declared_scope"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "record"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertMeasuredTable,
+            descriptor(
+                "measured-table.upsert",
+                "Commit a versioned numeric table bound to an imported JSON/CSV SHA-256 asset; no metric inference",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "table":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.measured-table/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "label":{"type":"string","minLength":1,"maxLength":160},
+                                "version":{"type":"integer","minimum":1},
+                                "source_asset_id":{"type":"string","format":"uuid"},
+                                "source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "rows":{"type":"array","minItems":1,"maxItems":64,"items":{
+                                    "type":"object",
+                                    "properties":{
+                                        "key":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,47}$"},
+                                        "label":{"type":"string","minLength":1,"maxLength":120},
+                                        "milli":{"type":"integer","minimum":-1000000000,"maximum":1000000000},
+                                        "unit":{"type":"string","enum":["count","percent","seconds","milliseconds","bytes"]}
+                                    },
+                                    "required":["key","label","milli","unit"],
+                                    "additionalProperties":false
+                                }}
+                            },
+                            "required":["schema","id","label","version","source_asset_id","source_sha256","rows"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "table"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::UpsertMeasuredBinding,
+            descriptor(
+                "measured-binding.upsert",
+                "Bind a measured row to existing Canvas text or explicitly bounded bar width",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "binding_id":{"type":"string","format":"uuid"},
+                        "scene_id":{"type":"string","format":"uuid"},
+                        "node_id":{"type":"string","format":"uuid"},
+                        "table_id":{"type":"string","format":"uuid"},
+                        "datum_key":{"type":"string","maxLength":48},
+                        "view":{"type":"object"}
+                    }),
+                    &[
+                        "ref",
+                        "binding_id",
+                        "scene_id",
+                        "node_id",
+                        "table_id",
+                        "datum_key",
+                        "view",
+                    ],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachMeasuredBinding,
+            descriptor(
+                "measured-binding.detach",
+                "Remove source binding only, retaining the existing editable Canvas node",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},"binding_id":{"type":"string","format":"uuid"}}),
+                    &["ref", "binding_id"],
                 ),
             ),
         ),
@@ -2478,9 +2804,19 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.audio.cue.upsert"));
         assert!(names.contains(&"driver.motionwright.audio.mix.set"));
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
+        assert!(names.contains(&"driver.motionwright.product-stage.upsert"));
+        assert!(names.contains(&"driver.motionwright.product-stage.detach"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
-        assert_eq!(capabilities.len(), 52);
+        assert!(names.contains(&"driver.motionwright.capture-source.register"));
+        assert!(names.contains(&"driver.motionwright.claim.add"));
+
+        assert!(names.contains(&"driver.motionwright.measured-table.upsert"));
+        assert!(names.contains(&"driver.motionwright.measured-binding.upsert"));
+        assert!(names.contains(&"driver.motionwright.measured-binding.detach"));
+        assert!(names.contains(&"driver.motionwright.procedural-field.upsert"));
+        assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
+        assert_eq!(capabilities.len(), 61);
     }
 
     #[tokio::test]

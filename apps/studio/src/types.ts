@@ -1,5 +1,9 @@
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
+import type { MeasuredTable, MeasuredView } from "./measuredData";
+import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
+import type { ProductStageConfig } from "./productStage";
+import type { CaptureSourceRecord } from "./captureSource";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
 export type RendererKind =
@@ -579,7 +583,15 @@ export type Change =
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
+  | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
+  | { type: "detach_product_stage"; instance_id: string }
+  | { type: "register_capture_source"; record: CaptureSourceRecord }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
+  | { type: "upsert_measured_table"; table: MeasuredTable }
+  | { type: "upsert_measured_binding"; binding_id: string; scene_id: string; node_id: string; table_id: string; datum_key: string; view: MeasuredView }
+  | { type: "detach_measured_binding"; binding_id: string }
+  | { type: "upsert_procedural_field"; instance_id: string; scene_id: string; config: ProceduralConfig }
+  | { type: "detach_procedural_field"; instance_id: string }
   | { type: "set_brand_governance"; profile: BrandProfile | null; exceptions: BrandException[] }
   | { type: "set_taste_profile"; profile: TasteProfile | null }
   | { type: "record_creative_decision"; decision: CreativeDecision }
@@ -587,6 +599,7 @@ export type Change =
   | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }
   | { type: "set_brief"; objective: string; audience: string; constraints: string[]; exclusions: string[] }
+  | { type: "add_claim"; text: string; source: SourceReference | null; context: string; source_revision: string | null }
   | { type: "set_narrative_premise"; premise: string }
   | { type: "add_scene"; name: string; objective: string; duration_seconds: number }
   | { type: "move_scene"; scene_id: string; to_index: number }

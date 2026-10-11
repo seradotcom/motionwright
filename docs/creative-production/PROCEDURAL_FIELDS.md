@@ -1,0 +1,125 @@
+# MW05-E06-04 — deterministic procedural field, bounded implementation
+
+This is a real editable Canvas authoring capability within **Production**, not an opaque
+generated SVG/video, extra renderer, scheduler, Core or Platform dependency.
+
+## Contract and deterministic implementation
+
+The versioned `ProceduralConfig` defines an integer `seed`, `count`, `columns`,
+`distribution` (`grid`, `staggered`, `scatter`, `radial`, `spiral`), origin, extent, object size, optional `shape` (`square` / `circle`, legacy default square),
+opacity percentage, #RRGGBB fill, and optional 30-fps synchronized Y/opacity entrance sequencing
+(`reveal_step_frames` 0–10; 0 disables, `reveal_duration_frames` 1–60).
+Every generated item is a real, persistent,
+separately editable Canvas `rectangle` or `circle` with a stable UUID, a source baseline,
+style, z-index and coordinate-space metadata.
+
+- The authored stage is 1920 × 1080 project pixels; all generated squares remain
+  inside its bounded area. Scene nodes are rendered by the existing Motion Canvas
+  route and may be changed normally in Canvas, then exported through the
+  existing native rendering/receipt path.
+- Per-field limit: **1–64 objects**; **1–16 columns**, **4–128 px size**, **1–100%
+  opacity**; **at most 16 fields per project, one per scene**. Validation rejects
+  impossible cell geometry, too-large frame bounds, unsupported distributions,
+  and out-of-range integers before generating nodes.
+- Grid is centered cell repetition, staggered adds deterministic alternating row
+  offset, scatter samples within each cell using 32-bit wrapping integer
+  hashing. The seed affects scatter; it intentionally does not affect grid
+  alignment or fixed staggered rhythm.
+- Radial/spiral placement uses a frozen 17-sample quarter-wave sine lookup
+  scaled by 10,000, reflected to 64 integer phases. Runtime uses no
+  floating-point sin/cos, no global RNG and no additional renderer.
+  The seeded 32-bit hash rotates the phase; radial evenly spaces points
+  on an ellipse, while spiral grows radius from 1/count toward full extent.
+  Both reject fields narrower or shorter than twice object size. Every
+  generated node remains a semantic Canvas object, including circles.
+- Existing version-1 documents missing shape still generate square nodes
+  and retain exactly the prior UUIDs and golden grid/scatter coordinates.
+- Generated UUID = SHA-256 of `motionwright.procedural.v1\0`, the field UUID,
+  then the four-byte **little-endian** index, with version-8 and RFC variant
+  bits set. The same index retains its identity across seed/layout/count changes.
+- Optional entrance keys use the native-admitted synchronized Y/opacity grammar:
+  HOLD at frame 0, optional HOLD at `index × step`, then EASE_OUT_CUBIC
+  to the original Y position and 100% opacity at `start + duration`.
+  Initial Y is displaced +12 project pixels to create a visible SlideIn.
+  Rational time is canonicalized in 30fps fractions. Animated fields with
+  opacity below 100% fail closed, because Film cannot preserve terminal alpha.
+  The last key must remain inside the half-open scene interval; otherwise
+  the command fails before allocating any authored nodes.
+- With active BrandProfile governance, allowed accent colors constrain
+  both the declared procedural field fill and the current editable
+  node fills. Only exact rule, scene and policy-digest campaign
+  exceptions can authorize an alternative.
+- All generated items share one z-index, -32, rather than exceeding the
+  native Film limit of 32 distinct layer orders. Static alpha below 100%
+  remains editable but is explicitly rejected by native Film.
+- Rust and TypeScript independently implement this specification. Tests in both
+  languages assert identical expected coordinates and IDs for a 12-node seeded
+  fixture. The generator does not access global RNG, system time or cloud APIs.
+
+## Revision, human editing and source safety
+
+`upsert_procedural_field` and `detach_procedural_field` are existing project
+change transactions. The existing project/scene locks, generation/revision
+authority and persistent branch/undo structures remain authoritative.
+
+Updating a field uses its prior generated baseline to merge compatible
+per-property human changes. A conflicting human edit is never silently
+discarded. Adding items only appends a stable new index. Shrinking requires that
+the removed suffix is unmodified and unreferenced by any other node; otherwise
+the whole update fails. Deleting a generated node independently makes a
+subsequent generator update fail until the node is restored or generator detached.
+
+**Detach is intentionally non-destructive:** it removes the procedural generator
+link and retains all already generated Canvas nodes for manual authorship.
+
+The panel shows an explicitly labeled **editorial preview**, not a native
+renderer acceptance receipt.
+
+### CI-only native design evidence
+
+The pinned Semwright/Motion Canvas/MLT pipeline now authors three additional
+six-second 1920x1080 project fixtures: `procedural-static`,
+`procedural-motion` and `procedural-orbit` (radial circles with native entrances). Each uses the real Driver Host and produces H.264/AAC
+MP4 (synthetic distinct-channel stereo tones only, **not sound design**),
+180 native PNG frames, `editable-project.json` and portable
+`procedural.motionwright`. Import rotates the generation and rejects
+writes using the previous generation.
+
+`tooling/procedural_native_evidence.py` inspects original native frames at
+12 exact authored object positions, rejects blank/unchanged animated frames,
+detects missing static objects and produces a four-frame contact sheet.
+It independently decodes frames 0 and 120 from the **delivered MP4**.
+Existing decoded AV acceptance still requires motion by default, allowing
+non-moving video only when explicitly declared static, nonblank and stable.
+The MP4, pixel evidence and source are commit/digest-bound in a separate
+`procedural-native-<SHA>` GitHub Actions artifact.
+
+**This is a technical design test, not aesthetic approval.** The new CI
+work must pass for its exact commit; final creative review of the MP4 by a
+human remains required.
+
+## Current boundary
+
+This slice implements editable repetition, two-dimensional spatial distributions,
+and a bounded native-admitted Y/opacity OutCubic entrance sequence. **More expressive temporal fields,
+velocity/forces, 3D instancing, multishot orchestration, masks,
+GPU acceleration and independently reviewed native rendering fidelity
+remain out of scope.** Even when CI passes, MW05-E06-04 stays
+partially completed until the remaining families and real aesthetic QA are
+delivered. No accelerated GPU/CPU performance claim is implied by the object
+count limits.
+
+Tests: `crates/domain/tests/procedural_fields.rs`,
+`crates/native/tests/procedural_fields.rs`,
+`apps/studio/src/proceduralField.test.ts` and
+`apps/studio/tests/procedural-field.spec.ts`. Resource-heavy tests, native
+rendering and packaging run on GitHub Actions, not the author's workstation.
+
+The Semwright Native SDK application driver exposes typed, revision-bound `procedural-field.upsert` and `procedural-field.detach` operations. No parallel backend is added.
+
+Evidence modules: tooling/native_av_master_e2e.py,
+tooling/procedural_native_evidence.py,
+tooling/native_tests/test_procedural_native_evidence.py,
+tooling/tests/test_native_av_media_probe.py and
+.github/workflows/procedural-native-e2e.yml (standalone pinned
+procedural CI with an independent evidence artifact).
