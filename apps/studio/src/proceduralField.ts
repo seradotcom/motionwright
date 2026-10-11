@@ -3,9 +3,12 @@ import type { CanvasNode, Project } from "./types";
 import { mergeComponentNodes, sameValue } from "./creativeProduction";
 import type { ProductionDesign } from "./creativeProduction";
 
-export type FieldDistribution = "grid" | "staggered" | "scatter";
+export type FieldDistribution = "grid" | "staggered" | "scatter" | "radial" | "spiral";
+export type ProceduralShape = "square" | "circle";
 export interface ProceduralConfig {
   seed: number; count: number; columns: number; distribution: FieldDistribution;
+  /** Optional on legacy version-1 projects, default square. */
+  shape?: ProceduralShape;
   origin_x: number; origin_y: number; area_width: number; area_height: number;
   size: number; opacity_percent: number; fill: string;
   reveal_step_frames: number; reveal_duration_frames: number;
@@ -15,7 +18,7 @@ export interface ProceduralFieldInstance {
   config: ProceduralConfig; baseline: CanvasNode[];
 }
 export const defaultProceduralConfig=():ProceduralConfig=>({
-  seed:41,count:12,columns:4,distribution:"scatter",
+  seed:41,count:12,columns:4,distribution:"scatter",shape:"square",
   origin_x:180,origin_y:170,area_width:900,area_height:560,
   size:32,opacity_percent:100,fill:"#A5C8DF",
   reveal_step_frames:0,reveal_duration_frames:12,
@@ -24,7 +27,7 @@ const hex=/^#[0-9a-f]{6}$/i;
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 /** Retain the meaning of version-1 non-sequenced field documents. */
 export function normalizedProceduralConfig(c:ProceduralConfig):ProceduralConfig {
-  return {...c,reveal_step_frames:c.reveal_step_frames??0,reveal_duration_frames:c.reveal_duration_frames??12};
+  return {...c,shape:c.shape??"square",reveal_step_frames:c.reveal_step_frames??0,reveal_duration_frames:c.reveal_duration_frames??12};
 }
 export function validateProceduralConfig(input:ProceduralConfig):void {
   const c=normalizedProceduralConfig(input);
@@ -35,13 +38,17 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
     c.size<4 || c.size>128 || c.opacity_percent<1 || c.opacity_percent>100 ||
     (c.reveal_step_frames>0 && c.opacity_percent!==100) ||
     c.reveal_step_frames<0 || c.reveal_step_frames>10 || c.reveal_duration_frames<1 || c.reveal_duration_frames>60 ||
-    !hex.test(c.fill) || !["grid","staggered","scatter"].includes(c.distribution)) {
+    !hex.test(c.fill) || !["grid","staggered","scatter","radial","spiral"].includes(c.distribution) ||
+    !["square","circle"].includes(c.shape??"square")) {
     throw new Error("Procedural item, style or CPU budget exceeded.");
   }
   if(c.origin_x+c.area_width>1920 || c.origin_y+c.area_height>1080)
     throw new Error("Procedural field exceeds 1920x1080 authored stage.");
   const columns=Math.min(c.columns,c.count), rows=Math.ceil(c.count/columns);
-  if(Math.floor(c.area_width/columns)<c.size || Math.floor(c.area_height/rows)<c.size)
+  if(c.distribution==="radial" || c.distribution==="spiral"){
+    if(c.area_width<c.size*2 || c.area_height<c.size*2)
+      throw new Error("Procedural orbit requires a field at least twice the item size.");
+  }else if(Math.floor(c.area_width/columns)<c.size || Math.floor(c.area_height/rows)<c.size)
     throw new Error("Procedural item does not fit its bounded cell.");
 }
 export function proceduralHash(seed:number,index:number,salt:number):number {
@@ -49,6 +56,24 @@ export function proceduralHash(seed:number,index:number,salt:number):number {
   v^=v>>>16;v=Math.imul(v,0x7feb352d)>>>0;
   v^=v>>>15;v=Math.imul(v,0x846ca68b)>>>0;
   return (v^(v>>>16))>>>0;
+}
+/** Immutable Q1 sine lookup. Same integer table/symmetry as the Rust generator. */
+const quarterSine64=[0,980,1951,2903,3827,4714,5556,6344,7071,7730,8315,8819,9239,9569,9808,9952,10000] as const;
+export function sine64(phase:number):number {
+  const p=phase%64;
+  if(p<=16)return quarterSine64[p];
+  if(p<=32)return quarterSine64[32-p];
+  if(p<=48)return -quarterSine64[p-32];
+  return -quarterSine64[64-p];
+}
+function orbitPosition(index:number,c:ProceduralConfig):{x:number;y:number}{
+  const phase=(Math.floor(index*64/c.count)+proceduralHash(c.seed,0,0x7c3e8a71)%64)%64;
+  const rx=Math.floor((c.area_width-c.size)/2),ry=Math.floor((c.area_height-c.size)/2);
+  const fraction=c.distribution==="spiral"?index+1:c.count;
+  return {
+    x:c.origin_x+rx+Math.trunc(rx*fraction*sine64(phase+16)/(10000*c.count)),
+    y:c.origin_y+ry+Math.trunc(ry*fraction*sine64(phase)/(10000*c.count)),
+  };
 }
 function frameTime(frames:number):{num:string;den:string}{
   let a=frames,b=30;
@@ -79,21 +104,26 @@ export async function realizeProceduralField(id:string,input:ProceduralConfig):P
   const cellW=Math.floor(c.area_width/columns),cellH=Math.floor(c.area_height/rows);
   const nodes:CanvasNode[]=[];
   for(let index=0;index<c.count;index++){
-    const col=index%columns,row=Math.floor(index/columns);
-    const freeX=cellW-c.size,freeY=cellH-c.size;
-    let dx=Math.floor(freeX/2),dy=Math.floor(freeY/2);
-    if(c.distribution==="staggered"){
-      const quarter=Math.floor(freeX/4);
-      dx=row%2===0?dx+quarter:dx-quarter;
-    }else if(c.distribution==="scatter"){
-      dx=proceduralHash(c.seed,index,0x71a5029b)%(freeX+1);
-      dy=proceduralHash(c.seed,index,0xda39c617)%(freeY+1);
+    let x:number,y:number;
+    if(c.distribution==="radial" || c.distribution==="spiral"){
+      ({x,y}=orbitPosition(index,c));
+    }else{
+      const col=index%columns,row=Math.floor(index/columns);
+      const freeX=cellW-c.size,freeY=cellH-c.size;
+      let dx=Math.floor(freeX/2),dy=Math.floor(freeY/2);
+      if(c.distribution==="staggered"){
+        const quarter=Math.floor(freeX/4);
+        dx=row%2===0?dx+quarter:dx-quarter;
+      }else if(c.distribution==="scatter"){
+        dx=proceduralHash(c.seed,index,0x71a5029b)%(freeX+1);
+        dy=proceduralHash(c.seed,index,0xda39c617)%(freeY+1);
+      }
+      x=c.origin_x+col*cellW+dx;y=c.origin_y+row*cellH+dy;
     }
-    const x=c.origin_x+col*cellW+dx,y=c.origin_y+row*cellH+dy;
     nodes.push({
       id:await proceduralNodeId(id,index),
       name:`ProceduralField / item ${String(index).padStart(3,"0")}`,
-      kind:"rectangle",parent_id:null,
+      kind:c.shape==="circle"?"circle":"rectangle",parent_id:null,
       x,y,
       width:c.size,height:c.size,rotation_deg:0,opacity:c.opacity_percent/100,text:null,
       coordinate_space:"project_pixels",z_index:-32,

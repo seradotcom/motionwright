@@ -353,3 +353,156 @@ fn brand_palette_applies_to_procedural_configuration_and_human_nodes() {
     );
     p.validate().unwrap();
 }
+
+#[test]
+fn orbit_and_spiral_share_identity_and_match_fixed_point_golden_layout() {
+    let config = ProceduralConfig {
+        distribution: FieldDistribution::Radial,
+        shape: ProceduralShape::Circle,
+        ..Default::default()
+    };
+    let nodes = realize_procedural_field(instance_id(), &config).unwrap();
+    let golden = vec![
+        (889, 638),
+        (698, 692),
+        (489, 686),
+        (279, 601),
+        (189, 485),
+        (199, 358),
+        (339, 230),
+        (530, 176),
+        (739, 182),
+        (949, 267),
+        (1039, 383),
+        (1029, 510),
+    ];
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|n| (n.x as u32, n.y as u32))
+            .collect::<Vec<_>>(),
+        golden
+    );
+    assert!(nodes.iter().all(|n| n.kind == "circle"
+        && n.x >= 180.0
+        && n.y >= 170.0
+        && n.x + n.width <= 1080.0
+        && n.y + n.height <= 730.0));
+    let spiral = ProceduralConfig {
+        distribution: FieldDistribution::Spiral,
+        ..config.clone()
+    };
+    let spiral_nodes = realize_procedural_field(instance_id(), &spiral).unwrap();
+    let spiral_golden = vec![
+        (636, 451),
+        (628, 477),
+        (583, 497),
+        (503, 489),
+        (437, 455),
+        (407, 396),
+        (454, 315),
+        (558, 262),
+        (708, 245),
+        (893, 295),
+        (1004, 387),
+        (1029, 510),
+    ];
+    assert_eq!(
+        spiral_nodes
+            .iter()
+            .map(|n| (n.x as u32, n.y as u32))
+            .collect::<Vec<_>>(),
+        spiral_golden
+    );
+    assert_eq!(
+        nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
+        spiral_nodes.iter().map(|n| n.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn orbit_budget_and_legacy_square_decoding_fail_closed() {
+    for distribution in [FieldDistribution::Radial, FieldDistribution::Spiral] {
+        let invalid = ProceduralConfig {
+            distribution,
+            count: 32,
+            area_width: 80,
+            size: 60,
+            ..Default::default()
+        };
+        assert!(
+            realize_procedural_field(instance_id(), &invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("orbit")
+        );
+    }
+    let old_json = serde_json::json!({
+        "seed":41,"count":12,"columns":4,"distribution":"scatter",
+        "origin_x":180,"origin_y":170,"area_width":900,"area_height":560,
+        "size":32,"opacity_percent":100,"fill":"#A5C8DF",
+        "reveal_step_frames":0,"reveal_duration_frames":12,
+    });
+    let restored: ProceduralConfig = serde_json::from_value(old_json).unwrap();
+    assert_eq!(restored.shape, ProceduralShape::Square);
+    assert_eq!(
+        realize_procedural_field(instance_id(), &restored).unwrap(),
+        realize_procedural_field(instance_id(), &ProceduralConfig::default()).unwrap()
+    );
+}
+#[test]
+fn circle_orbit_mutation_keeps_human_override_and_updates_kind() {
+    let mut p = project();
+    upsert(&mut p, ProceduralConfig::default()).unwrap();
+    let id = procedural_node_id(instance_id(), 1);
+    let mut style = p.scenes[0].nodes[1].style.clone();
+    style.fill = Some("#E4A621".into());
+    p.apply_change(&Change::UpdateCanvasStyle {
+        scene_id: p.scenes[0].id,
+        node_id: id,
+        style,
+    })
+    .unwrap();
+    let next = ProceduralConfig {
+        distribution: FieldDistribution::Radial,
+        shape: ProceduralShape::Circle,
+        ..Default::default()
+    };
+    upsert(&mut p, next).unwrap();
+    assert_eq!(p.scenes[0].nodes.len(), 12);
+    assert!(p.scenes[0].nodes.iter().all(|n| n.kind == "circle"));
+    assert_eq!(p.scenes[0].nodes[1].style.fill.as_deref(), Some("#E4A621"));
+    p.validate().unwrap();
+}
+
+#[test]
+fn bounded_orbits_retain_all_nodes_and_stage_boundaries_across_seed_extremes() {
+    let id = instance_id();
+    for distribution in [FieldDistribution::Radial, FieldDistribution::Spiral] {
+        for seed in [0, 1, 41, 0xffff_ffff] {
+            for count in [1, 2, 3, 12, 31, 63, 64] {
+                let config = ProceduralConfig {
+                    seed,
+                    distribution,
+                    count,
+                    columns: 16,
+                    shape: ProceduralShape::Circle,
+                    ..Default::default()
+                };
+                let nodes = realize_procedural_field(id, &config).unwrap();
+                let repeat = realize_procedural_field(id, &config).unwrap();
+                assert_eq!(nodes, repeat);
+                assert_eq!(nodes.len(), usize::from(count));
+                let all_ids: std::collections::BTreeSet<_> = nodes.iter().map(|n| n.id).collect();
+                assert_eq!(all_ids.len(), usize::from(count));
+                assert!(nodes.iter().all(|node| node.x >= f64::from(config.origin_x)
+                    && node.y >= f64::from(config.origin_y)
+                    && node.x + node.width
+                        <= f64::from(config.origin_x) + f64::from(config.area_width)
+                    && node.y + node.height
+                        <= f64::from(config.origin_y) + f64::from(config.area_height)
+                    && node.kind == "circle"));
+            }
+        }
+    }
+}

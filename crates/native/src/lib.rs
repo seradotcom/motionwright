@@ -2207,7 +2207,8 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                                 "seed":{"type":"integer","minimum":0,"maximum":4294967295u64},
                                 "count":{"type":"integer","minimum":1,"maximum":64},
                                 "columns":{"type":"integer","minimum":1,"maximum":16},
-                                "distribution":{"type":"string","enum":["grid","staggered","scatter"]},
+                                "distribution":{"type":"string","enum":["grid","staggered","scatter","radial","spiral"]},
+                                "shape":{"type":"string","enum":["square","circle"]},
                                 "origin_x":{"type":"integer","minimum":0,"maximum":1920},
                                 "origin_y":{"type":"integer","minimum":0,"maximum":1080},
                                 "area_width":{"type":"integer","minimum":0,"maximum":1920},
@@ -2569,6 +2570,15 @@ mod tests {
             change_from_args(OperationKind::UpsertProceduralField, &arguments).unwrap(),
             Change::UpsertProceduralField { .. }
         ));
+        arguments["config"]["distribution"] = json!("spiral");
+        arguments["config"]["shape"] = json!("circle");
+        assert!(matches!(
+            change_from_args(OperationKind::UpsertProceduralField, &arguments).unwrap(),
+            Change::UpsertProceduralField { .. }
+        ));
+        arguments["config"]["shape"] = json!("unknown_shader");
+        assert!(change_from_args(OperationKind::UpsertProceduralField, &arguments).is_err());
+        arguments["config"]["shape"] = json!("circle");
         let config = arguments["config"].as_object_mut().unwrap();
         config.insert("arbitrary_code".into(), json!("untrusted expression"));
         assert!(change_from_args(OperationKind::UpsertProceduralField, &arguments).is_err());

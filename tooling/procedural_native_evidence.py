@@ -78,9 +78,18 @@ def inspect_procedural_frames(
         raise AssertionError("Procedural project has missing/renamed authored objects")
     if len({node["id"] for node in nodes}) != 12:
         raise AssertionError("Procedural IDs are not unique")
-    animated = seed["fixture"] == "procedural-field-motion/1"
+    mode = seed["fixture"]
+    if mode not in {"procedural-field-static/1", "procedural-field-motion/1", "procedural-field-orbit/1"}:
+        raise AssertionError("Unknown procedural fixture identity")
+    animated = mode != "procedural-field-static/1"
     if animated != bool(field["config"]["reveal_step_frames"]):
         raise AssertionError("Native fixture animation declaration is inconsistent")
+    if mode == "procedural-field-orbit/1" and (
+        field["config"].get("distribution") != "radial"
+        or field["config"].get("shape") != "circle"
+        or any(node["kind"] != "circle" for node in nodes)
+    ):
+        raise AssertionError("Native orbit is not authored as radial Canvas circles")
     size = (seed["width"], seed["height"])
     selected = (frames[0], frames[30], frames[90], frames[179])
     metrics = [visible_centers(frame, nodes, size) for frame in selected]
@@ -143,7 +152,7 @@ def inspect_procedural_mp4(
         dimensions = (seed["width"], seed["height"])
         first = visible_centers(images[0], nodes, dimensions)
         later = visible_centers(images[1], nodes, dimensions)
-    is_animated = seed["fixture"] == "procedural-field-motion/1"
+    is_animated = bool(project["production_design"]["procedural_fields"][0]["config"]["reveal_step_frames"])
     if later["visible_count"] < len(nodes) - 1:
         raise AssertionError("Decoded MP4 lost procedural final visible objects")
     if is_animated:

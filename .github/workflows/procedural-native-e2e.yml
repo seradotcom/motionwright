@@ -156,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p verification/procedural-field-e2e
-          for mode in procedural-static procedural-motion; do
+          for mode in procedural-static procedural-motion procedural-orbit; do
             MOTIONWRIGHT_E2E_FIXTURE="$mode" python3 tooling/native_av_master_e2e.py |
               tee "verification/procedural-field-e2e/$mode.log"
           done
@@ -168,7 +168,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path("verification/procedural-field-e2e") / os.environ["GITHUB_SHA"]
-          for mode in ("procedural-static", "procedural-motion"):
+          for mode in ("procedural-static", "procedural-motion", "procedural-orbit"):
               folder = root / mode
               result = json.loads((folder / "result.json").read_text())
               inspection = json.loads((folder / "procedural-native-inspection.json").read_text())

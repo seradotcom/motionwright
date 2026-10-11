@@ -13,6 +13,17 @@ pub enum FieldDistribution {
     Grid,
     Staggered,
     Scatter,
+    /// Equally distributed phase samples on a bounded elliptic perimeter.
+    Radial,
+    /// Progressive radial growth with the same bounded elliptic phase samples.
+    Spiral,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProceduralShape {
+    #[default]
+    Square,
+    Circle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +33,9 @@ pub struct ProceduralConfig {
     pub count: u16,
     pub columns: u8,
     pub distribution: FieldDistribution,
+    /// Absent in v1 authoring documents: legacy default is a square.
+    #[serde(default)]
+    pub shape: ProceduralShape,
     pub origin_x: u16,
     pub origin_y: u16,
     pub area_width: u16,
@@ -45,6 +59,7 @@ impl Default for ProceduralConfig {
             count: 12,
             columns: 4,
             distribution: FieldDistribution::Scatter,
+            shape: ProceduralShape::Square,
             origin_x: 180,
             origin_y: 170,
             area_width: 900,
@@ -88,7 +103,18 @@ impl ProceduralConfig {
         }
         let columns = u32::from(self.columns).min(u32::from(self.count));
         let rows = u32::from(self.count).div_ceil(columns);
-        if u32::from(self.area_width) / columns < u32::from(self.size)
+        if matches!(
+            self.distribution,
+            FieldDistribution::Radial | FieldDistribution::Spiral
+        ) {
+            if u32::from(self.area_width) < u32::from(self.size) * 2
+                || u32::from(self.area_height) < u32::from(self.size) * 2
+            {
+                return Err(DomainError::Invalid(
+                    "procedural orbit requires a field at least twice the item size".into(),
+                ));
+            }
+        } else if u32::from(self.area_width) / columns < u32::from(self.size)
             || u32::from(self.area_height) / rows < u32::from(self.size)
         {
             return Err(DomainError::Invalid(
@@ -121,6 +147,46 @@ pub fn procedural_node_id(id: Uuid, index: u32) -> Uuid {
     result[8] = (result[8] & 0x3f) | 0x80;
     Uuid::from_bytes(result)
 }
+/// An immutable fixed-point quarter-sine table, scaled by 10_000.
+/// Computed once at design time. Runtime placement never uses floating-point
+/// trigonometry, host RNG or locale-sensitive math, and is identical in JS.
+const QUARTER_SINE_64: [i32; 17] = [
+    0, 980, 1951, 2903, 3827, 4714, 5556, 6344, 7071, 7730, 8315, 8819, 9239, 9569, 9808, 9952,
+    10_000,
+];
+fn sine_64(phase: u32) -> i32 {
+    let phase = (phase % 64) as usize;
+    match phase {
+        0..=16 => QUARTER_SINE_64[phase],
+        17..=32 => QUARTER_SINE_64[32 - phase],
+        33..=48 => -QUARTER_SINE_64[phase - 32],
+        _ => -QUARTER_SINE_64[64 - phase],
+    }
+}
+
+/// Elliptic radius always fits inside configured stage bounds.
+/// All arithmetic is bounded signed integer; Rust division truncates toward 0,
+/// matching Math.trunc in the independent TypeScript realization.
+fn orbit_position(index: u32, config: &ProceduralConfig) -> (u32, u32) {
+    let count = u32::from(config.count);
+    let step = (index * 64 / count + procedural_hash(config.seed, 0, 0x7c3e_8a71) % 64) % 64;
+    let radius_x = i64::from((u32::from(config.area_width) - u32::from(config.size)) / 2);
+    let radius_y = i64::from((u32::from(config.area_height) - u32::from(config.size)) / 2);
+    let fraction = if config.distribution == FieldDistribution::Spiral {
+        index + 1
+    } else {
+        count
+    };
+    let center_x = i64::from(config.origin_x) + radius_x;
+    let center_y = i64::from(config.origin_y) + radius_y;
+    let x = center_x
+        + radius_x * i64::from(fraction) * i64::from(sine_64(step + 16))
+            / (10_000 * i64::from(count));
+    let y = center_y
+        + radius_y * i64::from(fraction) * i64::from(sine_64(step)) / (10_000 * i64::from(count));
+    (x as u32, y as u32)
+}
+
 /// Generates real, individually editable native Canvas nodes.
 pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<Vec<CanvasNode>> {
     config.validate()?; // all limits checked before creating any nodes
@@ -131,35 +197,49 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
     let size = u32::from(config.size);
     let mut nodes = Vec::with_capacity(usize::from(config.count));
     for index in 0..u32::from(config.count) {
-        let col = index % columns;
-        let row = index / columns;
-        let free_x = cell_w - size;
-        let free_y = cell_h - size;
-        let (dx, dy) = match config.distribution {
-            FieldDistribution::Grid => (free_x / 2, free_y / 2),
-            FieldDistribution::Staggered => {
-                let quarter = free_x / 4;
-                let mid = free_x / 2;
-                (
-                    if row % 2 == 0 {
-                        mid + quarter
-                    } else {
-                        mid - quarter
-                    },
-                    free_y / 2,
-                )
-            }
-            FieldDistribution::Scatter => (
-                procedural_hash(config.seed, index, 0x71a5_029b) % (free_x + 1),
-                procedural_hash(config.seed, index, 0xda39_c617) % (free_y + 1),
-            ),
+        let (x, y) = if matches!(
+            config.distribution,
+            FieldDistribution::Radial | FieldDistribution::Spiral
+        ) {
+            orbit_position(index, config)
+        } else {
+            let col = index % columns;
+            let row = index / columns;
+            let free_x = cell_w - size;
+            let free_y = cell_h - size;
+            let (dx, dy) = match config.distribution {
+                FieldDistribution::Grid => (free_x / 2, free_y / 2),
+                FieldDistribution::Staggered => {
+                    let quarter = free_x / 4;
+                    let mid = free_x / 2;
+                    (
+                        if row % 2 == 0 {
+                            mid + quarter
+                        } else {
+                            mid - quarter
+                        },
+                        free_y / 2,
+                    )
+                }
+                FieldDistribution::Scatter => (
+                    procedural_hash(config.seed, index, 0x71a5_029b) % (free_x + 1),
+                    procedural_hash(config.seed, index, 0xda39_c617) % (free_y + 1),
+                ),
+                FieldDistribution::Radial | FieldDistribution::Spiral => unreachable!(),
+            };
+            (
+                u32::from(config.origin_x) + col * cell_w + dx,
+                u32::from(config.origin_y) + row * cell_h + dy,
+            )
         };
-        let x = u32::from(config.origin_x) + col * cell_w + dx;
-        let y = u32::from(config.origin_y) + row * cell_h + dy;
         let node = CanvasNode {
             id: procedural_node_id(id, index),
             name: format!("ProceduralField / item {index:03}"),
-            kind: "rectangle".into(),
+            kind: match config.shape {
+                ProceduralShape::Square => "rectangle",
+                ProceduralShape::Circle => "circle",
+            }
+            .into(),
             parent_id: None,
             x: f64::from(x),
             y: f64::from(y),

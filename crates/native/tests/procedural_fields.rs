@@ -88,3 +88,32 @@ fn unsupported_partial_final_alpha_is_explicitly_rejected_not_baked() {
     let err = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
     assert!(err.message.contains("rotation/opacity state"));
 }
+
+#[test]
+fn native_radial_circles_preserve_unique_semantic_subjects_and_motion() {
+    for distribution in [FieldDistribution::Radial, FieldDistribution::Spiral] {
+        let (p, options) = project(ProceduralConfig {
+            shape: ProceduralShape::Circle,
+            distribution,
+            reveal_step_frames: 6,
+            reveal_duration_frames: 18,
+            ..Default::default()
+        });
+        let projected = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+        let shot = &projected[0].film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.subjects.len(), 12);
+        assert_eq!(shot.layers.len(), 1);
+        assert_eq!(shot.motion.len(), 12);
+        assert!(
+            shot.subjects
+                .iter()
+                .all(|item| item.role == "circle" && !item.initially_visible)
+        );
+        assert!(
+            shot.motion
+                .iter()
+                .all(|motion| matches!(motion.primitive, Primitive::SlideIn { .. }))
+        );
+        assert!(realize(&projected[0].film).is_ok());
+    }
+}

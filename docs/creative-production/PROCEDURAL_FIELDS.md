@@ -6,11 +6,11 @@ generated SVG/video, extra renderer, scheduler, Core or Platform dependency.
 ## Contract and deterministic implementation
 
 The versioned `ProceduralConfig` defines an integer `seed`, `count`, `columns`,
-`distribution` (`grid`, `staggered`, `scatter`), origin, extent, square size,
+`distribution` (`grid`, `staggered`, `scatter`, `radial`, `spiral`), origin, extent, object size, optional `shape` (`square` / `circle`, legacy default square),
 opacity percentage, #RRGGBB fill, and optional 30-fps synchronized Y/opacity entrance sequencing
 (`reveal_step_frames` 0–10; 0 disables, `reveal_duration_frames` 1–60).
 Every generated item is a real, persistent,
-separately editable Canvas `rectangle` with a stable UUID, a source baseline,
+separately editable Canvas `rectangle` or `circle` with a stable UUID, a source baseline,
 style, z-index and coordinate-space metadata.
 
 - The authored stage is 1920 × 1080 project pixels; all generated squares remain
@@ -25,6 +25,15 @@ style, z-index and coordinate-space metadata.
   offset, scatter samples within each cell using 32-bit wrapping integer
   hashing. The seed affects scatter; it intentionally does not affect grid
   alignment or fixed staggered rhythm.
+- Radial/spiral placement uses a frozen 17-sample quarter-wave sine lookup
+  scaled by 10,000, reflected to 64 integer phases. Runtime uses no
+  floating-point sin/cos, no global RNG and no additional renderer.
+  The seeded 32-bit hash rotates the phase; radial evenly spaces points
+  on an ellipse, while spiral grows radius from 1/count toward full extent.
+  Both reject fields narrower or shorter than twice object size. Every
+  generated node remains a semantic Canvas object, including circles.
+- Existing version-1 documents missing shape still generate square nodes
+  and retain exactly the prior UUIDs and golden grid/scatter coordinates.
 - Generated UUID = SHA-256 of `motionwright.procedural.v1\0`, the field UUID,
   then the four-byte **little-endian** index, with version-8 and RFC variant
   bits set. The same index retains its identity across seed/layout/count changes.
@@ -68,9 +77,9 @@ renderer acceptance receipt.
 
 ### CI-only native design evidence
 
-The pinned Semwright/Motion Canvas/MLT pipeline now authors two additional
-six-second 1920x1080 project fixtures: `procedural-static` and
-`procedural-motion`. Each uses the real Driver Host and produces H.264/AAC
+The pinned Semwright/Motion Canvas/MLT pipeline now authors three additional
+six-second 1920x1080 project fixtures: `procedural-static`,
+`procedural-motion` and `procedural-orbit` (radial circles with native entrances). Each uses the real Driver Host and produces H.264/AAC
 MP4 (synthetic distinct-channel stereo tones only, **not sound design**),
 180 native PNG frames, `editable-project.json` and portable
 `procedural.motionwright`. Import rotates the generation and rejects

@@ -347,8 +347,8 @@
     {
       "id": "MW05-E06-04",
       "implementation": "partial",
-      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E; honors BrandProfile palettes and per-scene exceptions",
-      "remaining_scope": "Actual procedural MP4 and pixel-evidence CI must pass for the exact HEAD, human creative review is outstanding; richer temporal fields, native performance benchmarking and additional procedural families remain open",
+      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E; honors BrandProfile palettes and per-scene exceptions; deterministic integer radial/spiral distributions and Circle primitive with legacy migration, 56-configuration bounds tests, third native 180-frame orbital-circle proof",
+      "remaining_scope": "Native orbit master requires exact-HEAD CI pass and human creative review; advanced temporal fields, custom masks/forces, 3D instancing and independent performance benchmarks remain open",
       "source_paths": [
         "crates/domain/src/procedural.rs",
         "crates/domain/tests/procedural_fields.rs",

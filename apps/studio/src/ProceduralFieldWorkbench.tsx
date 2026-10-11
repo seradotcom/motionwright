@@ -16,7 +16,7 @@ const dimensions=[
   ["origin_y","Stage Y",0,1080],
   ["area_width","Field width",1,1920],
   ["area_height","Field height",1,1080],
-  ["size","Square size",4,128],
+  ["size","Object size",4,128],
   ["opacity_percent","Opacity (%) · Native Film requires 100",1,100],
   ["reveal_step_frames","Entrance interval (frames; 0 disables)",0,10],
   ["reveal_duration_frames","Entrance fade length (frames)",1,60],
@@ -70,8 +70,8 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
     <div className="production-section-title">
       <div><h2>Procedural field / repetition</h2><p>Seeded Canvas objects, not a baked texture or remote generative model.</p></div>
     </div>
-    <p className="production-help">Every square is an independently editable Canvas node.
-      Grid and staggered patterns use fixed geometry; Scatter uses a fully specified 32-bit seeded distribution.
+    <p className="production-help">Every object is a separately editable Canvas square or circle.
+      Grid/staggered, seeded scatter, fixed-point radial and progressive spiral layouts share stable IDs.
       Up to 64 nodes per field, 16 fields per project and one attached field per scene.</p>
     {!scene && <p role="status">Choose a working scene to author a field.</p>}
     {stale && <div className="production-notice" role="status">
@@ -86,6 +86,15 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
           <option value="grid">Grid / precise rhythm</option>
           <option value="staggered">Staggered / repeated offset</option>
           <option value="scatter">Scatter / seeded displacement</option>
+          <option value="radial">Radial / elliptic orbit</option>
+          <option value="spiral">Spiral / progressive orbit</option>
+        </select>
+      </label>
+      <label className="production-field"><span>Primitive</span>
+        <select aria-label="Procedural primitive" value={draft.shape??"square"}
+          onChange={e=>setDraft(v=>({...v,shape:e.target.value as NonNullable<ProceduralConfig["shape"]>}))}>
+          <option value="square">Square</option>
+          <option value="circle">Circle</option>
         </select>
       </label>
       <label className="production-field"><span>Fill (#RRGGBB)</span>

@@ -144,3 +144,55 @@ describe("governed procedural authoring",()=>{
     expect(p.production_design?.brand_exceptions?.[0].scene_id).toBe(p.scenes[0].id);
   });
 });
+
+
+describe("procedural orbit and shape conformance",()=>{
+  const goldenRadial=[
+    [889,638],[698,692],[489,686],[279,601],[189,485],[199,358],
+    [339,230],[530,176],[739,182],[949,267],[1039,383],[1029,510],
+  ];
+  const goldenSpiral=[
+    [636,451],[628,477],[583,497],[503,489],[437,455],[407,396],
+    [454,315],[558,262],[708,245],[893,295],[1004,387],[1029,510],
+  ];
+  it("matches fixed-point Rust golden positions and stable circle identities",async()=>{
+    const config={...defaultProceduralConfig(),distribution:"radial" as const,shape:"circle" as const};
+    const radial=await realizeProceduralField(ID,config);
+    expect(radial.map(n=>[n.x,n.y])).toEqual(goldenRadial);
+    expect(radial.every(n=>n.kind==="circle")).toBe(true);
+    const spiral=await realizeProceduralField(ID,{...config,distribution:"spiral"});
+    expect(spiral.map(n=>[n.x,n.y])).toEqual(goldenSpiral);
+    expect(spiral.map(n=>n.id)).toEqual(radial.map(n=>n.id));
+  });
+  it("changes from square to circle without clobbering human style",async()=>{
+    let p=await upsert(project());
+    const selected=p.scenes[0].nodes[1];
+    p=await applyChange(p,{type:"update_canvas_style",scene_id:p.scenes[0].id,
+      node_id:selected.id,style:{...selected.style,fill:"#E4A621"}});
+    p=await upsert(p,{...defaultProceduralConfig(),distribution:"radial",shape:"circle"});
+    expect(p.scenes[0].nodes.every(n=>n.kind==="circle")).toBe(true);
+    expect(p.scenes[0].nodes[1].style.fill).toBe("#E4A621");
+    expect(p.scenes[0].nodes[1].id).toBe(selected.id);
+  });
+  it("preserves bounded scene geometry and unique IDs at all count and seed extremes",async()=>{
+    for(const distribution of ["radial","spiral"] as const)
+      for(const seed of [0,1,41,4294967295])
+        for(const count of [1,2,3,12,31,63,64]){
+          const config={...defaultProceduralConfig(),distribution,seed,count,columns:16,shape:"circle" as const};
+          const nodes=await realizeProceduralField(ID,config);
+          expect(nodes).toHaveLength(count);
+          expect(new Set(nodes.map(n=>n.id)).size).toBe(count);
+          expect(nodes.every(n=>n.x>=config.origin_x && n.y>=config.origin_y &&
+            n.x+n.width<=config.origin_x+config.area_width &&
+            n.y+n.height<=config.origin_y+config.area_height && n.kind==="circle")).toBe(true);
+        }
+  });
+  it("rejects unbounded or forged orbit and decodes legacy unshaped squares",async()=>{
+    for(const distribution of ["radial","spiral"] as const)
+      await expect(realizeProceduralField(ID,{...defaultProceduralConfig(),
+        distribution,area_width:80,size:60})).rejects.toThrow(/orbit/);
+    const old=structuredClone(defaultProceduralConfig());
+    delete old.shape;
+    expect(await realizeProceduralField(ID,old)).toEqual(await realizeProceduralField(ID,defaultProceduralConfig()));
+  });
+});

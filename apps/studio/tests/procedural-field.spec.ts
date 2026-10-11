@@ -34,3 +34,24 @@ test("Production procedural designer creates and revises real editable Canvas ob
   await page.getByRole("button",{name:"Edit individual objects"}).click();
   await expect(page.getByRole("button",{name:"Canvas object ProceduralField / item 000",exact:true})).toBeVisible();
 });
+
+test("Production procedural circles and orbital layouts remain editable",async({page},testInfo)=>{
+  await page.goto("/");
+  await page.getByRole("button",{name:"Add scene",exact:true}).click();
+  await page.getByLabel("New scene name").fill("Orbital design study");
+  await page.getByRole("button",{name:"Add",exact:true}).click();
+  await page.getByRole("button",{name:"Production",exact:true}).click();
+  await page.getByLabel("Production working scene").selectOption({label:"Orbital design study"});
+  await page.getByRole("button",{name:"Procedural",exact:true}).click();
+  await page.getByLabel("Procedural primitive").selectOption("circle");
+  await page.getByLabel("Procedural distribution").selectOption("radial");
+  await expect(page.getByRole("img",{name:/Procedural editorial preview, radial distribution, 12 editable objects/})).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath("procedural-circle-radial.png"),fullPage:true});
+  await page.getByRole("button",{name:"Add procedural field"}).click();
+  await expect(page.getByRole("button",{name:"Update procedural field"})).toBeVisible();
+  await page.getByLabel("Procedural distribution").selectOption("spiral");
+  await expect(page.getByRole("img",{name:/Procedural editorial preview, spiral distribution, 12 editable objects/})).toBeVisible();
+  await page.getByRole("button",{name:"Update procedural field"}).click();
+  await page.getByRole("button",{name:"Edit individual objects"}).click();
+  await expect(page.getByRole("button",{name:"Canvas object ProceduralField / item 000",exact:true})).toBeVisible();
+});

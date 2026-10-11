@@ -36,7 +36,7 @@ HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (
                 "split-square": (1080, 1080),
                 "metric-landscape": (1920, 1080), "metric-portrait": (1080, 1920),
                 "metric-square": (1080, 1080)}
-PROCEDURAL_MODES = {"procedural-static", "procedural-motion"}
+PROCEDURAL_MODES = {"procedural-static", "procedural-motion", "procedural-orbit"}
 if FIXTURE not in {"baseline", *HERO_ASPECTS, *PROCEDURAL_MODES}:
     raise SystemExit("unknown bounded E2E fixture")
 IS_PROCEDURAL = FIXTURE in PROCEDURAL_MODES

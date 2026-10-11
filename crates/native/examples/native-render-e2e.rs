@@ -754,9 +754,10 @@ fn seed_procedural(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let animated = match mode {
         "static" => false,
-        "motion" => true,
-        _ => return Err("procedural fixture mode must be static or motion".into()),
+        "motion" | "orbit" => true,
+        _ => return Err("procedural fixture mode must be static, motion or orbit".into()),
     };
+    let orbit = mode == "orbit";
     let service = StudioService::open(database)?;
     if !service.projects(2)?.is_empty() {
         return Err("procedural native fixture requires empty database".into());
@@ -779,7 +780,16 @@ fn seed_procedural(
         seed: 41,
         count: 12,
         columns: 4,
-        distribution: motionwright_domain::FieldDistribution::Scatter,
+        distribution: if orbit {
+            motionwright_domain::FieldDistribution::Radial
+        } else {
+            motionwright_domain::FieldDistribution::Scatter
+        },
+        shape: if orbit {
+            motionwright_domain::ProceduralShape::Circle
+        } else {
+            motionwright_domain::ProceduralShape::Square
+        },
         origin_x: 260,
         origin_y: 180,
         area_width: 1240,
@@ -841,7 +851,7 @@ fn seed_procedural(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "fixture": if animated { "procedural-field-motion/1" } else { "procedural-field-static/1" },
+            "fixture": if orbit { "procedural-field-orbit/1" } else if animated { "procedural-field-motion/1" } else { "procedural-field-static/1" },
             "project_id": project.id, "resource": project.resource_key(),
             "generation": project.generation, "revision": project.revision,
             "scene_id": scene_id, "deliverable_id": deliverable.id,
