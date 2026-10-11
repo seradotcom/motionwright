@@ -142,6 +142,8 @@ jobs:
           set -euo pipefail
           cargo test --locked -p motionwright-native --lib motion_render_integrity -- --nocapture \
             | tee verification/native-av-master-e2e/job-integrity-test.log
+          cargo test --locked -p motionwright-service --lib foreign_motion_status_or_result_is_unknown_in_studio_and_sdk_job_projection -- --nocapture \
+            | tee -a verification/native-av-master-e2e/job-integrity-test.log
           python3 - <<'PY'
           import hashlib, json, os
           from pathlib import Path
@@ -152,6 +154,7 @@ jobs:
           contents = log.read_text(encoding="utf-8")
           assert "test result: ok." in contents
           assert "forged_status_or_result_must_never_become_native_render_evidence" in contents
+          assert "foreign_motion_status_or_result_is_unknown_in_studio_and_sdk_job_projection" in contents
           (root / "job-integrity-contract.json").write_text(json.dumps({
               "schema":"motionwright.synthetic-job-identity-conformance/1",
               "motionwright_sha":os.environ["GITHUB_SHA"],
