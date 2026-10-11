@@ -137,6 +137,35 @@ jobs:
             motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
             -- --nocapture
 
+      - name: Adversarial acknowledged render job integrity (synthetic, no redispatch)
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-native --lib motion_render_integrity -- --nocapture \
+            | tee verification/native-av-master-e2e/job-integrity-test.log
+          cargo test --locked -p motionwright-service --lib foreign_motion_status_or_result_is_unknown_in_studio_and_sdk_job_projection -- --nocapture \
+            | tee -a verification/native-av-master-e2e/job-integrity-test.log
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/native-av-master-e2e")
+          src = Path("crates/native/src/production/motion_render_integrity_tests.rs")
+          log = root / "job-integrity-test.log"
+          assert src.is_file() and log.stat().st_size > 0
+          contents = log.read_text(encoding="utf-8")
+          assert "test result: ok." in contents
+          assert "forged_status_or_result_must_never_become_native_render_evidence" in contents
+          assert "foreign_motion_status_or_result_is_unknown_in_studio_and_sdk_job_projection" in contents
+          (root / "job-integrity-contract.json").write_text(json.dumps({
+              "schema":"motionwright.synthetic-job-identity-conformance/1",
+              "motionwright_sha":os.environ["GITHUB_SHA"],
+              "native_driver_mode":"synthetic_broker_envelopes_not_live_provider_fault",
+              "source_sha256":hashlib.sha256(src.read_bytes()).hexdigest(),
+              "result":"PASS",
+              "live_provider_recovery":"NOT_PROVEN",
+              "second_render_start":"FORBIDDEN",
+          },sort_keys=True,indent=2)+"\n", encoding="utf-8")
+          PY
+
       - name: Verify decoded-media acceptance rejects silent, swapped, or static output
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_media_probe.py' -v
 

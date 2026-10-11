@@ -885,6 +885,26 @@ fn unconfirmed_started_motion_render(mut error: Error) -> Error {
         .recipe_progress(1, "driver.motion-canvas.render.start")
 }
 
+/// A provider status/result is evidence only for the *same* render job
+/// previously acknowledged by the Broker. The pinned Semwright Motion Canvas
+/// JobView always carries job_ref; missing/foreign references are not allowed
+/// to turn a status read into a verified native media result.
+///
+/// Both inputs are app-owned; never embed the opaque provider reference in
+/// diagnostic/error text (which could flow into CI or UI).
+fn require_acknowledged_motion_job(
+    view: &Value,
+    acknowledged_job_ref: &str,
+    observation: &'static str,
+) -> NativeResult<()> {
+    if view.get("job_ref").and_then(Value::as_str) != Some(acknowledged_job_ref) {
+        return Err(unconfirmed_started_motion_render(backend(format!(
+            "Motion Canvas {observation} does not identify the acknowledged native render job"
+        ))));
+    }
+    Ok(())
+}
+
 fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<String> {
     value
         .pointer(pointer)
@@ -1071,11 +1091,10 @@ impl ProductionCoordinator {
             let mut poll = 0_u32;
             let terminal = loop {
                 if Instant::now() >= deadline {
-                    return Err(Error::new(
+                    return Err(unconfirmed_started_motion_render(Error::new(
                         ErrorCode::Timeout,
                         "Motion Canvas render did not reach a terminal state before the bounded deadline",
-                    )
-                    .uncertain());
+                    )));
                 }
                 let status = match self
                     .execute(
@@ -1101,6 +1120,7 @@ impl ProductionCoordinator {
                 let data = response_data(&status)
                     .map_err(unconfirmed_started_motion_render)?
                     .clone();
+                require_acknowledged_motion_job(&data, &job_ref, "status")?;
                 match data.get("state").and_then(Value::as_str) {
                     Some("succeeded") => break data,
                     Some("failed") => {
@@ -1141,9 +1161,9 @@ impl ProductionCoordinator {
                 .and_then(Value::as_u64)
                 != Some(segment.frame_count)
             {
-                return Err(backend(
+                return Err(unconfirmed_started_motion_render(backend(
                     "Motion Canvas terminal artifact frame count does not match the Film realization",
-                ));
+                )));
             }
 
             let rendered = self
@@ -1155,21 +1175,25 @@ impl ProductionCoordinator {
                     json!({"job_ref": job_ref}),
                     false,
                 )
-                .await?;
-            let rendered_data = response_data(&rendered)?;
+                .await
+                .map_err(unconfirmed_started_motion_render)?;
+            let rendered_data =
+                response_data(&rendered).map_err(unconfirmed_started_motion_render)?;
+            require_acknowledged_motion_job(rendered_data, &job_ref, "result")?;
             if rendered_data.get("state").and_then(Value::as_str) != Some("succeeded") {
-                return Err(backend(
+                return Err(unconfirmed_started_motion_render(backend(
                     "Motion Canvas render result is not a successful terminal artifact",
-                ));
+                )));
             }
-            let artifact = rendered_data
-                .get("artifact")
-                .cloned()
-                .ok_or_else(|| backend("Motion Canvas render result has no artifact"))?;
+            let artifact = rendered_data.get("artifact").cloned().ok_or_else(|| {
+                unconfirmed_started_motion_render(backend(
+                    "Motion Canvas render result has no artifact",
+                ))
+            })?;
             if artifact.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count) {
-                return Err(backend(
+                return Err(unconfirmed_started_motion_render(backend(
                     "Motion Canvas result artifact frame count does not match the Film realization",
-                ));
+                )));
             }
 
             let verified = self
@@ -2565,6 +2589,15 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             "PASS"
         );
         assert_eq!(coordinator.receipts(project.id, 100).unwrap().len(), 12);
+    }
+
+    #[cfg(unix)]
+    mod motion_render_integrity {
+        use super::*;
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/production/motion_render_integrity_tests.rs"
+        ));
     }
 
     #[cfg(unix)]
