@@ -44,7 +44,10 @@ export function createNativeReviewRepairDraft(
   }
   const rationale = [
     "Manual native-frame observation; repair NOT verified",
-    "Frame " + sample.frameIndex + "; PNG SHA-256 " + sample.pngSha256,
+    "Project " + plan.projectId + " generation " + plan.generation + " revision " + plan.revision,
+    "Scene " + plan.sceneId + " profile " + plan.profileId,
+    "Target object " + node.id + "; severity " + finding.severity + "; confidence " + finding.confidence,
+    "Frame " + sample.frameIndex + " time " + sample.timelineTime.num + "/" + sample.timelineTime.den + " s; PNG SHA-256 " + sample.pngSha256,
     "Constraint: " + finding.violatedConstraint,
     "Observed: " + finding.observation,
     "Suggested manual repair: " + finding.proposedRepair,

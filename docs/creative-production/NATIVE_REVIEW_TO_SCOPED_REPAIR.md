@@ -13,8 +13,12 @@ native authorization endpoint.
 3. **Draft scoped repair** changes only the UI tab. It carries the project
    generation/revision, deliverable profile, source frame index, PNG SHA-256,
    selected object ID, and a clearly labeled *manual* review rationale.
+   The durable rationale also records source generation/revision/profile, exact
+   rational frame time, severity and confidence, without disclosing the grant.
 4. Production → Scoped changes selects that object and pre-fills the rationale,
-   **not** replacement text or geometry. The operator must modify the value,
+   **not** replacement text or geometry. The selected target remains fixed
+   for this source-anchored draft; discard the draft to select a different
+   object. The operator must modify the value,
    queue the edit, preview the bounded editorial A/B diff, and explicitly
    commit a fresh project revision.
 5. All existing CAS, locks, object-scope checks, and independent native

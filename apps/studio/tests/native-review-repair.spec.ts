@@ -84,8 +84,9 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
   const prepare = page.getByRole("button", { name: "Draft scoped repair" });
   await expect(prepare).toBeEnabled();
   await prepare.click();
-  await expect(page.getByRole("heading", { name: "Scoped changes" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Scoped changes", exact: true })).toBeVisible();
   await expect(page.getByLabel("Patch target object")).toHaveValue(target!.id);
+  await expect(page.getByLabel("Patch target object")).toBeDisabled();
   await expect(page.getByText(/Native frame 0 · source r/)).toBeVisible();
   const rationale = page.getByLabel("Patch rationale");
   await expect(rationale).toHaveValue(/Manual native-frame observation; repair NOT verified/);

@@ -84,6 +84,11 @@ describe("native review -> scoped repair handoff is never an automatic project e
       editKind:target.kind==="text"?"text":"transform"});
     expect(draft.rationale).toContain("repair NOT verified");
     expect(draft.rationale).toContain(sample.pngSha256);
+    expect(draft.rationale).toContain("generation " + plan.generation);
+    expect(draft.rationale).toContain("profile " + plan.profileId);
+    expect(draft.rationale).toContain("Target object " + target.id);
+    expect(draft.rationale).toContain("severity " + finding.severity);
+    expect(draft.rationale).toContain("revision " + plan.revision);
     expect(draft.rationale).toContain(finding.proposedRepair);
     expect(draft.rationale).not.toContain("owned-native-frame-grant");
     expect(nativeRepairDraftIsCurrent(project,scene,draft)).toBe(true);

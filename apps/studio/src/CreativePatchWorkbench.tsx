@@ -64,7 +64,7 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
   const sourceUnchanged=repairDraft!==null && !!node && (kind==="text" ? text===(node.text??"") :
     Object.entries(transform).every(([key,value])=>node[key as keyof CanvasNode]===value));
   const queue=()=>{
-    if (!node || stale || sourceUnchanged) return;
+    if (!node || stale || sourceUnchanged || (repairDraft!==null && node.id!==repairDraft.targetNodeId)) return;
     const edit:ScopedCanvasEdit=kind==="text"?{kind:"text",node_id:node.id,text}:{kind:"transform",node_id:node.id,transform};
     setEdits([...edits.filter(e=>e.node_id!==edit.node_id || e.kind!==edit.kind),edit]);
     setPreview(null);setUndoTarget(null);setError(null);
@@ -88,17 +88,17 @@ export default function CreativePatchWorkbench({project,scene,commit,busy,playhe
   };
   return <div className="production-patch">
     <div className="production-section-title"><Eye size={18}/><div><h2>Scoped changes</h2><p>Stage a bounded proposal, inspect the difference and commit once.</p></div></div>
-    {repairDraft && <div className="production-notice" role="status"><strong>Native frame {repairDraft.frameIndex} · source r{repairDraft.revision} · uncommitted repair</strong><span>PNG SHA-256 {repairDraft.frameSha256}. This handoff is a manual observation, not source authenticity or a quality PASS. Enter a replacement, preview the scoped diff, then explicitly commit.</span></div>}
+    {repairDraft && <div className="production-notice" role="status"><strong>Native frame {repairDraft.frameIndex} · source r{repairDraft.revision} · uncommitted repair</strong><span>PNG SHA-256 {repairDraft.frameSha256}. This handoff is a manual observation, not source authenticity or a quality PASS. The target object is fixed for this draft; discard it to select another. Enter a replacement, preview the scoped diff, then explicitly commit.</span></div>}
     <div className="production-notice"><strong>Revision {base} · one scene · {edits.length} proposed edit{edits.length===1?"":"s"}</strong>
       <span>Scene and property locks are checked in preview and again by the revisioned service at commit. This view is an editorial comparison, not renderer verification.</span></div>
     {stale && <div className="production-error" role="alert">The project changed to revision {project.revision}. This proposal cannot commit against an old base. <button className="secondary-button" onClick={reset}>Start a new scoped draft</button></div>}
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">
-        <label className="production-field"><span>Target object</span><select aria-label="Patch target object" value={nodeId} onChange={e=>setNodeId(e.target.value)}><option value="" disabled>Select an object</option>{scene?.nodes.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>
+        <label className="production-field"><span>Target object</span><select aria-label="Patch target object" value={nodeId} disabled={repairDraft!==null} onChange={e=>setNodeId(e.target.value)}><option value="" disabled>Select an object</option>{scene?.nodes.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>
         <label className="production-field"><span>Edit</span><select aria-label="Patch edit kind" value={kind} onChange={e=>setKind(e.target.value as "text"|"transform")}><option value="text">Text only</option><option value="transform">Transform only</option></select></label>
         {kind==="text"?<label className="production-field"><span>Replacement text</span><textarea aria-label="Patch replacement text" rows={4} value={text} onChange={e=>setText(e.target.value)}/></label>
           :<div className="production-transform-grid">{(["x","y","width","height","rotation_deg","opacity"] as const).map(field=><label className="production-field" key={field}><span>{field.replace("_deg"," (deg)")}</span><input type="number" step={field==="opacity"?.01:1} value={transform[field]} onChange={e=>setTransform({...transform,[field]:Number(e.target.value)})}/></label>)}</div>}
-        <button className="secondary-button" disabled={!node || stale || sourceUnchanged || edits.length>=128 || pending} onClick={queue}><Plus size={14}/> Add to proposal</button>
+        <button className="secondary-button" disabled={!node || stale || sourceUnchanged || (repairDraft!==null && node.id!==repairDraft.targetNodeId) || edits.length>=128 || pending} onClick={queue}><Plus size={14}/> Add to proposal</button>
         <label className="production-field"><span>Visible reason for this change</span><textarea aria-label="Patch rationale" rows={3} placeholder="What is wrong, where is it visible, and why does this edit help?" value={rationale} onChange={e=>{setRationale(e.target.value);setPreview(null);}}/></label>
       </section>
       <section className="production-patch-queue" aria-label="Proposed edits"><h3>Proposed edits</h3>{edits.length===0?<p className="production-help">No edits queued. Selecting or typing does not change the project.</p>:edits.map((edit,index)=><div key={edit.node_id+edit.kind}><span>{editSummary(edit)}</span><button className="icon-button" aria-label={"Remove proposed edit "+(index+1)} onClick={()=>{setEdits(edits.filter((_,i)=>i!==index));setPreview(null);}}><Trash2 size={14}/></button></div>)}
