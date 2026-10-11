@@ -634,7 +634,7 @@ mod tests {
             }}}),
             "2026-10-09T01:00:03Z",
         );
-        let orphan = derive_production_jobs(&[result.clone()], generation, 8, 10);
+        let orphan = derive_production_jobs(std::slice::from_ref(&result), generation, 8, 10);
         assert_eq!(orphan.len(), 1, "retain visibility of partial history");
         assert_eq!(orphan[0].state, ProductionJobState::OutcomeUnknown);
         assert_eq!(
