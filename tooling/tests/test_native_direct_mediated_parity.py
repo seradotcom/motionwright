@@ -245,6 +245,18 @@ class SourceBoundComparisonTests(unittest.TestCase):
                 )
                 self.assertEqual(result["native_validation_checks"], 1)
                 self.assertTrue(result["independent_job_confirmed"])
+                # New measured phases must observe only the six original,
+                # allowed direct commands and the existing terminal wait.
+                subtimings = result["measured_direct_substages_micros"]
+                self.assertEqual(
+                    set(subtimings),
+                    {"plan", "apply", "start", "terminal_wait", "result", "verify"},
+                )
+                self.assertTrue(all(type(v) is int and v >= 0 for v in subtimings.values()))
+                self.assertGreaterEqual(
+                    result["measured_direct_total_micros"] + len(subtimings),
+                    sum(subtimings.values()),
+                )
                 with self.assertRaisesRegex(parity.DirectParityError, "reused"):
                     parity.run_direct_native_film(
                         film_file=film, executable=Path("semwright"),
