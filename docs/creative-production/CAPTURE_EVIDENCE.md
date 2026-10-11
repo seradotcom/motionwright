@@ -88,10 +88,30 @@ Redacted PNG/JSON source assets cannot be removed while referenced by the
 append-only capture record. Reusing the same registration ID is prohibited;
 replaying an identical durable request should return its prior CAS receipt.
 
-Registration proves **metadata/asset identity only**; the independent
-PNG verifier and exact browser CI remain the authority for technical
-pixel/redaction/repetition evidence. Neither model alone certifies legal
-rights, application behavior or private data safety.
+The SQLite admission now checks the actual imported **source bytes** after
+idempotent request replay, owner-generation and revision authorization.
+Its 64 KiB strictly parsed JSON receipt must match the declared application
+source commit/version, loopback URL, exact browser actions, 1440 ? 940 viewport,
+synthetic fixture digest, linked project claim, one redaction rectangle, and
+the digest of the repeated masked screenshot. The immutable source PNG is
+read and SHA-256 verified independently and must contain a valid PNG IHDR
+with the exact admitted viewport and checksum; a different bitmap cannot
+be substituted under the declared identity.
+
+This is **source-file correspondence**, not automatic proof of screenshot
+redaction effectiveness or application behavior. Actual decompressed pixel
+masking and repeatability remain independently inspected by the Chromium
+capture-evidence verifier and source-pinned CI. The separate fixture-data
+SHA-256 stored here is cross-linked to the imported manifest; until the
+original fixture-state bytes are also admitted, it is not a second
+independent hash audit of the dataset. Neither component certifies rights,
+privacy clearance, customer activity, creative approval or factual truth.
+
+SQLite negative tests reject a forged but genuinely imported JSON receipt
+and a genuinely imported PNG with wrong viewport dimensions despite
+matching manifest metadata, without changing durable project state. The
+tests use an explicitly synthetic 1440 ? 940 PNG raster under tooling/testdata,
+not a claimed real browser capture.
 
 New source-contract tests exercise source-identity mismatch, future or
 foreign revision, incorrect digest, missing evidence asset, redaction

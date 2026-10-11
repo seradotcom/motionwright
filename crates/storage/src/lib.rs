@@ -12,6 +12,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
+mod capture_evidence;
 mod derived_cache;
 mod integrity;
 mod production;
@@ -452,19 +453,7 @@ impl Store {
     }
 
     pub fn read_blob(&self, digest: &str, limit: u64) -> Result<Vec<u8>> {
-        let path = self.checked_existing_blob_path(digest)?;
-        let size = ensure_regular_file(&path, "content-addressed blob")?.len();
-        if size > limit {
-            return Err(StorageError::BlobTooLarge { size, limit });
-        }
-        let bytes = fs::read(path)?;
-        let actual = hex::encode(Sha256::digest(&bytes));
-        if actual != digest {
-            return Err(StorageError::InvalidBackup(
-                "content-addressed blob failed digest verification".into(),
-            ));
-        }
-        Ok(bytes)
+        read_verified_blob_from_root(&self.blob_root, digest, limit)
     }
 
     pub fn export_project_bundle(
@@ -653,41 +642,10 @@ impl Store {
             .join(digest))
     }
 
-    /// CAS readers must not follow symlinked staging/root/shard directories.
-    /// Checking only the final digest-named leaf misses a replaced shard.
+    /// The same checked path is used by public blob reads and transactional
+    /// first-party capture admission. Caller ownership is checked separately.
     fn checked_existing_blob_path(&self, digest: &str) -> Result<PathBuf> {
-        validate_digest(digest)?;
-        let dirs = [
-            self.blob_root.clone(),
-            self.blob_root.join("sha256"),
-            self.blob_root.join("sha256").join(&digest[..2]),
-        ];
-        for directory in &dirs {
-            match ensure_regular_directory(directory, "content-addressed source directory") {
-                Ok(_) => {}
-                Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(StorageError::BlobMissing {
-                        digest: digest.to_owned(),
-                    });
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let path = self.blob_path(digest)?;
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-                Err(StorageError::UnsafeSourcePath(
-                    "content-addressed blob leaf must be a regular non-symlink file".into(),
-                ))
-            }
-            Ok(_) => Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(StorageError::BlobMissing {
-                    digest: digest.to_owned(),
-                })
-            }
-            Err(error) => Err(error.into()),
-        }
+        checked_existing_blob_path_from_root(&self.blob_root, digest)
     }
 
     pub fn create_project(&mut self, project: &Project) -> Result<()> {
@@ -1004,6 +962,7 @@ impl Store {
             _ => None,
         };
         let request_sha = request_digest(id, change)?;
+        let blob_root = self.blob_root.clone();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1048,6 +1007,11 @@ impl Store {
             });
         }
 
+        if let Change::RegisterCaptureSource { record } = change {
+            // Never touch a digest until the receipt-replay, generation and
+            // canonical revision checks above have confirmed authority.
+            capture_evidence::verify_capture_source(&blob_root, &project, record)?;
+        }
         if let Some((digest, path)) = required_blob {
             let descriptor = hash_file(&path)?;
             if descriptor.sha256 != digest {
@@ -1265,6 +1229,57 @@ fn validate_digest(digest: &str) -> Result<()> {
         return Err(StorageError::InvalidBlobDigest);
     }
     Ok(())
+}
+
+/// All immutable source reads reject symlinks at the root, shard and leaf.
+/// This free helper can be called while SQLite holds the connection mutably.
+fn checked_existing_blob_path_from_root(blob_root: &Path, digest: &str) -> Result<PathBuf> {
+    validate_digest(digest)?;
+    let directories = [
+        blob_root.to_path_buf(),
+        blob_root.join("sha256"),
+        blob_root.join("sha256").join(&digest[..2]),
+    ];
+    for directory in &directories {
+        match ensure_regular_directory(directory, "content-addressed source directory") {
+            Ok(_) => {}
+            Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StorageError::BlobMissing {
+                    digest: digest.to_owned(),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let path = blob_root.join("sha256").join(&digest[..2]).join(digest);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+            Err(StorageError::UnsafeSourcePath(
+                "content-addressed blob leaf must be a regular non-symlink file".into(),
+            ))
+        }
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(StorageError::BlobMissing {
+                digest: digest.to_owned(),
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
+    let path = checked_existing_blob_path_from_root(blob_root, digest)?;
+    let size = ensure_regular_file(&path, "content-addressed blob")?.len();
+    if size > limit {
+        return Err(StorageError::BlobTooLarge { size, limit });
+    }
+    let bytes = fs::read(path)?;
+    if hex::encode(Sha256::digest(&bytes)) != digest {
+        return Err(StorageError::InvalidBackup(
+            "content-addressed blob failed digest verification".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn blob_relative_path(digest: &str) -> Result<String> {

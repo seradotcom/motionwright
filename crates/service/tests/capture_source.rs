@@ -19,51 +19,92 @@ fn prepare(service: &StudioService, dir: &Path) -> (Project, CaptureSourceRecord
     let mut p = service
         .create_project("First-party source registry")
         .unwrap();
-    let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/src-tauri/icons/icon.png");
-    let screenshot = dir.join("captured-first-party.png");
-    fs::copy(&icon, &screenshot).unwrap();
+    // Deliberately synthetic viewport-sized PNG with explicit opaque mask.
+    // Actual Chromium captures are validated by independent pinned CI.
+    let screenshot = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tooling/testdata/synthetic-first-party-viewport.png");
     p = service
         .import_asset_file(
             p.id,
             &p.stamp(),
             "source-png",
             &screenshot,
-            "Owned first-party fixture image".into(),
+            "Synthetic first-party raster fixture".into(),
             "image/png".into(),
         )
         .unwrap()
         .project;
     let screenshot_asset = p.assets.last().unwrap().clone();
-    let manifest_file = dir.join("first-party-evidence.json");
-    fs::write(&manifest_file, br#"{"schema":"motionwright.first-party-capture-evidence/1","scope":"test-fixture-not-reviewed"}"#).unwrap();
-    p = service
-        .import_asset_file(
-            p.id,
-            &p.stamp(),
-            "source-json",
-            &manifest_file,
-            "Declared capture provenance".into(),
-            "application/json".into(),
-        )
-        .unwrap()
-        .project;
-    let manifest_asset = p.assets.last().unwrap().clone();
-
-    // Snapshot the observed owner revision as the immutable claim source.
     let observed = p.revision;
     p = apply(
         service,
         &p,
         "capture-claim",
         Change::AddClaim {
-            text: "An authorized Studio UI fixture appears in the source image".into(),
+            text: "An original synthetic Studio viewport fixture exists".into(),
             source: Some(SourceReference::ProjectRevision { revision: observed }),
             context: "synthetic-first-party-capture-validation".into(),
-            source_revision: Some("owned-test-fixture".into()),
+            source_revision: Some("synthetic-viewport-test".into()),
         },
     );
     let claim = p.brief.claims.last().unwrap().clone();
+    let screenshot_sha = screenshot_asset.content_sha256.clone().unwrap();
+    let manifest_file = dir.join("first-party-evidence.json");
+    let manifest = serde_json::json!({
+        "schema": "motionwright.first-party-capture-evidence/1",
+        "app": {
+            "id": "motionwright-studio",
+            "version": "0.1.0",
+            "source_revision": "b".repeat(40),
+        },
+        "scenario": {
+            "id": "production-original-ui-local-v1",
+            "origin": "http://127.0.0.1:1420",
+            "route": "/",
+            "actions": ["open:/", "click:Production"],
+            "viewport": {"width":1440,"height":940,"device_scale_factor":1},
+            "browser": "chromium",
+            "fixture_kind": "synthetic-first-party-data",
+            "auth_mode": "none",
+            "external_requests": 0,
+            "credential_fields": 0
+        },
+        "claim_id": claim.id,
+        "fixture_state_sha256": "f".repeat(64),
+        "redactions": [{
+            "selector": ".revision-chip",
+            "x":100, "y":50, "width":80,"height":24,
+            "mask_color":"#0B0B0B"
+        }],
+        "capture": {
+            "path": "capture.png",
+            "sha256": screenshot_sha,
+            "repeated_sha256": screenshot_sha,
+            "pixel_equal": true,
+            "redacted": true,
+            "raw_unredacted_saved": false,
+            "width":1440,
+            "height":940
+        },
+        "review_status": "technical-evidence-only-human-review-required"
+    });
+    fs::write(
+        &manifest_file,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    p = service
+        .import_asset_file(
+            p.id,
+            &p.stamp(),
+            "source-json",
+            &manifest_file,
+            "Declared source receipt".into(),
+            "application/json".into(),
+        )
+        .unwrap()
+        .project;
+    let manifest_asset = p.assets.last().unwrap().clone();
     let capture = CaptureSourceRecord {
         schema: CAPTURE_RECORD_SCHEMA.into(),
         id: Uuid::new_v4(),
@@ -202,4 +243,106 @@ fn forged_and_stale_source_receipts_do_not_mutate_sqlite_history() {
             .len(),
         2
     );
+}
+
+#[test]
+fn mismatched_manifest_bytes_reject_a_validly_imported_but_false_receipt() {
+    let folder = tempfile::tempdir().unwrap();
+    let service = StudioService::open(folder.path().join("forged-manifest.sqlite3")).unwrap();
+    let (project, record) = prepare(&service, folder.path());
+    let source = folder.path().join("first-party-evidence.json");
+    let mut forged: serde_json::Value =
+        serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    forged["capture"]["sha256"] = serde_json::Value::String("c".repeat(64));
+    let false_receipt = folder.path().join("forged-evidence.json");
+    fs::write(&false_receipt, serde_json::to_vec(&forged).unwrap()).unwrap();
+    let revised = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "forged-manifest-import",
+            &false_receipt,
+            "Disagreeing JSON source".into(),
+            "application/json".into(),
+        )
+        .unwrap()
+        .project;
+    let new_asset = revised.assets.last().unwrap();
+    let wrong = CaptureSourceRecord {
+        manifest_asset_id: new_asset.id,
+        manifest_sha256: new_asset.content_sha256.clone().unwrap(),
+        ..record
+    };
+    let denied = service
+        .apply(
+            revised.id,
+            &revised.stamp(),
+            "forged-record",
+            &Change::RegisterCaptureSource { record: wrong },
+        )
+        .unwrap_err();
+    assert!(
+        denied
+            .to_string()
+            .contains("imported JSON source disagrees")
+    );
+    assert_eq!(service.project(revised.id).unwrap(), revised);
+}
+#[test]
+fn valid_manifest_does_not_authorize_mismatched_png_viewport_bytes() {
+    let folder = tempfile::tempdir().unwrap();
+    let service = StudioService::open(folder.path().join("mismatch-png.sqlite3")).unwrap();
+    let (project, record) = prepare(&service, folder.path());
+    let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/icons/icon.png");
+    let revised = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "wrong-sized-png",
+            &icon,
+            "Wrong viewport PNG bytes".into(),
+            "image/png".into(),
+        )
+        .unwrap()
+        .project;
+    let png_asset = revised.assets.last().unwrap();
+    let source = folder.path().join("first-party-evidence.json");
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    receipt["capture"]["sha256"] =
+        serde_json::Value::String(png_asset.content_sha256.clone().unwrap());
+    receipt["capture"]["repeated_sha256"] = receipt["capture"]["sha256"].clone();
+    let new_receipt = folder.path().join("wrong-viewport-receipt.json");
+    fs::write(&new_receipt, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let revised = service
+        .import_asset_file(
+            revised.id,
+            &revised.stamp(),
+            "wrong-viewport-receipt",
+            &new_receipt,
+            "Matching metadata but invalid viewport image".into(),
+            "application/json".into(),
+        )
+        .unwrap()
+        .project;
+    let receipt_asset = revised.assets.last().unwrap();
+    let bad = CaptureSourceRecord {
+        screenshot_asset_id: png_asset.id,
+        screenshot_sha256: png_asset.content_sha256.clone().unwrap(),
+        screenshot_repeat_sha256: png_asset.content_sha256.clone().unwrap(),
+        manifest_asset_id: receipt_asset.id,
+        manifest_sha256: receipt_asset.content_sha256.clone().unwrap(),
+        ..record
+    };
+    let denied = service
+        .apply(
+            revised.id,
+            &revised.stamp(),
+            "wrong-sized-admission",
+            &Change::RegisterCaptureSource { record: bad },
+        )
+        .unwrap_err();
+    assert!(denied.to_string().contains("PNG bytes do not match"));
+    assert_eq!(service.project(revised.id).unwrap(), revised);
 }
