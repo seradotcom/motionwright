@@ -67,8 +67,8 @@ fn three_generic_origins_are_bounded_and_keep_every_screen_anchor_across_aspects
                 .unwrap();
             let cx = focus.x + focus.width / 2.0;
             let cy = focus.y + focus.height / 2.0;
-            assert!((cx-screen.x-screen.width*.510).abs()<0.000001);
-            assert!((cy-screen.y-screen.height*.620).abs()<0.000001);
+            assert!((cx - screen.x - screen.width * 0.510).abs() < 0.000001);
+            assert!((cy - screen.y - screen.height * 0.620).abs() < 0.000001);
             assert_eq!(
                 nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
                 realize_product_stage(
