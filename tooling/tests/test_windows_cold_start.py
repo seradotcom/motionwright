@@ -167,6 +167,18 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].parent.name, "com.seradotcom.motionwright")
 
+    def test_relative_evidence_output_is_refused_before_any_runtime_launch(self):
+        with self.assertRaisesRegex(windows.ColdStartError, "bounded absolute"):
+            windows.validate_evidence_paths(
+                self.root / "scratch",
+                Path("ci-evidence/windows-nsis-cold-relaunch.json"),
+            )
+        with self.assertRaisesRegex(windows.ColdStartError, "bounded absolute"):
+            windows.validate_evidence_paths(
+                Path("relative-scratch"),
+                self.root / "proof.json",
+            )
+
     def test_no_local_machine_or_browser_can_start_installed_smoke(self):
         exe, receipt, sha = candidate_fixture(self.root)
         scratch = self.root / "no-runtime-start"

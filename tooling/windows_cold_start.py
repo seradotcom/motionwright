@@ -241,14 +241,18 @@ def boot_once(
                 process.wait(timeout=12)
 
 
+def validate_evidence_paths(scratch: Path, output: Path) -> None:
+    require(scratch.is_absolute() and output.is_absolute(),
+            "Installed bootstrap requires bounded absolute runner paths")
+
+
 def run_installed_relaunch(
     *, executable: Path, smoke_receipt: Path, expected_sha: str,
     scratch: Path, output: Path,
 ) -> dict:
     require(os.name == "nt" and os.getenv("GITHUB_ACTIONS") == "true",
             "Installed Windows GUI bootstrap is restricted to a disposable GitHub Windows runner")
-    require(scratch.is_absolute() and output.is_absolute(),
-            "Installed bootstrap requires bounded absolute runner paths")
+    validate_evidence_paths(scratch, output)
     require(not scratch.exists(), "Installed bootstrap scratch must be newly created")
     require(not output.exists(), "Installed bootstrap evidence must not be overwritten")
     source = check_installed_candidate(smoke_receipt, executable, expected_sha)

@@ -247,16 +247,17 @@ jobs:
             throw 'Cannot uniquely identify the previously validated installed NSIS executable'
           }
           $scratch = Join-Path $env:RUNNER_TEMP 'motionwright-windows-cold-relaunch'
+          $proofPath = Join-Path $env:GITHUB_WORKSPACE 'ci-evidence/windows-nsis-cold-relaunch.json'
           python tooling/windows_cold_start.py `
             --installed-binary "$($binaries[0].FullName)" `
             --candidate-smoke ci-evidence/windows-nsis-smoke.json `
             --expected-source-sha "$env:GITHUB_SHA" `
             --scratch "$scratch" `
-            --output ci-evidence/windows-nsis-cold-relaunch.json
+            --output "$proofPath"
           if ($LASTEXITCODE -ne 0) {
             throw 'Installed NSIS cold boot or persisted-project relaunch did not pass'
           }
-          $proof = Get-Content ci-evidence/windows-nsis-cold-relaunch.json -Raw | ConvertFrom-Json
+          $proof = Get-Content "$proofPath" -Raw | ConvertFrom-Json
           if ($proof.source_sha -ne $env:GITHUB_SHA -or
               $proof.first_launch_real_visible_hwnd -ne $true -or
               $proof.second_launch_real_visible_hwnd -ne $true -or
