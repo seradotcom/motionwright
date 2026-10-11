@@ -375,14 +375,20 @@
     {
       "id": "MW05-E07-02",
       "implementation": "partial",
-      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA",
-      "remaining_scope": "General user-authorized external app/native window capture, media-rights and actual dataset provenance, multi-step real application scenarios, credential/PII coverage beyond test fixture, durable CAS screenshot claim ledger and ProductStage screen-media/renderer integration remain open",
+      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA; typed append-only Project CaptureSourceRecord referencing imported immutable PNG/JSON asset IDs/hashes, synthetic fixture-data hash, source project generation/revision and existing linked brief claim, with Native SDK CAS operation and Rust/Studio/SQLite negative tests",
+      "remaining_scope": "The persistent first-party source registry needs exact-HEAD CI verification; external authorized app/window capture, end-to-end privacy/rights review, generic software scenarios, pixel-level capture admission from user sessions and timeline media playback remain open",
       "source_paths": [
         "apps/studio/tests/reproducible-capture.spec.ts",
         "tooling/capture_evidence.py",
         "tooling/tests/test_capture_evidence.py",
         ".github/workflows/capture-evidence.yml",
-        "docs/creative-production/CAPTURE_EVIDENCE.md"
+        "docs/creative-production/CAPTURE_EVIDENCE.md",
+        "crates/domain/src/capture_source.rs",
+        "crates/domain/tests/capture_source.rs",
+        "crates/service/tests/capture_source.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/captureSource.ts",
+        "apps/studio/src/captureSource.test.ts"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

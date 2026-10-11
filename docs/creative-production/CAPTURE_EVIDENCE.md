@@ -57,14 +57,48 @@ acceptance. A green test from an earlier commit cannot certify a later
 revision. The review status remains "technical evidence only; human review
 required".
 
+## Persistent capture-source registration
+
+An admitted first-party capture may also be registered in the existing
+project-local StudioService journal with Change::RegisterCaptureSource
+(capture-source.register through the same Semwright Native SDK app). It does
+**not** execute or ingest screenshots by itself. The caller must first
+import the redacted PNG and JSON capture receipt through the ordinary
+immutable Asset store, then reference those asset IDs with exact SHA-256
+digests, the original data-state SHA-256 and an already recorded brief claim
+bound to that project's source revision. The originating project generation
+must match at registration. For portable project imports, the historical
+generation remains in the record after the application's import procedure
+rotates the current generation.
+
+The record has a fixed first-party origin, app, scenario, versioned viewport,
+mask selector, no external-request or credential-field allowance and a
+strict bounded schema. It cannot carry raw credentials, arbitrary URL/cookies,
+a third-party capture permission or a fabricated verification flag.
+Redacted PNG/JSON source assets cannot be removed while referenced by the
+append-only capture record. Reusing the same registration ID is prohibited;
+replaying an identical durable request should return its prior CAS receipt.
+
+Registration proves **metadata/asset identity only**; the independent
+PNG verifier and exact browser CI remain the authority for technical
+pixel/redaction/repetition evidence. Neither model alone certifies legal
+rights, application behavior or private data safety.
+
+New source-contract tests exercise source-identity mismatch, future or
+foreign revision, incorrect digest, missing evidence asset, redaction
+tampering, project locks, source removal and durable SQLite replay.
+The original first-party browser capture workflow remains a separate
+technical test, not a substitute for user-authorized external capture.
+
 ## Explicit remaining product work
 
 - Exact capture of a user-authorized external application or native desktop
   window, including version, dataset/revision and owner permission.
 - Multi-action scenario scripting with reproducible input fixtures.
 - Recorded redaction policies spanning all sensitive input sources.
-- Source-asset admission to Motionwright's project CAS and permanent claim
-  ledger, rather than CI-only evidence artifacts.
+- User-facing admission and revalidation of external source captures and
+  privacy policies. First-party PNG/JSON registry metadata is now modeled;
+  complete external capture-to-asset workflow remains outside this slice.
 - Authentic playback and asset replacement in ProductStage, and renderer
   receipts linked to the production timeline.
 - Human rights and creative review of actual customer material.

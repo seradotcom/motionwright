@@ -720,6 +720,7 @@ enum OperationKind {
     DetachProductHero,
     SetProductionPlan,
     UpsertNativeCapsule,
+    RegisterCaptureSource,
     ApplyCreativePatch,
     RenameProject,
     SetBrief,
@@ -895,6 +896,14 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .ok_or_else(|| Error::invalid("plan is required"))?,
             )
             .map_err(|_| Error::invalid("invalid ProductionPlan"))?,
+        }),
+        OperationKind::RegisterCaptureSource => Ok(Change::RegisterCaptureSource {
+            record: serde_json::from_value(
+                args.get("record")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("capture record is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid bounded first-party capture source record"))?,
         }),
         OperationKind::UpsertNativeCapsule => Ok(Change::UpsertNativeCapsule {
             capsule: serde_json::from_value(
@@ -2188,6 +2197,64 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::RegisterCaptureSource,
+            descriptor(
+                "capture-source.register",
+                "Append an immutable declared first-party PNG/JSON capture source linked to an authored project-revision claim",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "record":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.capture-source/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "screenshot_asset_id":{"type":"string","format":"uuid"},
+                                "screenshot_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "manifest_asset_id":{"type":"string","format":"uuid"},
+                                "manifest_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "fixture_state_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "claim_id":{"type":"string","format":"uuid"},
+                                "source_project_id":{"type":"string","format":"uuid"},
+                                "source_generation":{"type":"string","format":"uuid"},
+                                "source_revision":{"type":"integer","minimum":1},
+                                "app_id":{"type":"string","const":"motionwright-studio"},
+                                "app_version":{"type":"string","maxLength":17},
+                                "source_commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+                                "scenario_id":{"type":"string","const":"production-original-ui-local-v1"},
+                                "origin":{"type":"string","const":"http://127.0.0.1:1420"},
+                                "route":{"type":"string","const":"/"},
+                                "viewport_width":{"type":"integer","const":1440},
+                                "viewport_height":{"type":"integer","const":940},
+                                "device_scale_factor":{"type":"integer","const":1},
+                                "screenshot_repeat_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "redaction":{"type":"object","properties":{
+                                    "selector":{"type":"string","const":".revision-chip"},
+                                    "x":{"type":"integer","minimum":0,"maximum":1440},
+                                    "y":{"type":"integer","minimum":0,"maximum":940},
+                                    "width":{"type":"integer","minimum":12,"maximum":1440},
+                                    "height":{"type":"integer","minimum":12,"maximum":940},
+                                    "mask_color":{"type":"string","const":"#0B0B0B"}
+                                },"required":["selector","x","y","width","height","mask_color"],
+                                  "additionalProperties":false},
+                                "external_requests":{"type":"integer","const":0},
+                                "credential_fields":{"type":"integer","const":0},
+                                "declared_scope":{"type":"string","const":"first-party-synthetic-fixture-only"}
+                            },
+                            "required":["schema","id","screenshot_asset_id","screenshot_sha256",
+                                "manifest_asset_id","manifest_sha256","fixture_state_sha256","claim_id","source_project_id",
+                                "source_generation","source_revision","app_id","app_version","source_commit",
+                                "scenario_id","origin","route","viewport_width","viewport_height",
+                                "device_scale_factor","screenshot_repeat_sha256","redaction",
+                                "external_requests","credential_fields","declared_scope"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "record"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertNativeCapsule,
             descriptor(
                 "native-capsule.upsert",
@@ -2480,7 +2547,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.product-hero.upsert"));
         assert!(names.contains(&"driver.motionwright.creative.patch.apply"));
         assert!(names.contains(&"driver.motionwright.creative.patch.undo"));
-        assert_eq!(capabilities.len(), 52);
+        assert!(names.contains(&"driver.motionwright.capture-source.register"));
+        assert_eq!(capabilities.len(), 53);
     }
 
     #[tokio::test]

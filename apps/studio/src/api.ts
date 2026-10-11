@@ -1,6 +1,7 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
+import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
@@ -916,6 +917,11 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
       break;
+    case "register_capture_source": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      registerCaptureRecord(next,change.record);
+      break;
+    }
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();
@@ -1371,6 +1377,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     case "remove_asset": {
       assertUnlocked(next, projectResource(next), ["content"]);
+      if(next.production_design?.captures?.some(record=>
+        record.screenshot_asset_id===change.asset_id ||
+        record.manifest_asset_id===change.asset_id))
+        throw new Error("Asset is referenced by an immutable capture provenance record.");
       if (
         next.audio.voice_tracks.some((track) => track.asset_id === change.asset_id) ||
         next.brief.claims.some((claim) => claim.source?.kind === "asset" && claim.source.asset_id === change.asset_id)
@@ -1796,6 +1806,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  validateCaptureRecords(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");
