@@ -3,7 +3,7 @@ use motionwright_domain::{
     MotionProperty, NodeStyle, RationalTime, RevisionStamp,
 };
 use motionwright_native::{
-    film::{FilmBuildOptions, SceneFilmIntent},
+    film::{FilmBuildOptions, SceneFilmIntent, build_motion_canvas_segments},
     production::{
         MltAudioArtifact, MltAvMasterRequest, MotionCanvasRenderEvidence, ProductionConnection,
         ProductionCoordinator,
@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <seed DATABASE | render DATABASE CONNECTION EVIDENCE_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -281,6 +281,98 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn fixture_film_options(
+    scene_id: Uuid,
+    expected_frames: u64,
+) -> Result<FilmBuildOptions, Box<dyn std::error::Error>> {
+    if expected_frames != 60 && expected_frames != 180 {
+        return Err("no canonical native-render fixture for this frame count".into());
+    }
+    Ok(FilmBuildOptions {
+        frame_rate: Rate::new(30, 1)?,
+        font_family: "Instrument Sans Variable".into(),
+        mono_font_family: "IBM Plex Mono".into(),
+        scene_intents: vec![SceneFilmIntent {
+            scene_id,
+            role: if expected_frames == 180 {
+                NarrativeRole::Reveal
+            } else {
+                NarrativeRole::Mechanism
+            },
+            archetype: if expected_frames == 180 {
+                Archetype::ObjectSpotlight
+            } else {
+                Archetype::Statement
+            },
+        }],
+    })
+}
+
+/// CI-only source transfer for a direct-driver parity test. This is not a
+/// production raw-execution API: the actual app still uses ProductionCoordinator
+/// and the pinned Semwright Native SDK. The exported Film is the same owned
+/// project revision passed to the mediated renderer, never a guessed mock.
+fn export_direct_parity_film(
+    database: &Path,
+    evidence_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Err("direct Film parity export is restricted to disposable CI".into());
+    }
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("direct parity fixture requires exactly one project".into());
+    }
+    let project = &projects[0];
+    let expected_frames = expected_fixture_frames(project)?;
+    if expected_frames != 60 || project.scenes.len() != 1 {
+        return Err("direct parity export only accepts the bounded 60-frame fixture".into());
+    }
+    let profile = project
+        .deliverables
+        .first()
+        .ok_or("direct parity fixture has no output profile")?;
+    if (profile.width, profile.height) != (1920, 1080) {
+        return Err("direct parity export requires the exact 1920x1080 source".into());
+    }
+    let options = fixture_film_options(project.scenes[0].id, expected_frames)?;
+    let segments = build_motion_canvas_segments(project, profile.id, &options)?;
+    if segments.len() != 1
+        || segments[0].frame_count != expected_frames
+        || segments[0].scene_ids != vec![project.scenes[0].id]
+    {
+        return Err("direct parity Film is not the exact source-bound 60-frame segment".into());
+    }
+    let contents = serde_json::to_vec_pretty(&segments[0].film)?;
+    if contents.is_empty() || contents.len() > 2 * 1024 * 1024 {
+        return Err("direct parity Film exceeds the controlled source budget".into());
+    }
+    if !evidence_path.parent().is_some_and(Path::is_dir) {
+        return Err("direct parity evidence parent directory is missing".into());
+    }
+    let mut stream = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(evidence_path)?;
+    stream.write_all(&contents)?;
+    stream.write_all(b"\n")?;
+    stream.sync_all()?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "direct_parity_source": "PASS",
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "segment_id": segments[0].id,
+            "frame_count": expected_frames,
+            "bytes": contents.len() + 1
+        }))?
+    );
+    Ok(())
+}
+
 async fn render(
     database: &Path,
     connection_path: &Path,
@@ -311,24 +403,7 @@ async fn render(
         return Err("owner-provisioned connection is not bound to the seeded project".into());
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
-    let options = FilmBuildOptions {
-        frame_rate: Rate::new(30, 1)?,
-        font_family: "Instrument Sans Variable".into(),
-        mono_font_family: "IBM Plex Mono".into(),
-        scene_intents: vec![SceneFilmIntent {
-            scene_id: scene.id,
-            role: if expected_frames == 180 {
-                NarrativeRole::Reveal
-            } else {
-                NarrativeRole::Mechanism
-            },
-            archetype: if expected_frames == 180 {
-                Archetype::ObjectSpotlight
-            } else {
-                Archetype::Statement
-            },
-        }],
-    };
+    let options = fixture_film_options(scene.id, expected_frames)?;
     let result = match coordinator
         .render_motion_canvas_segments(
             project.id,
@@ -592,6 +667,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             seed(&database)
+        }
+        "film" => {
+            let database = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            export_direct_parity_film(&database, &evidence)
         }
         "render" => {
             let database = path_arg(&mut args);

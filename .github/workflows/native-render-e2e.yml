@@ -14,6 +14,8 @@ on:
       - 'apps/desktop/src-tauri/**'
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
+      - 'tooling/native_direct_mediated_parity.py'
+      - 'tooling/tests/test_native_direct_mediated_parity.py'
       - 'tooling/native_provider_lifecycle.py'
       - 'tooling/tests/test_native_provider_lifecycle.py'
       - '.github/workflows/native-render-e2e.yml'
@@ -118,6 +120,9 @@ jobs:
             noncanonical_linear_opacity_keys_fail_without_approximation \
             -- --nocapture
 
+      - name: Verify direct-vs-mediated parity invariants before native rendering
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_direct_mediated_parity.py' -v
+
       - name: Verify bounded provider lifecycle diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
 
@@ -137,6 +142,8 @@ jobs:
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-middle.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-last.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-lifecycle.json"
+          test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-direct-parity-film.json"
+          test -s "verification/native-render-e2e/${GITHUB_SHA}/native-direct-mediated-parity.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -148,6 +155,22 @@ jobs:
           assert result["linear_position_motion_sampled"] is True
           assert result["native_motion_frame_sha256"]["start"] != result["native_motion_frame_sha256"]["end_of_linear_tween"]
           assert result["linear_opacity_motion_sampled"] is True
+          assert result["direct_mediated_native_frame_parity"] == "PASS"
+          assert len(result["direct_mediated_same_film_sha256"]) == 64
+          comparison = json.loads((root / "native-direct-mediated-parity.json").read_text())
+          assert comparison["schema"] == "motionwright-native-direct-mediated-parity/1"
+          assert comparison["motionwright_sha"] == os.environ["GITHUB_SHA"]
+          assert comparison["project_generation"] == result["project"]["generation"]
+          assert comparison["project_revision"] == result["project"]["revision"]
+          assert comparison["semwright_sha"] == result["semwright_sha"]
+          assert comparison["source_film_sha256"] == result["direct_mediated_same_film_sha256"]
+          assert comparison["direct_job_distinct_from_mediated"] is True
+          assert comparison["direct_native_validation_checks"] > 0
+          assert comparison["pixels"]["frame_count"] == 60
+          assert comparison["pixels"]["every_frame_byte_identical"] is True
+          assert len(comparison["pixels"]["ordered_frame_digests_sha256"]) == 64
+          assert comparison["human_visual_acceptance"] == "NOT_RUN"
+          assert comparison["arbitrary_renderer_property_parity"] == "NOT_PROVEN"
           region = result["native_linear_opacity_region"]
           assert region["scope"] == "actual_pinned_motion_canvas_png_rgb24_region_only"
           assert region["rect"] == [1150, 750, 180, 90]
