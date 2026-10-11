@@ -7,7 +7,16 @@ import "./variant-continuity.css";
 export default function VariantContinuityReview({project,profile,saved}:{
   project:Project;profile:DeliverableProfile;saved:DeliverableProfile|null;
 }) {
-  const preview=useMemo(()=>inspectVariantContinuity(project,profile),[project,profile]);
+  const preview=useMemo(()=>{
+    try {return inspectVariantContinuity(project,profile);}
+    catch {return null;}
+  },[project,profile]);
+  if(!preview) return <section className="variant-continuity" aria-label="Narrative cut continuity review">
+    <h3>Continuity not assessed</h3>
+    <p className="variant-continuity-intro" role="status">The source data exceeded this bounded
+      analysis or has invalid timing. No completeness claim is made. Review the project and cut
+      using the trusted source editor before making delivery decisions.</p>
+  </section>;
   const dirty=!!saved && JSON.stringify(profile)!==JSON.stringify(saved);
   const sourceNames=new Map(project.scenes.map(scene=>[scene.id,scene.name]));
   const claimNames=new Map(project.brief.claims.map(claim=>[claim.id,claim.text]));
