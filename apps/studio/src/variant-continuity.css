@@ -1,0 +1,38 @@
+.variant-continuity { border:1px solid var(--border); background:var(--surface-2); display:grid; gap:18px; padding:20px; min-width:0; }
+.variant-continuity-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
+.variant-continuity-heading > div { display:flex; gap:11px; align-items:flex-start; min-width:0; }
+.variant-continuity-heading svg { color:var(--muted); flex-shrink:0; margin-top:2px; }
+.variant-continuity-heading h3 { font-size:14px; font-weight:550; margin:0 0 5px; letter-spacing:-.015em; }
+.variant-continuity-heading p { font-size:11px; line-height:1.5; margin:0; color:var(--muted); }
+.variant-continuity-verdict { letter-spacing:.035em; text-align:right; color:var(--muted); font-size:10px; line-height:1.6; }
+.variant-continuity-intro { font-size:11px; line-height:1.75; color:var(--muted); margin:0; max-width:730px; }
+.variant-continuity-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--border-soft); }
+.variant-continuity-metrics > div { display:grid; align-content:space-between; gap:12px; min-width:0; padding:16px; border-right:1px solid var(--border-soft); }
+.variant-continuity-metrics > div:last-child { border-right:0; }
+.variant-continuity-metrics span { font-size:10px; line-height:1.45; color:var(--muted); }
+.variant-continuity-metrics strong { font-size:17px; font-weight:550; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.variant-continuity-omitted { border-left:2px solid var(--border); padding:9px 14px; background:var(--surface-1); }
+.variant-continuity-omitted strong { font-weight:550; font-size:11px; }
+.variant-continuity-omitted p { font-size:11px; color:var(--muted); line-height:1.55; margin:8px 0 0; }
+.variant-continuity-results { display:grid; gap:12px; }
+.variant-continuity-subhead { display:flex; gap:9px; align-items:center; }
+.variant-continuity-subhead > svg { color:var(--muted); }
+.variant-continuity-subhead strong { font-size:12px; font-weight:550; }
+.variant-continuity-subhead small { font-size:10px; margin-left:auto; color:var(--muted); }
+.variant-continuity-clear { font-size:11px; line-height:1.65; color:var(--muted); margin:0; }
+.variant-continuity-findings { max-height:340px; overflow-y:auto; display:grid; gap:1px; background:var(--border-soft); border:1px solid var(--border-soft); }
+.variant-continuity-findings article { display:grid; gap:6px; padding:12px 14px; background:var(--surface-1); }
+.variant-continuity-findings article > span { font-size:9px; letter-spacing:.04em; color:var(--muted); text-transform:uppercase; }
+.variant-continuity-findings article > strong { font-size:11px; font-weight:550; }
+.variant-continuity-findings article p { font-size:11px; line-height:1.6; color:var(--muted); margin:0; }
+.variant-continuity-findings article small { font-size:10px; color:var(--dim); }
+.variant-continuity-findings > p { font-size:11px; color:var(--muted); padding:12px; }
+.variant-continuity-disclosure { display:flex; gap:10px; border-top:1px solid var(--border); padding-top:15px; }
+.variant-continuity-disclosure svg { flex-shrink:0; margin-top:2px; color:var(--muted); }
+.variant-continuity-disclosure p { font-size:10px; line-height:1.7; color:var(--muted); margin:0; }
+@media (max-width:850px) {
+ .variant-continuity-heading { flex-direction:column; }
+ .variant-continuity-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .variant-continuity-metrics > div:nth-child(2) {border-right:0;}
+ .variant-continuity-metrics > div:nth-child(-n+2) {border-bottom:1px solid var(--border-soft);}
+}

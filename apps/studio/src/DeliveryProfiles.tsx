@@ -1,6 +1,7 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import NativeAvReview from "./NativeAvReview";
+import VariantContinuityReview from "./VariantContinuityReview";
 import {
   assembleNativeAvMaster,
   assembleNativeMultisegmentAvMaster,
@@ -764,6 +765,8 @@ export default function DeliveryProfiles({
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> A protected scene is outside this cut. Saving will remain blocked until it is included.</div>
               )}
             </section>
+
+            <VariantContinuityReview project={project} profile={draft} saved={selected} />
 
             {(localizedVariant || Object.keys(draft.text_overrides).length > 0) && (
               <section className="caption-export-panel" aria-label="Localized text">

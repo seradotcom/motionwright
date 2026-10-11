@@ -1,0 +1,60 @@
+name: Narrative Cut Continuity
+
+on:
+  pull_request:
+    paths:
+      - "apps/studio/src/variantContinuity*"
+      - "apps/studio/src/VariantContinuityReview.tsx"
+      - "apps/studio/src/DeliveryProfiles.tsx"
+      - "apps/studio/tests/variant-continuity.spec.ts"
+      - "docs/creative-production/**"
+      - ".github/workflows/variant-continuity.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/studio/src/variantContinuity*"
+      - "apps/studio/src/VariantContinuityReview.tsx"
+      - "apps/studio/src/DeliveryProfiles.tsx"
+      - ".github/workflows/variant-continuity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python3 tooling/source_policy.py
+      - run: python3 tooling/creative_status_policy.py
+
+  studio-and-browser:
+    needs: source
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/variantContinuity.test.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/variant-continuity.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: narrative-variant-browser-evidence
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore
