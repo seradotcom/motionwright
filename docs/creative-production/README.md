@@ -30,10 +30,13 @@ In **Native inspection**, select the output profile matching a current native re
 
 ## First-party reproducible screen capture (MW05-E07-02)
 
-An isolated source-pinned Chromium workflow now captures the actual
+An isolated source-pinned Chromium workflow captures the actual
 first-party Studio interface using a synthetic local project state, a
 versioned navigation scenario, pinned viewport, explicit revision-chip
-redaction and repeated PNG SHA-256. A separate byte/pixel verifier checks
+redaction and repeated PNG SHA-256. The separate Production ? Capture sources
+workstation supports append-only, metadata-bound registration of previously
+imported redacted PNG and JSON evidence against an authored project claim;
+it never creates or certifies a raw screenshot. A separate byte/pixel verifier checks
 the masked image, its claim/source linkage, allowed loopback origin and
 absence of private credentials or external requests.
 

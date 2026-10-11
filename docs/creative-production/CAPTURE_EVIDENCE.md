@@ -71,6 +71,13 @@ must match at registration. For portable project imports, the historical
 generation remains in the record after the application's import procedure
 rotates the current generation.
 
+The Production ? Capture sources workstation now allows the editor to
+author a bounded first-party claim, select previously imported PNG and JSON
+source assets, and supply the actual fixture digest, source revision, app
+version and mask geometry. The panel does not read bytes, capture the desktop,
+or certify privacy. Native SDK/StudioService and the separate PNG evidence
+verifier remain authoritative.
+
 The record has a fixed first-party origin, app, scenario, versioned viewport,
 mask selector, no external-request or credential-field allowance and a
 strict bounded schema. It cannot carry raw credentials, arbitrary URL/cookies,
