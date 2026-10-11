@@ -374,10 +374,16 @@
     },
     {
       "id": "MW05-E07-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "No reproducible real software capture added",
-      "remaining_scope": "Versioned scenarios, data state and redactions required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA",
+      "remaining_scope": "General user-authorized external app/native window capture, media-rights and actual dataset provenance, multi-step real application scenarios, credential/PII coverage beyond test fixture, durable CAS screenshot claim ledger and ProductStage screen-media/renderer integration remain open",
+      "source_paths": [
+        "apps/studio/tests/reproducible-capture.spec.ts",
+        "tooling/capture_evidence.py",
+        "tooling/tests/test_capture_evidence.py",
+        ".github/workflows/capture-evidence.yml",
+        "docs/creative-production/CAPTURE_EVIDENCE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

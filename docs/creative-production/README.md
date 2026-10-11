@@ -28,6 +28,20 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## First-party reproducible screen capture (MW05-E07-02)
+
+An isolated source-pinned Chromium workflow now captures the actual
+first-party Studio interface using a synthetic local project state, a
+versioned navigation scenario, pinned viewport, explicit revision-chip
+redaction and repeated PNG SHA-256. A separate byte/pixel verifier checks
+the masked image, its claim/source linkage, allowed loopback origin and
+absence of private credentials or external requests.
+
+See [Capture Evidence](CAPTURE_EVIDENCE.md). The captured artifact is
+first-party test evidence **only**, not a third-party customer interaction,
+general-purpose desktop recording, ProductStage media ingest or creative
+approval. The v0.5 requirement remains partially implemented.
+
 ## Data and migration contracts
 
 Format 1 is read without changing revision or generation. Its first successful edit writes format 2 in the same existing transaction. A failed operation does not upgrade or alter the stored project. New creative state cannot be labeled format 1, and unknown future formats are rejected. The UI exposes the upgrade boundary before editing. This is not an implementation of cross-product legacy import.
