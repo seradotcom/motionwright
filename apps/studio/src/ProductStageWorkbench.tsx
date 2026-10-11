@@ -37,8 +37,27 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
   const valid=(()=>{
     try{validateProductStageConfig(draft);return true;}catch{return false;}
   })();
+  const brandConflict=(()=>{
+    const policy=project.production_design?.brand_profile;
+    if(!policy || !scene)return null;
+    const waived=(id:string)=>project.production_design?.brand_exceptions?.some(
+      exception=>exception.scene_id===scene.id && exception.rule_id===id)??false;
+    for(const rule of policy.rules){
+      if(waived(rule.id))continue;
+      if(rule.kind==="allowed_accents" &&
+        !rule.colors.some(color=>color.toLowerCase()===draft.accent.toLowerCase()))
+        return "This ProductStage accent is outside the mandatory BrandProfile palette.";
+      if(rule.kind==="required_wordmark")
+        return "This generic stage cannot satisfy the required wordmark; use an approved scene-scoped exception.";
+      if(rule.kind==="forbidden_phrase" &&
+        [draft.screen_heading,draft.screen_detail,draft.action_label].some(
+          text=>text.toLowerCase().includes(rule.phrase.toLowerCase())))
+        return "ProductStage copy contains a phrase forbidden by the active BrandProfile.";
+    }
+    return null;
+  })();
   const canSave=!!scene && scene.renderer==="motion-canvas" && seconds(scene.duration)>=2 &&
-    valid && !!preview.length && !previewError && !loading && !changed && !locked && !busy;
+    valid && !brandConflict && !!preview.length && !previewError && !loading && !changed && !locked && !busy;
   function reload(){
     setDraft(structuredClone(stored?.config??defaultProductStageConfig()));
     setBase(project.revision);setCommitError(null);
@@ -141,6 +160,7 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       <p className="production-help">{PRODUCT_STAGE_DISCLOSURE}. This disclosure is mandatory
         in native output while the stage is bound. Replacing content preserves stable screen
         and focus anchors, compatible human overrides and the existing scene camera.</p>
+      {brandConflict && <p role="status" className="production-error">{brandConflict}</p>}
       {previewError && draft.author_attestation.trim() && <p role="alert" className="production-error">{previewError}</p>}
       {commitError && <p role="alert" className="production-error">{commitError}</p>}
       <button className="primary-button" disabled={!canSave} onClick={()=>void save()}>

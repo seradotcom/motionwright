@@ -1,5 +1,6 @@
 import {describe,expect,it} from "vitest";
 import {applyChange} from "./api";
+import { brandDigest } from "./brandGovernance";
 import {emptyProductionDesign} from "./creativeProduction";
 import {fixtureProject} from "./fixture";
 import {rationalSeconds} from "./types";
@@ -115,5 +116,45 @@ describe("ProductStage generic original UI grammar",()=>{
   it("refuses overlong native text that cannot fit a handset screen rather than clipping it",async()=>{
     const config={...ready(),frame:"generic_handset" as const,screen_heading:"M".repeat(40)};
     await expect(realizeProductStage(id,config,1920,1080)).rejects.toThrow(/screen anchor/);
+  });
+});
+
+describe("brand-governed generic ProductStage",()=>{
+  it("enforces BrandProfile palette on configured and human-edited focus and supports exact scoped waiver",async()=>{
+    let p=await commit(seed(),ready());
+    const rule=crypto.randomUUID(),sceneId=p.scenes[0].id;
+    const brand={id:crypto.randomUUID(),label:"Owned UI accent palette",version:1,
+      rules:[{kind:"allowed_accents" as const,id:rule,colors:["#86C8D1"]}]};
+    p=await applyChange(p,{type:"set_brand_governance",profile:brand,exceptions:[]});
+    const forbidden={...ready(),accent:"#F06020"};
+    await expect(commit(p,forbidden)).rejects.toThrow(/Brand rule/);
+    const focus=await stageNodeId(id,"focus_marker");
+    const original=p.scenes[0].nodes.find(n=>n.id===focus)!;
+    expect(original.style.fill).toBe("#86C8D1");
+    await expect(applyChange(p,{type:"update_canvas_style",scene_id:sceneId,
+      node_id:focus,style:{...original.style,fill:"#F06020"}})).rejects.toThrow(/Brand rule/);
+    const digest=await brandDigest(brand);
+    p=await applyChange(p,{type:"set_brand_governance",profile:brand,exceptions:[{
+      id:crypto.randomUUID(),rule_id:rule,scene_id:sceneId,brand_sha256:digest,
+      campaign:"One reviewed original-UI campaign",author:"Declaring owner",
+      rationale:"Exact-scene alternate source palette approval",
+    }]});
+    p=await commit(p,forbidden);
+    expect(p.production_design?.stages?.[0].config.accent).toBe("#F06020");
+  });
+  it("never silently bypasses a required wordmark on a generic stage",async()=>{
+    const rule=crypto.randomUUID();
+    const brand={id:crypto.randomUUID(),label:"Required wordmark policy",version:1,
+      rules:[{kind:"required_wordmark" as const,id:rule,text:"OWNER"}]};
+    let p=await applyChange(seed(),{type:"set_brand_governance",profile:brand,exceptions:[]});
+    await expect(commit(p,ready())).rejects.toThrow(/Brand rule/);
+    const digest=await brandDigest(brand);
+    p=await applyChange(p,{type:"set_brand_governance",profile:brand,exceptions:[{
+      id:crypto.randomUUID(),rule_id:rule,scene_id:p.scenes[0].id,
+      brand_sha256:digest,campaign:"One scoped UI study",author:"Approving owner",
+      rationale:"No real-product-capture claim permitted",
+    }]});
+    p=await commit(p,ready());
+    expect(p.production_design?.stages).toHaveLength(1);
   });
 });

@@ -53,6 +53,25 @@ reproducibility belong to later requirements; no third-party media is copied
 or presented as the tested software here. A user can falsely assert authorship:
 this implementation cannot automatically audit license ownership.
 
+## Brand policy enforcement
+
+An active project BrandProfile applies to the source ProductStage as well as
+to its effective human-edited Canvas nodes. Allowed accent policies govern
+the chrome indicator, card highlight, action button and screen-relative focus
+marker. The native source generator derives all four from the declared accent;
+the layout and object identities are unchanged. Changing the source config or
+manually recoloring one of those objects outside the allowed palette fails
+the canonical Rust/Studio project validation.
+
+Forbidden phrases are checked against visible source copy and actual scene
+text. A policy requiring a wordmark cannot be satisfied by the intentionally
+anonymous original graphic and therefore blocks its attachment without an
+explicit scene/rule-scoped, exact-policy-digest BrandException. Existing
+inferred aesthetic preferences never waive the mandatory policy, and a
+waiver for one scene cannot authorize another. The Studio inspector reports
+these basic constraints before commit; actual project validation remains the
+authority and also checks edited, persisted node fills.
+
 ## Contracts and tests
 
 Application revisions use Change::UpsertProductStage and

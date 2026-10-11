@@ -323,6 +323,7 @@ impl ProductionDesign {
             &self.project_decisions,
             scenes,
             &self.heroes,
+            &self.stages,
         )?;
         if self.heroes.len() > 64 || self.capsules.len() > 256 || self.stages.len() > 16 {
             return Err(DomainError::Invalid(

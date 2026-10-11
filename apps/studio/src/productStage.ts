@@ -25,6 +25,7 @@ export interface ProductStageInstance {
   config:ProductStageConfig;baseline:CanvasNode[];
 }
 export const PRODUCT_STAGE_DISCLOSURE="ORIGINAL UI GRAPHIC / NOT A PRODUCT CAPTURE";
+export const STAGE_ACCENT_ROLES=["chrome_indicator","card_highlight","action_button","focus_marker"] as const;
 export const STAGE_ROLES=[
   "frame","screen","chrome","chrome_indicator",
   "screen_heading","screen_detail","card","card_highlight",
@@ -134,7 +135,7 @@ export async function realizeProductStage(id:string,config:ProductStageConfig,w=
     ["card_highlight","rectangle",sub(screen,.115,.465,.23,.115),12,config.accent,null,0,400],
     ["action_button","rectangle",sub(screen,.08,.77,.36,.10),13,config.accent,null,0,400],
     ["action_text","text",sub(screen,.10,.79,.29,.055),14,"#132431",config.action_label,actionFont,600],
-    ["focus_marker","circle",{x:fx-focusSize/2,y:fy-focusSize/2,w:focusSize,h:focusSize},15,"#F7C87B",null,0,400],
+    ["focus_marker","circle",{x:fx-focusSize/2,y:fy-focusSize/2,w:focusSize,h:focusSize},15,config.accent,null,0,400],
     ["focus_caption","text",{x:calloutX,y:fy-11*scale,w:screen.w*.12,h:26*scale},16,config.foreground,"FOCUS",12*scale,600],
     ["screen_caption","text",sub(screen,.08,.91,.82,.04),17,config.foreground,caption,12*scale,500],
     ["disclosure","text",{x:w*.11,y:h*.905,w:w*.78,h:24*scale},18,config.foreground,PRODUCT_STAGE_DISCLOSURE,14*scale,400],

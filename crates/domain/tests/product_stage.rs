@@ -373,3 +373,171 @@ fn actual_native_stage_copy_is_safe_in_both_anonymous_frame_widths() {
         }
     }
 }
+
+#[test]
+fn stage_palette_applies_to_effective_objects_and_digest_scoped_waivers() {
+    let mut p = project();
+    upsert(&mut p, config()).unwrap();
+    let rule_id = Uuid::new_v4();
+    let brand = BrandProfile {
+        id: Uuid::new_v4(),
+        label: "Authorized generic product palette".into(),
+        version: 1,
+        rules: vec![BrandRule::AllowedAccents {
+            id: rule_id,
+            colors: vec!["#86C8D1".into()],
+        }],
+    };
+    p.apply_change(&Change::SetBrandGovernance {
+        profile: Some(brand.clone()),
+        exceptions: vec![],
+    })
+    .unwrap();
+
+    let mut forbidden = config();
+    forbidden.accent = "#F06020".into();
+    let mut attempt = p.clone();
+    assert!(
+        upsert(&mut attempt, forbidden.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    assert_eq!(p.production_design.stages[0].config.accent, "#86C8D1");
+
+    let scene_id = p.scenes[0].id;
+    let focus_id = stage_node_id(id(), "focus_marker");
+    let mut changed_style = p.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == focus_id)
+        .unwrap()
+        .style
+        .clone();
+    changed_style.fill = Some("#F06020".into());
+    let mut edited = p.clone();
+    assert!(
+        edited
+            .apply_change(&Change::UpdateCanvasStyle {
+                scene_id,
+                node_id: focus_id,
+                style: changed_style
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .find(|n| n.id == focus_id)
+            .unwrap()
+            .style
+            .fill
+            .as_deref(),
+        Some("#86C8D1")
+    );
+
+    // A narrowly-scoped, exact-digest exception allows this scene only.
+    let waiver = BrandException {
+        id: Uuid::new_v4(),
+        rule_id,
+        scene_id,
+        brand_sha256: brand.content_digest().unwrap(),
+        campaign: "One explicitly reviewed UI campaign".into(),
+        author: "Declaring design owner".into(),
+        rationale: "Allow a single alternative palette on this original graphic".into(),
+    };
+    p.apply_change(&Change::SetBrandGovernance {
+        profile: Some(brand.clone()),
+        exceptions: vec![waiver],
+    })
+    .unwrap();
+    upsert(&mut p, forbidden.clone()).unwrap();
+    p.validate().unwrap();
+
+    p.apply_change(&Change::AddScene {
+        name: "Second unwaived screen".into(),
+        objective: "No scoped policy exception applies here".into(),
+        duration_seconds: 6,
+    })
+    .unwrap();
+    let second = p.scenes[1].id;
+    let mut unrelated = p.clone();
+    assert!(
+        unrelated
+            .apply_change(&Change::UpsertProductStage {
+                instance_id: Uuid::new_v4(),
+                scene_id: second,
+                config: forbidden,
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    assert_eq!(p.production_design.stages.len(), 1);
+}
+
+#[test]
+fn required_brand_wordmark_and_prohibited_stage_copy_fail_closed() {
+    let mut p = project();
+    let wordmark_id = Uuid::new_v4();
+    let brand = BrandProfile {
+        id: Uuid::new_v4(),
+        label: "Required brand identity".into(),
+        version: 1,
+        rules: vec![BrandRule::RequiredWordmark {
+            id: wordmark_id,
+            text: "OWNER".into(),
+        }],
+    };
+    p.apply_change(&Change::SetBrandGovernance {
+        profile: Some(brand.clone()),
+        exceptions: vec![],
+    })
+    .unwrap();
+    let mut attempted = p.clone();
+    assert!(
+        upsert(&mut attempted, config())
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    let waiver = BrandException {
+        id: Uuid::new_v4(),
+        rule_id: wordmark_id,
+        scene_id: p.scenes[0].id,
+        brand_sha256: brand.content_digest().unwrap(),
+        campaign: "One explicitly excluded original UI".into(),
+        author: "Approving producer".into(),
+        rationale: "This isolated original generic stage carries a separate visual identity".into(),
+    };
+    p.apply_change(&Change::SetBrandGovernance {
+        profile: Some(brand),
+        exceptions: vec![waiver],
+    })
+    .unwrap();
+    upsert(&mut p, config()).unwrap();
+
+    let forbidden = BrandProfile {
+        id: Uuid::new_v4(),
+        label: "Editorial exclusions".into(),
+        version: 1,
+        rules: vec![BrandRule::ForbiddenPhrase {
+            id: Uuid::new_v4(),
+            phrase: "clear workflow".into(),
+        }],
+    };
+    let mut rejected = p.clone();
+    assert!(
+        rejected
+            .apply_change(&Change::SetBrandGovernance {
+                profile: Some(forbidden),
+                exceptions: vec![],
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+}

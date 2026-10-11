@@ -10,6 +10,12 @@ use std::collections::BTreeSet;
 
 pub const PRODUCT_STAGE_VERSION: u32 = 1;
 pub const PRODUCT_STAGE_DISCLOSURE: &str = "ORIGINAL UI GRAPHIC / NOT A PRODUCT CAPTURE";
+pub const STAGE_ACCENT_ROLES: [&str; 4] = [
+    "chrome_indicator",
+    "card_highlight",
+    "action_button",
+    "focus_marker",
+];
 pub const STAGE_ROLES: [&str; 14] = [
     "frame",
     "screen",
@@ -440,7 +446,7 @@ pub fn realize_product_stage(
                 h: focus_size,
             },
             15,
-            ("#F7C87B", None, 0.0, 400),
+            (&config.accent, None, 0.0, 400),
         ),
         static_node(
             id,
