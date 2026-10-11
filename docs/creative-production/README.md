@@ -28,6 +28,14 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## Original planar camera reframe (MW05-E07-03)
+
+Production ? Camera now authors a bounded source-owned 2D camera pan using
+the existing Semwright Native SDK and Film timeline. See
+[Camera Reframe](CAMERA_REFRAME.md). It is an original, editable planar
+camera translation, not 3D optics, dolly, lens simulation, native MP4 or
+human creative approval until corresponding proofs have passed.
+
 ## Integrated original composition contracts
 
 The existing production model now admits four distinct source-bound creative

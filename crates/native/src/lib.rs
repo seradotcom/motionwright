@@ -720,6 +720,8 @@ enum OperationKind {
     DetachProductHero,
     UpsertProductStage,
     DetachProductStage,
+    UpsertCameraReframe,
+    DetachCameraReframe,
     UpsertProceduralField,
     DetachProceduralField,
     SetProductionPlan,
@@ -910,6 +912,17 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         }),
         OperationKind::DetachProductStage => Ok(Change::DetachProductStage {
             instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::UpsertCameraReframe => Ok(Change::UpsertCameraReframe {
+            reframe: serde_json::from_value(
+                args.get("reframe")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("camera reframe object is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid owned native camera reframe contract"))?,
+        }),
+        OperationKind::DetachCameraReframe => Ok(Change::DetachCameraReframe {
+            id: uuid(args, "id")?,
         }),
         OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
             instance_id: uuid(args, "instance_id")?,
@@ -2362,6 +2375,48 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertCameraReframe,
+            descriptor(
+                "camera-reframe.upsert",
+                "Author an exact bounded planar camera move while preserving existing editable Canvas subjects",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "reframe":{
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","format":"uuid"},
+                                "scene_id":{"type":"string","format":"uuid"},
+                                "component_version":{"type":"integer","const":1},
+                                "start_center_x":{"type":"number","minimum":720,"maximum":1200},
+                                "start_center_y":{"type":"number","minimum":320,"maximum":760},
+                                "end_center_x":{"type":"number","minimum":720,"maximum":1200},
+                                "end_center_y":{"type":"number","minimum":320,"maximum":760},
+                                "duration_frames":{"type":"integer","minimum":12,"maximum":180}
+                            },
+                            "required":["id","scene_id","component_version",
+                                "start_center_x","start_center_y","end_center_x","end_center_y",
+                                "duration_frames"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "reframe"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachCameraReframe,
+            descriptor(
+                "camera-reframe.detach",
+                "Release an original camera pan without deleting its semantic subjects or terminal camera position",
+                schema(
+                    json!({"ref":{"type":"string","maxLength":512},
+                        "id":{"type":"string","format":"uuid"}}),
+                    &["ref", "id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertProceduralField,
             descriptor(
                 "procedural-field.upsert",
@@ -2862,7 +2917,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         // The unified composition admission exposed 61 operations; the music
         // cut adds one scoped, owner-source-bound Native SDK operation.
-        assert_eq!(capabilities.len(), 62);
+        assert!(names.contains(&"driver.motionwright.camera-reframe.upsert"));
+        assert!(names.contains(&"driver.motionwright.camera-reframe.detach"));
+        assert_eq!(capabilities.len(), 64);
     }
 
     #[tokio::test]

@@ -469,10 +469,21 @@
     },
     {
       "id": "MW05-E07-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No arc, dolly or focal camera rigs added",
-      "remaining_scope": "Provider limits and real temporal previews required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Bounded original planar 2D camera source with start/end center, 12?180 30fps frames, 80px displacement limit, safe-area preflight, native per-subject Film Settle projection and explicit Studio + Native SDK CAS edit/detach",
+      "remaining_scope": "Full source-pinned native MP4 proof, 3D arc/dolly/focal-length controls, concurrent object-keyframe timelines, multiple beats and arbitrary frame rates, optical/perspective/lit shots and human creative review are not complete",
+      "source_paths": [
+        "crates/domain/src/camera_reframe.rs",
+        "crates/domain/tests/camera_reframe.rs",
+        "crates/native/src/film.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/tests/camera_reframe.rs",
+        "apps/studio/src/cameraReframe.ts",
+        "apps/studio/src/cameraReframe.test.ts",
+        "apps/studio/src/CameraReframeWorkbench.tsx",
+        "apps/studio/tests/camera-reframe.spec.ts",
+        "docs/creative-production/CAMERA_REFRAME.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
