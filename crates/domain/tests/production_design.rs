@@ -571,3 +571,78 @@ fn metric_evidence_family_change_protects_human_copy_and_rejects_conflicts() {
         "conflicts must not partially apply a generated metric"
     );
 }
+
+#[test]
+fn metric_source_disclosure_is_frozen_until_explicit_detach() {
+    let mut p = project();
+    let id = Uuid::new_v4();
+    insert(
+        &mut p,
+        id,
+        HeroConfig {
+            layout: HeroLayout::MetricEvidence,
+            headline: "42% growth".into(),
+            body: "Reported figures require measured source evidence.".into(),
+            wordmark: "DATA".into(),
+            ..HeroConfig::default()
+        },
+    );
+    let scene_id = p.scenes[0].id;
+    let node_id = hero_node_id(id, "disclosure");
+    assert!(p.scenes[0].nodes.iter().any(|node| node.id == node_id
+        && node.text.as_deref()
+            == Some("METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED")));
+
+    let notice = p.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .unwrap();
+    let hidden = CanvasTransform {
+        x: notice.x,
+        y: notice.y,
+        width: notice.width,
+        height: notice.height,
+        rotation_deg: notice.rotation_deg,
+        opacity: 0.0,
+    };
+    for bad in [
+        Change::TransformCanvasNode {
+            scene_id,
+            node_id,
+            transform: hidden,
+        },
+        Change::UpdateCanvasText {
+            scene_id,
+            node_id,
+            text: Some("This is confirmed evidence".into()),
+        },
+        Change::RemoveCanvasNode { scene_id, node_id },
+    ] {
+        let before = p.clone();
+        let mut staging = p.clone();
+        let error = staging.apply_change(&bad).unwrap_err();
+        assert!(
+            error.to_string().contains("disclosure"),
+            "bad edit must fail because the bound notice is protected: {error}",
+        );
+        assert_eq!(
+            p, before,
+            "source state stays untouched in caller workspace"
+        );
+    }
+
+    // The operator can still add locks: those do not change visual content.
+    p.apply_change(&Change::SetNodePropertyLock {
+        scene_id,
+        node_id,
+        property: NodeProperty::Text,
+        locked: true,
+    })
+    .unwrap();
+
+    p.apply_change(&Change::DetachProductHero { instance_id: id })
+        .unwrap();
+    assert!(p.production_design.heroes.is_empty());
+    assert!(p.scenes[0].nodes.iter().any(|node| node.id == node_id));
+}

@@ -77,6 +77,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
       </div>
       <label className="production-check"><input type="checkbox" checked={draft.motion} onChange={e => setDraft({...draft,motion:e.target.checked})}/> Animate entrance</label>
       <p className="production-help">Turning motion off creates a static equivalent. Changing family reflows the same six stable object identities; updating preserves compatible human overrides and rejects conflicts. Split and metric layouts read left-to-right in landscape and reflow top-to-bottom on compact formats. MetricEvidence text is user supplied and carries an explicit unverified-source disclosure.</p>
+      {draft.layout==="metric_evidence" && <p className="production-help">SOURCE NOT VERIFIED is protected while this component is attached. Detaching preserves the objects but removes this semantic safeguard; it does not verify the underlying claim.</p>}
       {error && <p className="production-error" role="alert">{error}</p>}
       {!scene && <button className="primary-button" disabled={busy} onClick={() => commit({type:"add_scene",name:"Product hero",objective:"An original, editable product reveal",duration_seconds:6})}><Plus size={14}/> Create a six-second scene</button>}
       {scene && (scene.renderer!=="motion-canvas" || seconds(scene.duration)<2) && <p className="production-error">Select a Motion Canvas scene at least two seconds long. Existing scene settings will not be replaced automatically.</p>}

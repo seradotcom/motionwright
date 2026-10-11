@@ -1,5 +1,5 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
-import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
+import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
@@ -1767,6 +1767,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  validateMetricSourceNoticesOnEdit(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");

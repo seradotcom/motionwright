@@ -132,6 +132,27 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
     return node;
   }));
 }
+/** Source-unverified caption is immutable only while MetricEvidence remains
+ * an attached managed composition. Old projects remain readable; mutations
+ * must restore an original exact caption or explicitly detach the component.
+ * Mirrors the Rust Project write guard, including the property-lock exception.
+ */
+export function validateMetricSourceNoticesOnEdit(project: Project): void {
+  for (const hero of project.production_design?.heroes ?? []) {
+    if (hero.config.layout !== "metric_evidence") continue;
+    const baseline = hero.baseline.find(node => node.name === "MetricEvidence / disclosure");
+    const actual = project.scenes.find(scene => scene.id === hero.scene_id)
+      ?.nodes.find(node => node.id === baseline?.id);
+    if (!baseline || !actual) {
+      throw new Error("MetricEvidence source-not-verified disclosure cannot be deleted.");
+    }
+    const visible = { ...actual, property_locks: baseline.property_locks };
+    if (!sameValue(visible, baseline)) {
+      throw new Error("MetricEvidence source-not-verified disclosure is immutable while attached.");
+    }
+  }
+}
+
 export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;

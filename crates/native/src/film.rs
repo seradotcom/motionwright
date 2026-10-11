@@ -1276,6 +1276,11 @@ pub fn build_motion_canvas_segments(
     project
         .validate()
         .map_err(|error| contract("Motionwright project is invalid", error))?;
+    // Historical projects remain readable, but a tampered attached metric
+    // notice must never be submitted as an authoritative native Film.
+    project
+        .validate_metric_source_notices()
+        .map_err(|error| contract("MetricEvidence source disclosure is invalid", error))?;
     let intents = options.intent_map()?;
     let deliverable = project
         .deliverables
@@ -2146,6 +2151,58 @@ mod tests {
         assert_eq!(segments[0].global_start, Rational::ZERO);
         assert_eq!(segments[0].duration, Rational::new(1, 1).unwrap());
         assert_eq!(segments[0].frame_count, 30);
+    }
+
+    #[test]
+    fn native_film_refuses_a_tampered_historical_metric_notice() {
+        use motionwright_domain::{HeroConfig, HeroLayout, hero_node_id};
+
+        let mut project = Project::new("Source caption historical import").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Metric study".into(),
+                objective: "A statement not yet supported by source measurements".into(),
+                duration_seconds: 6,
+            })
+            .unwrap();
+        let id = Uuid::new_v4();
+        let scene_id = project.scenes[0].id;
+        project
+            .apply_change(&Change::UpsertProductHero {
+                instance_id: id,
+                scene_id,
+                config: HeroConfig {
+                    layout: HeroLayout::MetricEvidence,
+                    headline: "42% growth".into(),
+                    body: "This figure still needs independent source checking.".into(),
+                    wordmark: "DATA".into(),
+                    ..HeroConfig::default()
+                },
+            })
+            .unwrap();
+
+        let notice_id = hero_node_id(id, "disclosure");
+        project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == notice_id)
+            .unwrap()
+            .text = Some("APPROVED FACT".into());
+        // Historical reads can return an old authored document unchanged.
+        assert!(project.validate().is_ok());
+        // A native media export cannot silently legitimize its missing notice.
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: vec![],
+        };
+        let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap_err();
+        assert!(
+            error.message.contains("MetricEvidence source disclosure"),
+            "native film should refuse a tampered source-not-verified caption: {error:?}"
+        );
     }
 
     #[test]

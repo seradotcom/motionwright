@@ -192,3 +192,35 @@ describe("MetricEvidence as a third versioned composition family", () => {
     expect(p).toEqual(before);
   });
 });
+
+describe("attached MetricEvidence source notice cannot be rewritten into a verification claim",()=>{
+  it("rejects source-disclosure text edits and node deletion without changing the project",async()=>{
+    const sourceProject=source();
+    let p=await applyChange(sourceProject,{
+      type:"upsert_product_hero",instance_id:instance,scene_id:sourceProject.scenes[0].id,
+      config:{...defaultHeroConfig(),layout:"metric_evidence",headline:"42% growth",
+        body:"Original user-authored data, pending source verification.",wordmark:"DATA"}
+    });
+    const scene_id=p.scenes[0].id;
+    const node_id=await heroNodeId(instance,"disclosure");
+    expect(p.scenes[0].nodes.find(n=>n.id===node_id)?.text)
+      .toBe("METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED");
+    const prior=structuredClone(p);
+    await expect(applyChange(p,{
+      type:"update_canvas_text",scene_id,node_id,text:"VERIFIED BY US"
+    })).rejects.toThrow("disclosure");
+    await expect(applyChange(p,{
+      type:"remove_canvas_node",scene_id,node_id
+    })).rejects.toThrow("disclosure");
+    const disclosure=p.scenes[0].nodes.find(n=>n.id===node_id)!;
+    await expect(applyChange(p,{
+      type:"transform_canvas_node",scene_id,node_id,
+      transform:{x:disclosure.x,y:disclosure.y,width:disclosure.width,height:disclosure.height,
+        rotation_deg:disclosure.rotation_deg,opacity:0}
+    })).rejects.toThrow("disclosure");
+    expect(p).toEqual(prior);
+    p=await applyChange(p,{type:"detach_product_hero",instance_id:instance});
+    expect(p.production_design?.heroes).toHaveLength(0);
+    expect(p.scenes[0].nodes.find(n=>n.id===node_id)?.text).toContain("SOURCE NOT VERIFIED");
+  });
+});

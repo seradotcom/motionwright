@@ -2254,7 +2254,51 @@ impl Project {
             }
         }
         self.updated_at = Utc::now();
-        self.validate()
+        self.validate()?;
+        self.validate_metric_source_notices()
+    }
+
+    /// A source-unverified metric study must keep its authored disclosure
+    /// while it remains a managed semantic component. This runs on writes,
+    /// not on historical reads, so an older project is never erased on load.
+    /// Explicit detachment remains a separate human authoring choice.
+    pub fn validate_metric_source_notices(&self) -> Result<()> {
+        for hero in &self.production_design.heroes {
+            if hero.config.layout != HeroLayout::MetricEvidence {
+                continue;
+            }
+            let expected = hero
+                .baseline
+                .iter()
+                .find(|node| node.id == hero_node_id(hero.id, "disclosure"))
+                .ok_or_else(|| {
+                    DomainError::Invalid(
+                        "MetricEvidence baseline is missing its source disclosure".into(),
+                    )
+                })?;
+            let observed = self
+                .scenes
+                .iter()
+                .find(|scene| scene.id == hero.scene_id)
+                .and_then(|scene| scene.nodes.iter().find(|node| node.id == expected.id))
+                .ok_or_else(|| {
+                    DomainError::Locked(
+                        "MetricEvidence source-not-verified disclosure cannot be deleted".into(),
+                    )
+                })?;
+            // Property locks affect edit rights but not visual appearance.
+            // All other fields, including motion, opacity, geometry, text,
+            // paint and z-order, must match the exact generated source.
+            let mut normalized = observed.clone();
+            normalized.property_locks = expected.property_locks.clone();
+            if normalized != *expected {
+                return Err(DomainError::Locked(
+                    "MetricEvidence source-not-verified disclosure is immutable while attached"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn reflow_scene_starts(&mut self) -> Result<()> {
