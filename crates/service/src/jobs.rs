@@ -241,17 +241,37 @@ pub(crate) fn derive_production_jobs_all(
 
         let wrapper = completed_wrapper(receipt);
         let data = wrapper.map(driver_data);
-        let cancellation_requested = data
-            .and_then(|value| value.get("cancellation_requested"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let observed_state = data.and_then(state_from_data).or_else(|| {
-            if receipt.stage == "outcome_unknown" {
-                Some(ProductionJobState::OutcomeUnknown)
-            } else {
-                None
-            }
-        });
+        // render.status/result are reads of an acknowledged job, not a new
+        // source of render authority. The current Motionwright receipt carries
+        // the request's job_ref independently of the returned native JobView.
+        // A foreign/missing response must not make the *original* job appear
+        // succeeded (or advertise its unverified artifact) in Studio/SDK.
+        let unbound_motion_observation = provider == "driver:motion-canvas"
+            && receipt.stage == "completed"
+            && matches!(kind, RenderCommand::Status | RenderCommand::Result)
+            && !matches!(
+                (
+                    receipt.payload.get("job_ref").and_then(Value::as_str),
+                    data.and_then(|view| view.get("job_ref")).and_then(Value::as_str)
+                ),
+                (Some(expected), Some(observed)) if expected == observed
+            );
+        let cancellation_requested = !unbound_motion_observation
+            && data
+                .and_then(|value| value.get("cancellation_requested"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        let observed_state = if unbound_motion_observation {
+            Some(ProductionJobState::OutcomeUnknown)
+        } else {
+            data.and_then(state_from_data).or_else(|| {
+                if receipt.stage == "outcome_unknown" {
+                    Some(ProductionJobState::OutcomeUnknown)
+                } else {
+                    None
+                }
+            })
+        };
 
         let entry = jobs.entry(job_ref.clone()).or_insert_with(|| {
             let initial_state = observed_state.unwrap_or(ProductionJobState::OutcomeUnknown);
@@ -285,6 +305,15 @@ pub(crate) fn derive_production_jobs_all(
         entry.last_command = receipt.command.clone();
         entry.last_observed_at = receipt.created_at.clone();
         entry.local_observations = entry.local_observations.saturating_add(1);
+        if unbound_motion_observation {
+            entry.last_observation = ProductionObservationState::OutcomeUnknown;
+            if !entry.state.definitive_terminal() {
+                entry.state = ProductionJobState::OutcomeUnknown;
+            }
+            // Do not transfer the forged status, progress, generation,
+            // cancellation or artifact flags into a verified job projection.
+            continue;
+        }
 
         match receipt.stage.as_str() {
             "completed" => {
@@ -422,7 +451,7 @@ mod tests {
                 "status-observed-running",
                 "driver.motion-canvas.render.status",
                 "completed",
-                json!({"result": {"data": {"job_ref":"mc:original","state":"rendering"}}}),
+                json!({"job_ref":"mc:original","result": {"data": {"job_ref":"mc:original","state":"rendering"}}}),
                 "2026-10-09T01:00:02Z",
             ),
             receipt(
@@ -479,7 +508,7 @@ mod tests {
             "original-render-result",
             "driver.motion-canvas.render.result",
             "completed",
-            json!({"result": {"data": {"job_ref":"mc:original","state":"succeeded",
+            json!({"job_ref":"mc:original","result": {"data": {"job_ref":"mc:original","state":"succeeded",
                 "artifact":{"manifest":"verified-canonical-frame-manifest"}}}}),
             "2026-10-09T01:00:06Z",
         ));
@@ -541,7 +570,7 @@ mod tests {
                 "result",
                 "driver.motion-canvas.render.result",
                 "completed",
-                json!({"result":{"data":{"job_ref":"mc-1","state":"succeeded","artifact":{"manifest":"frames.json"}}}}),
+                json!({"job_ref":"mc-1","result":{"data":{"job_ref":"mc-1","state":"succeeded","artifact":{"manifest":"frames.json"}}}}),
                 "2026-10-05T01:00:02Z",
             ),
             receipt(
@@ -550,7 +579,7 @@ mod tests {
                 "late-status",
                 "driver.motion-canvas.render.status",
                 "completed",
-                json!({"result":{"data":{"job_ref":"mc-1","state":"running"}}}),
+                json!({"job_ref":"mc-1","result":{"data":{"job_ref":"mc-1","state":"running"}}}),
                 "2026-10-05T01:00:03Z",
             ),
         ];
@@ -559,6 +588,130 @@ mod tests {
         assert_eq!(jobs[0].applicability, ProductionJobApplicability::Stale);
         assert!(jobs[0].result_available);
         assert!(jobs[0].artifact_available);
+    }
+
+    #[test]
+    fn foreign_motion_status_or_result_is_unknown_in_studio_and_sdk_job_projection() {
+        let generation = Uuid::now_v7();
+        let start = receipt(
+            generation,
+            8,
+            "render-start",
+            "driver.motion-canvas.render.start",
+            "completed",
+            json!({"result":{"data":{"job_ref":"mc:original","state":"queued"}}}),
+            "2026-10-09T01:00:00Z",
+        );
+        for (command, returned_id, include_request) in [
+            (
+                "driver.motion-canvas.render.status",
+                Some("mc:foreign"),
+                true,
+            ),
+            ("driver.motion-canvas.render.status", None, true),
+            (
+                "driver.motion-canvas.render.result",
+                Some("mc:foreign"),
+                true,
+            ),
+            ("driver.motion-canvas.render.result", None, true),
+            (
+                "driver.motion-canvas.render.result",
+                Some("mc:original"),
+                false,
+            ),
+        ] {
+            let response = receipt(
+                generation,
+                8,
+                "untrusted-readback",
+                command,
+                "completed",
+                json!({
+                    "job_ref": if include_request { Some("mc:original") } else { None },
+                    "result": {"data": {
+                        "job_ref": returned_id,
+                        "state": "succeeded",
+                        "artifact": {"manifest":"must-never-appear-as-verified"},
+                        "progress": {"completed": 60,"total":60}
+                    },
+                    "execution": {"provenance":{"provider_generation":900}}}
+                }),
+                "2026-10-09T01:00:01Z",
+            );
+            let jobs = derive_production_jobs(&[start.clone(), response], generation, 8, 10);
+            assert_eq!(
+                jobs.len(),
+                1,
+                "foreign/missing data may not create another source job"
+            );
+            assert_eq!(jobs[0].job_ref, "mc:original");
+            assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
+            assert_eq!(
+                jobs[0].last_observation,
+                ProductionObservationState::OutcomeUnknown
+            );
+            assert!(!jobs[0].artifact_available);
+            assert!(!jobs[0].result_available);
+            assert!(jobs[0].progress.is_none());
+            assert!(jobs[0].provider_generation.is_none());
+        }
+
+        // Legacy/foreign aliases are not authoritative Motion Canvas JobView
+        // fields, even if an alias happens to equal the requested opaque ref.
+        // The native coordinator itself requires the exact canonical job_ref.
+        for alias in [
+            json!({"job":"mc:original","state":"succeeded",
+                "artifact":{"manifest":"alias-must-not-grant-success"}}),
+            json!({"job":{"id":"mc:original"},"state":"succeeded",
+                "artifact":{"manifest":"alias-must-not-grant-success"}}),
+        ] {
+            let aliased = receipt(
+                generation,
+                8,
+                "alias-result",
+                "driver.motion-canvas.render.result",
+                "completed",
+                json!({"job_ref":"mc:original","result":{"data":alias}}),
+                "2026-10-09T01:00:01Z",
+            );
+            let jobs = derive_production_jobs(&[start.clone(), aliased], generation, 8, 10);
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
+            assert!(!jobs[0].artifact_available);
+            assert!(!jobs[0].result_available);
+        }
+
+        // A later canonical result with the *matching* original job is the
+        // only receipt allowed to reconcile a previous status identity fault.
+        let forged = receipt(
+            generation,
+            8,
+            "bad-status",
+            "driver.motion-canvas.render.status",
+            "completed",
+            json!({"job_ref":"mc:original","result":{"data":{
+                "job_ref":"mc:foreign","state":"succeeded","artifact":{"manifest":"untrusted"}
+            }}}),
+            "2026-10-09T01:00:01Z",
+        );
+        let later = receipt(
+            generation,
+            8,
+            "good-result",
+            "driver.motion-canvas.render.result",
+            "completed",
+            json!({"job_ref":"mc:original","result":{"data":{
+                "job_ref":"mc:original","state":"succeeded",
+                "artifact":{"manifest":"bound-to-original-job"}
+            }}}),
+            "2026-10-09T01:00:02Z",
+        );
+        let jobs = derive_production_jobs(&[start, forged, later], generation, 8, 10);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].state, ProductionJobState::Succeeded);
+        assert!(jobs[0].artifact_available);
+        assert!(jobs[0].result_available);
     }
 
     #[test]
