@@ -1,0 +1,88 @@
+# Motionwright v0.1.0 — verified release-blocker assessment
+
+The code in Cargo.toml and tauri.conf.json declares **0.1.0**. That is a
+source package version, **not** a stable release or an independent product
+PASS. This assessment keeps technical candidate evidence separate from
+permission to distribute an accepted, signed product.
+
+## Read-only source assessment
+
+Run against an exact commit checkout:
+
+    python3 tooling/v01_release_readiness.py \
+      --source-sha "$(git rev-parse HEAD)" \
+      --expect-blocked \
+      --output ci-evidence/v01-release-readiness.json
+
+Use an empty output location. The reporter creates a **new file only** and
+will not replace an existing assessment from another SHA. Without --output,
+only a compact sanitized status is printed. The 40-character SHA is a
+caller-supplied identifier; this tool does not independently authenticate
+the local Git checkout, a GitHub build or an installed binary. The separate
+CI checkout and artifact receipts bind those identities in their own gates.
+
+The report includes the 208 requirement implementation/verification counts,
+the statuses of the 60 private acceptance cases, the exact Semwright Native
+SDK source pin, known open RustSec warning IDs, and conservative release
+blockers. It intentionally omits the private acceptance specification,
+sensitive review media, reviewer identities, connection paths and tokens.
+
+The status is currently BLOCKED_PENDING_EXTERNAL_EVIDENCE. The workflow
+**passes when it confirms that blocked verdict is source-consistent**. A green
+check is not permission to publish, sign, notarize, recruit users, or promote
+a test case to human PASS.
+
+## What automated GitHub Actions now establishes
+
+The latest installed candidate workflows provide **source-specific**
+technical evidence for Linux AppImage/Debian, Windows NSIS, and macOS DMG
+structure. In disposable runners, Windows NSIS and Linux AppImage both
+exercise fresh desktop startup, committed local SQLite creation, clean
+relaunch and retained project identity. Native Film/Motion Canvas/MLT
+workflows test real provider-generated media against the pinned Semwright
+Broker/Driver Host. Build CI, source policies, exact-SHA provenance, and
+safe first-use preflight reports are independently useful.
+
+They do **not** establish an owner-provisioned native Broker running in a
+fresh physical-device installation, signing/notarization acceptance, human
+aesthetic review, or unrestricted creative capability.
+
+## The remaining independent gates
+
+1. Audit the original private v0.1.0 specification's **208 requirements**;
+   do not infer that an EVIDENCE_PRESENT implementation status meets every
+   criterion in the private text.
+2. Execute all **60 acceptance scenarios** on actual installed builds.
+   Use the separate private intake process in
+   docs/acceptance/REVIEW_INTAKE.md and provide source- and file-hash-bound
+   primary evidence plus a distinct evaluator. All 60 are still NOT_RUN in
+   the public ledger until an authorized reviewer makes genuine findings.
+3. Run a verified first live Semwright connection and original render in
+   the installed app using the exact pinned SDK, real owner Broker/Driver
+   Host and explicit effect grant; do not confuse the safe CLI --version
+   preflight with a production provider handshake.
+4. Resolve or explicitly adjudicate open provider lifecycle/cleanup issues
+   #49 and #91 and document release implications. No undocumented deletion
+   of native MLT projects is allowed.
+5. Resolve the transitive glib unsoundness and macro-stack maintenance
+   warnings that remain open in
+   docs/security/known-rustsec-advisories.json. An unchanged advisory set
+   and a passing cargo-audit *policy* do not mean the warnings disappeared.
+6. Obtain intentional code-signing and notarization evidence where
+   appropriate for the target operating systems, with independent
+   installed-device smoke tests and publisher authorization.
+
+There is **no automatic conversion** from a synthetic test, job SUCCESS,
+read-only installer smoke or this machine-generated report to release
+authorization. No stable v0.1.0 GitHub Release is created by this workflow.
+The existing technical pre-release remains a separate proof.
+
+## Engineering contract
+
+tooling/v01_release_readiness.py is a side-effect-free metadata reader
+except for its explicitly requested new JSON receipt. It fails closed for
+duplicate JSON fields, malformed IDs, inconsistent Cargo/Tauri versions,
+missing Semwright pins, forged VERIFIED requirements, unsupported acceptance
+PASS, and silently closed dependency warnings. Unit tests deliberately
+prove that even a synthetic 60/60 PASS with warning-free source metadata
+**cannot authorize a release** without independent external review.
