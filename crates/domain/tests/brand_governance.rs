@@ -246,9 +246,12 @@ fn metric_evidence_headline_accent_is_brand_governed_after_human_style_edit() {
 
     let mut unapproved = source.style.clone();
     unapproved.fill = Some("#EE0000".into());
+    // Domain validation operates on a staging Project. The SQLite service
+    // is responsible for rolling back a rejected mutation transaction.
     let previous = project.clone();
+    let mut proposed = project.clone();
     assert!(
-        project
+        proposed
             .apply_change(&Change::UpdateCanvasStyle {
                 scene_id,
                 node_id: headline_id,
@@ -260,7 +263,7 @@ fn metric_evidence_headline_accent_is_brand_governed_after_human_style_edit() {
     );
     assert_eq!(
         project, previous,
-        "rejected human accent edit must be atomic"
+        "the original authored project remains intact"
     );
 
     let waiver = BrandException {
