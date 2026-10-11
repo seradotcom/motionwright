@@ -147,7 +147,26 @@ fn one_edited_film_projects_three_original_source_families_without_flattening() 
         .collect::<Vec<_>>();
     assert_eq!(shots.len(), 3, "three source editable Film shots");
     assert_eq!(shots[0].layers.len(), STAGE_ROLES.len());
-    assert_eq!(shots[1].layers.len(), 8);
+    // Eight procedural Canvas objects intentionally share one z-index/-32
+    // Film layer: the engine counts distinct layer orders, not object count.
+    // Assert editability and distinct source identity independently.
+    assert_eq!(shots[1].layers.len(), 1);
+    assert_eq!(shots[1].subjects.len(), 8);
+    let procedural_subject_ids = shots[1]
+        .subjects
+        .iter()
+        .map(|subject| subject.id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(procedural_subject_ids.len(), 8);
+    for index in 0..8 {
+        let original_id = procedural_node_id(procedural_id, index);
+        assert!(
+            procedural_subject_ids
+                .iter()
+                .any(|id| id.contains(&original_id.simple().to_string())),
+            "the original editable procedural Canvas node {index} must survive canonical Film projection"
+        );
+    }
     assert!(shots[0].subjects.iter().any(|item| {
         item.id
             .contains(&stage_node_id(stage_id, "disclosure").simple().to_string())
