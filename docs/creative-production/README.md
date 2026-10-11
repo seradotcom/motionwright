@@ -40,7 +40,10 @@ See [ProductStage](PRODUCT_STAGE.md) for bounded Stage controls, mandatory
 anti-fake-capture truth labeling and source-rights limitations. This is
 only an original graphic study. **Real asset-backed screenshots, branded
 device models, physical 3D cameras and capture evidence are not enabled.**
-Native Film and browser proofs remain pending exact-HEAD CI and human review.
+An isolated source-pinned Semwright workflow requests original native
+browser/handset H264 masters and checks original PNG, decoded MP4, semantic
+text, motion, portable source and disclosure. Exact-head technical proof and
+human aesthetic review are still pending.
 
 ## Data and migration contracts
 

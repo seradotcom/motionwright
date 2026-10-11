@@ -151,7 +151,8 @@ export async function realizeProductStage(id:string,config:ProductStageConfig,w=
         line_height:isText?1.12:null,blend_mode:"normal"},
       relations:[],property_locks:[],keyframes:[],
     };
-    if(config.animate_focus && (role==="focus_marker"||role==="focus_caption"))node.keyframes=focusKeys(node);
+    if(config.animate_focus && ["focus_marker","focus_caption","card_highlight"].includes(role))
+      node.keyframes=focusKeys(node);
     return node;
   }));
   for(const node of nodes.filter(n=>n.kind==="text")){

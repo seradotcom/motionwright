@@ -652,6 +652,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "seed-stage" => {
+            let database = path_arg(&mut args);
+            let frame = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_stage(&database, &frame, &project_json)
+        }
         "seed-hero" => {
             let database = path_arg(&mut args);
             let aspect = text_arg(&mut args);
@@ -876,9 +885,228 @@ fn seed_hero(
     Ok(())
 }
 
+/// Two independent GENERIC frame silhouettes. The content is a deliberately
+/// original, synthetic semantic UI study, NEVER an authenticated product
+/// screenshot or a third-party device/brand representation.
+fn seed_stage(
+    database: &Path,
+    frame: &str,
+    project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use motionwright_domain::{
+        ProductStageConfig, STAGE_ROLES, StageFrame, realize_product_stage, stage_node_id,
+    };
+    let frame_kind = match frame {
+        "browser" => StageFrame::Browser,
+        "handset" => StageFrame::GenericHandset,
+        _ => return Err("ProductStage native fixture frame must be browser or handset".into()),
+    };
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("ProductStage source fixture must use a fresh owner-local database".into());
+    }
+    let initial = service.create_project("SYNTHETIC original UI / NOT A CAPTURE")?;
+    let scene = service
+        .apply(
+            initial.id,
+            &initial.stamp(),
+            "stage-scene",
+            &Change::AddScene {
+                name: format!("Original generic {frame} graphic"),
+                objective: "Test native semantic original UI, never real screen capture".into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = scene.scenes[0].id;
+    let id = Uuid::parse_str("00000000-0000-4000-8000-000000000005")?;
+    let first_config=ProductStageConfig {
+        frame:frame_kind,
+        author_attestation:"I authored the original generic test-only screen design and authorize this technical render.".into(),
+        animate_focus:true,
+        ..ProductStageConfig::default()
+    };
+    let first = service
+        .apply(
+            scene.id,
+            &scene.stamp(),
+            "stage-first-original",
+            &Change::UpsertProductStage {
+                instance_id: id,
+                scene_id,
+                config: first_config.clone(),
+            },
+        )?
+        .project;
+    let screen_id = stage_node_id(id, "screen");
+    let focus_id = stage_node_id(id, "focus_marker");
+    let original_screen = first.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == screen_id)
+        .ok_or("missing original stage screen")?
+        .clone();
+    let original_focus = first.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == focus_id)
+        .ok_or("missing original focus object")?
+        .clone();
+    let original_camera = first.scenes[0].camera.clone();
+    let config = ProductStageConfig {
+        screen_heading: "Clear original workflow".into(),
+        screen_detail: "Editable screen graphics with stable anchors".into(),
+        action_label: "Continue".into(),
+        ..first_config
+    };
+    let changed = service
+        .apply(
+            first.id,
+            &first.stamp(),
+            "stage-replace-authored-copy",
+            &Change::UpsertProductStage {
+                instance_id: id,
+                scene_id,
+                config: config.clone(),
+            },
+        )?
+        .project;
+    if changed.scenes[0].nodes.len() != STAGE_ROLES.len()
+        || changed.scenes[0].camera != original_camera
+        || changed.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == screen_id)
+            != Some(&original_screen)
+        || changed.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == focus_id)
+            != Some(&original_focus)
+        || changed.production_design.stages[0].config != config
+    {
+        return Err("ProductStage content replacement changed original camera/screen/focus or instance identity".into());
+    }
+    let mut profile = changed.deliverables[0].clone();
+    profile.name = format!("ProductStage / original {frame} 16:9");
+    let project = service
+        .apply(
+            changed.id,
+            &changed.stamp(),
+            "stage-native-profile",
+            &Change::UpsertDeliverable { profile },
+        )?
+        .project;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    output.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    output.write_all(b"\n")?;
+    output.sync_all()?;
+    let realized = realize_product_stage(id, &config, 1920, 1080)?;
+    if realized != project.production_design.stages[0].baseline {
+        return Err(
+            "ProductStage native source differs from exact deterministic semantic realization"
+                .into(),
+        );
+    }
+    let layout = project_json.with_file_name("expected-stage-layout.json");
+    let mut layout_output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&layout)?;
+    layout_output.write_all(&serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.product-stage-original-layout/1",
+        "project_id":project.id,"generation":project.generation,"revision":project.revision,
+        "frame":frame,"width":1920,"height":1080,"nodes":realized,
+        "creative_approval":"required",
+        "source_rights":"synthetic_original_declared_not_independently_attested",
+    }))?)?;
+    layout_output.sync_all()?;
+
+    let bundle_path = project_json.with_file_name("stage.motionwright");
+    service.export_project_bundle(project.id, &bundle_path)?;
+    let import_folder = tempfile::tempdir()?;
+    let imported_service = StudioService::open(import_folder.path().join("import.sqlite3"))?;
+    let inspected = imported_service.inspect_project_bundle(&bundle_path)?;
+    let imported = imported_service.import_project_bundle(&bundle_path)?;
+    if !inspected.project.rotates_generation
+        || imported.generation == project.generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err(
+            "ProductStage portable bundle changed authored screen or reused generation".into(),
+        );
+    }
+    if imported_service
+        .apply(
+            imported.id,
+            &project.stamp(),
+            "stale-stage-bundle-generation",
+            &Change::RenameProject {
+                title: "Must be rejected".into(),
+            },
+        )
+        .is_ok()
+    {
+        return Err("ProductStage bundle accepted an old generation write".into());
+    }
+    let bundle_receipt = project_json.with_file_name("bundle-import-check.json");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&bundle_receipt)?;
+    file.write_all(&serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.original-product-stage-bundle/1",
+        "source_generation":project.generation,"import_generation":imported.generation,
+        "project_schema":imported.schema_version,
+        "semantic_state_preserved":true,"generation_rotated":true,
+        "old_generation_write_rejected":true,
+        "scene_camera_preserved":true,"screen_focus_preserved":true,
+        "bundle":"stage.motionwright","creative_approval":"required",
+        "renderer_grants_imported":false,
+    }))?)?;
+    file.sync_all()?;
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture":"product-stage-original/1","stage_frame":frame,
+            "project_id":project.id,"resource":project.resource_key(),
+            "generation":project.generation,"revision":project.revision,
+            "scene_id":scene_id,"deliverable_id":deliverable.id,
+            "width":deliverable.width,"height":deliverable.height,"frame_count":180,
+            "stage_instance_id":id,"screen_id":screen_id,"focus_id":focus_id,
+            "original_graphic":true,"real_product_capture":false,
+            "synthetic_source_only":true,"rights_verification":"author_declaration_not_audited",
+            "creative_approval":"required",
+        }))?
+    );
+    Ok(())
+}
+
 fn expected_fixture_frames(
     project: &motionwright_domain::Project,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    if !project.production_design.stages.is_empty() {
+        if project.production_design.stages.len() != 1
+            || !project.production_design.heroes.is_empty()
+            || project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != motionwright_domain::STAGE_ROLES.len()
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err("ProductStage source no longer matches the fixed, original six-second semantic fixture".into());
+        }
+        return Ok(180);
+    }
     if project.production_design.heroes.is_empty() {
         return Ok(60);
     }

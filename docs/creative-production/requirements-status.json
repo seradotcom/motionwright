@@ -367,8 +367,8 @@
     {
       "id": "MW05-E07-01",
       "implementation": "partial",
-      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations",
-      "remaining_scope": "Rights-cleared original screenshot/visual asset binding, reproducible authorized real capture, textured 3D devices, native cinematic camera/light, independent MP4 acceptance and human creative review remain open",
+      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations; separate exact-SHA owner-local Semwright H264/AAC original browser and anonymous handset fixtures, genuine semantic glyph/focus pixel inspector plus eight synthetic negative oracle tests (pending exact-head native CI)",
+      "remaining_scope": "Original semantic native browser/handset MP4 still needs exact-HEAD GH Actions and human aesthetic acceptance; reproducible real UI capture and authorized asset replacement, 3D cameras, commercial hardware rights verification remain open",
       "source_paths": [
         "crates/domain/src/product_stage.rs",
         "crates/domain/src/lib.rs",
@@ -381,7 +381,12 @@
         "apps/studio/src/productStage.test.ts",
         "apps/studio/src/ProductStageWorkbench.tsx",
         "apps/studio/tests/product-stage.spec.ts",
-        "docs/creative-production/PRODUCT_STAGE.md"
+        "docs/creative-production/PRODUCT_STAGE.md",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/product_stage_native_evidence.py",
+        "tooling/native_tests/test_product_stage_native_evidence.py",
+        ".github/workflows/product-stage-e2e.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

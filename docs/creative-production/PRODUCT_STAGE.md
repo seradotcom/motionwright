@@ -67,5 +67,33 @@ overridden styles, motion keys, baseline/lock conflicts, missing disclosure,
 source-rights declaration, layout bounds, removed object detection, detach,
 and native Film semantic subjects with actual glyph child text.
 
+## Exact pinned native H264/MP4 evidence (CI-only)
+
+The isolated ProductStage native design evidence GitHub workflow now builds
+the exact Semwright revision locked in SOURCE_LOCK.json, connects its real
+Motion Canvas Driver Host and MLT output, and generates two six-second
+H264/AAC masters. The two fixtures are anonymous browser and handset
+original graphics, **never source app captures or commercial devices**.
+Both source portable bundles preserve 14 semantic Canvas objects, stable
+screen/focus IDs, source revision, authored camera and generation-rotated
+import authority. Replacing original heading, detail and action through CAS
+must not change the generic frame/focus.
+
+Independent real frame checks verify frame, screen, card, heading glyphs,
+bottom disclosure and focus/highlight entrance in original Motion Canvas
+PNG pixels. Two independently decoded H264 frames are checked against the
+authored semantic regions and the final MP4 SHA-256. The software does not
+substitute an SVG editorial preview for those pixels.
+Eight bounded adversarial PIL fixtures reject missing heading, missing
+anti-fake-capture disclosure, missing focus/highlight, premature entrance,
+wrong native dimensions and a missing device outline. Synthetic negative
+fixtures are explicitly not positive renderer evidence.
+
+The current workflow still requires a **successful exact-HEAD GitHub run**
+and independent inspection of attached artifacts before declaring technical
+acceptance. Audio comprises synthetic stereo verification tones, not final
+sound design. Even successful native proof is not rights verification,
+creative-human approval or an authentic product screenshot.
+
 Acceptance remains **PARTIAL / NOT_COMPLETED**. An app capture with redactions,
 viewport, version and exact scenario reproducibility is MW05-E07-02.

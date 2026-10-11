@@ -483,7 +483,7 @@ pub fn realize_product_stage(
         ),
     ];
     if config.animate_focus {
-        for role in ["focus_marker", "focus_caption"] {
+        for role in ["focus_marker", "focus_caption", "card_highlight"] {
             let target = stage_node_id(id, role);
             let node = nodes
                 .iter_mut()
