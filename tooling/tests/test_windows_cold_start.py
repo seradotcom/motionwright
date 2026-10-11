@@ -179,6 +179,40 @@ class WindowsCandidateUnitTests(unittest.TestCase):
                 self.root / "proof.json",
             )
 
+    def test_webview_launch_preserves_runner_windows_profile_without_provider_authority(self):
+        original = {
+            "APPDATA": "C:\\Users\\runneradmin\\AppData\\Roaming",
+            "LOCALAPPDATA": "C:\\Users\\runneradmin\\AppData\\Local",
+            "USERPROFILE": "C:\\Users\\runneradmin",
+            "MOTIONWRIGHT_SEMWRIGHT_CONNECTION": "private-owner-connection.json",
+        }
+        observed = windows.native_windows_launch_environment(original)
+        for name in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
+            self.assertEqual(observed[name], original[name])
+        self.assertNotIn("MOTIONWRIGHT_SEMWRIGHT_CONNECTION", observed)
+        self.assertIn("MOTIONWRIGHT_SEMWRIGHT_CONNECTION", original)
+
+    @unittest.skipUnless(os.name == "nt", "Windows-only failure artifact IO")
+    def test_failure_artifact_is_sanitized_and_keeps_human_acceptance_not_run(self):
+        scratch = self.root / "runner-scratch"
+        scratch.mkdir()
+        (scratch / "first-launch.log").write_bytes(
+            b"WebView2 native startup failed at C:\\Users\\private\\session.json"
+        )
+        output = self.root / "ci-evidence" / "proof.json"
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            windows.write_sanitized_failure_record(
+                output=output, scratch=scratch, expected_sha="a" * 40,
+                error=windows.ColdStartError("Installed desktop exited (exit_code=2)"),
+            )
+        report = output.with_name("windows-nsis-cold-relaunch-diagnostic.json")
+        decoded = json.loads(report.read_text())
+        self.assertEqual(decoded["result"], "FAIL")
+        self.assertEqual(decoded["human_install_acceptance"], "NOT_RUN")
+        self.assertTrue(decoded["logs"]["first-launch"]["known_error_signals"]["webview2"])
+        self.assertNotIn("C:\\Users\\private", report.read_text())
+        self.assertFalse(decoded["raw_application_logs_uploaded"])
+
     def test_no_local_machine_or_browser_can_start_installed_smoke(self):
         exe, receipt, sha = candidate_fixture(self.root)
         scratch = self.root / "no-runtime-start"

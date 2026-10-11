@@ -211,7 +211,10 @@ def boot_once(
         try:
             while time.monotonic() - started < seconds:
                 if process.poll() is not None:
-                    raise ColdStartError("Installed desktop exited before a persistent project and real HWND existed")
+                    raise ColdStartError(
+                        "Installed desktop exited before a persistent project and real HWND existed "
+                        f"(exit_code={process.returncode})"
+                    )
                 observed = known_databases(database_roots)
                 if len(observed) > 1:
                     raise ColdStartError("Installed desktop created multiple candidate project stores")
@@ -246,6 +249,19 @@ def validate_evidence_paths(scratch: Path, output: Path) -> None:
             "Installed bootstrap requires bounded absolute runner paths")
 
 
+def native_windows_launch_environment(source: dict[str, str]) -> dict[str, str]:
+    """The disposable runner itself is the isolation boundary.
+
+    Do not forge USERPROFILE/APPDATA/LOCALAPPDATA for a Windows WebView2 process:
+    known-folder APIs and runtime registration still depend on the actual
+    Windows account. Removing only the optional native connection prevents
+    ambient provider authority without inventing a new user profile.
+    """
+    environment = dict(source)
+    environment.pop("MOTIONWRIGHT_SEMWRIGHT_CONNECTION", None)
+    return environment
+
+
 def run_installed_relaunch(
     *, executable: Path, smoke_receipt: Path, expected_sha: str,
     scratch: Path, output: Path,
@@ -257,24 +273,13 @@ def run_installed_relaunch(
     require(not output.exists(), "Installed bootstrap evidence must not be overwritten")
     source = check_installed_candidate(smoke_receipt, executable, expected_sha)
     scratch.mkdir(parents=True, exist_ok=False)
-    isolated_roaming = scratch / "roaming"
-    isolated_local = scratch / "local"
-    home = scratch / "profile"
-    temporary = scratch / "temp"
-    for folder in [isolated_roaming, isolated_local, home, temporary]:
-        folder.mkdir(mode=0o700)
-    environment = dict(os.environ)
-    existing_roaming = Path(environment["APPDATA"])
-    existing_local = Path(environment["LOCALAPPDATA"])
-    environment.update({
-        "APPDATA": str(isolated_roaming),
-        "LOCALAPPDATA": str(isolated_local),
-        "USERPROFILE": str(home),
-        "TEMP": str(temporary),
-        "TMP": str(temporary),
-    })
-    environment.pop("MOTIONWRIGHT_SEMWRIGHT_CONNECTION", None)
-    roots = [isolated_roaming, isolated_local, existing_roaming, existing_local]
+    # Keep the real, disposable hosted-runner Windows account. WebView2's
+    # Known Folders, COM activation and user-data storage are not modeled by
+    # merely replacing APPDATA and USERPROFILE environment strings.
+    environment = native_windows_launch_environment(os.environ)
+    require("APPDATA" in environment and "LOCALAPPDATA" in environment,
+            "Windows hosted runner does not expose native application-data directories")
+    roots = [Path(environment["APPDATA"]), Path(environment["LOCALAPPDATA"])]
     require(not known_databases(roots),
             "GitHub runner already contains an application project store before cold launch")
     first, db_path, first_seconds = boot_once(
@@ -314,6 +319,58 @@ def run_installed_relaunch(
     return result
 
 
+def write_sanitized_failure_record(
+    *, output: Path, scratch: Path, expected_sha: str, error: BaseException,
+) -> None:
+    """Keep a bounded failure explanation without uploading native app logs.
+
+    There is no owner Semwright session configured in this fixture, but raw
+    diagnostic output may still contain runner paths and must not be released.
+    """
+    if os.name != "nt" or os.getenv("GITHUB_ACTIONS") != "true" or not output.is_absolute():
+        return
+    diagnostic_path = output.with_name("windows-nsis-cold-relaunch-diagnostic.json")
+    categories = {
+        "webview2": b"webview2",
+        "sqlite": b"sqlite",
+        "application_data": b"app data",
+        "panic": b"panicked",
+        "win32": b"win32",
+        "dll": b"missing dll",
+    }
+    logs = {}
+    for label in ("first-launch", "relaunch"):
+        source = scratch / (label + ".log")
+        if source.is_file() and not source.is_symlink():
+            with source.open("rb") as stream:
+                excerpt = stream.read(65536).lower()
+            logs[label] = {
+                "file_bytes": source.stat().st_size,
+                "known_error_signals": {
+                    key: needle in excerpt for key, needle in categories.items()
+                },
+            }
+    description = (
+        str(error)[:220] if isinstance(error, ColdStartError)
+        else type(error).__name__
+    )
+    record = {
+        "schema": "motionwright-windows-nsis-cold-relaunch-failure/1",
+        "source_sha": expected_sha if SHA40.fullmatch(expected_sha) else "INVALID",
+        "result": "FAIL",
+        "stage": "installed_process_cold_boot_or_relaunch",
+        "reason": description,
+        "logs": logs,
+        "raw_application_logs_uploaded": False,
+        "native_provider_authority": "NOT_CONFIGURED",
+        "human_install_acceptance": "NOT_RUN",
+    }
+    diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+    with diagnostic_path.open("x", encoding="utf-8") as handle:
+        json.dump(record, handle, sort_keys=True, indent=2)
+        handle.write("\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installed-binary", required=True, type=Path)
@@ -329,6 +386,14 @@ def main() -> None:
             output=args.output,
         )
     except (ColdStartError, OSError, ValueError, sqlite3.Error) as error:
+        try:
+            write_sanitized_failure_record(
+                output=args.output, scratch=args.scratch,
+                expected_sha=args.expected_source_sha, error=error,
+            )
+        except (OSError, ValueError):
+            # Never mask the original bootstrap failure with diagnostic errors.
+            pass
         parser.exit(1, "windows-installed-cold-relaunch: " + str(error) + "\n")
     print(
         "windows-installed-cold-relaunch=PASS source=" + result["source_sha"]
