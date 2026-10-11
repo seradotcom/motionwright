@@ -9,6 +9,7 @@ import { defaultHeroConfig, emptyProductionDesign, realizeProductHero, sameValue
 import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind, NativeCapsule } from "./creativeProduction";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import ProceduralFieldWorkbench from "./ProceduralFieldWorkbench";
+import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import "./production-design.css";
 
 type Commit = (change: Change) => Promise<void>;
@@ -170,12 +171,13 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
 
 export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
   const [tab,setTab]=useState<"component"|"procedural"|"plan"|"sources"|"patch"|"inspection">("component");
+  const [repairDraft,setRepairDraft]=useState<NativeReviewRepairDraft|null>(null);
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);
   return <section className="production-workspace" aria-label="Creative production workstation">
     <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} · {design.capsules.length} native source{design.capsules.length===1?"":"s"} · revision {props.project.revision}</p></div>
-      <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>props.onSelectScene(e.target.value)}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
-    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["procedural","Procedural"],["plan","Production plan"],["sources","Native sources"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>setTab(key)}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench {...props}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="inspection"?<NativeInspectionWorkbench {...props}/>:<CreativePatchWorkbench {...props}/>}
+      <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>{setRepairDraft(null);props.onSelectScene(e.target.value);}}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
+    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["procedural","Procedural"],["plan","Production plan"],["sources","Native sources"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
+    {tab==="component"?<HeroWorkbench {...props}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
   </section>;
 }

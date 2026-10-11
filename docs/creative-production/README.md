@@ -26,7 +26,7 @@ Open **Production → Components** and select the imported scene. The **Composit
 
 In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, then apply once. The reversible history can preview undo or redo. Every inverse is a new CAS-protected revision. An intervening conflicting edit, property lock, missing object or incompatible new scene duration blocks the inverse. The original journal is never rewound.
 
-In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state.
+In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
 ## Data and migration contracts
 

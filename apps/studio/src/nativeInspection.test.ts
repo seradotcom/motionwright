@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addFrameOffset, nativeFindingBody, planNativeInspection } from "./nativeInspection";
+import { createNativeReviewRepairDraft, nativeRepairDraftIsCurrent } from "./nativeReviewRepair";
 import type { ManualCreativeFinding } from "./nativeInspection";
 import { fixtureProject } from "./fixture";
 import type { MotionCanvasRenderEvidence } from "./types";
@@ -52,5 +53,71 @@ describe("native inspection is a bounded source-granted read plan",()=>{
     expect(()=>nativeFindingBody(plan,{...sample,frameIndex:999},finding)).toThrow("outside");
     expect(()=>nativeFindingBody(plan,{...sample,timelineTime:{num:"999",den:"1"}},finding)).toThrow("outside");
     expect(()=>nativeFindingBody(plan,sample,{...finding,observation:""})).toThrow("empty");
+  });
+});
+
+
+describe("native review -> scoped repair handoff is never an automatic project edit",()=>{
+  const checked=()=>{
+    const {project,scene,profile,evidence}=fixture();
+    const plan=planNativeInspection(project,scene,profile,evidence)!;
+    const point=plan.samples[0];
+    const sample={frameIndex:point.frameIndex,timelineTime:point.timelineTime,
+      pngSha256:"ab".repeat(32),width:plan.width,height:plan.height};
+    const target=scene.nodes.find(node=>node.kind==="text") ?? scene.nodes[0];
+    const finding:ManualCreativeFinding={
+      severity:"important",confidence:"probable",violatedConstraint:"Keep text clear at the native entrance",
+      observation:"The selected frame has insufficient type separation.",
+      proposedRepair:"Review this object's placement and manually choose a corrected value.",
+      nodeId:target.id,
+    };
+    return {project,scene,plan,sample,finding,target};
+  };
+  it("transfers exact source context and selected object without editing a revision",()=>{
+    const {project,scene,plan,sample,finding,target}=checked();
+    const before=structuredClone(project);
+    const draft=createNativeReviewRepairDraft(project,scene,plan,sample,finding);
+    expect(draft).toMatchObject({schema:"motionwright.native-review-repair-draft/1",
+      projectId:project.id,generation:project.generation,revision:project.revision,
+      sceneId:scene.id,profileId:plan.profileId,frameIndex:sample.frameIndex,
+      frameSha256:sample.pngSha256,targetNodeId:target.id,
+      editKind:target.kind==="text"?"text":"transform"});
+    expect(draft.rationale).toContain("repair NOT verified");
+    expect(draft.rationale).toContain(sample.pngSha256);
+    expect(draft.rationale).toContain("generation " + plan.generation);
+    expect(draft.rationale).toContain("profile " + plan.profileId);
+    expect(draft.rationale).toContain("Target object " + target.id);
+    expect(draft.rationale).toContain("severity " + finding.severity);
+    expect(draft.rationale).toContain("revision " + plan.revision);
+    expect(draft.rationale).toContain(finding.proposedRepair);
+    expect(draft.rationale).not.toContain("owned-native-frame-grant");
+    expect(nativeRepairDraftIsCurrent(project,scene,draft,plan.profileId)).toBe(true);
+    expect(project).toEqual(before);
+  });
+  it("refuses stale project generations, wrong sources and unselected objects",()=>{
+    const {project,scene,plan,sample,finding}=checked();
+    const create=(p=project,s=scene,selection=sample,note=finding)=>
+      createNativeReviewRepairDraft(p,s,plan,selection,note);
+    expect(()=>create(project,scene,sample,{...finding,nodeId:null})).toThrow("Select");
+    expect(()=>create({...project,revision:project.revision+1})).toThrow("stale");
+    expect(()=>create({...project,generation:crypto.randomUUID()})).toThrow("stale");
+    expect(()=>createNativeReviewRepairDraft(project,scene,{...plan,profileId:crypto.randomUUID()},sample,finding)).toThrow("stale");
+    expect(()=>createNativeReviewRepairDraft(project,scene,{...plan,width:plan.width+1},sample,finding)).toThrow("stale");
+    expect(()=>create(project,scene,{...sample,pngSha256:"not-a-sha"})).toThrow("outside");
+    expect(()=>create(project,scene,{...sample,frameIndex:999})).toThrow("outside");
+    expect(()=>create(project,scene,sample,{...finding,nodeId:crypto.randomUUID()})).toThrow("outside");
+    expect(()=>create(project,scene,sample,{...finding,proposedRepair:""})).toThrow("empty");
+  });
+  it("invalidates a source-bound draft after a commit, switch, or missing object",()=>{
+    const {project,scene,plan,sample,finding}=checked();
+    const draft=createNativeReviewRepairDraft(project,scene,plan,sample,finding);
+    expect(nativeRepairDraftIsCurrent({...project,revision:project.revision+1},scene,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent({...project,generation:crypto.randomUUID()},scene,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent({...project,id:crypto.randomUUID()},scene,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,null,draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,scene,draft,null)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,scene,draft,crypto.randomUUID())).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,{...scene,nodes:[]},draft,plan.profileId)).toBe(false);
+    expect(nativeRepairDraftIsCurrent(project,scene,{...draft,frameSha256:"corrupt"},plan.profileId)).toBe(false);
   });
 });
