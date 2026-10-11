@@ -252,7 +252,7 @@ pub(crate) fn derive_production_jobs_all(
             && !matches!(
                 (
                     receipt.payload.get("job_ref").and_then(Value::as_str),
-                    data.and_then(job_ref_from_data)
+                    data.and_then(|view| view.get("job_ref")).and_then(Value::as_str)
                 ),
                 (Some(expected), Some(observed)) if expected == observed
             );
@@ -655,6 +655,31 @@ mod tests {
             assert!(!jobs[0].result_available);
             assert!(jobs[0].progress.is_none());
             assert!(jobs[0].provider_generation.is_none());
+        }
+
+        // Legacy/foreign aliases are not authoritative Motion Canvas JobView
+        // fields, even if an alias happens to equal the requested opaque ref.
+        // The native coordinator itself requires the exact canonical job_ref.
+        for alias in [
+            json!({"job":"mc:original","state":"succeeded",
+                "artifact":{"manifest":"alias-must-not-grant-success"}}),
+            json!({"job":{"id":"mc:original"},"state":"succeeded",
+                "artifact":{"manifest":"alias-must-not-grant-success"}}),
+        ] {
+            let aliased = receipt(
+                generation,
+                8,
+                "alias-result",
+                "driver.motion-canvas.render.result",
+                "completed",
+                json!({"job_ref":"mc:original","result":{"data":alias}}),
+                "2026-10-09T01:00:01Z",
+            );
+            let jobs = derive_production_jobs(&[start.clone(), aliased], generation, 8, 10);
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
+            assert!(!jobs[0].artifact_available);
+            assert!(!jobs[0].result_available);
         }
 
         // A later canonical result with the *matching* original job is the
