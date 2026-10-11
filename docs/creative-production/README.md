@@ -121,3 +121,15 @@ Actual HyperFrames Broker/Driver execution and direct-vs-mediated equivalence, e
 See `OWNERSHIP.md` for integration boundaries and `DESIGN_REVIEW.md` for the design-test protocol.
 
 MW05-E06-04 adds bounded, deterministic editable procedural fields in Production. See [PROCEDURAL_FIELDS.md](PROCEDURAL_FIELDS.md) for seeded integer contracts, safe reconfiguration, and remaining limitations; full E06 acceptance is not claimed.
+
+
+## Measured editorial stage costs (MW05-E03-04)
+
+The [creative stage-cost report](CREATIVE_STAGE_COST.md) reuses nine existing
+synthetic S/M/L CI projects, the actual ten measured service commits per
+project, and exact CAS preview-index validation time. A separate source-bound
+JSON artifact makes stage costs and avoided preview-index *work units*
+inspectable without claiming unmeasured frame-render speedups, human
+preference, or independent product acceptance. The original requirement
+remains partial until actual provider renders and comparable no-cache
+baselines have been measured.

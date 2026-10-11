@@ -223,10 +223,16 @@
     },
     {
       "id": "MW05-E03-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new measured cache-performance contract",
-      "remaining_scope": "Stage-specific saved work and validation cost must be measured",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Nine exact-source S/M/L synthetic project benchmarks now generate an additional source-bound stage-cost report from ten genuinely committed edits per project. It measures concept/shot/source-safety SQLite CAS latencies plus CAS preview-index validation/storage time, and counts verified skipped preview-index work units with 35 adversarial checks.",
+      "remaining_scope": "Actual video frame regeneration and full native render cost, saved wallclock renderer time versus a fair no-cache baseline, user creative stage overhead, and independent performance review are NOT_MEASURED. The existing benchmark is synthetic, not comparative.",
+      "source_paths": [
+        "tooling/creative_stage_cost.py",
+        "tooling/tests/test_creative_stage_cost.py",
+        "crates/service/examples/acceptance_bench.rs",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/creative-production/CREATIVE_STAGE_COST.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
