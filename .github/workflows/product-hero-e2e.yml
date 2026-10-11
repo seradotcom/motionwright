@@ -150,11 +150,11 @@ jobs:
       - name: Exercise spatial regression guardrails against synthetic failures
         run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
 
-      - name: Render and inspect six native semantic composition variants
+      - name: Render and inspect nine native semantic composition variants
         run: |
           set -euo pipefail
           mkdir -p verification/product-hero-e2e
-          for aspect in landscape portrait square split-landscape split-portrait split-square; do
+          for aspect in landscape portrait square split-landscape split-portrait split-square metric-landscape metric-portrait metric-square; do
             MOTIONWRIGHT_E2E_FIXTURE="$aspect" python3 tooling/native_av_master_e2e.py \
               | tee "verification/product-hero-e2e/$aspect.log"
           done
@@ -167,14 +167,17 @@ jobs:
           from pathlib import Path
           root = Path("verification/product-hero-e2e") / os.environ["GITHUB_SHA"]
           for aspect, size in {"landscape":(1920,1080), "portrait":(1080,1920), "square":(1080,1080),
-                               "split-landscape":(1920,1080), "split-portrait":(1080,1920), "split-square":(1080,1080)}.items():
+                               "split-landscape":(1920,1080), "split-portrait":(1080,1920), "split-square":(1080,1080),
+                               "metric-landscape":(1920,1080), "metric-portrait":(1080,1920), "metric-square":(1080,1080)}.items():
               folder = root / aspect
               result = json.loads((folder / "result.json").read_text())
               inspection = json.loads((folder / "creative-frame-inspection.json").read_text())
               assert result["native_av_master_e2e"] == "PASS"
               assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
               assert result["frame_count"] == 180
-              assert result["project"]["fixture"] == ("split-explanation/1" if aspect.startswith("split-") else "product-hero-reveal/1")
+              expected_family = ("metric-evidence/1" if aspect.startswith("metric-") else
+                                 "split-explanation/1" if aspect.startswith("split-") else "product-hero-reveal/1")
+              assert result["project"]["fixture"] == expected_family
               assert (result["project"]["width"], result["project"]["height"]) == size
               assert inspection["revision"] == result["project"]["revision"]
               assert inspection["technical_sampling"] == "PASS"

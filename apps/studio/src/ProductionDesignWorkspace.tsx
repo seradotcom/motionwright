@@ -26,6 +26,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
 }) {
   const instance = project.production_design?.heroes.find(hero => hero.scene_id === scene?.id);
   const [draft,setDraft] = useState<HeroConfig>(() => structuredClone(instance?.config ?? defaultHeroConfig()));
+  const familyName = draft.layout === "split_explanation" ? "SplitExplanation" : draft.layout === "metric_evidence" ? "MetricEvidence" : "ProductHeroReveal";
   const [base,setBase] = useState(project.revision);
   const [aspect,setAspect] = useState(aspects[0]);
   const [nodes,setNodes] = useState<CanvasNode[]>([]);
@@ -54,16 +55,17 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
   const locked = project.locks.some(lock => ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource) && ["content","position","style","timing","renderer"].includes(lock.kind));
   const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !busy && !error && !previewLoading && base===project.revision && !locked;
   return <div className="production-split">
-    <section className="production-inspector" aria-label={`${draft.layout==="split_explanation"?"SplitExplanation":"ProductHeroReveal"} controls`}>
-      <div className="production-section-title"><Layers size={16}/><div><h2>{draft.layout === "split_explanation" ? "SplitExplanation" : "ProductHeroReveal"}</h2><p>Editable first-party composition · v1</p></div></div>
+    <section className="production-inspector" aria-label={`${familyName} controls`}>
+      <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition · v1</p></div></div>
       <span className="production-status">CREATIVE REVIEW REQUIRED</span>
-      <p className="production-help">Six persistent semantic objects, synchronized cubic entrances and a responsive composition. Both families are graphic studies, not fabricated screenshots, measured comparisons or claims about actual software.</p>
-      <label className="production-field"><span>Composition family</span><select aria-label="Component layout" value={draft.layout ?? "product_hero_reveal"} onChange={e => setDraft({...draft, layout:e.target.value as "product_hero_reveal" | "split_explanation"})}>
+      <p className="production-help">Six persistent semantic objects, synchronized cubic entrances and a responsive composition. These families are graphic studies, not fabricated screenshots, validated statistics, measured comparisons or claims about actual software.</p>
+      <label className="production-field"><span>Composition family</span><select aria-label="Component layout" value={draft.layout ?? "product_hero_reveal"} onChange={e => setDraft({...draft, layout:e.target.value as NonNullable<HeroConfig["layout"]>})}>
         <option value="product_hero_reveal">ProductHeroReveal · product statement</option>
         <option value="split_explanation">SplitExplanation · two-part explanation</option>
+        <option value="metric_evidence">MetricEvidence · authored fact and context</option>
       </select></label>
       <RevisionNotice base={base} current={project.revision} onReload={reload}/>
-      {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":"Wordmark",8] ] as const).map(([field,label,max]) =>
+      {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":draft.layout==="metric_evidence"?"Authored fact / metric":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":draft.layout==="metric_evidence"?"Evidence context":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":draft.layout==="metric_evidence"?"Evidence label":"Wordmark",8] ] as const).map(([field,label,max]) =>
         <label className="production-field" key={field}><span>{label}<small>{Array.from(draft[field]).length}/{max}</small></span>
           {field === "headline" || field === "body" ? <textarea aria-label={label} rows={field==="headline"?3:4} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>
             : <input aria-label={label} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>} </label>)}
@@ -72,7 +74,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
         <label className="production-field"><span>Accent</span><input aria-label="Hero accent" type="color" value={draft.accent} onChange={e => setDraft({...draft,accent:e.target.value})}/></label>
       </div>
       <label className="production-check"><input type="checkbox" checked={draft.motion} onChange={e => setDraft({...draft,motion:e.target.checked})}/> Animate entrance</label>
-      <p className="production-help">Turning motion off creates a static equivalent. Changing family reflows the same six stable object identities; updating preserves compatible human overrides and rejects conflicts. The split layout reads left-to-right in landscape and top-to-bottom in portrait/square.</p>
+      <p className="production-help">Turning motion off creates a static equivalent. Changing family reflows the same six stable object identities; updating preserves compatible human overrides and rejects conflicts. Split and metric layouts read left-to-right in landscape and reflow top-to-bottom on compact formats. MetricEvidence text is user supplied and carries an explicit unverified-source disclosure.</p>
       {error && <p className="production-error" role="alert">{error}</p>}
       {!scene && <button className="primary-button" disabled={busy} onClick={() => commit({type:"add_scene",name:"Product hero",objective:"An original, editable product reveal",duration_seconds:6})}><Plus size={14}/> Create a six-second scene</button>}
       {scene && (scene.renderer!=="motion-canvas" || seconds(scene.duration)<2) && <p className="production-error">Select a Motion Canvas scene at least two seconds long. Existing scene settings will not be replaced automatically.</p>}
@@ -85,7 +87,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
       <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{sameValue(draft,instance?.config)?"Stored parameters":"Uncommitted parameters"} · editorial preview</span></div>
         <div className="production-button-row"><div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div><button className="secondary-button" disabled={previewLoading || !!error || !scene} onClick={()=>setExpanded(true)}>Enlarge study</button></div></div>
       <div className={"production-preview-mat " + (aspect.height>aspect.width?"portrait":"")}>
-        {previewLoading ? <p role="status">Preparing the editable study…</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} label={`${draft.layout==="split_explanation"?"SplitExplanation":"ProductHeroReveal"} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
+        {previewLoading ? <p role="status">Preparing the editable study…</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
       </div>
       <div className="production-transport"><span className="mono">{localTime.toFixed(3)} s</span>
         <input aria-label="Component playhead" type="range" min={0} max={scene?seconds(scene.duration):6} step={1/30} value={localTime} disabled={!scene} onChange={e => onSeek(seconds(scene!.start)+Number(e.target.value))}/>

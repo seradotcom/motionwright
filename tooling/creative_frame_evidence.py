@@ -55,7 +55,11 @@ def inspect_native_frames(frames: list[Path], destination: Path, size: tuple[int
     header = 90
     sheet = Image.new("RGB", (cols*(thumb_width+gutter)+gutter, header+rows*(thumb_height+label_height+gutter)+gutter), "#151A20")
     draw = ImageDraw.Draw(sheet)
-    family = "SPLITEXPLANATION" if project.get("fixture") == "split-explanation/1" else "PRODUCTHEROREVEAL"
+    family = {"split-explanation/1": "SPLITEXPLANATION",
+              "product-hero-reveal/1": "PRODUCTHEROREVEAL",
+              "metric-evidence/1": "METRICEVIDENCE"}.get(project.get("fixture"))
+    if family is None:
+        raise AssertionError("Unsupported creative fixture identity")
     draw.text((gutter,18), f"{family} / NATIVE FRAME CONTACT SHEET", fill="#F2F4F3")
     draw.text((gutter,40), f"{size[0]}x{size[1]} / 30 fps / revision {project['revision']} / Motionwright {source_sha[:12]}", fill="#A5C8DF")
     draw.text((gutter,61), "Technical samples only. Human creative approval and glyph review are still required.", fill="#A5C8DF")

@@ -141,3 +141,54 @@ describe("first-party creative production",()=>{
     await expect(applyChange(p,{type:"set_production_plan",plan:{...plan,shots:[{...plan.shots[0],evidence_kind:"real_capture"}]}})).rejects.toThrow("digest-bound");
   });
 });
+
+
+describe("MetricEvidence as a third versioned composition family", () => {
+  const config = {
+    ...defaultHeroConfig(), layout:"metric_evidence" as const,
+    eyebrow:"USER AUTHORED / NOT VERIFIED",
+    headline:"42% growth",
+    body:"A reported figure needs a source, date and independently checked evidence.",
+    wordmark:"DATA",accent:"#D9A46E",
+  };
+
+  it("reflows in three aspects with stable semantic IDs and a persistent unverified disclosure", async () => {
+    const original=await realizeProductHero(instance,defaultHeroConfig());
+    for(const [width,height] of [[1920,1080],[1080,1920],[1080,1080]]) {
+      const nodes=await realizeProductHero(instance,config,width,height);
+      expect(nodes).toHaveLength(6);
+      expect(nodes.map(n=>n.id)).toEqual(original.map(n=>n.id));
+      for(const node of nodes) {
+        expect(node.name.startsWith("MetricEvidence / ")).toBe(true);
+        expect(node.x).toBeGreaterThanOrEqual(0);
+        expect(node.y).toBeGreaterThanOrEqual(0);
+        expect(node.x+node.width).toBeLessThanOrEqual(width);
+        expect(node.y+node.height).toBeLessThanOrEqual(height);
+      }
+      const rule=nodes.find(n=>n.name.endsWith("rule"))!;
+      expect(width>height?rule.height>rule.width:rule.width>rule.height).toBe(true);
+      expect(nodes.find(n=>n.name.endsWith("headline"))).toMatchObject({text:"42% growth",style:{fill:"#D9A46E"}});
+      expect(nodes.at(-1)?.text).toBe("METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED");
+    }
+    const staticNodes=await realizeProductHero(instance,{...config,motion:false});
+    expect(staticNodes.every(n=>n.keyframes.length===0)).toBe(true);
+  });
+
+  it("protects human source and explanations while switching families", async () => {
+    let p=await seeded();const scene_id=p.scenes[0].id;
+    const eyebrow=await heroNodeId(instance,"eyebrow");
+    const body=await heroNodeId(instance,"body");
+    p=await applyChange(p,{type:"update_canvas_text",scene_id,node_id:eyebrow,text:"Human-authored source context"});
+    // Keep the baseline generated eyebrow while moving to the new family.
+    // Changing the eyebrow *and* preserving a human edit would be a real conflict.
+    const compatibleConfig={...config,eyebrow:defaultHeroConfig().eyebrow};
+    p=await applyChange(p,{type:"upsert_product_hero",instance_id:instance,scene_id,config:compatibleConfig});
+    expect(p.scenes[0].nodes.find(n=>n.id===eyebrow)?.text).toBe("Human-authored source context");
+    expect(p.scenes[0].nodes.find(n=>n.id===body)?.name).toBe("MetricEvidence / body");
+    p=await applyChange(p,{type:"update_canvas_text",scene_id,node_id:body,text:"Human-controlled explanation"});
+    const before=structuredClone(p);
+    await expect(applyChange(p,{type:"upsert_product_hero",instance_id:instance,scene_id,
+      config:{...compatibleConfig,body:"An incompatible regenerated metric claim"}})).rejects.toThrow("override conflict");
+    expect(p).toEqual(before);
+  });
+});
