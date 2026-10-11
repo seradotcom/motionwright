@@ -4,6 +4,36 @@ use uuid::Uuid;
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+fn write_original_wav(path: &std::path::Path) {
+    // Real, valid PCM16 RIFF source; no forged CAS digest or bypass of asset
+    // admission. The service computes the hash from these exact bytes.
+    let sample_rate = 48_000_u32;
+    let frames = 480_u32;
+    let data_bytes = frames * 2;
+    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    for frame in 0..frames {
+        let sample = if frame % 2 == 0 {
+            1_200_i16
+        } else {
+            -1_200_i16
+        };
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(path, wav).unwrap();
+}
+
 fn apply(service: &StudioService, project: &Project, id: &str, change: Change) -> Project {
     service
         .apply(project.id, &project.stamp(), id, &change)
@@ -41,21 +71,26 @@ fn exact_music_cut_persists_under_one_native_service_transaction_and_stale_cas_f
     );
     let first = p.scenes[0].id;
     let second = p.scenes[1].id;
-    let asset_id = Uuid::new_v4();
-    p = apply(
-        &service,
-        &p,
-        "imported",
-        Change::AddAsset {
-            asset: Asset {
-                id: asset_id,
-                name: "Original authorized owner audio.wav".into(),
-                media_type: "audio/wav".into(),
-                content_sha256: Some(DIGEST.into()),
-                source_revision: Some("owner-marked".into()),
-            },
-        },
-    );
+    let source = temp.path().join("original-music.wav");
+    write_original_wav(&source);
+    p = service
+        .import_asset_file(
+            p.id,
+            &p.stamp(),
+            "imported",
+            &source,
+            "Original authorized owner audio.wav".into(),
+            "audio/wav".into(),
+        )
+        .unwrap()
+        .project;
+    let imported = p
+        .assets
+        .iter()
+        .find(|asset| asset.name == "Original authorized owner audio.wav")
+        .expect("real imported audio file must be admitted");
+    let asset_id = imported.id;
+    let source_sha256 = imported.content_sha256.clone().unwrap();
     let shots = p
         .scenes
         .iter()
@@ -94,7 +129,7 @@ fn exact_music_cut_persists_under_one_native_service_transaction_and_stale_cas_f
     let cut = Change::SnapSceneCutToMusic {
         scene_id: first,
         beat_index: 1,
-        source_sha256: DIGEST.into(),
+        source_sha256,
         base_revision: p.revision,
         acknowledge_absolute_anchors: false,
     };

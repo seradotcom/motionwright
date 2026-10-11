@@ -122,7 +122,9 @@ export function inspectMusicCut(
   if (!plan || plan.clock.kind !== "music") {
     throw new Error("Save an owner-marked music clock before aligning a scene cut.");
   }
-  const source = project.assets.find(x=>x.id===plan.clock.asset_id && x.media_type.startsWith("audio/"));
+  // Retain TypeScript's discriminated clock narrowing inside find callbacks.
+  const clock = plan.clock;
+  const source = project.assets.find(x=>x.id===clock.asset_id && x.media_type.startsWith("audio/"));
   if (!source?.content_sha256 || !SHA.test(source.content_sha256) ||
       (expectedSourceSha256 && expectedSourceSha256!==source.content_sha256)) {
     throw new Error("Selected audio source identity changed. Revalidate its digest.");
