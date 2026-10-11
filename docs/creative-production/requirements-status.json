@@ -43,15 +43,20 @@
     {
       "id": "MW05-E00-03",
       "implementation": "partial",
-      "implemented_scope": "Native portable samples and desktop CI packages without paid models",
-      "remaining_scope": "Fresh-machine runtime onboarding and user acceptance remain open",
+      "implemented_scope": "Native portable samples, CI candidate packages and installed-desktop owner-selected persistent Semwright runtime connection with read-only digest/version/resource validation; a picker is not provisioning or acceptance",
+      "remaining_scope": "Semwright Broker/Driver Host fresh-machine provisioning, physical-device runtime/picker trials, complete first-use journey and independent user acceptance remain open",
       "source_paths": [
         "crates/storage/src/lib.rs",
         "crates/storage/tests/creative_migration.rs",
         "crates/native/examples/native-render-e2e.rs",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
         "apps/studio/tests/creative-production.spec.ts",
-        "apps/studio/src/production-design.css"
+        "apps/studio/src/production-design.css",
+        "apps/desktop/src-tauri/src/runtime_setup.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/IntegrationsWorkspace.tsx",
+        "apps/studio/tests/runtime-onboarding.spec.ts",
+        "docs/owner-native-runtime-onboarding.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

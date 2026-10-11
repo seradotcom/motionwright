@@ -2,6 +2,7 @@ mod av_delivery;
 mod av_master;
 mod effect_grants;
 mod media_integrity;
+mod runtime_setup;
 
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
@@ -32,11 +33,13 @@ use motionwright_service::{
     ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
+use runtime_setup::RuntimeConnectionRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 const SEMWRIGHT_REVISION: &str = "04142a2ae16e53a58bb6cf43135786e396a4b720";
@@ -48,6 +51,7 @@ struct AppState {
     effect_grants: EffectGrantRegistry,
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
+    runtime_connections: RuntimeConnectionRegistry,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +282,14 @@ struct WorkflowOverviewRequest {
 #[derive(Debug, Deserialize)]
 struct ProductionRuntimeStatusRequest {
     project_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeConnectionSelectionRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -583,16 +595,106 @@ fn model_request_preflight(
         .map_err(sanitized)
 }
 
+/// Read an owner-selected per-project pointer or retain the legacy explicit
+/// environment connection if no saved pointer exists. Never take a WebView
+/// supplied filesystem path for production, preview or workflow commands.
+fn selected_connection_path(state: &AppState, project_id: Uuid) -> Result<Option<PathBuf>, String> {
+    let project = state.service.project(project_id).map_err(sanitized)?;
+    state
+        .runtime_connections
+        .resolve(project.id, project.generation)
+}
+
+/// The OS native file dialog is the trusted owner gesture. JavaScript never
+/// sees the selected path, connection JSON, private session ticket or Broker
+/// authentication. The canonical Semwright client remains responsible for
+/// digest/protocol checks; this does not install or bootstrap a provider.
+#[tauri::command]
+async fn choose_semwright_connection(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<bool, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Project changed; refresh before selecting a Semwright connection.".into());
+    }
+    let handle = app.clone();
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Select an owner-provisioned Semwright connection")
+            .add_filter("JSON connection", &["json"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|_| "Native Semwright connection picker failed".to_string())?;
+    let Some(selected) = selected else {
+        return Ok(false); // cancel is not an error or a hidden connection change
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| "This native selection is not a local connection file".to_string())?;
+    let connection = ProductionConnection::load(&path)
+        .map_err(|_| "The selected Semwright connection failed local validation".to_string())?;
+    if connection.resource != project.resource_key() {
+        return Err("Selected Semwright connection belongs to another project resource.".into());
+    }
+    let client = ProductionClient::new(connection)
+        .map_err(|_| "Selected Semwright connection was rejected".to_string())?;
+    let probe = client.probe_runtime(SEMWRIGHT_VERSION).await.map_err(|_| {
+        "Selected Semwright runtime is unavailable or its digest is invalid".to_string()
+    })?;
+    if !probe.version_compatible {
+        return Err(
+            "Selected Semwright runtime does not match the pinned supported version.".into(),
+        );
+    }
+    let current = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if current.generation != project.generation || current.revision != project.revision {
+        return Err("Project changed during runtime setup; no new selection was stored.".into());
+    }
+    state
+        .runtime_connections
+        .remember_verified(request.project_id, request.generation, &path)?;
+    Ok(true)
+}
+
+/// A local revocation removes only Motionwright's saved path reference.
+/// It cannot cancel running native jobs, remove the owner's Semwright ticket,
+/// disable a separately configured environment override, or delete artifacts.
+#[tauri::command]
+fn clear_saved_semwright_connection(
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<bool, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Project changed; refresh before clearing a runtime selection.".into());
+    }
+    state.runtime_connections.clear_saved(project.id)
+}
+
 #[tauri::command]
 async fn production_runtime_status(
     state: State<'_, AppState>,
     request: ProductionRuntimeStatusRequest,
 ) -> Result<ProductionRuntimeStatusResponse, String> {
-    let Some(connection_path) = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION") else {
+    let Some(connection_path) = selected_connection_path(&state, request.project_id)? else {
         return Ok(ProductionRuntimeStatusResponse {
             status: "unconfigured",
             reason: Some(
-                "Set MOTIONWRIGHT_SEMWRIGHT_CONNECTION to an owner-provisioned canonical Semwright connection file."
+                "Choose an owner-provisioned connection in Integrations, or set the explicit MOTIONWRIGHT_SEMWRIGHT_CONNECTION environment path."
                     .into(),
             ),
             expected_version: SEMWRIGHT_VERSION,
@@ -686,10 +788,10 @@ async fn workflow_overview(
     state: State<'_, AppState>,
     request: WorkflowOverviewRequest,
 ) -> Result<WorkflowOverviewResponse, String> {
-    let Some(connection_path) = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION") else {
+    let Some(connection_path) = selected_connection_path(&state, request.project_id)? else {
         return Ok(WorkflowOverviewResponse {
             status: "unconfigured",
-            reason: Some("Set MOTIONWRIGHT_SEMWRIGHT_CONNECTION to an owner-provisioned canonical Semwright connection file.".into()),
+            reason: Some("Choose an owner-provisioned connection in Integrations, or set the explicit MOTIONWRIGHT_SEMWRIGHT_CONNECTION environment path.".into()),
             connection_identity: None,
             authority: None,
             traces: serde_json::json!({"traces": []}),
@@ -803,7 +905,7 @@ async fn workflow_action(
     state: State<'_, AppState>,
     request: WorkflowActionRequest,
 ) -> Result<WorkflowActionResponse, String> {
-    let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
+    let connection_path = selected_connection_path(&state, request.project_id)?
         .ok_or_else(|| "Canonical Semwright workflow actions are not configured.".to_string())?;
     let project = state
         .service
@@ -1032,7 +1134,7 @@ async fn render_motion_canvas(
     state: State<'_, AppState>,
     request: MotionCanvasRenderRequest,
 ) -> Result<NativePreviewRenderResponse, String> {
-    let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
+    let connection_path = selected_connection_path(&state, request.project_id)?
         .ok_or_else(|| "Canonical Semwright production is not configured.".to_string())?;
     let project = state
         .service
@@ -1152,7 +1254,7 @@ async fn assemble_av_master(
     state: State<'_, AppState>,
     request: AssembleAvMasterRequest,
 ) -> Result<NativeAvMasterResponse, String> {
-    let connection_path = std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION")
+    let connection_path = selected_connection_path(&state, request.project_id)?
         .ok_or_else(|| "Canonical Semwright AV mastering is not configured.".to_string())?;
     let project = state
         .service
@@ -1270,7 +1372,7 @@ async fn assemble_multisegment_av_master(
     request: AssembleAvMasterRequest,
 ) -> Result<NativeMultisegmentAvResponse, String> {
     let connection_path =
-        std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION").ok_or_else(|| {
+        selected_connection_path(&state, request.project_id)?.ok_or_else(|| {
             "Canonical Semwright multisegment mastering is not configured.".to_string()
         })?;
     let project = state
@@ -2103,6 +2205,7 @@ fn sanitized(error: impl std::fmt::Display) -> String {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -2131,6 +2234,7 @@ fn main() {
                 effect_grants: EffectGrantRegistry::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
+                runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
             });
             Ok(())
         })
@@ -2142,6 +2246,8 @@ fn main() {
             asset_integrity_page,
             model_request_preflight,
             production_runtime_status,
+            choose_semwright_connection,
+            clear_saved_semwright_connection,
             workflow_overview,
             workflow_action,
             production_jobs,

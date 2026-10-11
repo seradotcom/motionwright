@@ -5445,6 +5445,48 @@ select:focus {
   display: grid;
 }
 
+.integration-runtime-setup {
+  border-top: 1px solid var(--border-soft);
+  padding: 14px;
+  display: grid;
+  gap: 11px;
+  background: var(--surface-1);
+}
+
+.integration-runtime-setup > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.integration-runtime-setup strong {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.integration-runtime-setup p {
+  margin: 0;
+  max-width: 95ch;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.integration-runtime-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.integration-runtime-actions button {
+  min-height: 34px;
+}
+
+.integration-runtime-setup .integration-runtime-note {
+  color: var(--dim);
+  font-size: 10px;
+}
+
 .integration-boundary-row {
   min-height: 62px;
   display: grid;

@@ -447,6 +447,35 @@ export async function exportOtio(project: Project, path: string): Promise<OtioEx
   });
 }
 
+/** Native OS picker only: the WebView never receives the chosen path, file
+ * contents, Semwright session ticket or Broker socket details. Cancellation
+ * returns false; the owner may keep editing without configuring a renderer.
+ */
+export async function chooseSemwrightConnection(project: Project): Promise<boolean> {
+  if (!isTauri()) throw new Error("Native runtime selection requires the installed desktop app.");
+  return invoke<boolean>("choose_semwright_connection", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+    },
+  });
+}
+
+/** Revokes only this project's saved local pointer, never a provider job or the
+ * owner's connection file. A separately configured environment path remains.
+ */
+export async function clearSavedSemwrightConnection(project: Project): Promise<boolean> {
+  if (!isTauri()) throw new Error("Native runtime settings require the installed desktop app.");
+  return invoke<boolean>("clear_saved_semwright_connection", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+    },
+  });
+}
+
 export async function productionRuntimeCompatibility(
   project: Project,
 ): Promise<ProductionRuntimeCompatibility> {

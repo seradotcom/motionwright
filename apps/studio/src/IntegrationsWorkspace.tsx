@@ -1,6 +1,10 @@
 import { CircleCheck, CircleDashed, LockKeyhole, Package, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { productionRuntimeCompatibility } from "./api";
+import {
+  chooseSemwrightConnection,
+  clearSavedSemwrightConnection,
+  productionRuntimeCompatibility,
+} from "./api";
 import type {
   Bootstrap,
   Change,
@@ -70,6 +74,8 @@ export default function IntegrationsWorkspace({
   const [runtimeCompatibility, setRuntimeCompatibility] =
     useState<ProductionRuntimeCompatibility | null>(null);
   const [runtimeProbeFailed, setRuntimeProbeFailed] = useState(false);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [runtimeActionNote, setRuntimeActionNote] = useState<string | null>(null);
   const [handoffDraft, setHandoffDraft] = useState<HandoffBinding>(() => ({
     id: crypto.randomUUID(),
     system: "launchwright",
@@ -107,7 +113,42 @@ export default function IntegrationsWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [project.id, nativeSdk.mode]);
+  }, [project.id, project.generation, nativeSdk.mode]);
+
+  const updateRuntimeSelection = async (action: "choose" | "clear") => {
+    if (runtimeBusy || nativeSdk.mode !== "tauri") return;
+    setRuntimeBusy(true);
+    setRuntimeActionNote(null);
+    try {
+      const changed = action === "choose"
+        ? await chooseSemwrightConnection(project)
+        : await clearSavedSemwrightConnection(project);
+      // A canceled native chooser does not install/replace anything.
+      // Revoking only the saved pointer never stops an existing provider job.
+      const status = await productionRuntimeCompatibility(project);
+      setRuntimeCompatibility(status);
+      setRuntimeProbeFailed(false);
+      setRuntimeActionNote(action === "choose"
+        ? (changed
+            ? "Owner-selected runtime saved for this project. All production commands still require native policy and one-time grants."
+            : "File selection canceled. The previous runtime selection was preserved.")
+        : (changed
+            ? "Saved project connection reference removed. Existing native jobs and the owner's original connection file were not touched."
+            : "No saved project connection was present. An explicit environment connection may still apply."));
+    } catch (error) {
+      setRuntimeActionNote(error instanceof Error ? error.message : String(error));
+      // An invalid selection must not overwrite a previously working
+      // connection. Probe again; report its actual live state.
+      try {
+        setRuntimeCompatibility(await productionRuntimeCompatibility(project));
+        setRuntimeProbeFailed(false);
+      } catch {
+        setRuntimeProbeFailed(true);
+      }
+    } finally {
+      setRuntimeBusy(false);
+    }
+  };
 
   const runtimePresentation = useMemo(() => {
     if (runtimeProbeFailed) {
@@ -264,6 +305,38 @@ export default function IntegrationsWorkspace({
             status="CONTRACT ONLY"
             body="Inter-product handoff must use explicit public resource/artifact references. Motionwright does not read or write Launchwright private storage."
           />
+        </div>
+        <div className="integration-runtime-setup" aria-label="Configure Semwright runtime">
+          <div>
+            <strong>Connect an existing Semwright runtime</strong>
+            <p>Choose an owner-provisioned JSON connection with the operating system's file picker. Motionwright validates its project binding, executable digest and supported version before saving a local reference. This does not install Semwright, grant execution permission or expose the connection file to the editor.</p>
+            <p>Required resource: <code className="mono">project:{project.id}</code>. The owner-created connection must name this exact project.</p>
+          </div>
+          <div className="integration-runtime-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={nativeSdk.mode !== "tauri" || runtimeBusy}
+              onClick={() => void updateRuntimeSelection("choose")}
+            >
+              {runtimeBusy ? "Validating…" : "Choose Semwright connection"}
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              disabled={nativeSdk.mode !== "tauri" || runtimeBusy}
+              onClick={() => void updateRuntimeSelection("clear")}
+            >
+              Remove saved selection
+            </button>
+          </div>
+          <p className="integration-runtime-note" role="status" aria-live="polite">
+            {runtimeActionNote ?? (
+              nativeSdk.mode === "tauri"
+                ? "Local editing works without a renderer. A saved selection takes precedence over the optional legacy environment path; each production call revalidates native authority."
+                : "Runtime selection is available only in the installed desktop app. Browser demo mode cannot access local runtime files."
+            )}
+          </p>
         </div>
       </section>
 
