@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import sys
 import struct
 import tempfile
 import zlib
@@ -13,6 +14,10 @@ import unittest
 from unittest.mock import patch
 
 MODULE = Path(__file__).resolve().parents[1] / "native_direct_mediated_parity.py"
+# Allow the actual production script's pure sibling clock module when loaded
+# under a dynamic test spec (the ordinary python tooling/... entrypoint already
+# includes its source directory in sys.path).
+sys.path.insert(0, str(MODULE.parent))
 spec = importlib.util.spec_from_file_location("native_direct_mediated_parity", MODULE)
 assert spec and spec.loader
 parity = importlib.util.module_from_spec(spec)
