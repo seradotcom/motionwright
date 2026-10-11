@@ -144,6 +144,10 @@ jobs:
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-lifecycle.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-direct-parity-film.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-direct-mediated-parity.json"
+          for frame in 000000 000015 000030 000059; do
+            test -s "verification/native-render-e2e/${GITHUB_SHA}/mediated-native-frame-${frame}.png"
+            test -s "verification/native-render-e2e/${GITHUB_SHA}/direct-native-frame-${frame}.png"
+          done
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -167,8 +171,14 @@ jobs:
           assert comparison["direct_job_distinct_from_mediated"] is True
           assert comparison["direct_native_validation_checks"] > 0
           assert comparison["pixels"]["frame_count"] == 60
-          assert comparison["pixels"]["every_frame_byte_identical"] is True
-          assert len(comparison["pixels"]["ordered_frame_digests_sha256"]) == 64
+          pixels = comparison["pixels"]
+          assert pixels["all_frames_decoded_rgba_pixel_identical"] is True
+          assert pixels["raw_rgba_pixel_format"] == "rgba_1920x1080"
+          assert type(pixels["png_container_byte_identical"]) is bool
+          assert 0 <= pixels["png_container_mismatch_count"] <= 60
+          assert len(pixels["ordered_rgba_frame_digests_sha256"]) == 64
+          assert pixels["checked_frames"] == [0, 15, 30, 59]
+          assert all(len(value) == 64 for value in pixels["checked_frame_rgba_sha256"])
           assert comparison["human_visual_acceptance"] == "NOT_RUN"
           assert comparison["arbitrary_renderer_property_parity"] == "NOT_PROVEN"
           region = result["native_linear_opacity_region"]

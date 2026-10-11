@@ -5,7 +5,10 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import struct
 import tempfile
+import zlib
 import unittest
 from unittest.mock import patch
 
@@ -40,18 +43,53 @@ def fixture_artifact(root: Path, size: int = 60, salt: bytes = b"same") -> Path:
 
 
 class SourceBoundComparisonTests(unittest.TestCase):
+    def setUp(self):
+        # Fast adversarial unit fixtures intentionally contain only PNG headers.
+        # They exercise manifest/frame ordering and parity orchestration, not
+        # decoded images; the separate real-FFmpeg test verifies that boundary.
+        def synthetic_decoded(root, expected_frames=60):
+            return [
+                hashlib.sha256(
+                    (root / "frames" / f"{index:06}.png").read_bytes()
+                ).hexdigest()
+                for index in range(expected_frames)
+            ]
+        mocked = patch.object(parity, "decoded_rgba_frame_hashes",
+                              side_effect=synthetic_decoded)
+        mocked.start()
+        self.addCleanup(mocked.stop)
+
     def test_identical_direct_and_mediated_native_manifest_bytes_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mediated = fixture_artifact(root / "mediated")
             direct = fixture_artifact(root / "direct")
             result = parity.compare_native_pngs(mediated, direct)
-            self.assertTrue(result["every_frame_byte_identical"])
+            self.assertTrue(result["all_frames_decoded_rgba_pixel_identical"])
+            self.assertTrue(result["png_container_byte_identical"])
+            self.assertEqual(result["png_container_mismatch_count"], 0)
             self.assertEqual(result["frame_count"], 60)
             self.assertEqual(result["checked_frames"], [0, 15, 30, 59])
-            self.assertEqual(len(result["checked_frame_sha256"]), 4)
-            self.assertEqual(len(result["ordered_frame_digests_sha256"]), 64)
+            self.assertEqual(len(result["checked_frame_rgba_sha256"]), 4)
+            self.assertEqual(len(result["ordered_rgba_frame_digests_sha256"]), 64)
             self.assertNotIn(str(root), str(result))
+
+    def test_metadata_only_difference_does_not_synthesize_pixel_difference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mediated = fixture_artifact(root / "mediated")
+            direct = fixture_artifact(root / "direct", salt=b"other")
+            # The lower-level test models a verified *decoded* same-pixel
+            # result despite container-byte differences. It cannot override
+            # the real decoder used in CI.
+            with patch.object(
+                parity, "decoded_rgba_frame_hashes",
+                return_value=["a" * 64] * 60,
+            ):
+                result = parity.compare_native_pngs(mediated, direct)
+            self.assertTrue(result["all_frames_decoded_rgba_pixel_identical"])
+            self.assertFalse(result["png_container_byte_identical"])
+            self.assertEqual(result["png_container_mismatch_count"], 60)
 
     def test_forged_second_render_output_never_passes_as_pixel_parity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,6 +249,56 @@ class SourceBoundComparisonTests(unittest.TestCase):
                     )
         self.assertEqual(sum(s.endswith(".render.start") for s in commands), 2)
         self.assertNotIn("direct-native", str(result))
+
+
+def real_rgb_png(*, pixels: bytes, width: int = 2, height: int = 2, note: bytes = b"") -> bytes:
+    if len(pixels) != width * height * 3:
+        raise ValueError("PNG test fixture pixel count mismatch")
+    def chunk(name: bytes, body: bytes) -> bytes:
+        data = name + body
+        return struct.pack(">I", len(body)) + data + struct.pack(">I", zlib.crc32(data))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    scanlines = b"".join(
+        b"\x00" + pixels[row * width * 3:(row + 1) * width * 3]
+        for row in range(height)
+    )
+    ancillary = chunk(b"tEXt", b"comment\x00" + note) if note else b""
+    return (
+        parity.PNG_MAGIC + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(scanlines))
+        + ancillary + chunk(b"IEND", b"")
+    )
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg not available for tiny real RGBA decoder test")
+class RealDecodedFramehashTests(unittest.TestCase):
+    def test_real_png_metadata_differences_disappear_in_decoded_rgba(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frames = root / "frames"
+            frames.mkdir()
+            red = bytes([255, 0, 0] * 4)
+            (frames / "000000.png").write_bytes(real_rgb_png(pixels=red, note=b"one"))
+            (frames / "000001.png").write_bytes(real_rgb_png(pixels=red, note=b"two"))
+            a, b = parity.decoded_rgba_frame_hashes(
+                root, expected_frames=2, width=2, height=2,
+            )
+            self.assertEqual(a, b, "container metadata must not change decoded pixels")
+            self.assertEqual(len(a), 64)
+
+    def test_real_png_changed_visible_pixel_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frames = root / "frames"
+            frames.mkdir()
+            red = bytes([255, 0, 0] * 4)
+            other = bytes([0, 255, 0] + [255, 0, 0] * 3)
+            (frames / "000000.png").write_bytes(real_rgb_png(pixels=red))
+            (frames / "000001.png").write_bytes(real_rgb_png(pixels=other))
+            a, b = parity.decoded_rgba_frame_hashes(
+                root, expected_frames=2, width=2, height=2,
+            )
+            self.assertNotEqual(a, b, "even one changed visible pixel must change the digest")
 
 
 if __name__ == "__main__":

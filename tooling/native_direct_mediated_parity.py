@@ -102,30 +102,96 @@ def native_png_hashes(artifact_root: Path, expected_frames: int = 60) -> list[st
     return hashes
 
 
+def decoded_rgba_frame_hashes(
+    artifact_root: Path, expected_frames: int = 60,
+    width: int = 1920, height: int = 1080,
+) -> list[str]:
+    """Hash decoded visible RGBA pixels, not PNG compression or metadata.
+
+    FFmpeg is solely an independent verifier of actual native output. It
+    cannot render or alter a Motionwright Film. Framehash hashes decoded raw
+    RGBA bytes exactly once per source-indexed PNG; every frame is checked.
+    """
+    if not 1 <= expected_frames <= 120 or not (1 <= width <= 3840 and 1 <= height <= 3840):
+        raise DirectParityError("Decoded native comparison has an invalid output budget")
+    argv = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-f", "image2", "-framerate", "30", "-start_number", "0",
+        "-i", str(artifact_root / "frames" / "%06d.png"),
+        "-frames:v", str(expected_frames), "-pix_fmt", "rgba",
+        "-f", "framehash", "-hash", "SHA256", "pipe:1",
+    ]
+    try:
+        process = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DirectParityError("Independent native RGBA verification is unavailable") from error
+    if process.returncode != 0 or not 0 < len(process.stdout) <= 100_000:
+        raise DirectParityError("Independent native RGBA verification failed")
+    try:
+        text = process.stdout.decode("ascii")
+    except UnicodeError as error:
+        raise DirectParityError("Decoded RGBA digest protocol is not ASCII") from error
+    header = f"#dimensions 0: {width}x{height}"
+    if "#hash: SHA256" not in text.splitlines() or header not in text.splitlines():
+        raise DirectParityError("Decoded RGBA digest has the wrong algorithm or geometry")
+    rows = [line for line in text.splitlines() if line and not line.startswith("#")]
+    if len(rows) != expected_frames:
+        raise DirectParityError("Decoded native frame count is incomplete")
+    hashes = []
+    for index, row in enumerate(rows):
+        fields = [part.strip() for part in row.split(",")]
+        if len(fields) != 6:
+            raise DirectParityError("Decoded RGBA framehash has unexpected columns")
+        stream, dts, pts, duration, bytes_claimed, sha = fields
+        if (
+            (stream, dts, pts, duration, bytes_claimed)
+            != ("0", str(index), str(index), "1", str(width * height * 4))
+            or not HEX_SHA256.fullmatch(sha)
+        ):
+            raise DirectParityError("Decoded RGBA frame index, byte budget or digest is invalid")
+        hashes.append(sha)
+    return hashes
+
+
 def compare_native_pngs(
     mediated: Path, direct: Path, expected_frames: int = 60,
 ) -> dict[str, Any]:
-    mediated_sha = native_png_hashes(mediated, expected_frames)
-    direct_sha = native_png_hashes(direct, expected_frames)
-    mismatches = [index for index, (a, b) in enumerate(zip(mediated_sha, direct_sha)) if a != b]
-    if mismatches:
-        # Neither path/filename nor private native job references are disclosed.
+    # PNG manifests and actual *file bytes* must be valid independently.
+    # Different PNG SHA-256 alone does NOT establish a different image:
+    # metadata, filter selection and lossless compression can differ.
+    mediated_png_sha = native_png_hashes(mediated, expected_frames)
+    direct_png_sha = native_png_hashes(direct, expected_frames)
+    container_mismatches = sum(
+        a != b for a, b in zip(mediated_png_sha, direct_png_sha)
+    )
+
+    # The visual equality gate is an independent full-frame decode of all
+    # 60 actual native PNGs to an identical RGBA pixel format. No tolerance.
+    mediated_rgba = decoded_rgba_frame_hashes(mediated, expected_frames)
+    direct_rgba = decoded_rgba_frame_hashes(direct, expected_frames)
+    pixel_mismatches = sum(a != b for a, b in zip(mediated_rgba, direct_rgba))
+    if pixel_mismatches:
         raise DirectParityError(
-            f"Direct and mediated native pixels differ at {len(mismatches)} of "
+            f"Direct and mediated decoded RGBA pixels differ at {pixel_mismatches} of "
             f"{expected_frames} exact source-bound frames"
         )
-    if len(mediated_sha) != expected_frames or len(direct_sha) != expected_frames:
-        raise DirectParityError("Native parity frame comparison is incomplete")
+    if len(mediated_rgba) != expected_frames or len(direct_rgba) != expected_frames:
+        raise DirectParityError("Native decoded pixel parity frame comparison is incomplete")
+    checkpoints = sorted(set([0, expected_frames // 4, expected_frames // 2, expected_frames - 1]))
     return {
         "frame_count": expected_frames,
-        "every_frame_byte_identical": True,
-        "ordered_frame_digests_sha256": hashlib.sha256(
-            "".join(mediated_sha).encode("ascii")
+        "all_frames_decoded_rgba_pixel_identical": True,
+        "png_container_byte_identical": container_mismatches == 0,
+        "png_container_mismatch_count": container_mismatches,
+        "raw_rgba_pixel_format": "rgba_1920x1080",
+        "ordered_rgba_frame_digests_sha256": hashlib.sha256(
+            "".join(mediated_rgba).encode("ascii")
         ).hexdigest(),
-        "checked_frames": [0, 15, 30, expected_frames - 1],
-        "checked_frame_sha256": [
-            mediated_sha[index] for index in [0, 15, 30, expected_frames - 1]
-        ],
+        "checked_frames": checkpoints,
+        "checked_frame_rgba_sha256": [mediated_rgba[index] for index in checkpoints],
     }
 
 

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_direct_mediated_parity import (
-    checked_direct_artifact, compare_native_pngs,
+    DirectParityError, checked_direct_artifact, compare_native_pngs,
     run_direct_native_film,
 )
 
@@ -495,7 +495,41 @@ def main() -> None:
             claimed_direct_sha = direct["artifact"].get("manifest_sha256")
             if claimed_direct_sha is not None and claimed_direct_sha != direct_manifest_sha:
                 raise AssertionError("direct native manifest digest was not source-bound")
-            parity = compare_native_pngs(artifact_root, direct_root, expected_frames=60)
+            # Preserve a few separately inspectable, manifest-bound native
+            # frame pairs even if the *pixel* gate fails. They are genuine
+            # same-fixture source PNGs, not generated diagnostics.
+            for frame_index in [0, 15, 30, 59]:
+                frame_file = f"{frame_index:06}.png"
+                shutil.copyfile(
+                    artifact_root / "frames" / frame_file,
+                    EVIDENCE / f"mediated-native-frame-{frame_index:06}.png",
+                )
+                shutil.copyfile(
+                    direct_root / "frames" / frame_file,
+                    EVIDENCE / f"direct-native-frame-{frame_index:06}.png",
+                )
+            try:
+                parity = compare_native_pngs(artifact_root, direct_root, expected_frames=60)
+            except DirectParityError as error:
+                write_private_json(
+                    EVIDENCE / "native-direct-mediated-diagnostic.json",
+                    {
+                        "schema": "motionwright.native-direct-mediated-diagnostic/1",
+                        "result": "FAIL",
+                        "source_sha": GITHUB_SHA,
+                        "semwright_sha": PIN,
+                        "film_sha256": direct["film_sha256"],
+                        "native_manifest_sha256": {
+                            "mediated": manifest_digest,
+                            "direct": direct_manifest_sha,
+                        },
+                        "reason": str(error),
+                        "native_job_retry": "FORBIDDEN",
+                        "source_pixel_equivalence": "NOT_PROVEN",
+                        "human_visual_acceptance": "NOT_RUN",
+                    },
+                )
+                raise
             write_private_json(
                 EVIDENCE / "native-direct-mediated-parity.json",
                 {
