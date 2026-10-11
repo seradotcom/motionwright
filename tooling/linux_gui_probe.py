@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import time
+from typing import Callable
 
 
 def check_window_output(output: str) -> bool:
@@ -23,7 +24,10 @@ def check_window_output(output: str) -> bool:
     return bool(re.search(r'\bMotionwright\b', output))
 
 
-def run_probe(app_run: Path, scratch: Path, *, seconds: int) -> dict:
+def run_probe(
+    app_run: Path, scratch: Path, *, seconds: int,
+    ready_check: Callable[[Path], bool] | None = None,
+) -> dict:
     app_dir = app_run.parent.resolve(strict=True)
     resolved = app_run.resolve(strict=True)
     if not resolved.is_relative_to(app_dir) or not resolved.is_file():
@@ -47,6 +51,7 @@ def run_probe(app_run: Path, scratch: Path, *, seconds: int) -> dict:
     env["GDK_BACKEND"] = "x11"
     log_file = scratch / "app-run.log"
     result = {"status": "NO_WINDOW", "window_title": "", "elapsed_seconds": 0}
+    window_seen = False
     with log_file.open("wb") as log:
         child = subprocess.Popen(
             [str(app_run)], cwd=app_run.parent,
@@ -66,6 +71,15 @@ def run_probe(app_run: Path, scratch: Path, *, seconds: int) -> dict:
                     text=True, timeout=5, check=False,
                 )
                 if check.returncode == 0 and check_window_output(check.stdout):
+                    window_seen = True
+                    # Tauri can expose a window before its setup() callback
+                    # finishes creating the local SQLite project. The cold
+                    # relaunch test requires both a live window and committed
+                    # state before terminating the app. The ordinary window
+                    # smoke still uses its original immediate behavior.
+                    if ready_check is not None and not ready_check(scratch):
+                        time.sleep(0.6)
+                        continue
                     result = {
                         "status": "WINDOW_OBSERVED",
                         "window_title": "Motionwright",
@@ -87,6 +101,8 @@ def run_probe(app_run: Path, scratch: Path, *, seconds: int) -> dict:
                     pass
                 child.wait(timeout=4)
     if result["status"] != "WINDOW_OBSERVED":
+        if window_seen and ready_check is not None:
+            raise RuntimeError("Window appeared, but installed project bootstrap never became ready within the bounded probe")
         raise RuntimeError("Motionwright never created an X11 window within the bounded probe")
     return result
 

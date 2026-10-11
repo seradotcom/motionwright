@@ -13,6 +13,9 @@ on:
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
       - "tooling/tests/test_windows_cold_start.py"
+      - "tooling/linux_cold_start.py"
+      - "tooling/tests/test_linux_cold_start.py"
+      - "tooling/tests/test_linux_gui_readiness.py"
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -30,6 +33,9 @@ on:
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
       - "tooling/tests/test_windows_cold_start.py"
+      - "tooling/linux_cold_start.py"
+      - "tooling/tests/test_linux_cold_start.py"
+      - "tooling/tests/test_linux_gui_readiness.py"
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -51,7 +57,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Candidate receipt and installed-package smoke policy tests
-        run: python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py
+        run: python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
     needs: receipt-policy
@@ -143,12 +149,40 @@ jobs:
             find "$extracted" -maxdepth 1 -name '*.desktop' -printf '%f\n'
             exit 1
           fi
-          echo "AppImage source payload extracted and identified; testing Xvfb window"
+          echo "AppImage source payload extracted; testing fresh bootstrap, SQLite persistence and a second real X11 window"
           xvfb-run -a -s "-screen 0 1440x940x24" \
-            dbus-run-session -- python3 tooling/linux_gui_probe.py \
+            dbus-run-session -- python3 tooling/linux_cold_start.py \
               --app-run "$extracted/AppRun" \
               --scratch "$work/isolated-gui" \
+              --source-sha "$GITHUB_SHA" \
+              --source-lock SOURCE_LOCK.json \
               --output ci-evidence/linux-appimage-window.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          evidence = json.loads(Path("ci-evidence/linux-appimage-window.json").read_text())
+          assert evidence["schema"] == "motionwright.ci.installed-cold-relaunch/1"
+          assert evidence["motionwright_sha"] == os.environ["GITHUB_SHA"]
+          assert evidence["semwright_sha"] == json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"]
+          assert evidence["status"] == "WINDOW_OBSERVED"
+          assert evidence["window_title"] == "Motionwright"
+          assert evidence["launch_count"] == 2
+          assert evidence["first_launch"]["status"] == "WINDOW_OBSERVED"
+          assert evidence["reopened_launch"]["status"] == "WINDOW_OBSERVED"
+          persistence = evidence["persistence"]
+          assert persistence["status"] == "PASS"
+          assert persistence["one_project_after_both_launches"] is True
+          assert persistence["same_project_id"] is True
+          assert persistence["same_generation"] is True
+          assert persistence["same_revision"] is True
+          assert persistence["same_domain_document_sha256"] is True
+          assert persistence["sqlite_integrity_checked_twice"] is True
+          assert persistence["schema_version"] == 2
+          assert persistence["native_receipts"] == 0
+          assert all(len(persistence[key]) == 64 for key in ("project_identity_sha256", "generation_sha256", "document_sha256"))
+          assert evidence["claims"]["human_install_acceptance"] == "NOT_RUN"
+          assert evidence["claims"]["native_renderer_execution"] == "NOT_RUN"
+          PY
           python3 tooling/candidate_smoke.py \
             --candidate-receipt ci-evidence/linux-candidate.json \
             --expected-source-sha "$GITHUB_SHA" \
@@ -162,7 +196,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-linux-smoke-diagnostics
-          path: ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run.log
+          path: |
+            ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run.log
+            ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run-first.log
+            ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run-second.log
           if-no-files-found: warn
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
