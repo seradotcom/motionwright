@@ -2232,11 +2232,13 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             descriptor(
                 "procedural-field.detach",
                 "Detach an editable generator without deleting its authored Canvas objects",
-                schema(json!({
-                    "ref":{"type":"string","maxLength":512},
-                    "instance_id":{"type":"string","format":"uuid","maxLength":64}
-                })),
-                &["ref", "instance_id"],
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "instance_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "instance_id"],
+                ),
             ),
         ),
         (
