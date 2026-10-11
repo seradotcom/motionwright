@@ -186,3 +186,115 @@ fn authored_palette_and_wordmark_are_constrained_even_after_human_override() {
             .is_err()
     );
 }
+
+#[test]
+fn metric_evidence_headline_accent_is_brand_governed_after_human_style_edit() {
+    let mut project = Project::new("Bounded metric brand study").unwrap();
+    project
+        .apply_change(&Change::AddScene {
+            name: "Original evidence".into(),
+            objective: "Make an honestly labeled metric study".into(),
+            duration_seconds: 6,
+        })
+        .unwrap();
+    let scene_id = project.scenes[0].id;
+    let instance_id = Uuid::new_v4();
+    let config = HeroConfig {
+        layout: HeroLayout::MetricEvidence,
+        headline: "42% growth".into(),
+        body: "A reported figure is not verified without its source.".into(),
+        wordmark: "DATA".into(),
+        accent: "#D9A46E".into(),
+        ..HeroConfig::default()
+    };
+    project
+        .apply_change(&Change::UpsertProductHero {
+            instance_id,
+            scene_id,
+            config: config.clone(),
+        })
+        .unwrap();
+    let rule_id = Uuid::new_v4();
+    let brand = BrandProfile {
+        id: Uuid::new_v4(),
+        label: "Evidence pilot".into(),
+        version: 1,
+        rules: vec![
+            BrandRule::AllowedAccents {
+                id: rule_id,
+                colors: vec!["#D9A46E".into()],
+            },
+            BrandRule::RequiredWordmark {
+                id: Uuid::new_v4(),
+                text: "DATA".into(),
+            },
+        ],
+    };
+    project
+        .apply_change(&Change::SetBrandGovernance {
+            profile: Some(brand.clone()),
+            exceptions: vec![],
+        })
+        .unwrap();
+    let headline_id = hero_node_id(instance_id, "headline");
+    let source = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == headline_id)
+        .unwrap();
+    assert_eq!(source.style.fill.as_deref(), Some("#D9A46E"));
+
+    let mut unapproved = source.style.clone();
+    unapproved.fill = Some("#EE0000".into());
+    let previous = project.clone();
+    assert!(
+        project
+            .apply_change(&Change::UpdateCanvasStyle {
+                scene_id,
+                node_id: headline_id,
+                style: unapproved.clone()
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("brand rule")
+    );
+    assert_eq!(
+        project, previous,
+        "rejected human accent edit must be atomic"
+    );
+
+    let waiver = BrandException {
+        id: Uuid::new_v4(),
+        rule_id,
+        scene_id,
+        brand_sha256: brand.content_digest().unwrap(),
+        campaign: "A single quoted evidence slide".into(),
+        author: "Recorded reviewer, not authenticated".into(),
+        rationale: "Intentional contrast in one scene only".into(),
+    };
+    project
+        .apply_change(&Change::SetBrandGovernance {
+            profile: Some(brand),
+            exceptions: vec![waiver],
+        })
+        .unwrap();
+    project
+        .apply_change(&Change::UpdateCanvasStyle {
+            scene_id,
+            node_id: headline_id,
+            style: unapproved,
+        })
+        .unwrap();
+    assert_eq!(
+        project.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == headline_id)
+            .unwrap()
+            .style
+            .fill
+            .as_deref(),
+        Some("#EE0000"),
+    );
+    project.validate().unwrap();
+}

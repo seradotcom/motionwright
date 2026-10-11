@@ -250,6 +250,11 @@ pub fn validate_brand_governance(
                             .filter(|node| {
                                 node.id == hero_node_id(hero.id, "wordmark")
                                     || node.id == hero_node_id(hero.id, "rule")
+                                    // MetricEvidence makes the headline an accent-painted
+                                    // semantic field. A human style override must not
+                                    // escape the same mandatory palette policy.
+                                    || (hero.config.layout == HeroLayout::MetricEvidence
+                                        && node.id == hero_node_id(hero.id, "headline"))
                             })
                             .filter_map(|node| node.style.fill.as_deref())
                             .any(|fill| !allowed(fill))

@@ -34,7 +34,9 @@ editor, **not cryptographic proof** of identity or rights clearance.
 
 For this vertical slice, palette and wordmark restrictions apply to authored
 first-party hero components; phrase restrictions apply to scene nodes and hero
-copy. Generic fonts, imagery, external-native payloads and audio are not yet
+copy. In MetricEvidence, the large headline is also an accent-painted semantic
+field: the allowlisted palette governs its current authored fill after human
+style edits, not only the component config, wordmark and graphic rule. Generic fonts, imagery, external-native payloads and audio are not yet
 subject to full brand compliance. This does not certify a delivery as brand-safe.
 
 Adding a rule to an already nonconforming scene fails closed until the text is

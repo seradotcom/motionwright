@@ -71,3 +71,38 @@ describe("brand, taste, decisions and campaign scope",()=>{
     expect(p.production_design?.brand_profile?.rules[0].kind).toBe("forbidden_phrase");
   });
 });
+
+describe("MetricEvidence and BrandProfile share the exact accent authority",()=>{
+  it("checks the accent-painted metric headline, preserves a rejected human edit and admits only a scoped waiver",async()=>{
+    let p=await seeded();
+    const scene_id=p.scenes[0].id;
+    const config={...defaultHeroConfig(),layout:"metric_evidence" as const,
+      headline:"42% growth",
+      body:"A reported figure is not verified without its source.",
+      wordmark:"DATA",accent:"#D9A46E"};
+    p=await applyChange(p,{type:"upsert_product_hero",instance_id:identity,scene_id,config});
+    const rule={kind:"allowed_accents" as const,id:ruleId,colors:["#D9A46E"]};
+    const profile:BrandProfile={id:crypto.randomUUID(),label:"Evidence brand",version:1,
+      rules:[rule,{kind:"required_wordmark",id:crypto.randomUUID(),text:"DATA"}]};
+    p=await applyChange(p,{type:"set_brand_governance",profile,exceptions:[]});
+    const targetId=await heroNodeId(identity,"headline");
+    const node=p.scenes[0].nodes.find(n=>n.id===targetId)!;
+    expect(node.style.fill).toBe("#D9A46E");
+    const previous=structuredClone(p);
+    const changed={...node.style,fill:"#EE0000"};
+    await expect(applyChange(p,{type:"update_canvas_style",scene_id,node_id:targetId,style:changed}))
+      .rejects.toThrow("Brand rule");
+    expect(p).toEqual(previous);
+
+    const waiver:BrandException={id:crypto.randomUUID(),rule_id:ruleId,scene_id,
+      brand_sha256:await brandDigest(profile),campaign:"Specific metric",
+      author:"Recorded reviewer",rationale:"Intentional local accent variation"};
+    p=await applyChange(p,{type:"set_brand_governance",profile,exceptions:[waiver]});
+    p=await applyChange(p,{type:"update_canvas_style",scene_id,node_id:targetId,style:changed});
+    expect(p.scenes[0].nodes.find(n=>n.id===targetId)?.style.fill).toBe("#EE0000");
+    expect(p.production_design?.brand_exceptions).toHaveLength(1);
+    const changedBrand={...profile,version:2};
+    await expect(applyChange(p,{type:"set_brand_governance",profile:changedBrand,exceptions:[waiver]}))
+      .rejects.toThrow("stale policy digest");
+  });
+});
