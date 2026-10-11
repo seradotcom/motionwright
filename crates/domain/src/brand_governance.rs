@@ -170,9 +170,9 @@ pub fn validate_brand_governance(
     decisions: &[CreativeDecision],
     scenes: &[Scene],
     heroes: &[ProductHeroInstance],
-    stages: &[ProductStageInstance],
-    fields: &[ProceduralFieldInstance],
+    styled_components: (&[ProductStageInstance], &[ProceduralFieldInstance]),
 ) -> Result<()> {
+    let (stages, fields) = styled_components;
     if let Some(taste) = taste {
         taste.validate()?;
     }

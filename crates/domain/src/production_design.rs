@@ -337,8 +337,7 @@ impl ProductionDesign {
             &self.project_decisions,
             scenes,
             &self.heroes,
-            &self.stages,
-            &self.procedural_fields,
+            (&self.stages, &self.procedural_fields),
         )?;
         self.validate_measured_data(scenes, assets)?;
         if self.heroes.len() > 64 || self.capsules.len() > 256 || self.stages.len() > 16 {
