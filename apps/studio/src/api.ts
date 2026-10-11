@@ -1,4 +1,5 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
+import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
@@ -39,6 +40,7 @@ import type {
   ProductionJobsHistoryCursor,
   ProductionJobsHistoryPage,
   ProductionRuntimeCompatibility,
+  CreativeRuntimeDoctorReport,
   WaveformPage,
   WorkflowAction,
   WorkflowActionResult,
@@ -499,6 +501,21 @@ export async function productionRuntimeCompatibility(
     connection_identity: null,
     executable_sha256: null,
   };
+}
+
+export async function inspectCreativeRuntime(
+  project: Project,
+): Promise<CreativeRuntimeDoctorReport> {
+  if (isTauri()) {
+    return invoke<CreativeRuntimeDoctorReport>("creative_runtime_doctor", {
+      request: {
+        project_id: project.id,
+        generation: project.generation,
+        revision: project.revision,
+      },
+    });
+  }
+  return browserCreativeDoctor(project, fixtureBootstrap.native_sdk.pinned_revision);
 }
 
 export async function workflowOverview(project: Project): Promise<WorkflowOverview> {

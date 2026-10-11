@@ -681,6 +681,46 @@ export interface ProductionRuntimeCompatibility {
   executable_sha256: string | null;
 }
 
+export interface CreativeDoctorCheck {
+  id: string;
+  status: "validated" | "blocked" | "version_compatible" | "not_tested";
+  detail: string;
+}
+export interface CreativeDoctorRenderer {
+  renderer: Scene["renderer"];
+  required_semwright_driver: string | null;
+  scene_count: number;
+  declared_extension_admitted: boolean;
+  provider_verified: false;
+  state: "not_used" | "native_provider_not_tested" |
+    "optional_descriptor_only" | "optional_extension_not_admitted";
+}
+export interface CreativeDoctorOutput {
+  profile_id: string;
+  width: number;
+  height: number;
+  estimated_uncompressed_rgba_frame_bytes: number;
+  source_profile_validated: boolean;
+  render_and_delivery_verified: false;
+}
+export interface CreativeRuntimeDoctorReport {
+  schema: "motionwright.creative-runtime-doctor/1";
+  project_id: string;
+  generation: string;
+  revision: number;
+  semwright_native_sdk_source_pin: string;
+  runtime_version_evidence: string;
+  runtime_version_detail: string;
+  verdict: "preflight_only" | "owner_action_required" | "browser_only" | "source_invalid";
+  renderers: CreativeDoctorRenderer[];
+  outputs: CreativeDoctorOutput[];
+  checks: CreativeDoctorCheck[];
+  ready_for_native_production: false;
+  install_performed: false;
+  broker_dispatch_performed: false;
+  authorizing_grant_created: false;
+}
+
 export interface Bootstrap {
   project: Project;
   native_sdk: {

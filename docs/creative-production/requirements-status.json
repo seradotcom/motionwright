@@ -834,10 +834,20 @@
     },
     {
       "id": "MW05-E15-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "No runtime installer or new doctor workflow added",
-      "remaining_scope": "Explicit profile installation, size, destination and rollback required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "A real owner-triggered, read-only creative runtime doctor now uses the trusted desktop Semwright CLI version probe, revalidates project revision/generation and Native SDK operation contracts, and explains per-project renderer needs, unknown provider installation and unverified render evidence. Browser demo abstains explicitly.",
+      "remaining_scope": "Owner-authorized runtime/profile installation, exact signed package size, destination, disk-space budgeting, provider discovery and transactional rollback are not implemented; external creative acceptance remains unverified.",
+      "source_paths": [
+        "crates/native/src/creative_doctor.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/CreativeRuntimeDoctorPanel.tsx",
+        "apps/studio/src/creativeDoctor.ts",
+        "apps/studio/src/creativeDoctor.test.ts",
+        "apps/studio/tests/creative-runtime-doctor.spec.ts",
+        "apps/studio/src/IntegrationsWorkspace.tsx",
+        "docs/creative-production/CREATIVE_RUNTIME_DOCTOR.md",
+        ".github/workflows/creative-runtime-doctor.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

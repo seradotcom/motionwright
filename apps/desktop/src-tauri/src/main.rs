@@ -22,6 +22,9 @@ use motionwright_domain::{
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
     build_application,
+    creative_doctor::{
+        CliEvidence, CreativeRuntimeDoctorReport, inspect_creative_runtime, require_doctor_scope,
+    },
     film::{FilmBuildOptions, build_motion_canvas_segments},
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
@@ -781,6 +784,33 @@ async fn production_runtime_status(
             executable_sha256: Some(client.connection().executable_sha256.clone()),
         }),
     }
+}
+
+#[tauri::command]
+async fn creative_runtime_doctor(
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<CreativeRuntimeDoctorReport, String> {
+    let service = state.service.clone();
+    let initial = service.project(request.project_id).map_err(sanitized)?;
+    require_doctor_scope(&initial, request.generation, request.revision).map_err(str::to_owned)?;
+    let status = production_runtime_status(
+        state,
+        ProductionRuntimeStatusRequest {
+            project_id: request.project_id,
+        },
+    )
+    .await?;
+    let current = service.project(request.project_id).map_err(sanitized)?;
+    require_doctor_scope(&current, request.generation, request.revision).map_err(str::to_owned)?;
+    build_application(service)
+        .map_err(|_| "Native SDK creative contract validation failed".to_string())?;
+    Ok(inspect_creative_runtime(
+        &current,
+        SEMWRIGHT_REVISION,
+        CliEvidence::from_runtime_status(status.status),
+        true,
+    ))
 }
 
 #[tauri::command]
@@ -2246,6 +2276,7 @@ fn main() {
             asset_integrity_page,
             model_request_preflight,
             production_runtime_status,
+            creative_runtime_doctor,
             choose_semwright_connection,
             clear_saved_semwright_connection,
             workflow_overview,
