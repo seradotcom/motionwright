@@ -1,0 +1,107 @@
+name: Native Creative Runtime Doctor
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/native/src/creative_doctor.rs"
+      - "crates/native/src/lib.rs"
+      - "apps/desktop/src-tauri/src/main.rs"
+      - "apps/studio/src/creativeDoctor*"
+      - "apps/studio/src/CreativeRuntimeDoctorPanel.tsx"
+      - "apps/studio/src/creative-runtime-doctor.css"
+      - "apps/studio/src/IntegrationsWorkspace.tsx"
+      - "apps/studio/src/fixture.ts"
+      - "apps/studio/src/api.ts"
+      - "apps/studio/src/types.ts"
+      - "apps/studio/tests/creative-runtime-doctor.spec.ts"
+      - "docs/creative-production/CREATIVE_RUNTIME_DOCTOR.md"
+      - "docs/creative-production/requirements-status.json"
+      - ".github/workflows/creative-runtime-doctor.yml"
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "crates/native/src/creative_doctor.rs"
+      - "apps/desktop/src-tauri/src/main.rs"
+      - "apps/studio/src/creativeDoctor*"
+      - "apps/studio/src/CreativeRuntimeDoctorPanel.tsx"
+      - ".github/workflows/creative-runtime-doctor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  source-boundaries:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python tooling/source_policy.py
+      - run: python tooling/creative_status_policy.py
+      - run: python tooling/acceptance_policy.py
+
+  native-contracts:
+    needs: source-boundaries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p motionwright-native --lib creative_doctor::tests -- --nocapture
+      - run: cargo clippy -p motionwright-native --lib -- -D warnings
+
+  studio-browser:
+    needs: source-boundaries
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/creativeDoctor.test.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/creative-runtime-doctor.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: creative-runtime-doctor-browser
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore
+
+  desktop-windows:
+    needs: [source-boundaries, studio-browser]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm --prefix apps/studio ci --no-audit --no-fund
+      - run: npm --prefix apps/studio run build
+      - run: cargo check -p motionwright-desktop --bin motionwright-desktop
