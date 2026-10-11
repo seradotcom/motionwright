@@ -101,7 +101,7 @@ fn verify_png_header(png: &[u8], width: u32, height: u32) -> Result<()> {
         || png[26..29] != [0, 0, 0]
         || u32::from_be_bytes(png[29..33].try_into().expect("IHDR crc bytes"))
             != crc32(&png[12..29])
-        || &png[png.len() - 12..png.len() - 8] != 0_u32.to_be_bytes()
+        || png[png.len() - 12..png.len() - 8] != 0_u32.to_be_bytes()
         || &png[png.len() - 8..png.len() - 4] != b"IEND"
     {
         return Err(denied(
