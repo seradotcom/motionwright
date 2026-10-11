@@ -223,7 +223,7 @@ fn forged_foreign_sources_claims_revisions_and_sensitive_state_fail_closed() {
                 .is_err(),
             "forged {name} must be rejected"
         );
-        assert_eq!(clone.production_design.captures.len(), 0, name);
+        assert_eq!(clone.production_design.captures.len(), 0, "{name}");
     }
     let mut malicious = serde_json::to_value(record.clone()).unwrap();
     malicious["validated_customer_behavior"] = serde_json::json!(true);
