@@ -107,15 +107,16 @@ export function inspectVariantContinuity(
     const claim=project.brief.claims.find(item=>item.id===id);
     if(!claim){flag("UNKNOWN_CLAIM","block","A retained shot references a missing brief claim.",null,id);continue;}
     const reference=claim.source;
-    const trustedAsset=reference?.kind==="asset"
-      ?project.assets.some(asset=>asset.id===reference.asset_id && sourceDigest.test(asset.content_sha256??""))
-      :false;
+    const claimAssetId=reference?.kind==="asset" ? reference.asset_id : null;
+    const trustedAsset=!!claimAssetId && project.assets.some(asset=>
+      asset.id===claimAssetId && sourceDigest.test(asset.content_sha256??""));
     const sourceShot=retained.some(scene=>{
       const shot=shots.get(scene.id);
       if(!shot || !shot.claim_ids.includes(id) ||
         !["real_capture","licensed_footage"].includes(shot.evidence_kind))return false;
       return shot.asset_ids.some(assetId=>project.assets.some(asset=>
-        asset.id===assetId && sourceDigest.test(asset.content_sha256??"") &&
+        assetId===claimAssetId && asset.id===assetId &&
+        sourceDigest.test(asset.content_sha256??"") &&
         (shot.evidence_kind==="real_capture"
           ?(asset.media_type.startsWith("image/")||asset.media_type.startsWith("video/"))
           :asset.media_type.startsWith("video/"))));

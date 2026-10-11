@@ -86,6 +86,12 @@ describe("MW05-E14-02 source-bound narrative variant continuity",()=>{
     const profile=variant(p);profile.included_scene_ids=p.scenes.slice(0,2).map(s=>s.id);
     expect(inspectVariantContinuity(p,profile).omitted_claim_ids).toEqual([]);
   });
+  it("rejects unrelated media even when both assets have valid hashes",()=>{
+    const p=source();addedClaim(p,0,"source");
+    p.production_design!.plan!.shots[0].asset_ids=[p.assets[1].id];
+    const report=inspectVariantContinuity(p,variant(p));
+    expect(report.findings.map(f=>f.code)).toContain("CLAIM_NOT_SOURCE_BOUND");
+  });
   it("labels authored graphic studies as insufficient real-product evidence",()=>{
     const p=source();addedClaim(p,0,"manual");
     const result=inspectVariantContinuity(p,variant(p));
