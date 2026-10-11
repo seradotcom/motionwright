@@ -340,8 +340,8 @@
     {
       "id": "MW05-E06-04",
       "implementation": "partial",
-      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields as real editable Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E",
-      "remaining_scope": "Temporal sequences, advanced fields/forces, GPU/nonnative renderer benchmarking, creative production proof and real artistic review",
+      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable 30fps opacity entrance sequences as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E",
+      "remaining_scope": "Advanced temporal fields/forces, GPU/nonnative renderer benchmarking, creative production proof and real artistic review",
       "source_paths": [
         "crates/domain/src/procedural.rs",
         "crates/domain/tests/procedural_fields.rs",

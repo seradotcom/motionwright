@@ -86,3 +86,31 @@ describe("procedural fields / deterministic Canvas generation",()=>{
     expect(p.scenes[0].nodes[0].y).not.toBe(oldY);
   });
 });
+describe("procedural 30fps entrance sequencing",()=>{
+  it("generates canonical per-node frame keys equivalent to Rust",async()=>{
+    const config={...defaultProceduralConfig(),count:5,
+      reveal_step_frames:3,reveal_duration_frames:12};
+    const nodes=await realizeProceduralField(ID,config);
+    expect(nodes[0].keyframes.map(k=>k.at)).toEqual([{num:"0",den:"1"},{num:"2",den:"5"}]);
+    expect(nodes[1].keyframes.map(k=>k.at)).toEqual([
+      {num:"0",den:"1"},{num:"1",den:"10"},{num:"1",den:"2"},
+    ]);
+    expect(nodes[1].keyframes.at(-1)?.interpolation).toBe("linear");
+    expect(nodes[4].keyframes.at(-1)?.value).toBe(.85);
+    let p=await upsert(project(),config);
+    expect(p.scenes[0].nodes[1].keyframes).toEqual(nodes[1].keyframes);
+    const prior=structuredClone(p);
+    const invalid={...defaultProceduralConfig(),count:30,
+      reveal_step_frames:10,reveal_duration_frames:60};
+    await expect(upsert(p,invalid)).rejects.toThrow("sequence exceeds scene duration");
+    expect(p).toEqual(prior);
+  });
+  it("keeps a previous unanimated field when sequencing fields are absent",async()=>{
+    const original=defaultProceduralConfig();
+    const old=structuredClone(original) as Partial<typeof original>;
+    delete old.reveal_step_frames;delete old.reveal_duration_frames;
+    const nodes=await realizeProceduralField(ID,old as typeof original);
+    expect(nodes).toEqual(await realizeProceduralField(ID,original));
+    expect(nodes.every(n=>n.keyframes.length===0)).toBe(true);
+  });
+});

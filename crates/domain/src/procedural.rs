@@ -29,6 +29,14 @@ pub struct ProceduralConfig {
     pub size: u16,
     pub opacity_percent: u8,
     pub fill: String,
+    /// 0 disables sequencing; otherwise each item enters step_frames after the previous.
+    #[serde(default)]
+    pub reveal_step_frames: u8,
+    #[serde(default = "default_reveal_duration")]
+    pub reveal_duration_frames: u8,
+}
+const fn default_reveal_duration() -> u8 {
+    12
 }
 impl Default for ProceduralConfig {
     fn default() -> Self {
@@ -44,6 +52,8 @@ impl Default for ProceduralConfig {
             size: 32,
             opacity_percent: 85,
             fill: "#A5C8DF".into(),
+            reveal_step_frames: 0,
+            reveal_duration_frames: default_reveal_duration(),
         }
     }
 }
@@ -57,6 +67,9 @@ impl ProceduralConfig {
             || self.size > 128
             || self.opacity_percent == 0
             || self.opacity_percent > 100
+            || self.reveal_step_frames > 10
+            || self.reveal_duration_frames == 0
+            || self.reveal_duration_frames > 60
             || self.fill.len() != 7
             || !self.fill.starts_with('#')
             || !self.fill.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
@@ -162,7 +175,35 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
             },
             relations: vec![],
             property_locks: BTreeSet::new(),
-            keyframes: vec![],
+            keyframes: if config.reveal_step_frames == 0 {
+                vec![]
+            } else {
+                let start = index * u32::from(config.reveal_step_frames);
+                let end = start + u32::from(config.reveal_duration_frames);
+                let mut keys = vec![CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property: MotionProperty::Opacity,
+                    value: 0.0,
+                    interpolation: MotionInterpolation::Hold,
+                }];
+                if start > 0 {
+                    keys.push(CanvasKeyframe {
+                        at: RationalTime::new(i64::from(start), 30)
+                            .expect("bounded procedural frame time"),
+                        property: MotionProperty::Opacity,
+                        value: 0.0,
+                        interpolation: MotionInterpolation::Hold,
+                    });
+                }
+                keys.push(CanvasKeyframe {
+                    at: RationalTime::new(i64::from(end), 30)
+                        .expect("bounded procedural frame time"),
+                    property: MotionProperty::Opacity,
+                    value: f64::from(config.opacity_percent) / 100.0,
+                    interpolation: MotionInterpolation::Linear,
+                });
+                keys
+            },
         };
         node.validate()?;
         nodes.push(node);
@@ -221,6 +262,19 @@ impl Project {
             return Err(DomainError::Invalid(
                 "procedural fields require a Motion Canvas scene".into(),
             ));
+        }
+        // Evaluate temporal budget before constructing any nodes or hashing identities.
+        config.validate()?;
+        if config.reveal_step_frames > 0 {
+            let final_frame = (u32::from(config.count) - 1) * u32::from(config.reveal_step_frames)
+                + u32::from(config.reveal_duration_frames);
+            let end =
+                RationalTime::new(i64::from(final_frame), 30).expect("bounded procedural timeline");
+            if end >= self.scenes[index].duration {
+                return Err(DomainError::Invalid(
+                    "procedural sequence exceeds scene duration; shorten step/duration or extend scene".into()
+                ));
+            }
         }
         let baseline = realize_procedural_field(id, config)?;
         let existing = self

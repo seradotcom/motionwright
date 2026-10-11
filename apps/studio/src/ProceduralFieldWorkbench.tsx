@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Save, RefreshCw, ExternalLink, Unlink } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
+import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
-import { defaultProceduralConfig, realizeProceduralField } from "./proceduralField";
+import { defaultProceduralConfig, normalizedProceduralConfig, realizeProceduralField } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
 
 const previewIdentity="00000000-0000-4000-8000-000000000095";
@@ -17,21 +18,24 @@ const dimensions=[
   ["area_height","Field height",1,1080],
   ["size","Square size",4,128],
   ["opacity_percent","Opacity (%)",1,100],
+  ["reveal_step_frames","Entrance interval (frames; 0 disables)",0,10],
+  ["reveal_duration_frames","Entrance fade length (frames)",1,60],
 ] as const;
 export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOpenCanvas}:Props){
   const stored=project.production_design?.procedural_fields?.find(field=>field.scene_id===scene?.id);
-  const [draft,setDraft]=useState<ProceduralConfig>(()=>structuredClone(stored?.config??defaultProceduralConfig()));
+  const [draft,setDraft]=useState<ProceduralConfig>(()=>normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
   const [base,setBase]=useState(project.revision);
   const [nodes,setNodes]=useState<CanvasNode[]>([]);
   const [error,setError]=useState<string|null>(null);
   const [previewError,setPreviewError]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
+  const [previewTime,setPreviewTime]=useState(2);
   const reload=()=>{
-    setDraft(structuredClone(stored?.config??defaultProceduralConfig()));
+    setDraft(normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
     setBase(project.revision);setError(null);
   };
   useEffect(()=>{
-    setDraft(structuredClone(stored?.config??defaultProceduralConfig()));
+    setDraft(normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
     setBase(project.revision);setError(null);
     // Deliberately reset on scene identity, not every revision; never silently lose a draft.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -46,6 +50,8 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
     return()=>{active=false;};
   },[draft,stored?.id]);
   const stale=base!==project.revision;
+  const previewMax=scene?Math.max(0,seconds(scene.duration)-1/30):6;
+  const renderedTime=Math.min(previewTime,previewMax);
   const update=async()=>{
     if(!scene || stale || busy || previewError) return;
     setError(null);
@@ -107,9 +113,13 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
       Native exports require the normal verified render/evidence path.</p>
     <section className="production-approval" aria-label="Procedural editorial preview">
       <h3>Live editorial study · 1920 × 1080</h3>
+      <label className="production-field"><span>Editorial playhead · {renderedTime.toFixed(2)} s</span>
+        <input aria-label="Procedural preview playhead" type="range" min={0} max={previewMax}
+          step={1/30} value={renderedTime} onChange={e=>setPreviewTime(Number(e.target.value))}/>
+      </label>
       {previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
        :previewError?<p role="status">No preview until the field constraints are valid.</p>
-       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={0} background="#0C1723"
+       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723"
           label={`Procedural editorial preview, ${draft.distribution} distribution, ${nodes.length} editable objects`}/>}
       <p className="mono">{draft.count} authored objects · seed {draft.seed} ·
         {stored?` attached field ${stored.id.slice(0,8)}…`:" not yet attached"} · no native render receipt</p>

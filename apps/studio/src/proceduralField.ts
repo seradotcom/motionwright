@@ -8,6 +8,7 @@ export interface ProceduralConfig {
   seed: number; count: number; columns: number; distribution: FieldDistribution;
   origin_x: number; origin_y: number; area_width: number; area_height: number;
   size: number; opacity_percent: number; fill: string;
+  reveal_step_frames: number; reveal_duration_frames: number;
 }
 export interface ProceduralFieldInstance {
   id: string; scene_id: string; generator_version: number;
@@ -17,15 +18,22 @@ export const defaultProceduralConfig=():ProceduralConfig=>({
   seed:41,count:12,columns:4,distribution:"scatter",
   origin_x:180,origin_y:170,area_width:900,area_height:560,
   size:32,opacity_percent:85,fill:"#A5C8DF",
+  reveal_step_frames:0,reveal_duration_frames:12,
 });
 const hex=/^#[0-9a-f]{6}$/i;
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-export function validateProceduralConfig(c:ProceduralConfig):void {
-  const integers=[c.seed,c.count,c.columns,c.origin_x,c.origin_y,c.area_width,c.area_height,c.size,c.opacity_percent];
+/** Retain the meaning of version-1 non-sequenced field documents. */
+export function normalizedProceduralConfig(c:ProceduralConfig):ProceduralConfig {
+  return {...c,reveal_step_frames:c.reveal_step_frames??0,reveal_duration_frames:c.reveal_duration_frames??12};
+}
+export function validateProceduralConfig(input:ProceduralConfig):void {
+  const c=normalizedProceduralConfig(input);
+  const integers=[c.seed,c.count,c.columns,c.origin_x,c.origin_y,c.area_width,c.area_height,c.size,c.opacity_percent,c.reveal_step_frames,c.reveal_duration_frames];
   if(integers.some(n=>!Number.isInteger(n)) || c.seed<0 || c.seed>0xffffffff ||
     c.count<1 || c.count>64 || c.columns<1 || c.columns>16 ||
     c.origin_x<0 || c.origin_y<0 || c.area_width<1 || c.area_height<1 ||
     c.size<4 || c.size>128 || c.opacity_percent<1 || c.opacity_percent>100 ||
+    c.reveal_step_frames<0 || c.reveal_step_frames>10 || c.reveal_duration_frames<1 || c.reveal_duration_frames>60 ||
     !hex.test(c.fill) || !["grid","staggered","scatter"].includes(c.distribution)) {
     throw new Error("Procedural item, style or CPU budget exceeded.");
   }
@@ -40,6 +48,11 @@ export function proceduralHash(seed:number,index:number,salt:number):number {
   v^=v>>>16;v=Math.imul(v,0x7feb352d)>>>0;
   v^=v>>>15;v=Math.imul(v,0x846ca68b)>>>0;
   return (v^(v>>>16))>>>0;
+}
+function frameTime(frames:number):{num:string;den:string}{
+  let a=frames,b=30;
+  while(b!==0){const rem=a%b;a=b;b=rem;}
+  return {num:String(frames/a),den:String(30/a)};
 }
 export async function proceduralNodeId(identity:string,index:number):Promise<string> {
   if(!uuid.test(identity) || !Number.isInteger(index) || index<0 || index>63)
@@ -58,7 +71,8 @@ export async function proceduralNodeId(identity:string,index:number):Promise<str
   const h=Array.from(output.slice(0,16),v=>v.toString(16).padStart(2,"0")).join("");
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
-export async function realizeProceduralField(id:string,c:ProceduralConfig):Promise<CanvasNode[]> {
+export async function realizeProceduralField(id:string,input:ProceduralConfig):Promise<CanvasNode[]> {
+  const c=normalizedProceduralConfig(input);
   validateProceduralConfig(c); // reject cost and frame bounds before hashing/allocating
   const columns=Math.min(c.columns,c.count),rows=Math.ceil(c.count/columns);
   const cellW=Math.floor(c.area_width/columns),cellH=Math.floor(c.area_height/rows);
@@ -82,7 +96,13 @@ export async function realizeProceduralField(id:string,c:ProceduralConfig):Promi
       width:c.size,height:c.size,rotation_deg:0,opacity:c.opacity_percent/100,text:null,
       coordinate_space:"project_pixels",z_index:-64+index,
       style:{fill:c.fill,stroke:null,stroke_width:0,font_family:null,font_size:null,font_weight:null,line_height:null,blend_mode:"normal"},
-      relations:[],property_locks:[],keyframes:[],
+      relations:[],property_locks:[],keyframes: c.reveal_step_frames===0?[]:(()=>{
+        const start=index*c.reveal_step_frames,end=start+c.reveal_duration_frames;
+        const keys:CanvasNode["keyframes"]=[{at:{num:"0",den:"1"},property:"opacity",value:0,interpolation:"hold"}];
+        if(start>0)keys.push({at:frameTime(start),property:"opacity",value:0,interpolation:"hold"});
+        keys.push({at:frameTime(end),property:"opacity",value:c.opacity_percent/100,interpolation:"linear"});
+        return keys;
+      })(),
     });
   }
   return nodes;
@@ -108,7 +128,15 @@ export async function applyProceduralChange(p:Project,change:ProceduralChange):P
   assertUnlocked(p,change.scene_id,["content","position","style","renderer"]);
   const scene=p.scenes.find(s=>s.id===change.scene_id);
   if(!scene || scene.renderer!=="motion-canvas") throw new Error("Procedural fields require a Motion Canvas scene.");
-  const baseline=await realizeProceduralField(change.instance_id,change.config);
+  const config=normalizedProceduralConfig(change.config);
+  validateProceduralConfig(config);
+  // Reject overlong sequences before hashing/allocating Canvas nodes.
+  if(config.reveal_step_frames>0){
+    const last=(config.count-1)*config.reveal_step_frames+config.reveal_duration_frames;
+    if(BigInt(last)*BigInt(scene.duration.den)>=BigInt(scene.duration.num)*30n)
+      throw new Error("Procedural sequence exceeds scene duration; shorten step/duration or extend scene.");
+  }
+  const baseline=await realizeProceduralField(change.instance_id,config);
   let result=structuredClone(scene.nodes);
   if(existing){
     if(existing.generator_version!==1 || !sameValue(existing.baseline,await realizeProceduralField(existing.id,existing.config)))
@@ -134,7 +162,7 @@ export async function applyProceduralChange(p:Project,change:ProceduralChange):P
     seen.add(node.id);result.push(node);
   }
   const instance:ProceduralFieldInstance={id:change.instance_id,scene_id:scene.id,
-    generator_version:1,config:structuredClone(change.config),baseline:structuredClone(baseline)};
+    generator_version:1,config:structuredClone(config),baseline:structuredClone(baseline)};
   scene.nodes=result;scene.status="draft";
   design.procedural_fields=[...fields.filter(field=>field.id!==change.instance_id),instance];
   p.production_design=design;

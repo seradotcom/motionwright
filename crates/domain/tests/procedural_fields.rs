@@ -128,10 +128,12 @@ fn variation_and_growth_keep_editable_override_and_node_identifiers() {
         },
     })
     .unwrap();
-    let mut config = ProceduralConfig::default();
-    config.seed = 123;
-    config.count = 18;
-    config.distribution = FieldDistribution::Scatter;
+    let config = ProceduralConfig {
+        seed: 123,
+        count: 18,
+        distribution: FieldDistribution::Scatter,
+        ..Default::default()
+    };
     upsert(&mut p, config).unwrap();
     assert_eq!(p.scenes[0].nodes.len(), 18);
     assert_eq!(p.scenes[0].nodes[0].id, first[0].id);
@@ -180,8 +182,10 @@ fn shrink_refuses_to_remove_modified_or_deleted_nodes() {
     })
     .unwrap();
     let prior = p.clone();
-    let mut smaller = ProceduralConfig::default();
-    smaller.count = 8;
+    let smaller = ProceduralConfig {
+        count: 8,
+        ..Default::default()
+    };
     assert!(upsert(&mut p, smaller.clone()).is_err());
     assert_eq!(p, prior);
     // Detach preserves all artwork and lets humans control it independent of the field.
@@ -203,8 +207,10 @@ fn unmodified_shrink_removes_only_generated_suffix() {
     let mut p = project();
     upsert(&mut p, ProceduralConfig::default()).unwrap();
     let original = p.scenes[0].nodes.clone();
-    let mut config = ProceduralConfig::default();
-    config.count = 8;
+    let config = ProceduralConfig {
+        count: 8,
+        ..Default::default()
+    };
     upsert(&mut p, config).unwrap();
     assert_eq!(p.scenes[0].nodes.len(), 8);
     assert_eq!(
@@ -216,4 +222,43 @@ fn unmodified_shrink_removes_only_generated_suffix() {
         "layout reflows to two rows"
     );
     p.validate().unwrap();
+}
+#[test]
+fn ordered_frame_reveals_are_editable_and_half_open_scene_bounded() {
+    let mut p = project();
+    let sequence = ProceduralConfig {
+        count: 5,
+        reveal_step_frames: 3,
+        reveal_duration_frames: 12,
+        ..Default::default()
+    };
+    let nodes = realize_procedural_field(instance_id(), &sequence).unwrap();
+    assert_eq!(nodes.len(), 5);
+    assert_eq!(nodes[0].keyframes.len(), 2);
+    assert_eq!(nodes[0].keyframes[0].at, RationalTime::ZERO);
+    assert_eq!(nodes[0].keyframes[1].at, RationalTime::new(2, 5).unwrap());
+    assert_eq!(nodes[1].keyframes.len(), 3);
+    assert_eq!(nodes[1].keyframes[1].at, RationalTime::new(1, 10).unwrap());
+    assert_eq!(nodes[1].keyframes[2].at, RationalTime::new(1, 2).unwrap());
+    assert_eq!(
+        nodes[1].keyframes[2].interpolation,
+        MotionInterpolation::Linear
+    );
+    upsert(&mut p, sequence).unwrap();
+    assert_eq!(p.scenes[0].nodes.len(), 5);
+    p.validate().unwrap();
+    let before = p.clone();
+    let invalid = ProceduralConfig {
+        count: 30,
+        reveal_step_frames: 10,
+        reveal_duration_frames: 60,
+        ..Default::default()
+    };
+    assert!(
+        upsert(&mut p, invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("sequence exceeds scene duration")
+    );
+    assert_eq!(p, before);
 }
