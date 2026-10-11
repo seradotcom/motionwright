@@ -347,3 +347,29 @@ fn bound_generic_stage_refuses_locked_fields_and_component_overlap() {
     .unwrap_err();
     assert!(err.to_string().contains("locked"));
 }
+
+#[test]
+fn actual_native_stage_copy_is_safe_in_both_anonymous_frame_widths() {
+    for frame in [StageFrame::Browser, StageFrame::GenericHandset] {
+        let cfg = ProductStageConfig {
+            frame,
+            screen_heading: "Clear original workflow".into(),
+            screen_detail: "Editable original interface".into(),
+            action_label: "Continue".into(),
+            animate_focus: true,
+            ..config()
+        };
+        let nodes = realize_product_stage(id(), &cfg, 1920, 1080).unwrap();
+        assert_eq!(nodes.len(), STAGE_ROLES.len());
+        for name in [
+            "screen_heading",
+            "screen_detail",
+            "action_text",
+            "disclosure",
+        ] {
+            let role = stage_node_id(id(), name);
+            let node = nodes.iter().find(|node| node.id == role).unwrap();
+            assert_eq!(node.kind, "text");
+        }
+    }
+}

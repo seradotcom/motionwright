@@ -955,7 +955,7 @@ fn seed_stage(
     let original_camera = first.scenes[0].camera.clone();
     let config = ProductStageConfig {
         screen_heading: "Clear original workflow".into(),
-        screen_detail: "Editable screen graphics with stable anchors".into(),
+        screen_detail: "Editable original interface".into(),
         action_label: "Continue".into(),
         ..first_config
     };

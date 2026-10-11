@@ -103,6 +103,15 @@ describe("ProductStage generic original UI grammar",()=>{
       node_id:await stageNodeId(id,"disclosure"),text:"Detached copy"});
     expect(p.scenes[0].nodes.at(-1)?.text).toBe("Detached copy");
   });
+  it("accepts actual native fixture copy in the bounded browser and handset anchor regions",async()=>{
+    for(const frame of ["browser","generic_handset"] as const){
+      const config={...ready(),frame,screen_heading:"Clear original workflow",
+        screen_detail:"Editable original interface",action_label:"Continue",animate_focus:true};
+      const nodes=await realizeProductStage(id,config,1920,1080);
+      expect(nodes).toHaveLength(14);
+      expect(nodes.filter(n=>n.kind==="text")).toHaveLength(6);
+    }
+  });
   it("refuses overlong native text that cannot fit a handset screen rather than clipping it",async()=>{
     const config={...ready(),frame:"generic_handset" as const,screen_heading:"M".repeat(40)};
     await expect(realizeProductStage(id,config,1920,1080)).rejects.toThrow(/screen anchor/);
