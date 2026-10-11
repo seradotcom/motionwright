@@ -710,7 +710,7 @@ async fn production_runtime_status(
         .service
         .project(request.project_id)
         .map_err(sanitized)?;
-    let connection = match ProductionConnection::load(PathBuf::from(connection_path)) {
+    let connection = match ProductionConnection::load(connection_path) {
         Ok(connection) => connection,
         Err(_) => {
             return Ok(ProductionRuntimeStatusResponse {
@@ -807,7 +807,7 @@ async fn workflow_overview(
         .service
         .project(request.project_id)
         .map_err(sanitized)?;
-    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+    let connection = ProductionConnection::load(connection_path)
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     if connection.resource != project.resource_key() {
         return Err(
@@ -928,7 +928,7 @@ async fn workflow_action(
     } else if request.effect_grant.is_some() {
         return Err("Read-only workflow actions do not consume mutation grants.".into());
     }
-    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+    let connection = ProductionConnection::load(connection_path)
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     if connection.resource != project.resource_key() {
         return Err(
@@ -1154,7 +1154,7 @@ async fn render_motion_canvas(
         generation: request.generation,
         revision: request.revision,
     };
-    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+    let connection = ProductionConnection::load(connection_path)
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     let output_root = connection.output_root.clone();
     let owner_resource = connection.resource.clone();
@@ -1307,7 +1307,7 @@ async fn assemble_av_master(
         generation: request.generation,
         revision: request.revision,
     };
-    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+    let connection = ProductionConnection::load(connection_path)
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     if connection.resource != project.resource_key() {
         return Err("Canonical Semwright output root belongs to another project.".into());
@@ -1416,7 +1416,7 @@ async fn assemble_multisegment_av_master(
         render.frame_rate.num,
         render.frame_rate.den,
     )?;
-    let connection = ProductionConnection::load(PathBuf::from(connection_path))
+    let connection = ProductionConnection::load(connection_path)
         .map_err(|_| "Canonical Semwright connection could not be loaded.".to_string())?;
     if connection.resource != project.resource_key() || connection.output_root != preview_root {
         return Err("Native multisegment source belongs to a different owner output root.".into());
