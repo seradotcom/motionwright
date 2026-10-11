@@ -170,6 +170,7 @@ pub fn validate_brand_governance(
     decisions: &[CreativeDecision],
     scenes: &[Scene],
     heroes: &[ProductHeroInstance],
+    fields: &[ProceduralFieldInstance],
 ) -> Result<()> {
     if let Some(taste) = taste {
         taste.validate()?;
@@ -240,26 +241,50 @@ pub fn validate_brand_governance(
                             .any(|text| text.to_lowercase().contains(&needle))
                         })
                 }
-                BrandRule::AllowedAccents { colors, .. } => hero.is_some_and(|hero| {
-                    let allowed =
-                        |color: &str| colors.iter().any(|v| v.eq_ignore_ascii_case(color));
-                    !allowed(&hero.config.accent)
-                        || scene
-                            .nodes
-                            .iter()
-                            .filter(|node| {
-                                node.id == hero_node_id(hero.id, "wordmark")
+                BrandRule::AllowedAccents { colors, .. } => {
+                    let hero_violation = hero.is_some_and(|hero| {
+                        let allowed =
+                            |color: &str| colors.iter().any(|v| v.eq_ignore_ascii_case(color));
+                        !allowed(&hero.config.accent)
+                            || scene
+                                .nodes
+                                .iter()
+                                .filter(|node| {
+                                    node.id == hero_node_id(hero.id, "wordmark")
                                     || node.id == hero_node_id(hero.id, "rule")
                                     // MetricEvidence makes the headline an accent-painted
                                     // semantic field. A human style override must not
                                     // escape the same mandatory palette policy.
                                     || (hero.config.layout == HeroLayout::MetricEvidence
                                         && node.id == hero_node_id(hero.id, "headline"))
-                            })
-                            .any(|node| {
-                                node.style.fill.as_deref().is_none_or(|fill| !allowed(fill))
-                            })
-                }),
+                                })
+                                .any(|node| {
+                                    node.style.fill.as_deref().is_none_or(|fill| !allowed(fill))
+                                })
+                    });
+                    let field_violation = fields
+                        .iter()
+                        .filter(|field| field.scene_id == scene.id)
+                        .any(|field| {
+                            let allowed = |fill: &str| {
+                                colors.iter().any(|color| color.eq_ignore_ascii_case(fill))
+                            };
+                            !allowed(&field.config.fill)
+                                || field.baseline.iter().any(|baseline| {
+                                    scene
+                                        .nodes
+                                        .iter()
+                                        .find(|node| node.id == baseline.id)
+                                        .is_some_and(|live| {
+                                            live.style
+                                                .fill
+                                                .as_deref()
+                                                .is_none_or(|fill| !allowed(fill))
+                                        })
+                                })
+                        });
+                    hero_violation || field_violation
+                }
                 BrandRule::RequiredWordmark { text, .. } => hero.is_some_and(|hero| {
                     hero.config.wordmark != *text
                         || scene

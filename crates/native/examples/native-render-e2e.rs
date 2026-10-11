@@ -520,6 +520,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "seed-procedural" => {
+            let database = path_arg(&mut args);
+            let mode = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_procedural(&database, &mode, &project_json)
+        }
         "seed-hero" => {
             let database = path_arg(&mut args);
             let aspect = text_arg(&mut args);
@@ -736,9 +745,148 @@ fn seed_hero(
     Ok(())
 }
 
+/// CI-only design evidence: author a real, portable project and render it using
+/// the unchanged owner-owned Semwright Driver Host and Motionwright coordinator.
+fn seed_procedural(
+    database: &Path,
+    mode: &str,
+    project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let animated = match mode {
+        "static" => false,
+        "motion" | "orbit" => true,
+        _ => return Err("procedural fixture mode must be static, motion or orbit".into()),
+    };
+    let orbit = mode == "orbit";
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("procedural native fixture requires empty database".into());
+    }
+    let initial = service.create_project("Procedural native design acceptance")?;
+    let added = service
+        .apply(
+            initial.id,
+            &initial.stamp(),
+            "procedural-acceptance-scene",
+            &Change::AddScene {
+                name: "Bounded geometric motion".into(),
+                objective: "Original generated graphic study, not real software footage".into(),
+                duration_seconds: 6,
+            },
+        )?
+        .project;
+    let scene_id = added.scenes[0].id;
+    let config = motionwright_domain::ProceduralConfig {
+        seed: 41,
+        count: 12,
+        columns: 4,
+        distribution: if orbit {
+            motionwright_domain::FieldDistribution::Radial
+        } else {
+            motionwright_domain::FieldDistribution::Scatter
+        },
+        shape: if orbit {
+            motionwright_domain::ProceduralShape::Circle
+        } else {
+            motionwright_domain::ProceduralShape::Square
+        },
+        origin_x: 260,
+        origin_y: 180,
+        area_width: 1240,
+        area_height: 660,
+        size: 88,
+        opacity_percent: 100,
+        fill: "#A5C8DF".into(),
+        reveal_step_frames: if animated { 6 } else { 0 },
+        reveal_duration_frames: 18,
+    };
+    let project = service
+        .apply(
+            added.id,
+            &added.stamp(),
+            "procedural-acceptance-field",
+            &Change::UpsertProceduralField {
+                instance_id: Uuid::parse_str("00000000-0000-4000-8000-000000000095")?,
+                scene_id,
+                config: config.clone(),
+            },
+        )?
+        .project;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    file.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    let bundle = project_json.with_file_name("procedural.motionwright");
+    service.export_project_bundle(project.id, &bundle)?;
+    let temp = tempfile::tempdir()?;
+    let destination = StudioService::open(temp.path().join("import.sqlite3"))?;
+    let inspected = destination.inspect_project_bundle(&bundle)?;
+    let imported = destination.import_project_bundle(&bundle)?;
+    if !inspected.project.rotates_generation
+        || imported.generation == project.generation
+        || imported.id != project.id
+        || imported.revision != project.revision
+        || imported.production_design != project.production_design
+        || imported.scenes != project.scenes
+    {
+        return Err("procedural portable round-trip changed authored nodes or authority".into());
+    }
+    if destination
+        .apply(
+            imported.id,
+            &project.stamp(),
+            "procedural-stale-authority",
+            &Change::RenameProject {
+                title: "Forbidden stale write".into(),
+            },
+        )
+        .is_ok()
+    {
+        return Err("procedural portable import reused source-generation authority".into());
+    }
+    let deliverable = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture": if orbit { "procedural-field-orbit/1" } else if animated { "procedural-field-motion/1" } else { "procedural-field-static/1" },
+            "project_id": project.id, "resource": project.resource_key(),
+            "generation": project.generation, "revision": project.revision,
+            "scene_id": scene_id, "deliverable_id": deliverable.id,
+            "width": deliverable.width, "height": deliverable.height,
+            "frame_count": 180, "procedural_config": config,
+            "generator_version": 1,
+            "portable_bundle": "procedural.motionwright",
+            "source_generation_rotated": true,
+            "creative_approval": "required",
+        }))?
+    );
+    Ok(())
+}
+
 fn expected_fixture_frames(
     project: &motionwright_domain::Project,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    if let [field] = project.production_design.procedural_fields.as_slice() {
+        if project.scenes.len() != 1
+            || project.scenes[0].duration != RationalTime::new(6, 1)?
+            || project.scenes[0].nodes.len() != usize::from(field.config.count)
+            || !project.production_design.heroes.is_empty()
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err(
+                "procedural native E2E fixture no longer matches its six-second project contract"
+                    .into(),
+            );
+        }
+        field.validate()?;
+        return Ok(180);
+    }
     if project.production_design.heroes.is_empty() {
         return Ok(60);
     }

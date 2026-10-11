@@ -310,7 +310,7 @@
     {
       "id": "MW05-E06-01",
       "implementation": "partial",
-      "implemented_scope": "Project-local mandatory brand rules, non-authoritative taste, scene/rule/policy-SHA256 campaign exceptions and revisioned creative decisions; Rust/Studio validation",
+      "implemented_scope": "Project-local mandatory brand rules, non-authoritative taste, scene/rule/policy-SHA256 campaign exceptions and revisioned creative decisions; Rust/Studio validation; mandatory palette also applies to procedural field configs and live node fills",
       "remaining_scope": "Organization-wide policy distribution and IAM/owner authorization, more properties/formats, full legacy nonconformance migration, human brand review",
       "source_paths": [
         "crates/domain/src/brand_governance.rs",
@@ -346,10 +346,23 @@
     },
     {
       "id": "MW05-E06-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new procedural fields or repeat system",
-      "remaining_scope": "Seeded bounded generators and editable controls required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E; honors BrandProfile palettes and per-scene exceptions; deterministic integer radial/spiral distributions and Circle primitive with legacy migration, 56-configuration bounds tests, third native 180-frame orbital-circle proof",
+      "remaining_scope": "Native orbit master requires exact-HEAD CI pass and human creative review; advanced temporal fields, custom masks/forces, 3D instancing and independent performance benchmarks remain open",
+      "source_paths": [
+        "crates/domain/src/procedural.rs",
+        "crates/domain/tests/procedural_fields.rs",
+        "apps/studio/src/proceduralField.ts",
+        "apps/studio/src/proceduralField.test.ts",
+        "apps/studio/src/ProceduralFieldWorkbench.tsx",
+        "apps/studio/tests/procedural-field.spec.ts",
+        "docs/creative-production/PROCEDURAL_FIELDS.md",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/procedural_native_evidence.py",
+        "tooling/native_tests/test_procedural_native_evidence.py",
+        ".github/workflows/procedural-native-e2e.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

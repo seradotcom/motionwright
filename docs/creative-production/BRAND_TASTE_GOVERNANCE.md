@@ -36,13 +36,17 @@ verification, directory/IAM integration and delegation of approval authority
 are **not implemented**. The author label is provenance supplied by the
 editor, **not cryptographic proof** of identity or rights clearance.
 
-For this vertical slice, palette and wordmark restrictions apply to authored
-first-party hero components; phrase restrictions apply to scene nodes and hero
-copy. In MetricEvidence, the large headline is also an accent-painted semantic
-field: the allowlisted palette governs its current authored fill after human
-style edits, not only the component config, wordmark and graphic rule. Clearing
-an accent-painted object's fill is also a violation, not an exception bypass. Generic fonts, imagery, external-native payloads and audio are not yet
-subject to full brand compliance. This does not certify a delivery as brand-safe.
+For this vertical slice, palette restrictions apply to authored Hero
+components and to configured **procedural field fills** and all live,
+human-edited procedural node fills. In MetricEvidence, the large headline
+is accent-painted; clearing that fill is a violation, not a policy bypass.
+Wordmark restrictions apply to Hero; forbidden phrases apply to all scene
+text and original Hero copy. Exact-policy-digest scene/rule exceptions
+remain the only waiver. Inferred TasteProfile never grants an override.
+
+Generic fonts, licensed imagery, opaque native-source payloads and audio
+are not yet subject to full brand compliance. This does not certify any
+delivery as brand-safe.
 
 Adding a rule to an already nonconforming scene fails closed until the text is
 corrected or a matching scene waiver is atomically supplied. The current
