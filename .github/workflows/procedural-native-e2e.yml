@@ -1,0 +1,209 @@
+name: Procedural native design evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/domain/src/procedural.rs'
+      - 'crates/native/src/lib.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'crates/native/tests/procedural_fields.rs'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
+      - 'tooling/procedural_native_evidence.py'
+      - 'tooling/native_tests/test_procedural_native_evidence.py'
+      - 'tooling/tests/test_native_av_media_probe.py'
+      - '.github/workflows/procedural-native-e2e.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'crates/domain/src/procedural.rs'
+      - 'crates/native/src/lib.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/procedural_native_evidence.py'
+      - '.github/workflows/procedural-native-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: procedural-native-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+
+jobs:
+  procedural-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-av-master-1.98.1
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cache-workspace-crates: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install pinned native runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            melt ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/native-av-master-e2e
+          {
+            melt -version | head -5
+            ffmpeg -version | head -3
+            ffprobe -version | head -3
+            bwrap --version
+          } > verification/native-av-master-e2e/native-runtime-versions.txt
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          set -euo pipefail
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-av-master-e2e/sandbox-profile.txt"
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build exact Semwright Broker and native providers
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          test -x target/debug/semwright
+          test -x target/debug/semwrightd
+          test -x target/debug/semwright-sandbox
+          test -x target/debug/semwright-motion-canvas-driver
+          test -x target/debug/semwright-mlt-video-driver
+          test -x target/debug/semwright-mlt-runtime-runner
+
+      - name: Build Motionwright native AV acceptance
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-render-e2e
+          cargo test --locked -p motionwright-native \
+            motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
+            -- --nocapture
+
+      - name: Exercise spatial regression guardrails against synthetic failures
+        run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
+
+      - name: Reject blank and deceptive procedural PNG studies
+        run: python3 -m unittest discover -s tooling/native_tests -p 'test_procedural_native_evidence.py' -v
+
+      - name: Render original procedural static and motion masters
+        run: |
+          set -euo pipefail
+          mkdir -p verification/procedural-field-e2e
+          for mode in procedural-static procedural-motion procedural-orbit; do
+            MOTIONWRIGHT_E2E_FIXTURE="$mode" python3 tooling/native_av_master_e2e.py |
+              tee "verification/procedural-field-e2e/$mode.log"
+          done
+
+      - name: Verify procedural native source, contact sheet and decoded MP4 proof
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_PROCEDURAL'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/procedural-field-e2e") / os.environ["GITHUB_SHA"]
+          for mode in ("procedural-static", "procedural-motion", "procedural-orbit"):
+              folder = root / mode
+              result = json.loads((folder / "result.json").read_text())
+              inspection = json.loads((folder / "procedural-native-inspection.json").read_text())
+              seed = result["project"]
+              assert result["native_av_master_e2e"] == "PASS"
+              assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+              assert seed["fixture"] == f"procedural-field-{mode.removeprefix('procedural-')}/1"
+              assert result["frame_count"] == result["decoded_video_frames"] == 180
+              assert (seed["width"], seed["height"]) == (1920, 1080)
+              assert inspection["revision"] == seed["revision"]
+              assert inspection["generation"] == seed["generation"]
+              assert inspection["source_sha"] == os.environ["GITHUB_SHA"]
+              assert inspection["semwright_sha"] == result["semwright_sha"]
+              assert inspection["technical_sampling"] == "PASS"
+              assert inspection["creative_approval"] == "required"
+              assert seed["source_generation_rotated"] is True
+              assert (folder / "procedural.motionwright" / "manifest.json").is_file()
+              source_hash = hashlib.sha256((folder / "editable-project.json").read_bytes()).hexdigest()
+              assert inspection["source_project_sha256"] == source_hash
+              sheet = inspection["contact_sheet"]
+              assert hashlib.sha256((folder / sheet["path"]).read_bytes()).hexdigest() == sheet["sha256"]
+              master_digest = hashlib.sha256((folder / "motionwright-master.mp4").read_bytes()).hexdigest()
+              assert result["master_sha256"] == inspection["decoded_master"]["mp4_sha256"] == master_digest
+              assert inspection["decoded_master"]["technical_sampling"] == "PASS"
+              assert result["procedural_native_pixel_evidence"] == hashlib.sha256(
+                  (folder / "procedural-native-inspection.json").read_bytes()
+              ).hexdigest()
+              print(mode, "original native render and decoded MP4 verified; creative review required")
+          PY_PROCEDURAL
+
+      - name: Upload procedural native design-review artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: procedural-native-${{ github.sha }}
+          path: verification/procedural-field-e2e/
+          if-no-files-found: ignore
+          retention-days: 7

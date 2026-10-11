@@ -1,5 +1,6 @@
 mod brand_governance;
 mod canvas;
+mod capture_source;
 mod creative;
 mod creative_revisions;
 mod delivery;
@@ -7,10 +8,14 @@ mod extensions;
 mod hero;
 mod history;
 mod integrations;
+mod measured_data;
 mod music_clock;
+mod procedural;
+mod product_stage;
 mod production_design;
 pub use brand_governance::*;
 pub use canvas::*;
+pub use capture_source::*;
 pub use creative::*;
 pub use creative_revisions::*;
 pub use delivery::*;
@@ -18,7 +23,10 @@ pub use extensions::*;
 pub use hero::*;
 pub use history::*;
 pub use integrations::*;
+pub use measured_data::*;
 pub use music_clock::*;
+pub use procedural::*;
+pub use product_stage::*;
 pub use production_design::*;
 
 use chrono::{DateTime, Utc};
@@ -645,6 +653,7 @@ impl Project {
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+        self.production_design.validate_capture_sources(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1019,12 +1028,49 @@ impl Project {
                 scene_id,
                 config,
             } => self.upsert_product_hero(*instance_id, *scene_id, config)?,
+            Change::UpsertProductStage {
+                instance_id,
+                scene_id,
+                config,
+            } => self.upsert_product_stage(*instance_id, *scene_id, config)?,
+            Change::DetachProductStage { instance_id } => {
+                self.detach_product_stage(*instance_id)?
+            }
+            Change::UpsertProceduralField {
+                instance_id,
+                scene_id,
+                config,
+            } => {
+                self.upsert_procedural_field(*instance_id, *scene_id, config)?;
+            }
+            Change::DetachProceduralField { instance_id } => {
+                self.detach_procedural_field(*instance_id)?;
+            }
             Change::SetProductionPlan { plan } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if let Some(plan) = plan {
                     plan.validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
                 }
                 self.production_design.plan = plan.clone();
+            }
+            Change::UpsertMeasuredTable { table } => self.upsert_measured_table(table)?,
+            Change::UpsertMeasuredBinding {
+                binding_id,
+                scene_id,
+                node_id,
+                table_id,
+                datum_key,
+                view,
+            } => self.upsert_measured_binding(
+                *binding_id,
+                *scene_id,
+                *node_id,
+                *table_id,
+                datum_key,
+                view,
+            )?,
+            Change::DetachMeasuredBinding { binding_id } => {
+                self.detach_measured_binding(*binding_id)?
             }
             Change::SetBrandGovernance {
                 profile,
@@ -1058,6 +1104,7 @@ impl Project {
                     .project_decisions
                     .push(decision.clone());
             }
+            Change::RegisterCaptureSource { record } => self.register_capture_source(record)?,
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.ensure_unlocked(&format!("scene:{}", capsule.scene_id), &[LockKind::Content])?;
@@ -1921,6 +1968,24 @@ impl Project {
             }
             Change::RemoveAsset { asset_id } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self.production_design.captures.iter().any(|record| {
+                    record.screenshot_asset_id == *asset_id
+                        || record.manifest_asset_id == *asset_id
+                        || record.fixture_state_asset_id == *asset_id
+                }) {
+                    return Err(DomainError::Invalid(
+                        "asset remains referenced by a source capture; retain its provenance"
+                            .into(),
+                    ));
+                }
+                if self
+                    .production_design
+                    .measured_tables
+                    .iter()
+                    .any(|table| table.source_asset_id == *asset_id)
+                {
+                    return Err(DomainError::Invalid("asset remains bound to a measured table; relink data before deleting source".into()));
+                }
                 if self
                     .audio
                     .voice_tracks
@@ -2298,8 +2363,38 @@ pub enum Change {
     DetachProductHero {
         instance_id: Uuid,
     },
+    UpsertProductStage {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        config: ProductStageConfig,
+    },
+    DetachProductStage {
+        instance_id: Uuid,
+    },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
+    },
+    UpsertMeasuredTable {
+        table: MeasuredTable,
+    },
+    UpsertMeasuredBinding {
+        binding_id: Uuid,
+        scene_id: Uuid,
+        node_id: Uuid,
+        table_id: Uuid,
+        datum_key: String,
+        view: MeasuredView,
+    },
+    DetachMeasuredBinding {
+        binding_id: Uuid,
+    },
+    UpsertProceduralField {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        config: ProceduralConfig,
+    },
+    DetachProceduralField {
+        instance_id: Uuid,
     },
     SetBrandGovernance {
         profile: Option<BrandProfile>,
@@ -2310,6 +2405,9 @@ pub enum Change {
     },
     RecordCreativeDecision {
         decision: CreativeDecision,
+    },
+    RegisterCaptureSource {
+        record: CaptureSourceRecord,
     },
     UpsertNativeCapsule {
         capsule: NativeCapsule,

@@ -1,4 +1,5 @@
 import type { Project } from "./types";
+import { STAGE_ACCENT_ROLES } from "./productStage";
 
 export type BrandRule =
   | { kind:"forbidden_phrase"; id:string; phrase:string }
@@ -97,25 +98,41 @@ export async function validateBrandGovernance(project:Project):Promise<void> {
   }
   for (const scene of project.scenes) {
     const hero=design?.heroes.find(h=>h.scene_id===scene.id);
+    const stage=design?.stages?.find(item=>item.scene_id===scene.id);
     for (const rule of brand.rules) {
       if (waivers.some(e=>e.scene_id===scene.id && e.rule_id===rule.id)) continue;
       let violation=false;
       if (rule.kind==="forbidden_phrase") {
         const needle=rule.phrase.toLowerCase();
         violation=scene.nodes.some(n=>n.text?.toLowerCase().includes(needle)) ||
-          (!!hero && [hero.config.eyebrow,hero.config.headline,hero.config.body,hero.config.wordmark].some(v=>v.toLowerCase().includes(needle)));
-      } else if (hero && rule.kind==="allowed_accents") {
-        const allowed=(v:string)=>rule.colors.some(c=>c.toLowerCase()===v.toLowerCase());
-        violation=!allowed(hero.config.accent) ||
+          (!!hero && [hero.config.eyebrow,hero.config.headline,hero.config.body,hero.config.wordmark].some(v=>v.toLowerCase().includes(needle))) ||
+          (!!stage && [stage.config.screen_heading,stage.config.screen_detail,stage.config.action_label]
+            .some(value=>value.toLowerCase().includes(needle)));
+      } else if (rule.kind==="allowed_accents") {
+        const allowed=(value:string)=>rule.colors.some(c=>c.toLowerCase()===value.toLowerCase());
+        const heroViolation=!!hero && (!allowed(hero.config.accent) ||
           scene.nodes.filter(n=>n.id===hero.baseline.find(b=>b.name.endsWith(" / wordmark"))?.id ||
                                 n.id===hero.baseline.find(b=>b.name.endsWith(" / rule"))?.id ||
                                 (hero.config.layout==="metric_evidence" &&
                                  n.id===hero.baseline.find(b=>b.name.endsWith(" / headline"))?.id))
-            .some(n=>n.style.fill===null || !allowed(n.style.fill));
-      } else if (hero && rule.kind==="required_wordmark") {
-        const wordmark=hero.baseline.find(n=>n.name.endsWith(" / wordmark"));
-        violation=hero.config.wordmark!==rule.text ||
-          (!wordmark || !scene.nodes.some(n=>n.id===wordmark.id && n.text===rule.text));
+            .some(n=>n.style.fill===null || !allowed(n.style.fill)));
+        const stageViolation=!!stage && (!allowed(stage.config.accent) ||
+          STAGE_ACCENT_ROLES.some(role=>{
+            const authored=stage.baseline.find(n=>n.name.endsWith(" / "+role));
+            const live=scene.nodes.find(n=>n.id===authored?.id);
+            return !live || live.style.fill===null || !allowed(live.style.fill);
+          }));
+        const field=design?.procedural_fields?.find(f=>f.scene_id===scene.id);
+        const fieldViolation=!!field && (!allowed(field.config.fill) ||
+          field.baseline.some(base=>{
+            const live=scene.nodes.find(n=>n.id===base.id);
+            return !!live && (live.style.fill===null || !allowed(live.style.fill));
+          }));
+        violation=heroViolation||stageViolation||fieldViolation;
+      } else if (rule.kind==="required_wordmark") {
+        const wordmark=hero?.baseline.find(n=>n.name.endsWith(" / wordmark"));
+        violation=!!stage || !!design?.procedural_fields?.some(f=>f.scene_id===scene.id) || (!!hero && (hero.config.wordmark!==rule.text ||
+          (!wordmark || !scene.nodes.some(n=>n.id===wordmark.id && n.text===rule.text))));
       }
       if (violation) throw new Error(`Brand rule ${rule.id} violated in scene ${scene.id}; scoped campaign exception required.`);
     }

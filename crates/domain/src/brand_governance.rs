@@ -170,7 +170,9 @@ pub fn validate_brand_governance(
     decisions: &[CreativeDecision],
     scenes: &[Scene],
     heroes: &[ProductHeroInstance],
+    styled_components: (&[ProductStageInstance], &[ProceduralFieldInstance]),
 ) -> Result<()> {
+    let (stages, fields) = styled_components;
     if let Some(taste) = taste {
         taste.validate()?;
     }
@@ -214,6 +216,7 @@ pub fn validate_brand_governance(
     }
     for scene in scenes {
         let hero = heroes.iter().find(|item| item.scene_id == scene.id);
+        let stage = stages.iter().find(|item| item.scene_id == scene.id);
         for rule in &brand.rules {
             if exceptions
                 .iter()
@@ -239,35 +242,80 @@ pub fn validate_brand_governance(
                             .iter()
                             .any(|text| text.to_lowercase().contains(&needle))
                         })
-                }
-                BrandRule::AllowedAccents { colors, .. } => hero.is_some_and(|hero| {
-                    let allowed =
-                        |color: &str| colors.iter().any(|v| v.eq_ignore_ascii_case(color));
-                    !allowed(&hero.config.accent)
-                        || scene
-                            .nodes
+                        || stage.is_some_and(|stage| {
+                            [
+                                &stage.config.screen_heading,
+                                &stage.config.screen_detail,
+                                &stage.config.action_label,
+                            ]
                             .iter()
-                            .filter(|node| {
-                                node.id == hero_node_id(hero.id, "wordmark")
+                            .any(|text| text.to_lowercase().contains(&needle))
+                        })
+                }
+                BrandRule::AllowedAccents { colors, .. } => {
+                    let allowed =
+                        |value: &str| colors.iter().any(|c| c.eq_ignore_ascii_case(value));
+                    let hero_violation = hero.is_some_and(|hero| {
+                        !allowed(&hero.config.accent)
+                            || scene
+                                .nodes
+                                .iter()
+                                .filter(|node| {
+                                    node.id == hero_node_id(hero.id, "wordmark")
                                     || node.id == hero_node_id(hero.id, "rule")
                                     // MetricEvidence makes the headline an accent-painted
                                     // semantic field. A human style override must not
                                     // escape the same mandatory palette policy.
                                     || (hero.config.layout == HeroLayout::MetricEvidence
                                         && node.id == hero_node_id(hero.id, "headline"))
+                                })
+                                .any(|node| {
+                                    node.style.fill.as_deref().is_none_or(|fill| !allowed(fill))
+                                })
+                    });
+                    let stage_violation = stage.is_some_and(|stage| {
+                        !allowed(&stage.config.accent)
+                            || STAGE_ACCENT_ROLES.iter().any(|role| {
+                                scene
+                                    .nodes
+                                    .iter()
+                                    .find(|node| node.id == stage_node_id(stage.id, role))
+                                    .is_none_or(|node| {
+                                        node.style.fill.as_deref().is_none_or(|fill| !allowed(fill))
+                                    })
                             })
-                            .any(|node| {
-                                node.style.fill.as_deref().is_none_or(|fill| !allowed(fill))
-                            })
-                }),
-                BrandRule::RequiredWordmark { text, .. } => hero.is_some_and(|hero| {
-                    hero.config.wordmark != *text
-                        || scene
-                            .nodes
-                            .iter()
-                            .find(|node| node.id == hero_node_id(hero.id, "wordmark"))
-                            .is_none_or(|node| node.text.as_deref() != Some(text.as_str()))
-                }),
+                    });
+                    let field_violation = fields
+                        .iter()
+                        .filter(|field| field.scene_id == scene.id)
+                        .any(|field| {
+                            !allowed(&field.config.fill)
+                                || field.baseline.iter().any(|base| {
+                                    scene
+                                        .nodes
+                                        .iter()
+                                        .find(|node| node.id == base.id)
+                                        .is_some_and(|live| {
+                                            live.style
+                                                .fill
+                                                .as_deref()
+                                                .is_none_or(|fill| !allowed(fill))
+                                        })
+                                })
+                        });
+                    hero_violation || stage_violation || field_violation
+                }
+                BrandRule::RequiredWordmark { text, .. } => {
+                    hero.is_some_and(|hero| {
+                        hero.config.wordmark != *text
+                            || scene
+                                .nodes
+                                .iter()
+                                .find(|node| node.id == hero_node_id(hero.id, "wordmark"))
+                                .is_none_or(|node| node.text.as_deref() != Some(text.as_str()))
+                    }) || stage.is_some()
+                        || fields.iter().any(|field| field.scene_id == scene.id)
+                }
             };
             if violated {
                 return Err(DomainError::Invalid(format!(
