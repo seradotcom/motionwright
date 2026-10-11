@@ -1,4 +1,5 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
+import { applyMusicCutToProject, inspectMusicCut } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { applyProductStageChange, validateProductStages } from "./productStage";
@@ -1069,6 +1070,17 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       if (scene) scene.status = change.status;
+      break;
+    }
+    case "snap_scene_cut_to_music": {
+      if (change.base_revision !== project.revision) {
+        throw new Error("Music cut proposal is stale. Refresh the project revision.");
+      }
+      const proposal=inspectMusicCut(next,change.scene_id,change.beat_index,change.source_sha256);
+      if (proposal.anchors_need_acknowledgement && !change.acknowledge_absolute_anchors) {
+        throw new Error("Acknowledge that absolute audio cues, transcripts and markers will not move.");
+      }
+      applyMusicCutToProject(next,proposal);
       break;
     }
     case "set_scene_duration": {

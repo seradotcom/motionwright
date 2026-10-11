@@ -176,3 +176,40 @@
 .production-expanded-study footer { display: flex; align-items: center; gap: 20px; padding: 16px 20px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); flex-shrink: 0; }
 .production-expanded-study footer input { flex: 1; accent-color: var(--accent); min-width: 90px; }
 @media (max-width: 800px) { .production-expanded-study { width: calc(100vw - 16px); height: calc(100vh - 16px); } .production-expanded-study footer > span:last-child { display: none; } }
+
+
+/* Source-bound musical timing. No decorative visualizations or fabricated audio. */
+.music-clock-workbench {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 22px;
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+.music-clock-heading { display: flex; gap: 10px; align-items: start; }
+.music-clock-heading > svg { margin-top: 2px; flex-shrink: 0; color: var(--muted); }
+.music-clock-heading h3 { margin: 0 0 4px; font-size: 14px; font-weight: 550; }
+.music-clock-heading p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.music-clock-source { font-size: 11px; margin: 0; line-height: 1.55; color: var(--muted); }
+.music-clock-source code { color: var(--text); font-size: 11px; }
+.music-clock-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(180px, 1fr); gap: 18px; }
+.music-clock-marks textarea { font-family: var(--font-mono, monospace); font-size: 12px; resize: vertical; }
+.music-clock-generator { display: grid; gap: 10px; border: 1px solid var(--border-soft); padding: 15px; }
+.music-clock-generator > strong { font-weight: 550; font-size: 11px; }
+.music-clock-generator > button { justify-self: start; }
+.music-cut-review { border-top: 1px solid var(--border); padding-top: 20px; display: grid; gap: 17px; }
+.music-cut-impact { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1px; background: var(--border-soft); border: 1px solid var(--border-soft); }
+.music-cut-impact > div { display: grid; gap: 7px; padding: 14px; background: var(--surface-1); min-width: 0; }
+.music-cut-impact > div:last-child { grid-column: 1 / -1; }
+.music-cut-impact span { color: var(--muted); font-size: 10px; }
+.music-cut-impact strong { color: var(--text); font-size: 14px; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.music-cut-footnote { display: flex; align-items: flex-start; gap: 11px; color: var(--muted); border-left: 2px solid var(--warning); padding: 8px 12px; }
+.music-cut-footnote svg { flex-shrink: 0; margin-top: 2px; }
+.music-cut-footnote p { font-size: 11px; line-height: 1.65; margin: 0; }
+.music-cut-acknowledge { align-items: flex-start; color: var(--text); font-size: 11px; line-height: 1.7; }
+.music-cut-acknowledge input { margin-top: 4px; flex-shrink: 0; }
+@media (max-width: 800px) {
+  .music-clock-workbench { padding: 15px; }
+  .music-clock-grid { grid-template-columns: minmax(0,1fr); }
+}
