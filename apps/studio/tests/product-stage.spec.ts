@@ -40,3 +40,25 @@ test("ProductStage rejects unreviewed third-party captures and oversized screen 
   await expect(page.locator(".production-inspector [role=alert]")).toContainText("screen anchor");
   await expect(page.getByRole("button",{name:"Add ProductStage to scene"})).toBeDisabled();
 });
+
+test("ProductStage refuses policy-prohibited copy before saving",async({page})=>{
+  await page.goto("/");
+  await page.getByRole("button",{name:"Add scene",exact:true}).click();
+  await page.getByLabel("New scene name").fill("Governed original screen");
+  await page.getByRole("button",{name:"Add",exact:true}).click();
+  await page.getByRole("button",{name:"Production",exact:true}).click();
+  await page.getByLabel("Production working scene").selectOption({label:"Governed original screen"});
+  await page.getByRole("button",{name:"Brand & taste",exact:true}).click();
+  await page.getByText("Brand identity",{exact:true}).locator("..").locator("input").fill("Governed UI");
+  await page.getByText("Forbidden copy phrases (one per line)")
+    .locator("..").locator("textarea").fill("screenbound");
+  await page.getByRole("button",{name:"Save brand policy"}).click();
+  await page.getByRole("button",{name:"ProductStage",exact:true}).click();
+  await page.getByLabel("ProductStage rights attestation")
+    .fill("I authored this generic original UI and authorize publication.");
+  await page.getByLabel("ProductStage heading").fill("screenbound");
+  await expect(page.getByText(/phrase forbidden by the active BrandProfile/)).toBeVisible();
+  await expect(page.getByRole("button",{name:"Add ProductStage to scene"})).toBeDisabled();
+  await page.getByLabel("ProductStage heading").fill("Independent original workflow");
+  await expect(page.getByRole("button",{name:"Add ProductStage to scene"})).toBeEnabled();
+});
