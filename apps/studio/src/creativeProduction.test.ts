@@ -212,6 +212,12 @@ describe("attached MetricEvidence source notice cannot be rewritten into a verif
     await expect(applyChange(p,{
       type:"remove_canvas_node",scene_id,node_id
     })).rejects.toThrow("disclosure");
+    const disclosure=p.scenes[0].nodes.find(n=>n.id===node_id)!;
+    await expect(applyChange(p,{
+      type:"transform_canvas_node",scene_id,node_id,
+      transform:{x:disclosure.x,y:disclosure.y,width:disclosure.width,height:disclosure.height,
+        rotation_deg:disclosure.rotation_deg,opacity:0}
+    })).rejects.toThrow("disclosure");
     expect(p).toEqual(prior);
     p=await applyChange(p,{type:"detach_product_hero",instance_id:instance});
     expect(p.production_design?.heroes).toHaveLength(0);

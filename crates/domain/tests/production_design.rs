@@ -593,7 +593,25 @@ fn metric_source_disclosure_is_frozen_until_explicit_detach() {
         && node.text.as_deref()
             == Some("METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED")));
 
+    let notice = p.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .unwrap();
+    let hidden = CanvasTransform {
+        x: notice.x,
+        y: notice.y,
+        width: notice.width,
+        height: notice.height,
+        rotation_deg: notice.rotation_deg,
+        opacity: 0.0,
+    };
     for bad in [
+        Change::TransformCanvasNode {
+            scene_id,
+            node_id,
+            transform: hidden,
+        },
         Change::UpdateCanvasText {
             scene_id,
             node_id,
