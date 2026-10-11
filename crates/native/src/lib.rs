@@ -16,6 +16,7 @@ use uuid::Uuid;
 pub mod assembly;
 pub mod canonical;
 mod component_text;
+pub mod creative_doctor;
 mod expressive;
 pub mod film;
 pub mod mlt_av_audio;

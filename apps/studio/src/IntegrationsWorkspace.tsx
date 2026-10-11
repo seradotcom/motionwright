@@ -1,5 +1,6 @@
 import { CircleCheck, CircleDashed, LockKeyhole, Package, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import CreativeRuntimeDoctorPanel from "./CreativeRuntimeDoctorPanel";
 import {
   chooseSemwrightConnection,
   clearSavedSemwrightConnection,
@@ -338,6 +339,8 @@ export default function IntegrationsWorkspace({
             )}
           </p>
         </div>
+        <CreativeRuntimeDoctorPanel project={project} nativeSdk={nativeSdk}
+          runtime={runtimeCompatibility} />
       </section>
 
       <section className="integration-section" aria-label="Launchwright public handoff bindings">

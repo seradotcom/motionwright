@@ -21,6 +21,13 @@ if REV not in desktop:
 if f'const SEMWRIGHT_VERSION: &str = "{VERSION}";' not in desktop:
     errors.append("desktop supported Semwright version does not match SOURCE_LOCK")
 
+# Browser mode is an explicit non-authoritative demo, but it must not
+# advertise a different Native SDK source pin from the installed build.
+fixture = (ROOT / "apps/studio/src/fixture.ts").read_text()
+demo_pin = re.search(r'pinned_revision:\s*"([0-9a-f]{40})"', fixture)
+if demo_pin is None or demo_pin.group(1) != REV:
+    errors.append("browser-demo SDK source pin differs from SOURCE_LOCK")
+
 tauri_config = json.loads((ROOT / "apps/desktop/src-tauri/tauri.conf.json").read_text())
 csp = tauri_config.get("app", {}).get("security", {}).get("csp", "")
 directives = {}
