@@ -234,14 +234,18 @@ impl Store {
         validate_digest(fingerprint_sha256)?;
         let location =
             self.derived_cache_manifest_path(&digest_text(scope), kind, fingerprint_sha256)?;
-        if !location.exists() {
-            return Ok(false);
+        match fs::symlink_metadata(&location) {
+            Ok(_) => {
+                // Deleting a derived manifest cannot grant access to bytes:
+                // a corrupt manifest is still safe to delete, while symlinks
+                // and special files must fail closed.
+                ensure_regular_file(&location, "derived cache eviction manifest")?;
+                fs::remove_file(location)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
         }
-        // Re-hash existing content before declaring it a safe candidate to evict.
-        let _ = self.lookup_derived_cache(scope, kind, fingerprint_sha256)?;
-        ensure_regular_file(&location, "derived cache eviction manifest")?;
-        fs::remove_file(location)?;
-        Ok(true)
     }
 }
 

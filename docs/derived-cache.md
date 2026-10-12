@@ -26,6 +26,10 @@ The Performance Acceptance Evidence workflow runs three unrelated briefs at S/M/
 
 The report counts exact preview-index regeneration units avoided. It does not claim renderer frames, render jobs, GPU time or wall-clock render savings. Those require a renderer-level cold/warm experiment with identical quality and remain a separate product-acceptance concern.
 
+## Revision-bound render-window proxy invalidation
+
+The v0.5 render-window proxy extension has a separate SQLite registration index. New project revisions revoke old cache registrations atomically in the same SQL commit through an append-only source-preserving trigger; a bounded post-commit tombstone drain physically removes derived manifests. If interrupted or blocked by an unsafe symlink, the stale manifest is never addressable as a hit because its registration has been revoked. The cleanup may be retried explicitly; immutable CAS blobs and project source remain untouched. These are application-owned derived proxies, not an admitted native renderer cache or proof of incremental native equivalence.
+
 ## Recovery
 
 Derived cache content is disposable. Cache eviction must not alter project source, delivery outputs or protected history. Missing cache bytes cause a miss and rebuild; they never convert historical metadata into CURRENT output. Cache presence is never used as an authorization signal.

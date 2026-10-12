@@ -21,7 +21,7 @@ fn fixture(scoped: bool) -> (TempDir, Store, Project) {
     if scoped {
         project.deliverables[0].included_scene_ids = vec![project.scenes[1].id];
     }
-    let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+    let mut store = Store::open(dir.path().join("project.sqlite3")).unwrap();
     store.create_project(&project).unwrap();
     (dir, store, project)
 }
@@ -274,4 +274,212 @@ fn global_mix_invalidates_all_selected_profile_windows_without_deleting_sources(
         .unwrap();
     assert_eq!(repeated.manifests_removed, 0);
     assert!(!repeated.impact.actually_invalidated_caches);
+}
+
+fn manifest_path(dir: &TempDir, key: &RenderWindowCacheKey) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let scope = format!(
+        "project:{}:generation:{}:revision:{}:profile:{}:source:{}-{}",
+        key.project_id,
+        key.expected.generation,
+        key.expected.revision,
+        key.deliverable_id,
+        key.source_window.start,
+        key.source_window.end,
+    );
+    let hash = hex::encode(Sha256::digest(scope.as_bytes()));
+    dir.path()
+        .join("derived-cache")
+        .join("sha256")
+        .join(&hash[..2])
+        .join(hash)
+}
+
+#[test]
+fn project_commit_atomically_invalidates_old_window_keys_and_deletes_derived_manifest() {
+    let (dir, mut store, p) = fixture(false);
+    let key = key(&p, p.deliverables[0].id, 0, 60, "render source v1");
+    let input = write(&dir, "artifact.bin", b"rendered-derived-only");
+    store.put_render_window_proxy(&key, &input, 60).unwrap();
+    let before = store.lookup_render_window_proxy(&key).unwrap().unwrap();
+    let blob = before.blob_path;
+    let manifest = manifest_path(&dir, &key);
+    assert_eq!(fs::read_dir(&manifest).unwrap().count(), 1);
+    let edited = store
+        .apply(
+            p.id,
+            &RevisionStamp::from(&p),
+            "successful-project-edit",
+            &Change::RenameProject {
+                title: "Revision two".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    assert_eq!(edited.revision, p.revision + 1);
+    assert_eq!(store.load_project(p.id).unwrap(), edited);
+    assert!(matches!(
+        store.lookup_render_window_proxy(&key),
+        Err(StorageError::Conflict { .. })
+    ));
+    let db = rusqlite::Connection::open(dir.path().join("project.sqlite3")).unwrap();
+    let active: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM render_window_cache_entries WHERE project_id=?1",
+            [p.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(active, 0);
+    // Best-effort postcommit physical deletion succeeded; original immutable
+    // CAS media survives despite loss of its disposable derived manifest.
+    assert_eq!(fs::read_dir(manifest).unwrap().count(), 0);
+    assert_eq!(fs::read(blob).unwrap(), b"rendered-derived-only");
+    let remaining = store.drain_render_window_evictions(16).unwrap();
+    assert_eq!(remaining.tombstones_selected, 0);
+}
+
+#[test]
+fn rejected_edit_never_clears_live_cache_registration() {
+    let (dir, mut store, p) = fixture(false);
+    let k = key(&p, p.deliverables[0].id, 0, 60, "source-bound");
+    store
+        .put_render_window_proxy(&k, write(&dir, "unchanged.bin", b"unchanged"), 60)
+        .unwrap();
+    let mut stale = RevisionStamp::from(&p);
+    stale.revision += 1;
+    assert!(matches!(
+        store.apply(
+            p.id,
+            &stale,
+            "invalid-edit",
+            &Change::RenameProject {
+                title: "Should not apply".into()
+            }
+        ),
+        Err(StorageError::Conflict { .. })
+    ));
+    assert!(store.lookup_render_window_proxy(&k).unwrap().is_some());
+    assert_eq!(fs::read_dir(manifest_path(&dir, &k)).unwrap().count(), 1);
+}
+
+#[test]
+fn interruption_after_sql_revocation_can_recover_physical_eviction() {
+    let (dir, store, p) = fixture(false);
+    let k = key(&p, p.deliverables[0].id, 0, 60, "interrupted cleanup");
+    store
+        .put_render_window_proxy(
+            &k,
+            write(&dir, "pending.bin", b"persistently protected"),
+            60,
+        )
+        .unwrap();
+    let path = dir.path().join("project.sqlite3");
+    let manifest = manifest_path(&dir, &k);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;
+         INSERT INTO render_window_cache_evictions
+             SELECT * FROM render_window_cache_entries;
+         DELETE FROM render_window_cache_entries;
+         COMMIT;",
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let reloaded = Store::open(dir.path().join("project.sqlite3")).unwrap();
+    assert!(reloaded.lookup_render_window_proxy(&k).unwrap().is_none());
+    assert_eq!(fs::read_dir(&manifest).unwrap().count(), 1);
+    let report = reloaded.drain_render_window_evictions(16).unwrap();
+    assert_eq!(report.tombstones_selected, 1);
+    assert_eq!(report.manifests_removed, 1);
+    assert_eq!(report.tombstones_cleared, 1);
+    assert_eq!(report.immutable_blobs_deleted, 0);
+    assert_eq!(fs::read_dir(manifest).unwrap().count(), 0);
+    assert_eq!(
+        reloaded
+            .drain_render_window_evictions(16)
+            .unwrap()
+            .tombstones_selected,
+        0
+    );
+}
+
+#[test]
+fn corrupt_derived_manifest_can_be_evicted_without_trusting_corrupt_bytes() {
+    let (dir, mut store, p) = fixture(false);
+    let k = key(&p, p.deliverables[0].id, 0, 60, "corruption");
+    store
+        .put_render_window_proxy(&k, write(&dir, "corrupt.bin", b"source-is-untouched"), 60)
+        .unwrap();
+    let folder = manifest_path(&dir, &k);
+    let file = fs::read_dir(&folder)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::write(&file, b"{corrupt-malformed-cache-manifest").unwrap();
+    assert!(store.lookup_render_window_proxy(&k).is_err());
+    let edited = store
+        .apply(
+            p.id,
+            &RevisionStamp::from(&p),
+            "evict-corrupt-manifest",
+            &Change::RenameProject {
+                title: "Revision without orphan manifest".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    assert_eq!(edited.revision, p.revision + 1);
+    assert_eq!(fs::read_dir(folder).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_manifests_never_escape_eviction_directory_and_tombstone_can_retry() {
+    use std::os::unix::fs::symlink;
+    let (dir, mut store, p) = fixture(false);
+    let k = key(&p, p.deliverables[0].id, 0, 60, "symlink attack");
+    store
+        .put_render_window_proxy(&k, write(&dir, "symlink.bin", b"protected bytes"), 60)
+        .unwrap();
+    let folder = manifest_path(&dir, &k);
+    let manifest = fs::read_dir(&folder)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::remove_file(&manifest).unwrap();
+    let outside = write(&dir, "outside-file", b"outside cannot be touched");
+    symlink(&outside, &manifest).unwrap();
+    let edited = store
+        .apply(
+            p.id,
+            &RevisionStamp::from(&p),
+            "commit-with-insecure-cache-entry",
+            &Change::RenameProject {
+                title: "Committed edit should survive".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    assert_eq!(edited.revision, p.revision + 1);
+    assert_eq!(fs::read(&outside).unwrap(), b"outside cannot be touched");
+    assert!(matches!(
+        store.lookup_render_window_proxy(&k),
+        Err(StorageError::Conflict { .. })
+    ));
+    assert!(store.drain_render_window_evictions(16).is_err());
+    fs::remove_file(manifest).unwrap();
+    assert_eq!(
+        store
+            .drain_render_window_evictions(16)
+            .unwrap()
+            .tombstones_cleared,
+        1
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"outside cannot be touched");
 }

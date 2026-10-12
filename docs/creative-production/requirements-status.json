@@ -214,7 +214,7 @@
     {
       "id": "MW05-E03-03",
       "implementation": "partial",
-      "implemented_scope": "Exact-rational source-frame dependency windows, Studio preflight and adversarial tests; now also includes bounded SQLite-indexed derived render-window proxy admission, revision-scoped lookup and physical eviction of affected manifests without deleting source blobs, with conservative montage/revision fallbacks",
+      "implemented_scope": "Exact-rational source-frame dependency windows, Studio preflight and adversarial tests; now also includes bounded SQLite-indexed derived render-window proxy admission, revision-scoped lookup, transactionally triggered revocation on edits, recoverable physical eviction tombstones and physical eviction of affected manifests without deleting source blobs, with conservative montage/revision fallbacks",
       "remaining_scope": "Native renderer producer/receipt admission and automatic invalidation at the production boundary, full-versus-incremental decoded-frame/audio equivalence, measured tails, output cut mapping and measured renderer wallclock savings remain NOT_COMPLETED. Physical derived proxy cache purging is a bounded partial implementation, not native cache acceleration.",
       "source_paths": [
         "crates/domain/src/production_design.rs",

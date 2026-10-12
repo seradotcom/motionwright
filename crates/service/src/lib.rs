@@ -34,7 +34,7 @@ pub use motionwright_storage::{
     BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan, PortableBlob,
     ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark, ProjectBackup,
     ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
-    RenderWindowCacheKey, RenderWindowPurgeReport,
+    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };
 use parking_lot::Mutex;
 use std::{
@@ -292,6 +292,13 @@ impl StudioService {
         self.store
             .lock()
             .purge_render_window_proxies(project_id, request)
+    }
+
+    pub fn drain_render_window_evictions(
+        &self,
+        limit: usize,
+    ) -> StorageResult<RenderWindowEvictionDrainReport> {
+        self.store.lock().drain_render_window_evictions(limit)
     }
 
     pub fn import_asset_file(

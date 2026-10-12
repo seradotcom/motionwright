@@ -43,15 +43,26 @@ fn invalid(message: impl Into<String>) -> StorageError {
     StorageError::InvalidDerivedCache(format!("render-window proxy: {}", message.into()))
 }
 
-fn scope(key: &RenderWindowCacheKey) -> String {
+fn recorded_scope(
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    deliverable: Uuid,
+    window: SourceFrameWindow,
+) -> String {
     format!(
-        "project:{}:generation:{}:revision:{}:profile:{}:source:{}-{}",
+        "project:{project_id}:generation:{generation}:revision:{revision}:profile:{deliverable}:source:{}-{}",
+        window.start, window.end,
+    )
+}
+
+fn scope(key: &RenderWindowCacheKey) -> String {
+    recorded_scope(
         key.project_id,
         key.expected.generation,
         key.expected.revision,
         key.deliverable_id,
-        key.source_window.start,
-        key.source_window.end,
+        key.source_window,
     )
 }
 
@@ -165,11 +176,18 @@ impl Store {
             source,
             work_units,
         )?;
+        // The admission statement rechecks current authority atomically
+        // with the registration. A concurrent project commit cannot insert
+        // an obsolete generation/revision into this active index.
         self.conn.execute(
             "INSERT OR IGNORE INTO render_window_cache_entries
              (project_id, generation, revision, deliverable_id,
               source_start, source_end, fingerprint_sha256)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             SELECT ?1,?2,?3,?4,?5,?6,?7
+             WHERE EXISTS (
+                SELECT 1 FROM projects
+                WHERE id=?1 AND generation=?2 AND revision=?3
+             )",
             params![
                 key.project_id.to_string(),
                 key.expected.generation.to_string(),
@@ -180,6 +198,31 @@ impl Store {
                 key.fingerprint_sha256
             ],
         )?;
+        let admitted: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM render_window_cache_entries
+             WHERE project_id=?1 AND generation=?2 AND revision=?3
+               AND deliverable_id=?4 AND source_start=?5 AND source_end=?6
+               AND fingerprint_sha256=?7",
+                params![
+                    key.project_id.to_string(),
+                    key.expected.generation.to_string(),
+                    key.expected.revision as i64,
+                    key.deliverable_id.to_string(),
+                    key.source_window.start as i64,
+                    key.source_window.end as i64,
+                    key.fingerprint_sha256,
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if admitted.is_none() {
+            validate_key(self, key)?;
+            return Err(invalid(
+                "cache registration was superseded by a concurrent edit",
+            ));
+        }
         Ok(record)
     }
 
@@ -347,6 +390,109 @@ impl Store {
             registrations_retained: entries.len() - registrations_removed,
             immutable_blobs_deleted: 0,
             native_render_equivalence_verified: false,
+        })
+    }
+}
+
+/// Bounded, recoverable deletion of derived cache metadata after a project
+/// commit. The SQLite cache registration was already revoked transactionally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenderWindowEvictionDrainReport {
+    pub tombstones_selected: usize,
+    pub manifests_removed: usize,
+    pub tombstones_cleared: usize,
+    pub immutable_blobs_deleted: u64,
+}
+
+impl Store {
+    /// Work on at most 256 pending keys. Idempotent: a missing manifest can
+    /// still clear its tombstone; malformed or symlink manifests fail closed.
+    pub fn drain_render_window_evictions(
+        &self,
+        limit: usize,
+    ) -> Result<RenderWindowEvictionDrainReport> {
+        if limit == 0 || limit > 256 {
+            return Err(invalid("eviction batch must be in 1..=256"));
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT project_id,generation,revision,deliverable_id,
+                    source_start,source_end,fingerprint_sha256
+             FROM render_window_cache_evictions
+             ORDER BY project_id,generation,revision,deliverable_id,source_start
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+        let mut pending = Vec::new();
+        for row in rows {
+            let (project_id, generation, revision, deliverable_id, start, end, digest) = row?;
+            validate_digest(&digest)?;
+            let pid =
+                Uuid::parse_str(&project_id).map_err(|_| invalid("invalid evicted project ID"))?;
+            let generation_id =
+                Uuid::parse_str(&generation).map_err(|_| invalid("invalid evicted generation"))?;
+            let profile =
+                Uuid::parse_str(&deliverable_id).map_err(|_| invalid("invalid evicted profile"))?;
+            let revision =
+                u64::try_from(revision).map_err(|_| invalid("negative evicted revision"))?;
+            let start = u64::try_from(start).map_err(|_| invalid("negative evicted start"))?;
+            let end = u64::try_from(end).map_err(|_| invalid("negative evicted end"))?;
+            if end <= start || end > 1_080_000 || end - start > MAX_WINDOW_FRAMES {
+                return Err(invalid("invalid persisted eviction window"));
+            }
+            pending.push((pid, generation_id, revision, profile, start, end, digest));
+        }
+        drop(stmt);
+        let mut removed = 0;
+        let mut cleared = 0;
+        for (project_id, generation, revision, deliverable_id, start, end, digest) in &pending {
+            let owner = recorded_scope(
+                *project_id,
+                *generation,
+                *revision,
+                *deliverable_id,
+                SourceFrameWindow {
+                    start: *start,
+                    end: *end,
+                },
+            );
+            // Safe without reading project source: the trigger revoked this
+            // registration in the same transaction as the revision update.
+            if self.evict_derived_cache_exact(&owner, KIND, digest)? {
+                removed += 1;
+            }
+            self.conn.execute(
+                "DELETE FROM render_window_cache_evictions
+                 WHERE project_id=?1 AND generation=?2 AND revision=?3
+                   AND deliverable_id=?4 AND source_start=?5 AND source_end=?6
+                   AND fingerprint_sha256=?7",
+                params![
+                    project_id.to_string(),
+                    generation.to_string(),
+                    *revision as i64,
+                    deliverable_id.to_string(),
+                    *start as i64,
+                    *end as i64,
+                    digest,
+                ],
+            )?;
+            cleared += 1;
+        }
+        Ok(RenderWindowEvictionDrainReport {
+            tombstones_selected: pending.len(),
+            manifests_removed: removed,
+            tombstones_cleared: cleared,
+            immutable_blobs_deleted: 0,
         })
     }
 }
