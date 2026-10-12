@@ -863,10 +863,17 @@
     },
     {
       "id": "MW05-E15-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No three-workflow user value or preference pilot",
-      "remaining_scope": "First useful result, reuse and revision-ten measurements required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "The existing nine S/M/L and three synthetic-brief StudioService benchmarks now separately measure new SQLite store opening, fresh project creation and first persisted editable scene, and prove the original first scene survives exactly ten further source edits and SQLite reopen. Exact-SHA reports also account for source-validated preview-index work reuse without claiming saved renderer time.",
+      "remaining_scope": "Actual installed-desktop time to first real native frame/video, first useful customer result, real-user onboarding/adoption/reuse, three distinct full creative workflows, independent human preference and time-to-value testing remain NOT_MEASURED.",
+      "source_paths": [
+        "crates/service/examples/acceptance_bench.rs",
+        "tooling/first_scene_reuse.py",
+        "tooling/tests/test_first_scene_reuse.py",
+        "tooling/creative_stage_cost.py",
+        ".github/workflows/performance-acceptance.yml",
+        "docs/creative-production/FIRST_EDITABLE_SCENE_EVIDENCE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     }
   ]
