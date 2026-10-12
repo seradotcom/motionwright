@@ -26,7 +26,26 @@ fn step_sequence_reflows_to_three_aspects_without_recreating_editable_objects() 
         assert_eq!(nodes.iter().map(|n| n.id).collect::<Vec<_>>(), stable);
         assert!(nodes.iter().all(|n| n.name.starts_with("StepSequence / ")));
         for node in &nodes {
-            node.validate().unwrap();
+            // realize_product_hero() already invokes the private canonical
+            // CanvasNode validator before returning. Integration tests may
+            // call only public contracts; do not widen its API for a test.
+            node.style.validate().unwrap();
+            for keyframe in &node.keyframes {
+                keyframe.validate().unwrap();
+            }
+            assert!(
+                [
+                    node.x,
+                    node.y,
+                    node.width,
+                    node.height,
+                    node.rotation_deg,
+                    node.opacity
+                ]
+                .iter()
+                .all(|v| v.is_finite())
+            );
+            assert!((0.0..=1.0).contains(&node.opacity));
             assert!(node.x >= 0.0 && node.y >= 0.0);
             assert!(node.x + node.width <= f64::from(width));
             assert!(node.y + node.height <= f64::from(height));
