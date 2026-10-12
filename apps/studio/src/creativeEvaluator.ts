@@ -64,7 +64,7 @@ export function validateEvaluator(bundle:CreativeEvaluatorBundle):void {
       criterion.kind==="text_contains"?["kind","id","phrase"]:
       criterion.kind==="project_pixel_safe_area"?["kind","id","margin_permille"]:
       criterion.kind==="human_question"?["kind","id","question"]:null;
-    if(!keys)deny("Unknown executable evaluator operation.");
+    if(keys===null)throw new Error("Unknown executable evaluator operation.");
     strictKeys(criterion,keys);
     if(!uuid.test(criterion.id) || seen.has(criterion.id))
       deny("Evaluator criterion IDs must be unique.");
