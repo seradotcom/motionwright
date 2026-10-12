@@ -13,6 +13,7 @@ mod music_clock;
 mod procedural;
 mod product_stage;
 mod production_design;
+mod stage_capture;
 pub use brand_governance::*;
 pub use canvas::*;
 pub use capture_source::*;
@@ -28,6 +29,7 @@ pub use music_clock::*;
 pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
+pub use stage_capture::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -654,6 +656,7 @@ impl Project {
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
         self.production_design.validate_capture_sources(self)?;
+        self.validate_stage_capture_cards()?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1036,6 +1039,11 @@ impl Project {
             Change::DetachProductStage { instance_id } => {
                 self.detach_product_stage(*instance_id)?
             }
+            Change::BindStageCapture {
+                stage_id,
+                capture_id,
+            } => self.bind_stage_capture(*stage_id, *capture_id)?,
+            Change::DetachStageCapture { stage_id } => self.detach_stage_capture(*stage_id)?,
             Change::UpsertProceduralField {
                 instance_id,
                 scene_id,
@@ -2370,6 +2378,13 @@ pub enum Change {
     },
     DetachProductStage {
         instance_id: Uuid,
+    },
+    BindStageCapture {
+        stage_id: Uuid,
+        capture_id: Uuid,
+    },
+    DetachStageCapture {
+        stage_id: Uuid,
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,

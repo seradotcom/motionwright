@@ -2,12 +2,12 @@ use crate::component_text::fixed_component_text;
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
     BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy, MeasuredView,
-    MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene,
+    MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene, stage_node_id,
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
     AUTHORING_VERSION, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat, EditorialSystem,
-    Film, FontFallback, FontSpec, Insets, Invocation, Layer, MotionEasing, NarrativeRole,
+    Film, FontFallback, FontSpec, Insets, Invocation, Layer, MediaFit, MotionEasing, NarrativeRole,
     OutputProfile, Point, Primitive, Sequence, Shot, Size, SpatialIntent, StartAnchor, Subject,
     SubjectContent, TemporalConstraint, TemporalGraph, TemporalSpan, TextDirection, TextRun,
     VisualConstraint, realize,
@@ -860,6 +860,7 @@ fn assets(project: &Project, sequences: &[Sequence]) -> NativeResult<Vec<AssetRe
 }
 
 struct ShotProjectionContext<'a> {
+    project: &'a Project,
     component_texts: &'a BTreeSet<Uuid>,
     profile: &'a DeliverableProfile,
     projection: LayoutProjection,
@@ -906,9 +907,67 @@ fn projected_shot(
             subjects.push(mapped);
             visual_constraints.append(&mut node_constraints);
         }
+        // Only an explicitly registered, immutable first-party capture may
+        // enter a ProductStage source card. It is a CONTAINED image inside
+        // the existing editable Canvas card, never a replacement for the
+        // authored scene, a fabricated screenshot, or a new provider route.
+        let linked_stage = context
+            .project
+            .production_design
+            .stages
+            .iter()
+            .find(|stage| stage.scene_id == scene.id && node.id == stage_node_id(stage.id, "card"));
+        if let Some(stage) = linked_stage {
+            if let Some(link) = context
+                .project
+                .production_design
+                .stage_capture_cards
+                .iter()
+                .find(|binding| binding.stage_id == stage.id)
+            {
+                let source = context
+                    .project
+                    .production_design
+                    .captures
+                    .iter()
+                    .find(|capture| capture.id == link.capture_id)
+                    .ok_or_else(|| invalid("Stage screenshot source was removed"))?;
+                let mut tile = node.clone();
+                tile.id = stage_node_id(stage.id, "source_capture_tile");
+                tile.name = "Source-bound first-party synthetic screenshot tile".into();
+                tile.x = node.x + node.width * 0.39;
+                tile.y = node.y + node.height * 0.08;
+                tile.width = node.width * 0.57;
+                tile.height = node.height * 0.82;
+                validate_static_safe_area(&tile, projection, context.output)?;
+                let image = Subject {
+                    id: subject_id(tile.id, identity.beat_scope),
+                    role: "first-party-synthetic-source-tile".into(),
+                    parent: None,
+                    layer: layer_names
+                        .get(&node.z_index)
+                        .cloned()
+                        .ok_or_else(|| invalid("Source tile Canvas card layer is missing"))?,
+                    content: SubjectContent::Image {
+                        asset_id: uid("asset", source.screenshot_asset_id),
+                        fit: MediaFit::Contain,
+                        ratio: f64::from(source.viewport_width) / f64::from(source.viewport_height),
+                    },
+                    layout: SpatialIntent::Fixed {
+                        position: canonical_position(&tile, projection, context.output),
+                        size: Size {
+                            width: tile.width * projection.object_scale,
+                            height: tile.height * projection.object_scale,
+                        },
+                    },
+                    initially_visible: true,
+                };
+                subjects.push(image);
+            }
+        }
         if subjects.len() > 512 {
             return Err(unsupported(
-                "Component text realization exceeds the native subject budget",
+                "Component source realization exceeds the native subject budget",
             ));
         }
     }
@@ -1104,6 +1163,7 @@ fn build_segment(
             .map(|binding| binding.node_id),
     );
     let shot_context = ShotProjectionContext {
+        project,
         component_texts: &component_texts,
         profile,
         projection,

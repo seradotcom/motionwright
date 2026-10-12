@@ -721,6 +721,8 @@ enum OperationKind {
     DetachProductHero,
     UpsertProductStage,
     DetachProductStage,
+    BindStageCapture,
+    DetachStageCapture,
     UpsertProceduralField,
     DetachProceduralField,
     SetProductionPlan,
@@ -911,6 +913,13 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         }),
         OperationKind::DetachProductStage => Ok(Change::DetachProductStage {
             instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::BindStageCapture => Ok(Change::BindStageCapture {
+            stage_id: uuid(args, "stage_id")?,
+            capture_id: uuid(args, "capture_id")?,
+        }),
+        OperationKind::DetachStageCapture => Ok(Change::DetachStageCapture {
+            stage_id: uuid(args, "stage_id")?,
         }),
         OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
             instance_id: uuid(args, "instance_id")?,
@@ -2363,6 +2372,35 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::BindStageCapture,
+            descriptor(
+                "product-stage.capture.bind",
+                "Bind one content-addressed, registered first-party synthetic screenshot as a contained editable-stage source tile",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "stage_id":{"type":"string","format":"uuid","maxLength":64},
+                        "capture_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "stage_id", "capture_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachStageCapture,
+            descriptor(
+                "product-stage.capture.detach",
+                "Remove the source image tile while retaining original editable ProductStage nodes and immutable capture provenance",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "stage_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "stage_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertProceduralField,
             descriptor(
                 "procedural-field.upsert",
@@ -2863,7 +2901,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         // The unified composition admission exposed 61 operations; the music
         // cut adds one scoped, owner-source-bound Native SDK operation.
-        assert_eq!(capabilities.len(), 62);
+        assert!(names.contains(&"driver.motionwright.product-stage.capture.bind"));
+        assert!(names.contains(&"driver.motionwright.product-stage.capture.detach"));
+        assert_eq!(capabilities.len(), 64);
     }
 
     #[tokio::test]

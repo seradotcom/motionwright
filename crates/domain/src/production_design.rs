@@ -29,6 +29,10 @@ pub struct ProductionDesign {
     /// Append-only source records, not certified screenshots or client evidence.
     #[serde(default)]
     pub captures: Vec<CaptureSourceRecord>,
+    /// Explicit first-party synthetic source tiles inside original editable
+    /// ProductStage cards. No asset URI/code is stored or executed here.
+    #[serde(default)]
+    pub stage_capture_cards: Vec<StageCaptureCard>,
     /// Versioned, source-bound measured JSON/CSV tables (not live external feeds).
     #[serde(default)]
     pub measured_tables: Vec<MeasuredTable>,

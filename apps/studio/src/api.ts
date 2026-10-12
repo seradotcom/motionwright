@@ -4,6 +4,7 @@ import { applyMusicCutToProject, inspectMusicCut } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { applyProductStageChange, validateProductStages } from "./productStage";
+import { applyStageCaptureChange, validateStageCaptureCards } from "./stageCapture";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
@@ -931,6 +932,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "bind_stage_capture":
+    case "detach_stage_capture":
+      await applyStageCaptureChange(next,change);
+      break;
     case "upsert_product_stage":
     case "detach_product_stage":
       await applyProductStageChange(next,change);
@@ -1879,6 +1884,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   await validateBrandGovernance(next);
   await validateProductStages(next);
   validateCaptureRecords(next);
+  await validateStageCaptureCards(next);
   validateMeasuredData(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
