@@ -471,11 +471,16 @@ impl Store {
         }
         fs::create_dir_all(&blob_root)?;
         ensure_regular_directory(&blob_root, "content-addressed storage root")?;
-        Ok(Self {
+        let store = Self {
             conn,
             path,
             blob_root,
-        })
+        };
+        // Recover a bounded number of obsolete derived manifests after an
+        // interrupted edit. Tombstones and misses remain authoritative even
+        // if filesystem cleanup encounters an unsafe or inaccessible file.
+        let _ = store.drain_render_window_evictions(64);
+        Ok(store)
     }
 
     pub fn path(&self) -> &Path {

@@ -44,6 +44,8 @@ jobs:
         run: |
           python3 tooling/source_policy.py
           cargo fmt --all -- --check
+      - name: Check atomic SQLite revocation and transaction rollback
+        run: python3 -m unittest tooling.tests.test_render_window_sql_guard -v
       - name: Execute physical eviction, authority and recovery tests
         run: |
           set -euo pipefail

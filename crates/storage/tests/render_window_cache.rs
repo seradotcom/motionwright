@@ -152,7 +152,7 @@ fn selective_physical_purge_preserves_clean_windows_and_immutable_cas() {
 }
 
 #[test]
-fn stale_revision_purges_all_even_when_new_scene_windows_do_not_overlap() {
+fn committed_revision_evicts_all_even_when_new_scene_windows_do_not_overlap() {
     let (dir, mut store, p) = fixture(false);
     let profile = p.deliverables[0].id;
     let old = key(&p, profile, 120, 180, "closing-before-unrelated-change");
@@ -181,7 +181,10 @@ fn stale_revision_purges_all_even_when_new_scene_windows_do_not_overlap() {
             ),
         )
         .unwrap();
-    assert_eq!(report.manifests_removed, 1);
+    // The successful edit already physically evicted this old derived entry;
+    // manual inspection cannot claim it performed the same deletion twice.
+    assert_eq!(report.manifests_removed, 0);
+    assert_eq!(report.registered_entries_checked, 0);
     assert!(matches!(
         store.lookup_render_window_proxy(&old),
         Err(StorageError::Conflict { .. }),
@@ -389,20 +392,12 @@ fn interruption_after_sql_revocation_can_recover_physical_eviction() {
     drop(store);
     let reloaded = Store::open(dir.path().join("project.sqlite3")).unwrap();
     assert!(reloaded.lookup_render_window_proxy(&k).unwrap().is_none());
-    assert_eq!(fs::read_dir(&manifest).unwrap().count(), 1);
-    let report = reloaded.drain_render_window_evictions(16).unwrap();
-    assert_eq!(report.tombstones_selected, 1);
-    assert_eq!(report.manifests_removed, 1);
-    assert_eq!(report.tombstones_cleared, 1);
-    assert_eq!(report.immutable_blobs_deleted, 0);
+    // Opening the existing store now automatically drains bounded tombstones.
     assert_eq!(fs::read_dir(manifest).unwrap().count(), 0);
-    assert_eq!(
-        reloaded
-            .drain_render_window_evictions(16)
-            .unwrap()
-            .tombstones_selected,
-        0
-    );
+    let report = reloaded.drain_render_window_evictions(16).unwrap();
+    assert_eq!(report.tombstones_selected, 0);
+    assert_eq!(report.manifests_removed, 0);
+    assert_eq!(report.immutable_blobs_deleted, 0);
 }
 
 #[test]
