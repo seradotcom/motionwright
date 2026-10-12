@@ -1,0 +1,132 @@
+/* Cut Room Ledger: compact read-only text framing inspection.
+   All colors use the existing studio tokens in both light and dark modes. */
+.canvas-type-preflight {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.canvas-type-preflight > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 45px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 570;
+  list-style-position: inside;
+}
+.canvas-type-preflight > summary:hover { background: var(--surface-2); }
+.canvas-type-preflight > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.canvas-type-summary {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color: var(--muted);
+}
+.canvas-type-body {
+  border-top: 1px solid var(--border-soft);
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+.canvas-type-body p { margin: 0; }
+.canvas-type-explainer,
+.canvas-type-disclaimer,
+.canvas-type-none {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+.canvas-type-explainer strong { color: var(--text); font-weight: 600; }
+.canvas-type-source {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text);
+  font-size: 11px;
+}
+.canvas-type-source .mono {
+  color: var(--muted);
+  font-size: 10px;
+}
+.canvas-type-caution {
+  border-left: 1px solid var(--accent);
+  padding: 8px 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.canvas-type-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.canvas-type-result {
+  padding: 10px 2px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  display: grid;
+  gap: 6px;
+}
+.canvas-type-result-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.canvas-type-result-head strong {
+  font-size: 11px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+.canvas-type-result-head > span {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+.canvas-type-frame_edge .canvas-type-result-head svg,
+.canvas-type-safe_area .canvas-type-result-head svg,
+.canvas-type-declared_lines .canvas-type-result-head svg { color: var(--accent); }
+.canvas-type-unresolved .canvas-type-result-head svg { color: var(--muted); }
+.canvas-type-sampled_inside .canvas-type-result-head svg { color: var(--muted); }
+.canvas-type-result p {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.canvas-type-result-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.canvas-type-result-footer .mono {
+  color: var(--muted);
+  font-size: 10px;
+}
+.canvas-type-result-footer button {
+  min-height: 32px;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: var(--control-radius);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text);
+  cursor: pointer;
+}
+.canvas-type-result-footer button:hover:not(:disabled) { background: var(--surface-3); }
+.canvas-type-result-footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .canvas-type-result-footer button { transition: none; }
+}
