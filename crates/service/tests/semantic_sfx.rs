@@ -1,7 +1,5 @@
 //! Durable owner-local SQLite source gate for semantic SFX imported WAVs.
-use motionwright_domain::{
-    Asset, Change, Project, SFX_CUE_SCHEMA, SemanticSfxCue, SfxAnchor, SfxEvent,
-};
+use motionwright_domain::{Change, Project, SFX_CUE_SCHEMA, SemanticSfxCue, SfxAnchor, SfxEvent};
 use motionwright_service::StudioService;
 use std::{fs, path::Path};
 use uuid::Uuid;

@@ -77,7 +77,8 @@ export function validateSemanticSfx(project:Project,cue:SemanticSfxCue):Schedule
     exactly(cue.anchor,["kind"]);
   }else if(cue.anchor.kind==="beat_start"){
     exactly(cue.anchor,["kind","beat_id"]);
-    const target=scene.beats.find(b=>b.id===cue.anchor.beat_id);
+    const id=cue.anchor.beat_id;
+    const target=scene.beats.find(b=>b.id===id);
     if(!target)invalid("SFX beat is no longer in the source scene.");
     relative=frame(target.start);
   }else{
