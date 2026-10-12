@@ -29,14 +29,60 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
   await page.addInitScript(({initialBoot,renderReceipt,encodedPng})=>{
     const w=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(command:string,args?:Record<string,unknown>)=>Promise<unknown>};
-      __READ_STATS__:{active:number;max:number;indices:number[]};
+      __READ_STATS__:{active:number;max:number;indices:number[];
+        filmChecks:number;runtimeChecks:number;grants:number;renders:number};
     };
-    w.__READ_STATS__={active:0,max:0,indices:[]};
+    w.__READ_STATS__={active:0,max:0,indices:[],
+      filmChecks:0,runtimeChecks:0,grants:0,renders:0};
     w.__TAURI_INTERNALS__={
       invoke:async(command,args)=>{
         if(command==="bootstrap")return structuredClone(initialBoot);
-        if(command==="issue_effect_grant")return {token:"synthetic-approval-only"};
-        if(command==="render_motion_canvas")return structuredClone(renderReceipt);
+        if(command==="production_runtime_status"){
+          const request=args?.request as {project_id:string;expected_generation:string;expected_revision:number};
+          if(request.project_id!==initialBoot.project.id
+            || request.expected_generation!==initialBoot.project.generation
+            || request.expected_revision!==initialBoot.project.revision)
+            throw Error("Unscoped Semwright compatibility probe");
+          w.__READ_STATS__.runtimeChecks++;
+          return {
+            status:"ready",reason:null,expected_version:"1.0.0",
+            observed_version:"1.0.0",version_compatible:true,
+            executable_sha256:"a".repeat(64),connection_identity:"b".repeat(64),
+            pinned_revision:"c".repeat(40),
+          };
+        }
+        if(command==="motion_canvas_preflight"){
+          const request=args?.request as {project_id:string;generation:string;revision:number;deliverable_id:string};
+          if(request.project_id!==initialBoot.project.id
+            || request.generation!==initialBoot.project.generation
+            || request.revision!==initialBoot.project.revision
+            || request.deliverable_id!==renderReceipt.deliverable_id)
+            throw Error("Unscoped Film projection check");
+          w.__READ_STATS__.filmChecks++;
+          return {
+            project_resource:"project:"+request.project_id,
+            generation:request.generation,revision:request.revision,
+            deliverable_id:request.deliverable_id,
+            verdict:"projection_ready",reason:null,segment_count:1,
+            total_frames:450,segments:[{
+              segment_id:"source-bound-progressive-test",
+              scene_ids:initialBoot.project.scenes.slice(0,2).map(scene=>scene.id),
+              frame_count:450,
+            }],
+          };
+        }
+        if(command==="issue_effect_grant"){
+          if(w.__READ_STATS__.runtimeChecks<1 || w.__READ_STATS__.filmChecks<1)
+            throw Error("One-time render grant requested without first-use checks");
+          w.__READ_STATS__.grants++;
+          return {token:"synthetic-approval-only"};
+        }
+        if(command==="render_motion_canvas"){
+          if(w.__READ_STATS__.grants!==1)
+            throw Error("Render invoked without exact one-time grant");
+          w.__READ_STATS__.renders++;
+          return structuredClone(renderReceipt);
+        }
         if(command==="preview_native_frame"){
           const request=args?.request as {token:string;frame_index:number;project_id:string;revision:number};
           if(request.token!=="synthetic-grant-only" ||
@@ -63,7 +109,13 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
   await page.getByLabel(first.name+" motion archetype").selectOption("statement");
   await page.getByLabel(second.name+" narrative role").selectOption("problem");
   await page.getByLabel(second.name+" motion archetype").selectOption("diagram_build");
-  await page.getByRole("button",{name:"Render native segments"}).click();
+  const renderButton=page.getByRole("button",{name:"Render native segments"});
+  await expect(renderButton).toBeDisabled();
+  await page.getByRole("button",{name:"Check Film projection"}).click();
+  await expect(page.getByLabel("First native production readiness"))
+    .toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
+  await expect(renderButton).toBeEnabled();
+  await renderButton.click();
   await expect(page.getByLabel("Native render evidence")).toContainText("NATIVE · PASS");
   await page.getByRole("button",{name:"Timeline",exact:true}).click();
   await page.getByRole("button",{name:"Show native frames"}).click();
@@ -80,6 +132,13 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
     __READ_STATS__:{active:number;max:number;indices:number[]};
   }).__READ_STATS__);
   expect(stats.max).toBe(1);
+  const authority=await page.evaluate(()=>(window as unknown as {
+    __READ_STATS__:{filmChecks:number;runtimeChecks:number;grants:number;renders:number};
+  }).__READ_STATS__);
+  expect(authority.filmChecks).toBe(1);
+  expect(authority.runtimeChecks).toBeGreaterThanOrEqual(2);
+  expect(authority.grants).toBe(1);
+  expect(authority.renders).toBe(1);
   expect(stats.indices[0]).toBe(0);
   expect(stats.indices.at(-1)).toBe(6);
   // Some intermediate frames may have been sampled while clicking, but
