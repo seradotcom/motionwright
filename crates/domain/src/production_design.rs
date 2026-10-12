@@ -38,6 +38,12 @@ pub struct ProductionDesign {
     /// Latest scoped invalidation notice, not a completed render-cache purge.
     #[serde(default)]
     pub last_measured_impact: Option<MeasuredDataImpact>,
+    /// Append-only versioned creative playbook+evaluator data; never executable.
+    #[serde(default)]
+    pub evaluator_bundles: Vec<CreativeEvaluatorBundle>,
+    /// Historical source-revision observations, not aesthetic PASS badges.
+    #[serde(default)]
+    pub evaluation_reports: Vec<CreativeEvaluationReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

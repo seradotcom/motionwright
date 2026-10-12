@@ -729,6 +729,8 @@ enum OperationKind {
     DetachMeasuredBinding,
     UpsertNativeCapsule,
     RegisterCaptureSource,
+    RegisterCreativeEvaluator,
+    EvaluateCreativeScene,
     ApplyCreativePatch,
     RenameProject,
     SetBrief,
@@ -932,6 +934,24 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .ok_or_else(|| Error::invalid("plan is required"))?,
             )
             .map_err(|_| Error::invalid("invalid ProductionPlan"))?,
+        }),
+        OperationKind::RegisterCreativeEvaluator => Ok(Change::RegisterCreativeEvaluator {
+            bundle: serde_json::from_value(
+                args.get("bundle")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("creative evaluator bundle is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid strictly data-only creative evaluator bundle"))?,
+        }),
+        OperationKind::EvaluateCreativeScene => Ok(Change::EvaluateCreativeScene {
+            evaluator_id: uuid(args, "evaluator_id")?,
+            evaluator_version: serde_json::from_value(
+                args.get("evaluator_version")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("evaluator version is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid evaluator version"))?,
+            scene_id: uuid(args, "scene_id")?,
         }),
         OperationKind::RegisterCaptureSource => Ok(Change::RegisterCaptureSource {
             record: serde_json::from_value(
@@ -2425,6 +2445,76 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::RegisterCreativeEvaluator,
+            descriptor(
+                "creative-evaluator.register",
+                "Append a versioned non-executable creative playbook with bounded observable and human criteria",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "bundle":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.creative-evaluator/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "version":{"type":"integer","minimum":1},
+                                "label":{"type":"string","minLength":1,"maxLength":100},
+                                "purpose":{"type":"string","minLength":1,"maxLength":280},
+                                "author_attestation":{"type":"string","minLength":1,"maxLength":240},
+                                "playbook":{"type":"array","minItems":1,"maxItems":12,"items":{
+                                    "type":"string","minLength":1,"maxLength":500
+                                }},
+                                "criteria":{"type":"array","minItems":1,"maxItems":16,"items":{
+                                    "oneOf":[
+                                        {"type":"object","properties":{
+                                            "kind":{"const":"minimum_nodes"},
+                                            "id":{"type":"string","format":"uuid"},
+                                            "minimum":{"type":"integer","minimum":1,"maximum":256}
+                                        },"required":["kind","id","minimum"],"additionalProperties":false},
+                                        {"type":"object","properties":{
+                                            "kind":{"const":"text_contains"},
+                                            "id":{"type":"string","format":"uuid"},
+                                            "phrase":{"type":"string","minLength":1,"maxLength":120}
+                                        },"required":["kind","id","phrase"],"additionalProperties":false},
+                                        {"type":"object","properties":{
+                                            "kind":{"const":"project_pixel_safe_area"},
+                                            "id":{"type":"string","format":"uuid"},
+                                            "margin_permille":{"type":"integer","minimum":0,"maximum":150}
+                                        },"required":["kind","id","margin_permille"],"additionalProperties":false},
+                                        {"type":"object","properties":{
+                                            "kind":{"const":"human_question"},
+                                            "id":{"type":"string","format":"uuid"},
+                                            "question":{"type":"string","minLength":1,"maxLength":250}
+                                        },"required":["kind","id","question"],"additionalProperties":false}
+                                    ]
+                                }}
+                            },
+                            "required":["schema","id","version","label","purpose",
+                                "author_attestation","playbook","criteria"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "bundle"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::EvaluateCreativeScene,
+            descriptor(
+                "creative-evaluator.evaluate",
+                "Record deterministic technical observations against an exact scene and preserve human-review abstention",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "evaluator_id":{"type":"string","format":"uuid"},
+                        "evaluator_version":{"type":"integer","minimum":1},
+                        "scene_id":{"type":"string","format":"uuid"}
+                    }),
+                    &["ref", "evaluator_id", "evaluator_version", "scene_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::RegisterCaptureSource,
             descriptor(
                 "capture-source.register",
@@ -2863,7 +2953,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         // The unified composition admission exposed 61 operations; the music
         // cut adds one scoped, owner-source-bound Native SDK operation.
-        assert_eq!(capabilities.len(), 62);
+        assert!(names.contains(&"driver.motionwright.creative-evaluator.register"));
+        assert!(names.contains(&"driver.motionwright.creative-evaluator.evaluate"));
+        assert_eq!(capabilities.len(), 64);
     }
 
     #[tokio::test]
