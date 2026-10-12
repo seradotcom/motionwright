@@ -64,7 +64,10 @@ aesthetic review, or unrestricted creative capability.
    render guard](v01-owner-first-render-gate.md) now prevents dispatch before
    same-revision Film and local CLI checks, but is not native owner evidence.
 4. Resolve or explicitly adjudicate open provider lifecycle/cleanup issues
-   #49 and #91 and document release implications. No undocumented deletion
+   #49 and #91 and document release implications. An optional [two-lifetime
+   native CI reproducibility check](reliability/v01-native-provider-repeat.md)
+   gathers controlled process and frame evidence but cannot prove provider
+   generation loss is fixed or authenticate an installed owner's session. No undocumented deletion
    of native MLT projects is allowed. The bounded v0.1 [read-only original-job
    status observation](reliability/v01-owner-native-status-read.md) does not
    fix provider lifecycle, verify native media or authorize a release.
