@@ -199,15 +199,22 @@
     {
       "id": "MW05-E03-02",
       "implementation": "partial",
-      "implemented_scope": "Editorial study and native source/master evidence explicitly distinguished",
-      "remaining_scope": "All progressive preview tiers and their scheduling remain open",
+      "implemented_scope": "Editorial study and native source/master evidence remain distinguished. Sampled source PNG scrub requests at up to 4Hz, settled exact-frame preview, one in-flight read per source, bounded three-frame/32MiB cache and truthful held-frame notices are implemented.",
+      "remaining_scope": "Actual reduced-resolution provider previews, additional quality tiers, cross-renderer scheduling, measured native bandwidth and independent perceptual acceptance are still open. Request sampling is not image downsampling.",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
         "apps/studio/src/NativeInspectionWorkbench.tsx",
         "tooling/creative_frame_evidence.py",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
         "apps/studio/tests/creative-production.spec.ts",
-        "apps/studio/src/production-design.css"
+        "apps/studio/src/production-design.css",
+        "apps/studio/src/NativeFrameStage.tsx",
+        "apps/studio/src/nativeProgressivePreview.ts",
+        "apps/studio/src/nativeProgressivePreview.test.ts",
+        "apps/studio/tests/native-preview.spec.ts",
+        "apps/studio/tests/native-progressive-preview.spec.ts",
+        "docs/creative-production/PROGRESSIVE_NATIVE_PREVIEW.md",
+        ".github/workflows/progressive-native-preview.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

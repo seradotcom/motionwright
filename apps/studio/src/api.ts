@@ -900,7 +900,8 @@ export async function readNativePreviewFrame(
     : data instanceof ArrayBuffer ? new Uint8Array(data)
       : Array.isArray(data) ? Uint8Array.from(data)
         : null;
-  if (!bytes || bytes.length < 8 || bytes[0] !== 137 || bytes[1] !== 80 ||
+  if (!bytes || bytes.length < 32 || bytes.length > 32 * 1024 * 1024 ||
+      bytes[0] !== 137 || bytes[1] !== 80 ||
       bytes[2] !== 78 || bytes[3] !== 71 || bytes[4] !== 13 ||
       bytes[5] !== 10 || bytes[6] !== 26 || bytes[7] !== 10) {
     throw new Error("Native preview did not return valid PNG bytes.");
