@@ -794,8 +794,8 @@
     {
       "id": "MW05-E14-02",
       "implementation": "partial",
-      "implemented_scope": "Hero hierarchies reflow across three native aspect outputs. Delivery now performs source-bound, read-only narrative cut continuity review for omitted scenes, protected content, lost/unsupported claims, localization and exact rational duration before native export.",
-      "remaining_scope": "Independent source authenticity and rights checks, medium-specific human-authored rhythm and complete post-render visual/audible acceptance remain open. A clean editorial preflight is not creative approval.",
+      "implemented_scope": "Hero hierarchies reflow across three native aspect outputs. Delivery performs source-bound read-only narrative cut continuity review for omitted scenes, protected content, unsupported claims and localized cuts; additionally, a saved/draft/parent variant impact inspector compares exact declared profile fields and conservative potential picture, sound, captions, mastering and editorial review stages without modifying the project.",
+      "remaining_scope": "Independent source authenticity, rights, source-asset dependency hashes, physical derived-cache invalidation, continuous native pixel equivalence, medium-specific human-authored rhythm and complete post-render visual/audible acceptance remain open. A clean editorial preflight or no profile field differences is not creative approval.",
       "source_paths": [
         "crates/domain/src/hero.rs",
         "crates/native/src/expressive.rs",
@@ -808,7 +808,12 @@
         "apps/studio/tests/variant-continuity.spec.ts",
         "apps/studio/src/DeliveryProfiles.tsx",
         "docs/creative-production/VARIANT_NARRATIVE_CONTINUITY.md",
-        ".github/workflows/variant-continuity.yml"
+        ".github/workflows/variant-continuity.yml",
+        "apps/studio/src/deliveryVariantImpact.ts",
+        "apps/studio/src/DeliveryVariantImpactReview.tsx",
+        "apps/studio/src/deliveryVariantImpact.test.ts",
+        "apps/studio/tests/delivery-variant-impact.spec.ts",
+        "docs/creative-production/DELIVERY_VARIANT_IMPACT.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

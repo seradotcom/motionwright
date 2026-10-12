@@ -6,6 +6,7 @@ import {
   type ScopedRuntimeObservation,
 } from "./firstNativeProduction";
 import VariantContinuityReview from "./VariantContinuityReview";
+import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import {
   assembleNativeAvMaster,
@@ -822,6 +823,7 @@ export default function DeliveryProfiles({
             </section>
 
             <VariantContinuityReview project={project} profile={draft} saved={selected} />
+            <DeliveryVariantImpactReview project={project} draft={draft} saved={selected} />
 
             {(localizedVariant || Object.keys(draft.text_overrides).length > 0) && (
               <section className="caption-export-panel" aria-label="Localized text">
