@@ -321,9 +321,12 @@ export function applyMusicConformToProject(project:Project,review:MusicConformRe
   if(project.id!==review.project_id||project.generation!==review.generation||
      project.revision!==review.base_revision)
     throw new Error("Music conform source project changed during review.");
+  if(review.scenes.length!==project.scenes.length ||
+     review.scenes.some((after,i)=>project.scenes[i]?.id!==after.scene_id))
+    throw new Error("Conform scene order became stale.");
   for(let i=0;i<project.scenes.length;i++){
     const scene=project.scenes[i],after=review.scenes[i];
-    if(scene.id!==after?.scene_id)throw new Error("Conform scene order became stale.");
+    // All scene identities are checked before entering this loop.
     scene.start=structuredClone(after.new_start);
     scene.duration=structuredClone(after.new_duration);
     if(after.changed)scene.status="draft";

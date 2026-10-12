@@ -189,9 +189,10 @@ fn unordered_duplicate_and_missing_target_sources_fail_closed() {
             .inspect_music_conform(&targets(&ids)[..1], AUDIO_SHA)
             .is_err()
     );
+    let excessive_targets = vec![targets(&ids)[0].clone(); 17];
     assert!(
         project
-            .inspect_music_conform(&vec![targets(&ids)[0].clone(); 17], AUDIO_SHA)
+            .inspect_music_conform(&excessive_targets, AUDIO_SHA)
             .is_err()
     );
 }

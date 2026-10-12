@@ -167,6 +167,8 @@ describe("MW05-E08-01 one-transaction multi-scene conform",()=>{
     expect(()=>applyMusicConformToProject(p,review)).toThrow("source project changed");
     p.revision--;
     p.scenes.reverse();
+    const reversed=structuredClone(p);
     expect(()=>applyMusicConformToProject(p,review)).toThrow("order");
+    expect(p).toEqual(reversed);
   });
 });
