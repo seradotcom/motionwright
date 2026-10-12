@@ -1,6 +1,10 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import NativeAvReview from "./NativeAvReview";
+import {
+  evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
+  type ScopedRuntimeObservation,
+} from "./firstNativeProduction";
 import VariantContinuityReview from "./VariantContinuityReview";
 import {
   assembleNativeAvMaster,
@@ -12,6 +16,7 @@ import {
   preflightMotionCanvas,
   preflightMultiSegmentReadiness,
   renderMotionCanvas,
+  productionRuntimeCompatibility,
 } from "./api";
 import type {
   Change,
@@ -153,6 +158,25 @@ export default function DeliveryProfiles({
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeObservation, setRuntimeObservation] = useState<ScopedRuntimeObservation | null>(null);
+  const [runtimeProbeBusy, setRuntimeProbeBusy] = useState(false);
+  const [runtimeProbeSerial, setRuntimeProbeSerial] = useState(0);
+
+  // Read-only CLI version/digest observation scoped to the exact creative
+  // revision. It neither contacts a rendering provider nor grants execution.
+  useEffect(() => {
+    let active = true;
+    const scope = firstRenderRuntimeScope(project);
+    setRuntimeObservation(null);
+    setRuntimeProbeBusy(desktopMode);
+    if (desktopMode) {
+      void productionRuntimeCompatibility(project)
+        .then((value) => { if (active) setRuntimeObservation({ scope, value }); })
+        .catch(() => { if (active) setRuntimeObservation(null); })
+        .finally(() => { if (active) setRuntimeProbeBusy(false); });
+    }
+    return () => { active = false; };
+  }, [project.id, project.generation, project.revision, desktopMode, runtimeProbeSerial]);
 
   useEffect(() => {
     const current = project.deliverables.find((profile) => profile.id === selectedId) ?? project.deliverables[0] ?? null;
@@ -316,6 +340,16 @@ export default function DeliveryProfiles({
     monoFontFamily,
   ]);
   const currentPreflight = preflight?.key === preflightKey ? preflight.report : null;
+  const firstRenderGate = evaluateFirstNativeRenderGate({
+    project,
+    profileId: selected?.id ?? null,
+    desktopMode,
+    profileDirty: dirty,
+    sceneIntentComplete: renderIntentsComplete,
+    nativePaletteReady,
+    preflight: currentPreflight,
+    runtime: runtimeObservation,
+  });
 
   function filmOptions(): MotionCanvasFilmOptions {
     if (!selected) throw new Error("Select a saved profile before building a Film projection.");
@@ -491,8 +525,26 @@ export default function DeliveryProfiles({
   };
 
   const startNativeRender = () => {
-    if (!selected || !renderReady) return;
+    if (!selected || !renderReady || !firstRenderGate.may_request_native_render) return;
     void run("render", async () => {
+      // Runtime selection or CLI bytes may have changed since the UI probe.
+      // Recheck immediately before requesting a one-time native effect grant.
+      const scope = firstRenderRuntimeScope(project);
+      const latest = await productionRuntimeCompatibility(project);
+      setRuntimeObservation({ scope, value: latest });
+      const gate = evaluateFirstNativeRenderGate({
+        project,
+        profileId: selected.id,
+        desktopMode,
+        profileDirty: dirty,
+        sceneIntentComplete: renderIntentsComplete,
+        nativePaletteReady,
+        preflight: currentPreflight,
+        runtime: { scope, value: latest },
+      });
+      if (!gate.may_request_native_render) {
+        throw new Error("Native runtime or Film preparation changed. " + gate.explanation);
+      }
       const result = await renderMotionCanvas(project, selected.id, filmOptions());
       onRenderEvidence(result);
       const frames = result.segments.reduce((sum, segment) => sum + segment.frame_count, 0);
@@ -912,13 +964,29 @@ export default function DeliveryProfiles({
                 <button
                   type="button"
                   className="button button-primary"
-                  disabled={!renderReady || busy !== null || currentPreflight?.verdict === "unsupported"}
+                  disabled={!firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
                   onClick={startNativeRender}
-                  title={currentPreflight?.verdict === "unsupported"
-                    ? "The current semantic Film projection is rejected. Change the scene/profile and check again."
-                    : "Start an authorized native render using the saved project revision."}
+                  title={firstRenderGate.explanation}
                 >
                   <Play size={14} /> {busy === "render" ? "Rendering…" : "Render native segments"}
+                </button>
+              </div>
+              <div className={"delivery-truth-note " +
+                (firstRenderGate.may_request_native_render ? "" : "warning")}
+                role="status" aria-label="First native production readiness">
+                {firstRenderGate.may_request_native_render
+                  ? <CircleCheck size={14} aria-hidden="true" />
+                  : <CircleDashed size={14} aria-hidden="true" />}
+                <span>
+                  {firstRenderGate.code.replaceAll("_", " ")} — {firstRenderGate.explanation}
+                  {" "}No native provider health, rendered frames or release approval are attested by this gate.
+                </span>
+              </div>
+              <div className="delivery-editor-actions">
+                <button type="button" className="button secondary"
+                  disabled={!desktopMode || runtimeProbeBusy || busy !== null}
+                  onClick={() => setRuntimeProbeSerial((previous) => previous + 1)}>
+                  {runtimeProbeBusy ? "Checking Semwright CLI…" : "Recheck Semwright CLI"}
                 </button>
               </div>
               {currentPreflight && (

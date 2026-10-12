@@ -39,6 +39,25 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
     runtime.__REVIEW_TEST_COMMANDS__ = [];
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        if (command === "production_runtime_status") return {
+          status: "ready", reason: null, expected_version: "1.0.0",
+          observed_version: "1.0.0", version_compatible: true,
+          executable_sha256: "a".repeat(64), connection_identity: "b".repeat(64),
+          pinned_revision: "c".repeat(40),
+        };
+        if (command === "motion_canvas_preflight") {
+          const scope = args?.request as {
+            project_id: string; generation: string; revision: number; deliverable_id: string;
+          };
+          return {
+            project_resource: "project:" + scope.project_id,
+            generation: scope.generation, revision: scope.revision,
+            deliverable_id: scope.deliverable_id,
+            verdict: "projection_ready", reason: null, segment_count: 1, total_frames: 60,
+            segments: [{ segment_id: "synthetic-film-only", scene_ids: [], frame_count: 60 }],
+          };
+        }
+
         runtime.__REVIEW_TEST_COMMANDS__.push(command);
         if (command === "bootstrap") return structuredClone(initialBoot);
         if (command === "issue_effect_grant") return { token: "synthetic-test-grant" };
@@ -69,6 +88,8 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await page.getByRole("button", { name: "Check Film projection" }).click();
+  await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
   await expect(page.getByLabel("Native render evidence")).toContainText("NATIVE · PASS");
 

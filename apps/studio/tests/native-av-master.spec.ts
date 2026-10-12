@@ -79,6 +79,25 @@ test("desktop AV master is linked only to session-native visual evidence and a m
     app.__SYNTHETIC_AV__ = { requests: [], exports: [], reviews: [], renders: 0, effects: 0 };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        if (command === "production_runtime_status") return {
+          status: "ready", reason: null, expected_version: "1.0.0",
+          observed_version: "1.0.0", version_compatible: true,
+          executable_sha256: "a".repeat(64), connection_identity: "b".repeat(64),
+          pinned_revision: "c".repeat(40),
+        };
+        if (command === "motion_canvas_preflight") {
+          const scope = args?.request as {
+            project_id: string; generation: string; revision: number; deliverable_id: string;
+          };
+          return {
+            project_resource: "project:" + scope.project_id,
+            generation: scope.generation, revision: scope.revision,
+            deliverable_id: scope.deliverable_id,
+            verdict: "projection_ready", reason: null, segment_count: 1, total_frames: 60,
+            segments: [{ segment_id: "synthetic-film-only", scene_ids: [], frame_count: 60 }],
+          };
+        }
+
         if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
         if (command === "issue_effect_grant") {
           app.__SYNTHETIC_AV__.effects++;
@@ -135,6 +154,8 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await page.getByRole("button", { name: "Check Film projection" }).click();
+  await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
   await expect(page.getByLabel("Native render evidence")).toContainText("NATIVE · PASS");
   await expect(assemble).toBeEnabled();
@@ -251,9 +272,28 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
   profile.voice_track_id = takeId;
   await page.addInitScript(({ initial, sceneIds }) => {
     const app = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> };
+      __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
     };
-    app.__TAURI_INTERNALS__ = { invoke: async (cmd) => {
+    app.__TAURI_INTERNALS__ = { invoke: async (cmd, args) => {
+        if (cmd === "production_runtime_status") return {
+          status: "ready", reason: null, expected_version: "1.0.0",
+          observed_version: "1.0.0", version_compatible: true,
+          executable_sha256: "a".repeat(64), connection_identity: "b".repeat(64),
+          pinned_revision: "c".repeat(40),
+        };
+        if (cmd === "motion_canvas_preflight") {
+          const scope = args?.request as {
+            project_id: string; generation: string; revision: number; deliverable_id: string;
+          };
+          return {
+            project_resource: "project:" + scope.project_id,
+            generation: scope.generation, revision: scope.revision,
+            deliverable_id: scope.deliverable_id,
+            verdict: "projection_ready", reason: null, segment_count: 1, total_frames: 60,
+            segments: [{ segment_id: "synthetic-film-only", scene_ids: [], frame_count: 60 }],
+          };
+        }
+
       if (cmd === "bootstrap") return structuredClone(initial);
       if (cmd === "issue_effect_grant") return { token: "synthetic-only" };
       if (cmd === "render_motion_canvas") return {
@@ -275,6 +315,8 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await page.getByRole("button", { name: "Check Film projection" }).click();
+  await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
   const panel = page.getByRole("region", { name: "Canonical audiovisual mastering" });
   await expect(panel.getByRole("button", { name: "Assemble native AV master" })).toBeDisabled();

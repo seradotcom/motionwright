@@ -119,7 +119,10 @@ test("unsupported Film projection prevents native dispatch for unchanged inputs"
 
   await page.getByLabel(boot.project.scenes[0].name + " narrative role").selectOption("reveal");
   await expect(page.getByLabel("Native Film preflight result")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Render native segments" })).toBeEnabled();
+  // Changing an authored intent invalidates its preflight; never permit a
+  // native effect request using evidence from an earlier composition.
+  await expect(page.getByRole("button", { name: "Render native segments" })).toBeDisabled();
+  await expect(page.getByLabel("First native production readiness")).toContainText("FILM PREFLIGHT REQUIRED");
 });
 
 test("browser demo cannot invent native Film semantic projection readiness", async ({ page }) => {
