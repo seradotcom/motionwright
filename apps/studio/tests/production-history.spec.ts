@@ -178,7 +178,12 @@ test("independent status append invalidates history cursor and requires explicit
     (window as unknown as { __APPEND_STATUS__: { changed: boolean } }).__APPEND_STATUS__.changed = true;
   });
   await page.getByRole("button", { name: "Load older production jobs" }).click();
-  await expect(page.getByRole("alert")).toContainText("Production receipt stream changed");
+  const historyError = page.getByRole("alert")
+    .filter({ hasText: "Historical receipt snapshot could not be continued" });
+  await expect(historyError).toContainText("Production receipt stream changed");
+  // The owner safety warning about the original UNKNOWN native operation
+  // remains separate from an unrelated expired read-only history cursor.
+  await expect(page.getByLabel("Unconfirmed native render recovery")).toBeVisible();
   await expect(page.getByRole("button", { name: "Load older production jobs" })).toBeDisabled();
   await expect(page.getByRole("table", { name: "Historical production job receipts" })
     .getByRole("row")).toHaveCount(17);
@@ -186,7 +191,8 @@ test("independent status append invalidates history cursor and requires explicit
   await expect.poll(async () => page.evaluate(() => (
     window as unknown as { __APPEND_STATUS__: { initialReads: number } }
   ).__APPEND_STATUS__.initialReads)).toBe(2);
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(historyError).toHaveCount(0);
+  await expect(page.getByLabel("Unconfirmed native render recovery")).toBeVisible();
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 });
 

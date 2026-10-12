@@ -9,6 +9,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { productionJobs, productionJobsHistory } from "./api";
 import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
+import { nativeRecoveryWarning } from "./nativeRecovery";
 import type {
   ProductionJobProjection,
   ProductionJobsHistoryCursor,
@@ -312,6 +313,7 @@ export default function ProductionJobsWorkspace({
   }
 
   const visibleJobs = historyOpen ? historicalJobs : jobs;
+  const recovery = nativeRecoveryWarning(project, visibleJobs);
   const waitingForFirstPage = historyOpen ? historicalLoading && historicalJobs.length === 0 : loading;
 
   return (
@@ -375,6 +377,29 @@ export default function ProductionJobsWorkspace({
         </div>
       </div>
 
+      {recovery && (
+        <div className="jobs-inline-error" role="alert" aria-label="Unconfirmed native render recovery">
+          <TriangleAlert size={15} aria-hidden="true" />
+          <div>
+            <strong>{recovery.code === "ORIGINAL_JOB_OUTCOME_UNKNOWN"
+              ? "Original native render outcome is unknown"
+              : "Native cancellation has not been confirmed"}</strong>
+            <span>{recovery.affectedJobs} current-revision native job
+              {recovery.affectedJobs === 1 ? "" : "s"} need owner reconciliation.</span>
+            <span>
+              Do not automatically start a replacement render or mark output complete.
+              Review the original job in the owner-authorized Semwright Broker/Driver Host;
+              only a canonical terminal result plus independently verified media establishes success.
+              If its provider generation is gone, leave the original result UNKNOWN.
+            </span>
+            <span>
+              Refresh receipts only reads Motionwright's local journal; it never queries,
+              restarts, cancels or grants permission to the native provider.
+              Historical snapshots can be incomplete until all pages are loaded.
+            </span>
+          </div>
+        </div>
+      )}
       {historyOpen && (
         <div className="jobs-history-banner" role="region" aria-label="Historical production snapshot">
           <div>
