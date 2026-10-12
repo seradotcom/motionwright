@@ -18,3 +18,17 @@ test("Render dependency inspector is source-revision bound and never claims actu
   await expect(page.getByRole("alert")).toContainText(/tail source/);
   await expect(page.getByText(/Tail length is not independently measured/)).toBeVisible();
 });
+
+
+test("Render impact remains compatible with the native StepSequence component family", async({page})=>{
+  await page.goto("/");
+  await page.getByRole("button",{name:"Production",exact:true}).click();
+  const baseline=await page.locator(".revision-chip").first().innerText();
+  const layout=page.getByLabel("Component layout");
+  await expect(layout.locator('option[value="step_sequence"]')).toHaveCount(1);
+  await page.getByRole("button",{name:"Render impact",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Render dependency impact"})).toBeVisible();
+  await page.getByRole("button",{name:"Components",exact:true}).click();
+  await expect(page.getByLabel("Component layout").locator('option[value="step_sequence"]')).toHaveCount(1);
+  await expect(page.locator(".revision-chip").first()).toHaveText(baseline);
+});
