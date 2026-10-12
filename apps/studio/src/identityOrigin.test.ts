@@ -122,7 +122,7 @@ describe("identity permission and revocation receipts",()=>{
     imported.generation=crypto.randomUUID();
     expect(()=>validateIdentityRegistry(imported)).not.toThrow();
     await expect(applyChange(imported,{type:"register_identity_origin",record:{
-      ...record,id:crypto.randomUUID(),
+      ...record,id:crypto.randomUUID(),provenance_asset_id:PERMISSION,provenance_sha256:CONSENT,
     }})).rejects.toThrow(/current project generation/);
   });
 });
