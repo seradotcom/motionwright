@@ -24,6 +24,8 @@ If a render diagnostic is present, the runner writes `provider-status-reconcilia
 
 Five lightweight adversarial Python tests cover role isolation, redaction, parent/child sampling, memory counters, lifecycle summary and the synthetic Timeout→Unavailable sequence, including refusal to treat another job's result as confirmation. Rust tests cover uncertain render outcome, stable request replay/no duplicate render-start and honest job projections. Full pinned renderer and AV E2E CI remains mandatory; these tests are not the 60 independent product acceptance cases.
 
+**New v0.1 bounded owner inspection (not lifecycle remediation):** The installed Jobs screen can now perform one explicitly requested read-only status query for the originally acknowledged Motion Canvas job, after authenticating its original completed render.start receipt, project revision and provider generation against the source-bound SQLite journal. See [owner-initiated original status observation](v01-owner-native-status-read.md). A provider-generation mismatch, missing job or failed status remains UNKNOWN, and a status reporting succeeded is not result/verification/media proof. No new render is started or retried, and no native cleanup consent is bypassed.
+
 **Outstanding:** determine why the pinned Driver Host generation disappeared (provider process exit, sandbox/Firefox resource pressure, lifecycle timeout or Broker behavior) using a genuinely instrumented recurrence. Do not close [issue #49](https://github.com/seradotcom/motionwright/issues/49) or upgrade Semwright's immutable pin speculatively.
 
 ## Acknowledged job identity and terminal-read uncertainty

@@ -26,6 +26,10 @@ use motionwright_native::{
         CliEvidence, CreativeRuntimeDoctorReport, inspect_creative_runtime, require_doctor_scope,
     },
     film::{FilmBuildOptions, build_motion_canvas_segments},
+    owner_reconciliation::{
+        OwnerMotionStatusObservation, authorize_original_motion_status,
+        classify_original_motion_status,
+    },
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
         MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
@@ -144,6 +148,15 @@ struct ProductionJobsHistoryPage {
     total_jobs: usize,
     next: Option<ProductionJobsHistoryCursor>,
     complete: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerNativeStatusRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    job_ref: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1030,6 +1043,118 @@ fn production_jobs(
         .service
         .production_jobs(request.project_id, request.limit)
         .map_err(sanitized)
+}
+
+/// A single explicit owner-initiated read-only status observation. The WebView
+/// supplies only an opaque selector, never a Semwright command, connection path,
+/// provider permission or a new job identity. No render.start or result/verify.
+#[tauri::command]
+async fn read_original_native_job_status(
+    state: State<'_, AppState>,
+    request: OwnerNativeStatusRequest,
+) -> Result<OwnerMotionStatusObservation, String> {
+    if request.job_ref.is_empty()
+        || request.job_ref.len() > 512
+        || !request.job_ref.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err("Native job selector is invalid.".into());
+    }
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let selected = request.job_ref.clone();
+    let service = state.service.clone();
+
+    // Derive trust from a fixed receipt watermark, never from the WebView's
+    // claim that some job exists. Do not block the Tauri main UI on a
+    // potentially large bounded local SQLite projection.
+    let (origin, watermark, resource) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let project = service.project(project_id).map_err(sanitized)?;
+            if project.generation != generation || project.revision != revision {
+                return Err("Native job observation belongs to a stale project revision.".into());
+            }
+            let watermark = service
+                .production_receipt_watermark(project_id)
+                .map_err(sanitized)?;
+            let jobs = service
+                .production_jobs_snapshot(project_id, &watermark)
+                .map_err(|_| {
+                    "Source-bound native job history could not be confirmed.".to_owned()
+                })?;
+            let job = jobs
+                .iter()
+                .find(|job| job.job_ref == selected)
+                .ok_or_else(|| {
+                    "No acknowledged native render job matches the selection.".to_owned()
+                })?;
+            let start = service
+                .latest_production_receipt(project_id, &job.root_request_id)
+                .map_err(sanitized)?
+                .ok_or_else(|| "Original native render start receipt is missing.".to_owned())?;
+            let expected = RevisionStamp {
+                resource: project.resource_key(),
+                generation,
+                revision,
+            };
+            let origin =
+                authorize_original_motion_status(&project, &expected, &selected, job, &start)
+                    .map_err(|_| "Native original start authority cannot be proven.".to_owned())?;
+            if service
+                .production_receipt_watermark(project_id)
+                .map_err(sanitized)?
+                != watermark
+            {
+                return Err(
+                    "Native job receipts changed during source inspection; refresh.".into(),
+                );
+            }
+            Ok((origin, watermark, project.resource_key()))
+        })
+        .await
+        .map_err(|_| "Local native job inspection did not complete.".to_owned())??;
+
+    // The connection is selected and verified by the trusted desktop backend,
+    // not passed in from JavaScript. The pinned client itself checks the
+    // Broker/Driver Host provenance and executable hash.
+    let path = selected_connection_path(&state, project_id)?
+        .ok_or_else(|| "Owner Semwright runtime connection is not configured.".to_owned())?;
+    let connection = ProductionConnection::load(&path)
+        .map_err(|_| "Owner Semwright runtime connection is invalid.".to_owned())?;
+    if connection.resource != resource {
+        return Err("Native job belongs to a different Semwright project resource.".into());
+    }
+    let client = ProductionClient::new(connection)
+        .map_err(|_| "Owner Semwright production client could not be validated.".to_owned())?;
+
+    // Exactly ONE read-only status query; never retry render.start, cancel,
+    // result, or provider initialization after an unavailable generation.
+    let status = client
+        .execute(
+            "driver.motion-canvas.render.status",
+            serde_json::json!({"job_ref": origin.job_ref}),
+            false,
+        )
+        .await;
+
+    let current = state.service.project(project_id).map_err(sanitized)?;
+    if current.generation != generation
+        || current.revision != revision
+        || state
+            .service
+            .production_receipt_watermark(project_id)
+            .map_err(sanitized)?
+            != watermark
+    {
+        return Err("Project or native job receipts changed during observation; refresh.".into());
+    }
+    // Return sanitized provider state only. The durable Jobs ledger is not
+    // rewritten from this read, and a successful status is not an admitted
+    // result, digest-verified frame set or finished audiovisual master.
+    Ok(classify_original_motion_status(
+        &origin,
+        status.as_ref().ok().map(|reply| &reply.value),
+    ))
 }
 
 /// Semantic authoring preflight: exactly the same project-owned Film projection
@@ -2320,6 +2445,7 @@ fn main() {
             workflow_overview,
             workflow_action,
             production_jobs,
+            read_original_native_job_status,
             production_jobs_history,
             motion_canvas_preflight,
             render_motion_canvas,
