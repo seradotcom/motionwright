@@ -283,8 +283,15 @@ struct WorkflowOverviewRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProductionRuntimeStatusRequest {
     project_id: Uuid,
+    /// Optional for older IPC consumers; current Studio always supplies
+    /// both, so stale render readiness never inherits a newer observation.
+    #[serde(default)]
+    expected_generation: Option<Uuid>,
+    #[serde(default)]
+    expected_revision: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +300,19 @@ struct RuntimeConnectionSelectionRequest {
     project_id: Uuid,
     generation: Uuid,
     revision: u64,
+}
+
+fn runtime_status_scope_matches(
+    project: &Project,
+    request: &ProductionRuntimeStatusRequest,
+) -> bool {
+    project.id == request.project_id
+        && request
+            .expected_generation
+            .is_none_or(|expected| expected == project.generation)
+        && request
+            .expected_revision
+            .is_none_or(|expected| expected == project.revision)
 }
 
 #[derive(Debug, Serialize)]
@@ -693,6 +713,13 @@ async fn production_runtime_status(
     state: State<'_, AppState>,
     request: ProductionRuntimeStatusRequest,
 ) -> Result<ProductionRuntimeStatusResponse, String> {
+    let initial = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if !runtime_status_scope_matches(&initial, &request) {
+        return Err("Project changed before the Semwright CLI compatibility probe.".into());
+    }
     let Some(connection_path) = selected_connection_path(&state, request.project_id)? else {
         return Ok(ProductionRuntimeStatusResponse {
             status: "unconfigured",
@@ -709,10 +736,6 @@ async fn production_runtime_status(
         });
     };
 
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
     let connection = match ProductionConnection::load(connection_path) {
         Ok(connection) => connection,
         Err(_) => {
@@ -730,7 +753,7 @@ async fn production_runtime_status(
             });
         }
     };
-    if connection.resource != project.resource_key() {
+    if connection.resource != initial.resource_key() {
         return Ok(ProductionRuntimeStatusResponse {
             status: "resource_mismatch",
             reason: Some(
@@ -748,7 +771,20 @@ async fn production_runtime_status(
 
     let client = ProductionClient::new(connection)
         .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
-    match client.probe_runtime(SEMWRIGHT_VERSION).await {
+    let probe = client.probe_runtime(SEMWRIGHT_VERSION).await;
+    // A CLI probe is asynchronous; a creative edit during the probe must not
+    // attribute the result to the old source revision.
+    let current = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if current.generation != initial.generation
+        || current.revision != initial.revision
+        || !runtime_status_scope_matches(&current, &request)
+    {
+        return Err("Project changed during the Semwright CLI compatibility probe.".into());
+    }
+    match probe {
         Ok(probe) => Ok(ProductionRuntimeStatusResponse {
             status: if probe.version_compatible {
                 "ready"
@@ -798,6 +834,8 @@ async fn creative_runtime_doctor(
         state,
         ProductionRuntimeStatusRequest {
             project_id: request.project_id,
+            expected_generation: Some(request.generation),
+            expected_revision: Some(request.revision),
         },
     )
     .await?;
@@ -2304,4 +2342,48 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("Motionwright desktop runtime failed");
+}
+
+#[cfg(test)]
+mod v01_first_owner_runtime_probe_contracts {
+    use super::*;
+
+    #[test]
+    fn scoped_runtime_probe_rejects_foreign_generation_revision_and_project() {
+        let project = Project::new("First owner native render").unwrap();
+        let mut request = ProductionRuntimeStatusRequest {
+            project_id: project.id,
+            expected_generation: Some(project.generation),
+            expected_revision: Some(project.revision),
+        };
+        assert!(runtime_status_scope_matches(&project, &request));
+        request.expected_generation = Some(Uuid::new_v4());
+        assert!(!runtime_status_scope_matches(&project, &request));
+        request.expected_generation = Some(project.generation);
+        request.expected_revision = Some(project.revision + 1);
+        assert!(!runtime_status_scope_matches(&project, &request));
+        request.expected_revision = Some(project.revision);
+        request.project_id = Uuid::new_v4();
+        assert!(!runtime_status_scope_matches(&project, &request));
+    }
+
+    #[test]
+    fn legacy_unscoped_status_requests_do_not_introduce_native_authority() {
+        let project = Project::new("Read-only legacy runtime compatibility").unwrap();
+        let request = ProductionRuntimeStatusRequest {
+            project_id: project.id,
+            expected_generation: None,
+            expected_revision: None,
+        };
+        // Existing IPC-only status consumers remain read-only. The current
+        // Studio always sends exact generation and revision.
+        assert!(runtime_status_scope_matches(&project, &request));
+        let invalid = serde_json::json!({
+            "project_id": project.id,
+            "expected_generation": project.generation,
+            "expected_revision": project.revision,
+            "effect_grant": "forged"
+        });
+        assert!(serde_json::from_value::<ProductionRuntimeStatusRequest>(invalid).is_err());
+    }
 }

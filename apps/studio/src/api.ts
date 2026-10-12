@@ -487,7 +487,11 @@ export async function productionRuntimeCompatibility(
 ): Promise<ProductionRuntimeCompatibility> {
   if (isTauri()) {
     return invoke<ProductionRuntimeCompatibility>("production_runtime_status", {
-      request: { project_id: project.id },
+      request: {
+        project_id: project.id,
+        expected_generation: project.generation,
+        expected_revision: project.revision,
+      },
     });
   }
   return {

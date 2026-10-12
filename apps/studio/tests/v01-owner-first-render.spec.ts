@@ -13,6 +13,14 @@ test("v0.1 first owner render requires exact Film and rechecked CLI without faki
     simulated.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       if (command === "bootstrap") return structuredClone(initial);
       if (command === "production_runtime_status") {
+        const request = args?.request as {
+          project_id: string; expected_generation: string; expected_revision: number;
+        };
+        if (request.project_id !== initial.project.id
+            || request.expected_generation !== initial.project.generation
+            || request.expected_revision !== initial.project.revision) {
+          throw new Error("Unscoped CLI compatibility probe denied");
+        }
         simulated.__OWNER_FIRST_RENDER__.attempts++;
         return {
           status: simulated.__OWNER_FIRST_RENDER__.compatible ? "ready" : "unavailable",
