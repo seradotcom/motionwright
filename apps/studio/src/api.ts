@@ -1,7 +1,7 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut } from "./musicClock";
-import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
+import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
@@ -1878,6 +1878,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   }
   await validateBrandGovernance(next);
   await validateProductStages(next);
+  await validateCraftDisclosures(next);
   validateCaptureRecords(next);
   validateMeasuredData(next);
   next.revision += 1;

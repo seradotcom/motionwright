@@ -8,7 +8,7 @@ import type { MeasuredTable, MeasuredBinding, MeasuredDataImpact } from "./measu
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
-export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence";
+export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence" | "contrast_comparison" | "editorial_quote";
 export interface HeroConfig {
   /** Optional for legacy format-2 projects. Rust defaults absent layouts to ProductHeroReveal. */
   layout?: HeroLayout;
@@ -58,7 +58,7 @@ function textBudget(value: string, max: number, label: string) {
   if (!value.trim() || new TextEncoder().encode(value).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid " + label);
 }
 export function validateHero(config: HeroConfig) {
-  if (config.layout !== undefined && config.layout !== "product_hero_reveal" && config.layout !== "split_explanation" && config.layout !== "metric_evidence") throw new Error("Unsupported semantic component layout.");
+  if (config.layout !== undefined && !(["product_hero_reveal","split_explanation","metric_evidence","contrast_comparison","editorial_quote"] as const).includes(config.layout)) throw new Error("Unsupported semantic component layout.");
   for (const [key, max] of [["eyebrow", 48], ["headline", 64], ["body", 150], ["wordmark", 8]] as const) {
     if (!config[key].trim() || Array.from(config[key]).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(config[key])) throw new Error("Hero " + key + " exceeds the layout budget or contains control characters.");
   }
@@ -105,6 +105,8 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
   validateHero(config);
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 320 || h < 320 || w > 7680 || h > 7680) throw new Error("Hero output dimensions are out of bounds.");
   if (config.layout === "metric_evidence") return realizeMetricEvidence(id,config,w,h);
+  if (config.layout === "contrast_comparison" || config.layout === "editorial_quote")
+    return realizeCraftHero(id,config,w,h);
   const portrait = h > w, square = h === w, split = config.layout === "split_explanation", scale = Math.min(w,h) / 1080, left = w * .09;
   const [headlineY, bodyY, markX, markY, markW, markH] = split && portrait ? [h*.20,h*.67,left,h*.565,w*.60,h*.045]
     : split && square ? [h*.17,h*.65,left,h*.55,w*.65,h*.07]
@@ -120,7 +122,7 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
     ["body",body,split&&!portrait&&!square?w*.57:left,bodyY,split&&!portrait&&!square?w*.35:textWidth,(split&&portrait?h*.14:split&&square?h*.20:split?h*.31:portrait?h*.13:h*.17),(split&&portrait?31:split&&square?29:split?38:30)*scale,400,460,1260,24*scale,0],
     ["wordmark",config.wordmark,markX,markY,markW,markH,(split&&portrait?54:split&&square?47:split?50:portrait?246:square?186:276)*scale,600,160,1460,(split?26:86)*scale,split?0:-5],
     ["rule","",split&&!portrait&&!square?w*.50:left,split&&portrait?h*.50:split&&square?h*.49:split?h*.25:h*.87,split&&!portrait&&!square?3*scale:split?w*.82:portrait?w*.18:w*.09,split&&!portrait&&!square?h*.50:3*scale,0,400,600,1360,10*scale,0],
-    ["disclosure",split?"SPLIT EXPLANATION / GRAPHIC STUDY · NOT A CAPTURE":"GRAPHIC STUDY / NOT A PRODUCT CAPTURE",left,h*.905,w*.82,28*scale,17*scale,400,740,1500,10*scale,0],
+    ["disclosure",split?"SPLIT EXPLANATION / GRAPHIC STUDY Â· NOT A CAPTURE":"GRAPHIC STUDY / NOT A PRODUCT CAPTURE",left,h*.905,w*.82,28*scale,17*scale,400,740,1500,10*scale,0],
   ];
   return Promise.all(entries.map(async ([role,text,x,y,width,height,fontSize,weight,start,end,offset,rotation], index) => {
     const isText = role !== "rule";
@@ -136,6 +138,76 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
     if (config.motion) node.keyframes = entryKeys(node,start,end,offset,rotation);
     return node;
   }));
+}
+/** Versioned original craft layouts, mirrored against Rust:
+ * semantic source text only; never a verified quote or before/after metric. */
+async function realizeCraftHero(id:string,config:HeroConfig,w:number,h:number):Promise<CanvasNode[]>{
+  const portrait=h>w,square=h===w,compact=portrait||square;
+  const quote=config.layout==="editorial_quote",scale=Math.min(w,h)/1080,left=w*.09;
+  const before=wrapCopy(config.headline,
+    quote&&compact?20:quote?31:compact?19:15,quote?4:3);
+  const after=wrapCopy(config.body,
+    quote&&compact?33:quote?48:compact?30:23,quote?3:4);
+  const divider:[number,number,number,number]=quote?[left,h*.213,w*.16,3*scale]:
+    compact?[left,h*.505,w*.82,3*scale]:[w*.495,h*.218,3*scale,h*.557];
+  const entries:Array<[string,string,number,number,number,number,number,number,number,number]>=[
+    ["eyebrow",config.eyebrow,left,h*.095,w*.81,h*.05,22*scale,500,0,500],
+    ["headline",before,
+      quote?w*.13:left,quote?h*.275:compact?h*.210:h*.305,
+      quote?w*.75:compact?w*.82:w*.375,
+      quote?h*.340:compact?h*.245:h*.365,
+      quote?68*scale:70*scale,600,170,1120],
+    ["body",after,
+      quote?w*.16:compact?left:w*.55,
+      quote?h*.674:compact?h*.570:h*.318,
+      quote?w*.73:compact?w*.82:w*.355,
+      quote?h*.145:compact?h*.210:h*.333,
+      quote?27*scale:42*scale,quote?400:500,480,1450],
+    ["wordmark",config.wordmark,
+      quote?w*.77:left,quote?h*.835:h*.828,
+      w*.16,h*.05,32*scale,600,640,1540],
+    ["rule","",...divider,0,400,0,900],
+    ["disclosure",quote?"ILLUSTRATIVE QUOTE / ATTRIBUTION NOT VERIFIED":
+      "CONCEPTUAL COMPARISON / NOT MEASURED EVIDENCE",
+      left,h*.916,w*.82,h*.033,15*scale,400,760,1460],
+  ];
+  const family=quote?"EditorialQuote":"ContrastComparison";
+  return Promise.all(entries.map(async([role,text,x,y,width,height,fontSize,weight,start,end],index)=>{
+    const isText=role!=="rule";
+    const node:CanvasNode={
+      id:await heroNodeId(id,role),name:family+" / "+role,
+      kind:isText?"text":"rectangle",parent_id:null,
+      x,y,width,height,rotation_deg:0,opacity:1,
+      text:isText?text:null,coordinate_space:"project_pixels",z_index:10+index,
+      style:{fill:role==="wordmark"||role==="rule"?config.accent:config.foreground,
+        stroke:null,stroke_width:0,font_family:isText?"Instrument Sans Variable":null,
+        font_size:isText?fontSize:null,font_weight:isText?weight:null,
+        line_height:isText?1.12:null,blend_mode:"normal"},
+      relations:[],property_locks:[],keyframes:[],
+    };
+    if(config.motion)node.keyframes=entryKeys(node,start,end,18*scale,0);
+    if(isText){
+      const lines=text.split("\n"),longest=Math.max(...lines.map(line=>Array.from(line).length));
+      if(longest*fontSize*.56>width*.96 ||
+        lines.length*fontSize*1.12>height*.96)
+        throw new Error(family+" "+role+" text exceeds the native editable screen anchor; shorten copy");
+    }
+    if(node.x<w*.05||node.y<h*.05||node.x+node.width>w*.96||node.y+node.height>h*.96)
+      throw new Error(family+" "+role+" exceeds original safe area");
+    return node;
+  }));
+}
+/** Attached craft safety labeling is compulsory in source and effective Canvas.
+ * Detach explicitly before changing its claim. This is not real evidence. */
+export async function validateCraftDisclosures(project:Project):Promise<void>{
+  for(const hero of project.production_design?.heroes??[]){
+    if(!["contrast_comparison","editorial_quote"].includes(hero.config.layout??""))continue;
+    const expected=hero.baseline.find(n=>n.id===await heroNodeId(hero.id,"disclosure"));
+    const scene=project.scenes.find(scene=>scene.id===hero.scene_id);
+    const actual=scene?.nodes.find(n=>n.id===expected?.id);
+    if(!expected || !actual || actual.kind!=="text" || actual.text!==expected.text)
+      throw new Error("Bound craft safety disclosure changed or falsely certified; detach first.");
+  }
 }
 export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -284,7 +356,7 @@ async function realizeMetricEvidence(id: string, config: HeroConfig, w: number, 
     ["body",explanation,wide?w*.62:left,bodyY,wide?w*.30:w*.82,wide?h*.28:h*.16,(wide?34:30)*scale,400,460,1260,24*scale],
     ["wordmark",config.wordmark,wide?w*.62:left,wordmarkY,wide?w*.30:w*.50,wide?h*.065:square?h*.050:h*.045,(wide?40:square?35:40)*scale,600,160,1460,26*scale],
     ["rule","",wide?w*.55:left,ruleY,wide?3*scale:w*.82,wide?h*.48:3*scale,0,400,600,1360,10*scale],
-    ["disclosure","METRIC EVIDENCE / EDITORIAL STUDY · SOURCE NOT VERIFIED",left,h*.905,w*.83,28*scale,17*scale,400,740,1500,10*scale],
+    ["disclosure","METRIC EVIDENCE / EDITORIAL STUDY Â· SOURCE NOT VERIFIED",left,h*.905,w*.83,28*scale,17*scale,400,740,1500,10*scale],
   ];
   return Promise.all(entries.map(async ([role,text,x,y,width,height,fontSize,weight,start,end,offset],index) => {
     const isText = role !== "rule";

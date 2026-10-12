@@ -310,8 +310,8 @@
     {
       "id": "MW05-E05-03",
       "implementation": "partial",
-      "implemented_scope": "Three bounded editable first-party composition families: ProductHeroReveal, SplitExplanation and MetricEvidence, three reflowed aspects, stable roles, native Film projection and source-derived Rust/Studio parity; MetricEvidence source claims remain explicitly unverified and its CI evidence pending",
-      "remaining_scope": "The remaining candidate component families, real client use and individually reviewed aesthetic/render evidence are not implemented or certified",
+      "implemented_scope": "Three bounded editable first-party composition families: ProductHeroReveal, SplitExplanation and MetricEvidence, three reflowed aspects, stable roles, native Film projection and source-derived Rust/Studio parity; MetricEvidence source claims remain explicitly unverified and its CI evidence pending; two additional responsive editable original craft grammars (ContrastComparison conceptual states, EditorialQuote illustrative text) with six stable semantic roles, source notices, native Film projection, CAS human-override merge, Studio and exact-SHA source-pinned render-evidence workflow (pending CI)",
+      "remaining_scope": "Thirty-six components across eight families and independent human creative approval remain incomplete; new conceptual/quotation native H.264 evidence is pending exact-HEAD CI and must not be treated as a real measured comparison or an authorized endorsement",
       "source_paths": [
         "crates/domain/src/hero.rs",
         "crates/native/tests/split_explanation.rs",
@@ -320,7 +320,15 @@
         "apps/studio/tests/split-explanation.spec.ts",
         "apps/studio/tests/metric-evidence.spec.ts",
         "crates/domain/tests/production_design.rs",
-        "apps/studio/conformance/creativeParity.test.ts"
+        "apps/studio/conformance/creativeParity.test.ts",
+        "crates/domain/tests/craft_components.rs",
+        "crates/native/tests/craft_components.rs",
+        "crates/native/examples/native-render-e2e.rs",
+        "apps/studio/src/craftComponents.test.ts",
+        "apps/studio/tests/craft-components.spec.ts",
+        "tooling/creative_frame_evidence.py",
+        ".github/workflows/craft-components-native-e2e.yml",
+        "docs/creative-production/CRAFT_COMPARISON_QUOTE.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

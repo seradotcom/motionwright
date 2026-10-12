@@ -349,6 +349,36 @@ impl ProductionDesign {
         let mut hero_scenes = BTreeSet::new();
         for hero in &self.heroes {
             hero.validate()?;
+            // Conceptual comparisons and illustrative quotations may not
+            // silently lose their safety disclosure while still attached.
+            if matches!(
+                hero.config.layout,
+                HeroLayout::ContrastComparison | HeroLayout::EditorialQuote
+            ) {
+                let source = hero
+                    .baseline
+                    .iter()
+                    .find(|node| node.id == hero_node_id(hero.id, "disclosure"))
+                    .ok_or_else(|| {
+                        DomainError::Invalid("craft disclosure baseline missing".into())
+                    })?;
+                let scene = scenes
+                    .iter()
+                    .find(|scene| scene.id == hero.scene_id)
+                    .ok_or_else(|| DomainError::Invalid("craft source scene missing".into()))?;
+                let actual = scene
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == source.id)
+                    .ok_or_else(|| {
+                        DomainError::Invalid("bound craft safety disclosure was removed".into())
+                    })?;
+                if actual.kind != "text" || actual.text != source.text {
+                    return Err(DomainError::Invalid(
+                        "bound craft safety disclosure was changed or falsely certified; detach first".into()
+                    ));
+                }
+            }
             if !ids.insert(hero.id)
                 || !hero_scenes.insert(hero.scene_id)
                 || !scenes.iter().any(|scene| scene.id == hero.scene_id)
