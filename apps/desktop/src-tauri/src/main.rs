@@ -36,8 +36,8 @@ use motionwright_native::{
     },
 };
 use motionwright_service::{
-    AssetIntegrityPage, ModelRequestDraft, ModelRequestPreflight, ProductionJobProjection,
-    ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
+    AssetIntegrityPage, MltCleanupInventory, ModelRequestDraft, ModelRequestPreflight,
+    ProductionJobProjection, ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use runtime_setup::RuntimeConnectionRegistry;
@@ -1043,6 +1043,26 @@ fn production_jobs(
         .service
         .production_jobs(request.project_id, request.limit)
         .map_err(sanitized)
+}
+
+/// Read-only inventory of native MLT project lifetime receipts.
+#[tauri::command]
+async fn mlt_cleanup_inventory(
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<MltCleanupInventory, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service
+            .mlt_cleanup_inventory_snapshot(
+                request.project_id,
+                request.generation,
+                request.revision,
+            )
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Native MLT receipt inventory task could not complete.".to_owned())?
 }
 
 /// A single explicit owner-initiated read-only status observation. The WebView
@@ -2445,6 +2465,7 @@ fn main() {
             workflow_overview,
             workflow_action,
             production_jobs,
+            mlt_cleanup_inventory,
             read_original_native_job_status,
             production_jobs_history,
             motion_canvas_preflight,

@@ -1,11 +1,13 @@
 mod audio;
 mod jobs;
+mod mlt_cleanup;
 mod models;
 pub use audio::{AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, WAVEFORM_FRAMES_PER_PEAK, WaveformPage};
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
 };
+pub use mlt_cleanup::MltCleanupInventory;
 pub use models::{
     ModelContextDisclosure, ModelProviderKind, ModelRequestDraft, ModelRequestPreflight,
 };
@@ -659,6 +661,57 @@ impl StudioService {
             project.generation,
             project.revision,
         ))
+    }
+
+    /// Exact project and receipt-watermark-bound read-only MLT lifetime
+    /// inventory. Never queries Semwright or requests destructive cleanup.
+    pub fn mlt_cleanup_inventory_snapshot(
+        &self,
+        project_id: Uuid,
+        expected_generation: Uuid,
+        expected_revision: u64,
+    ) -> StorageResult<MltCleanupInventory> {
+        const MAX_INVENTORY_RECEIPTS: u64 = 20_000;
+        let initial = self.project(project_id)?;
+        if initial.generation != expected_generation || initial.revision != expected_revision {
+            return Err(StorageError::GenerationConflict);
+        }
+        let watermark = self.production_receipt_watermark(project_id)?;
+        if watermark.count > MAX_INVENTORY_RECEIPTS {
+            return Err(invalid_import(
+                "MLT cleanup inventory exceeds the bounded receipt evidence budget",
+            ));
+        }
+        let mut receipts = Vec::with_capacity(watermark.count as usize);
+        let mut before = None;
+        if watermark.latest_id.is_some() {
+            loop {
+                let batch =
+                    self.production_receipts_snapshot_page(project_id, &watermark, before, 256)?;
+                if batch.is_empty() {
+                    break;
+                }
+                let full = batch.len() == 256;
+                before = batch.last().map(|r| r.id);
+                receipts.extend(batch);
+                if !full {
+                    break;
+                }
+            }
+        }
+        if receipts.len() as u64 != watermark.count {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        let report = mlt_cleanup::derive_mlt_cleanup_inventory(&initial, &watermark, &receipts)
+            .ok_or(StorageError::ReceiptStreamChanged)?;
+        let current = self.project(project_id)?;
+        if current.generation != expected_generation
+            || current.revision != expected_revision
+            || self.production_receipt_watermark(project_id)? != watermark
+        {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        Ok(report)
     }
 
     pub fn history_recent(
