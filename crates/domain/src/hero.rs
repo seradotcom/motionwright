@@ -13,6 +13,8 @@ pub enum HeroLayout {
     ProductHeroReveal,
     SplitExplanation,
     MetricEvidence,
+    /// An editable single-step explainer, NOT an observed product capture.
+    StepSequence,
 }
 
 pub const HERO_ROLES: [&str; 6] = [
@@ -192,6 +194,9 @@ pub fn realize_product_hero(
     let h = f64::from(height);
     if config.layout == HeroLayout::MetricEvidence {
         return realize_metric_evidence(id, config, w, h);
+    }
+    if config.layout == HeroLayout::StepSequence {
+        return realize_step_sequence(id, config, w, h);
     }
     let portrait = height > width;
     let square = height == width;
@@ -884,6 +889,229 @@ fn realize_metric_evidence(
             z_index: 10 + index as i32,
             style: NodeStyle {
                 fill: Some(if matches!(role, "headline" | "wordmark" | "rule") {
+                    config.accent.clone()
+                } else {
+                    config.foreground.clone()
+                }),
+                font_family: is_text.then(|| "Instrument Sans Variable".into()),
+                font_size: is_text.then_some(font_size),
+                font_weight: is_text.then_some(weight),
+                line_height: is_text.then_some(1.12),
+                ..Default::default()
+            },
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+            keyframes: vec![],
+        };
+        if config.motion {
+            node.keyframes = entry_keys(&node, start, end, offset, 0.0);
+        }
+        node.validate()?;
+        nodes.push(node);
+    }
+    Ok(nodes)
+}
+
+/// StepSequence is a single author-written process step, not a fabricated UI
+/// recording. Six stable semantic nodes deliberately share the v1 component
+/// identity namespace, so format reflows and legitimate field-level overrides
+/// use the canonical merge/lock policy rather than replacing source objects.
+fn realize_step_sequence(id: Uuid, config: &HeroConfig, w: f64, h: f64) -> Result<Vec<CanvasNode>> {
+    let portrait = h > w;
+    let square = h == w;
+    let wide = !portrait && !square;
+    let scale = w.min(h) / 1080.0;
+    let left = w * 0.085;
+    let title = wrap_copy(
+        &config.headline,
+        if wide {
+            19
+        } else if square {
+            17
+        } else {
+            22
+        },
+        3,
+    )?;
+    let explanation = wrap_copy(
+        &config.body,
+        if wide {
+            36
+        } else if square {
+            37
+        } else {
+            38
+        },
+        4,
+    )?;
+    let entries = [
+        (
+            "eyebrow",
+            config.eyebrow.clone(),
+            left,
+            h * 0.085,
+            w * 0.82,
+            h * 0.045,
+            23.0 * scale,
+            500,
+            0,
+            500,
+            14.0 * scale,
+        ),
+        (
+            "headline",
+            title,
+            if wide {
+                w * 0.53
+            } else if square {
+                w * 0.43
+            } else {
+                left
+            },
+            if wide {
+                h * 0.265
+            } else if square {
+                h * 0.27
+            } else {
+                h * 0.47
+            },
+            if wide {
+                w * 0.39
+            } else if square {
+                w * 0.48
+            } else {
+                w * 0.83
+            },
+            if wide {
+                h * 0.28
+            } else if square {
+                h * 0.30
+            } else {
+                h * 0.16
+            },
+            (if wide {
+                80.0
+            } else if square {
+                70.0
+            } else {
+                75.0
+            }) * scale,
+            600,
+            240,
+            1120,
+            50.0 * scale,
+        ),
+        (
+            "body",
+            explanation,
+            if wide { w * 0.53 } else { left },
+            if wide {
+                h * 0.65
+            } else if square {
+                h * 0.69
+            } else {
+                h * 0.69
+            },
+            if wide { w * 0.39 } else { w * 0.83 },
+            if wide { h * 0.17 } else { h * 0.15 },
+            (if wide { 32.0 } else { 30.0 }) * scale,
+            400,
+            520,
+            1380,
+            22.0 * scale,
+        ),
+        (
+            "wordmark",
+            config.wordmark.clone(),
+            left,
+            if wide {
+                h * 0.28
+            } else if square {
+                h * 0.28
+            } else {
+                h * 0.21
+            },
+            if wide {
+                w * 0.32
+            } else if square {
+                w * 0.30
+            } else {
+                w * 0.80
+            },
+            if wide {
+                h * 0.38
+            } else if square {
+                h * 0.29
+            } else {
+                h * 0.17
+            },
+            (if wide {
+                230.0
+            } else if square {
+                175.0
+            } else {
+                190.0
+            }) * scale
+                * (3.0 / config.wordmark.chars().count() as f64).min(1.0),
+            700,
+            120,
+            850,
+            58.0 * scale,
+        ),
+        (
+            "rule",
+            String::new(),
+            if wide { w * 0.48 } else { left },
+            if wide {
+                h * 0.24
+            } else if square {
+                h * 0.63
+            } else {
+                h * 0.43
+            },
+            if wide { 3.0 * scale } else { w * 0.83 },
+            if wide { h * 0.52 } else { 3.0 * scale },
+            0.0,
+            400,
+            450,
+            1300,
+            12.0 * scale,
+        ),
+        (
+            "disclosure",
+            "STEP SEQUENCE / EDITORIAL STUDY · NOT AN OBSERVED WORKFLOW".to_owned(),
+            left,
+            h * 0.915,
+            w * 0.84,
+            h * 0.03,
+            17.0 * scale,
+            400,
+            780,
+            1570,
+            10.0 * scale,
+        ),
+    ];
+    let mut nodes = Vec::with_capacity(HERO_ROLES.len());
+    for (index, (role, text, x, y, width, height, font_size, weight, start, end, offset)) in
+        entries.into_iter().enumerate()
+    {
+        let is_text = role != "rule";
+        let mut node = CanvasNode {
+            id: hero_node_id(id, role),
+            name: format!("StepSequence / {role}"),
+            kind: if is_text { "text" } else { "rectangle" }.into(),
+            parent_id: None,
+            x,
+            y,
+            width,
+            height,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: is_text.then_some(text),
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 10 + index as i32,
+            style: NodeStyle {
+                fill: Some(if role == "wordmark" || role == "rule" {
                     config.accent.clone()
                 } else {
                     config.foreground.clone()

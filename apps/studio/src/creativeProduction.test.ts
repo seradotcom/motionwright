@@ -192,3 +192,102 @@ describe("MetricEvidence as a third versioned composition family", () => {
     expect(p).toEqual(before);
   });
 });
+
+
+describe("StepSequence as a fourth source-preserving native composition family",()=>{
+  const config = {
+    ...defaultHeroConfig(),layout:"step_sequence" as const,
+    eyebrow:"WORKFLOW / AUTHOR MARKED STEP",
+    headline:"Inspect the intended result",
+    body:"Read the native project state and confirm the actual change before approving the next action.",
+    wordmark:"02 / 04",accent:"#D9A46E",
+  };
+  it("uses six stable editable semantic identities, safe boundaries and a mandatory disclaimer",async()=>{
+    const canonical=await realizeProductHero(instance,defaultHeroConfig());
+    for(const [width,height] of [[1920,1080],[1080,1920],[1080,1080]]) {
+      const nodes=await realizeProductHero(instance,config,width,height);
+      expect(nodes).toHaveLength(6);
+      expect(nodes.map(node=>node.id)).toEqual(canonical.map(node=>node.id));
+      expect(nodes.every(node=>node.name.startsWith("StepSequence / "))).toBe(true);
+      for(const node of nodes){
+        expect(node.x).toBeGreaterThanOrEqual(0);
+        expect(node.y).toBeGreaterThanOrEqual(0);
+        expect(node.x+node.width).toBeLessThanOrEqual(width);
+        expect(node.y+node.height).toBeLessThanOrEqual(height);
+      }
+      expect(nodes.find(node=>node.name.endsWith("wordmark"))?.text).toBe("02 / 04");
+      expect(nodes.find(node=>node.name.endsWith("rule"))?.style.fill).toBe("#D9A46E");
+      expect(nodes.find(node=>node.name.endsWith("disclosure"))?.text)
+        .toBe("STEP SEQUENCE / EDITORIAL STUDY · NOT AN OBSERVED WORKFLOW");
+      const rule=nodes.find(node=>node.name.endsWith("rule"))!;
+      expect(width>height?rule.height>rule.width:rule.width>rule.height).toBe(true);
+      expect(nodes.filter(node=>node.kind==="text")).toHaveLength(5);
+    }
+  });
+  it("declares a static equivalent without faking motion",async()=>{
+    const nodes=await realizeProductHero(instance,{...config,motion:false});
+    expect(nodes.every(node=>node.keyframes.length===0)).toBe(true);
+    expect(nodes.find(node=>node.name.endsWith("disclosure"))?.text).toContain("NOT AN OBSERVED");
+  });
+  it("preserves precise stepped cubic entrance timings on source nodes",async()=>{
+    const nodes=await realizeProductHero(instance,config);
+    const mark=nodes.find(node=>node.name.endsWith("wordmark"))!;
+    const statement=nodes.find(node=>node.name.endsWith("headline"))!;
+    const disclosure=nodes.find(node=>node.name.endsWith("disclosure"))!;
+    expect(previewTransform(mark,0).opacity).toBe(0);
+    expect(previewTransform(mark,2).opacity).toBe(1);
+    expect(previewTransform(statement,2).opacity).toBe(1);
+    expect(previewTransform(disclosure,2).opacity).toBe(1);
+    expect(mark.keyframes.every(k=>k.property!=="rotation_deg")).toBe(true);
+    expect(disclosure.keyframes.at(-1)?.interpolation).toBe("ease_out_cubic");
+  });
+  it("stores a new editable StepSequence in one ordinary service revision",async()=>{
+    const p=source();
+    const after=await applyChange(p,{
+      type:"upsert_product_hero",instance_id:instance,
+      scene_id:p.scenes[0].id,config,
+    });
+    expect(after.revision).toBe(p.revision+1);
+    expect(after.scenes[0].nodes).toHaveLength(6);
+    expect(after.scenes[0].status).toBe("draft");
+    expect(after.production_design?.heroes[0].config.layout).toBe("step_sequence");
+    const restored=JSON.parse(JSON.stringify(after)) as Project;
+    expect(restored.production_design?.heroes[0].baseline)
+      .toEqual(await realizeProductHero(instance,config,1920,1080));
+    expect(p.production_design?.heroes).toHaveLength(0);
+  });
+  it("does not replace independent human copy during layout transition",async()=>{
+    let p=await seeded();
+    const scene_id=p.scenes[0].id;
+    const eyebrow=await heroNodeId(instance,"eyebrow");
+    const body=await heroNodeId(instance,"body");
+    p=await applyChange(p,{
+      type:"update_canvas_text",scene_id,node_id:eyebrow,
+      text:"Author-validated scope: Step 02",
+    });
+    // Keep authored eyebrow baseline constant, so there is no overlapping
+    // generated change to the same property.
+    p=await applyChange(p,{
+      type:"upsert_product_hero",instance_id:instance,scene_id,
+      config:{...config,eyebrow:defaultHeroConfig().eyebrow},
+    });
+    expect(p.scenes[0].nodes.find(n=>n.id===eyebrow)?.text).toBe("Author-validated scope: Step 02");
+    expect(p.scenes[0].nodes.find(n=>n.id===body)?.name).toBe("StepSequence / body");
+    p=await applyChange(p,{
+      type:"update_canvas_text",scene_id,node_id:body,
+      text:"An editor-owned explanation that must survive revisions.",
+    });
+    const prior=structuredClone(p);
+    await expect(applyChange(p,{
+      type:"upsert_product_hero",instance_id:instance,scene_id,
+      config:{...config,eyebrow:defaultHeroConfig().eyebrow,
+        body:"An incompatible generated step explanation"},
+    })).rejects.toThrow("override conflict");
+    expect(p).toEqual(prior);
+  });
+  it("rejects over-budget source words before a native render or mutation",async()=>{
+    await expect(realizeProductHero(instance,{
+      ...config,headline:"X".repeat(20),
+    },1920,1080)).rejects.toThrow("wider");
+  });
+});

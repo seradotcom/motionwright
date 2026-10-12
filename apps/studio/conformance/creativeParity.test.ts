@@ -16,7 +16,7 @@ const fixture=JSON.parse(readFileSync(path,"utf8")) as {
   plan_digest_cases:Array<{plan:ProductionPlan;content_sha256:string}>;
   brand_profile_cases:Array<{profile:BrandProfile;content_sha256:string}>;
 };
-if(fixture.schema!=="motionwright.rust-studio-creative-parity/1" || fixture.hero_cases.length!==15 || fixture.plan_digest_cases.length!==3 || fixture.brand_profile_cases.length!==2) throw new Error("Unexpected Rust fixture schema or coverage.");
+if(fixture.schema!=="motionwright.rust-studio-creative-parity/1" || fixture.hero_cases.length!==18 || fixture.plan_digest_cases.length!==3 || fixture.brand_profile_cases.length!==2) throw new Error("Unexpected Rust fixture schema or coverage.");
 
 describe("current Rust implementation and Studio are the same editorial contract",()=>{
   it.each(fixture.hero_cases)("matches every generated property at $width x $height",async(row)=>{
