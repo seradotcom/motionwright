@@ -41,6 +41,25 @@ test("sampled native PNG readback uses only a session grant and follows the edit
     runtime.__SYNTHETIC_READS__ = [];
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        if (command === "production_runtime_status") return {
+          status: "ready", reason: null, expected_version: "1.0.0",
+          observed_version: "1.0.0", version_compatible: true,
+          executable_sha256: "a".repeat(64), connection_identity: "b".repeat(64),
+          pinned_revision: "c".repeat(40),
+        };
+        if (command === "motion_canvas_preflight") {
+          const scope = args?.request as {
+            project_id: string; generation: string; revision: number; deliverable_id: string;
+          };
+          return {
+            project_resource: "project:" + scope.project_id,
+            generation: scope.generation, revision: scope.revision,
+            deliverable_id: scope.deliverable_id,
+            verdict: "projection_ready", reason: null, segment_count: 1, total_frames: 60,
+            segments: [{ segment_id: "synthetic-film-only", scene_ids: [], frame_count: 60 }],
+          };
+        }
+
         if (command === "bootstrap") return { ...initialBoot, project: structuredClone(project) };
         if (command === "issue_effect_grant") return { token: "mock-grant" };
         if (command === "render_motion_canvas") return structuredClone(receipt);
@@ -71,6 +90,8 @@ test("sampled native PNG readback uses only a session grant and follows the edit
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await page.getByRole("button", { name: "Check Film projection" }).click();
+  await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
   await expect(page.getByLabel("Native render evidence")).toContainText("NATIVE · PASS");
 
@@ -140,10 +161,29 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
   };
   await page.addInitScript(({ initialBoot, initialReceipt }) => {
     const runtime = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string) => Promise<unknown> };
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
     };
     runtime.__TAURI_INTERNALS__ = {
-      invoke: async (command) => {
+      invoke: async (command, args) => {
+        if (command === "production_runtime_status") return {
+          status: "ready", reason: null, expected_version: "1.0.0",
+          observed_version: "1.0.0", version_compatible: true,
+          executable_sha256: "a".repeat(64), connection_identity: "b".repeat(64),
+          pinned_revision: "c".repeat(40),
+        };
+        if (command === "motion_canvas_preflight") {
+          const scope = args?.request as {
+            project_id: string; generation: string; revision: number; deliverable_id: string;
+          };
+          return {
+            project_resource: "project:" + scope.project_id,
+            generation: scope.generation, revision: scope.revision,
+            deliverable_id: scope.deliverable_id,
+            verdict: "projection_ready", reason: null, segment_count: 1, total_frames: 60,
+            segments: [{ segment_id: "synthetic-film-only", scene_ids: [], frame_count: 60 }],
+          };
+        }
+
         if (command === "bootstrap") return structuredClone(initialBoot);
         if (command === "issue_effect_grant") return { token: "mock-grant" };
         if (command === "render_motion_canvas") return structuredClone(initialReceipt);
@@ -162,6 +202,8 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
     await page.getByLabel(scene.name + " narrative role").selectOption(role);
     await page.getByLabel(scene.name + " motion archetype").selectOption(archetype);
   }
+  await page.getByRole("button", { name: "Check Film projection" }).click();
+  await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
   await page.getByRole("button", { name: "Show native frames" }).click();

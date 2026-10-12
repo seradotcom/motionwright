@@ -60,7 +60,9 @@ aesthetic review, or unrestricted creative capability.
 3. Run a verified first live Semwright connection and original render in
    the installed app using the exact pinned SDK, real owner Broker/Driver
    Host and explicit effect grant; do not confuse the safe CLI --version
-   preflight with a production provider handshake.
+   preflight with a production provider handshake. The v0.1 [first-owner
+   render guard](v01-owner-first-render-gate.md) now prevents dispatch before
+   same-revision Film and local CLI checks, but is not native owner evidence.
 4. Resolve or explicitly adjudicate open provider lifecycle/cleanup issues
    #49 and #91 and document release implications. No undocumented deletion
    of native MLT projects is allowed.

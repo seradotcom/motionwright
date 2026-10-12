@@ -63,6 +63,25 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
     shim.__MULTI_AV__ = { sources: [], assemblies: [], exports: [], effects: 0 };
     shim.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        if (command === "production_runtime_status") return {
+          status: "ready", reason: null, expected_version: "1.0.0",
+          observed_version: "1.0.0", version_compatible: true,
+          executable_sha256: "a".repeat(64), connection_identity: "b".repeat(64),
+          pinned_revision: "c".repeat(40),
+        };
+        if (command === "motion_canvas_preflight") {
+          const scope = args?.request as {
+            project_id: string; generation: string; revision: number; deliverable_id: string;
+          };
+          return {
+            project_resource: "project:" + scope.project_id,
+            generation: scope.generation, revision: scope.revision,
+            deliverable_id: scope.deliverable_id,
+            verdict: "projection_ready", reason: null, segment_count: 1, total_frames: 60,
+            segments: [{ segment_id: "synthetic-film-only", scene_ids: [], frame_count: 60 }],
+          };
+        }
+
         if (command === "bootstrap") return structuredClone(initial);
         if (command === "issue_effect_grant") {
           shim.__MULTI_AV__.effects++;
@@ -118,6 +137,8 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
     await page.getByLabel(scene.name + " narrative role").selectOption("mechanism");
     await page.getByLabel(scene.name + " motion archetype").selectOption("statement");
   }
+  await page.getByRole("button", { name: "Check Film projection" }).click();
+  await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
   await expect(assemble).toBeVisible();
   await expect(panel.getByRole("button", { name: "Assemble native AV master" })).toHaveCount(0);
