@@ -31,3 +31,25 @@ test("evaluator cannot register executable source without owner declaration",asy
   await expect(page.getByText(/Recipe validation/)).toContainText(/node count/i);
   await expect(page.getByRole("button",{name:"Register data-only evaluator"})).toBeDisabled();
 });
+
+test("data-only evaluator import requires explicit owner rights",async({page})=>{
+  await page.goto("/");
+  await page.getByRole("button",{name:"Production",exact:true}).click();
+  await page.getByRole("button",{name:"Evaluators",exact:true}).click();
+  const bundle={schema:"motionwright.creative-evaluator/1",
+    id:"00000000-0000-4000-8000-000000000077",version:1,
+    label:"Original imported scene assessment",purpose:"Review the authored original scene",
+    author_attestation:"I own this reusable original checklist",
+    playbook:["Inspect the editable scene without running executable skills"],
+    criteria:[{kind:"human_question",id:"00000000-0000-4000-8000-000000000078",
+      question:"Would an actual viewer understand this shot?"}],
+  };
+  await page.getByLabel("Import evaluator JSON").fill(JSON.stringify(bundle));
+  await expect(page.getByRole("button",{name:"Import original evaluator JSON"})).toBeDisabled();
+  await page.getByLabel("Confirm evaluator source rights").check();
+  await expect(page.getByRole("button",{name:"Import original evaluator JSON"})).toBeEnabled();
+  await page.getByRole("button",{name:"Import original evaluator JSON"}).click();
+  await expect(page.getByLabel("Evaluator source version").locator("option")).toHaveCount(2);
+  await page.getByRole("button",{name:"Evaluate authored scene"}).click();
+  await expect(page.getByText(/human creative approval: not_assessed/i)).toBeVisible();
+});

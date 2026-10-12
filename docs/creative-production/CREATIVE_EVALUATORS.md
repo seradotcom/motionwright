@@ -41,6 +41,16 @@ coordinate spaces or missing geometry produce not_assessed, not an invented
 PASS. Reports distinguish pass_technical_only, fail and needs_human_review.
 The creative_approval field is permanently not_assessed for these operations.
 
+## Reusing manifests between projects
+
+The Studio editor can copy a selected evaluator as exact JSON data. A receiving
+project may import that original manifest only after an explicit declaration
+of source-use rights. The strict schema rejects extra executable fields and
+requires the next sequential version for any evaluator identity already in
+that project. The original source ID, criterion IDs and recipe version are
+preserved; the destination journal remains the sole authority. This is
+portable data, not installation, delegation or signed-package verification.
+
 ## Source preservation and negative acceptance
 
 Evaluator versions are append-only, 1–64 across the project. Evaluations

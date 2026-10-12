@@ -149,7 +149,9 @@ fn evaluator_is_versioned_immutable_and_results_are_source_revision_bound() {
     })
     .unwrap();
     let newer = &p.production_design.evaluation_reports[1];
-    assert!(newer.source_revision > source);
+    // Direct domain changes do not allocate a new CAS revision.
+    // StudioService does; its durable test verifies the advanced source stamp.
+    assert_eq!(newer.source_revision, source);
     assert_eq!(newer.conclusion, TechnicalConclusion::Fail);
     assert_eq!(newer.observations[1].outcome, CriterionOutcome::Fail);
     assert_eq!(p.production_design.evaluation_reports[0], report);

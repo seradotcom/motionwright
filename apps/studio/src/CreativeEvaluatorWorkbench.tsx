@@ -25,6 +25,9 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
   const [selected,setSelected]=useState("");
   const [base,setBase]=useState(project.revision);
   const [error,setError]=useState<string|null>(null);
+  const [importText,setImportText]=useState("");
+  const [confirmImport,setConfirmImport]=useState(false);
+  const [transferStatus,setTransferStatus]=useState<string|null>(null);
   const stale=base!==project.revision;
   const locked=project.locks.some(lock=>
     ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource)&&lock.kind==="content");
@@ -77,6 +80,29 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
       await commit({type:"register_creative_evaluator",bundle});
       setSelected(bundle.id+":1");
       setBase(project.revision+1);
+    }catch(e){setError(explanation(e));}
+  };
+  const importManifest=async()=>{
+    if(!enabled||!confirmImport)return;
+    setError(null);setTransferStatus(null);
+    try{
+      if(new TextEncoder().encode(importText).length>16*1024)
+        throw new Error("Evaluator import exceeds bounded JSON budget.");
+      const bundle=JSON.parse(importText) as CreativeEvaluatorBundle;
+      validateEvaluator(bundle);
+      const latestVersion=Math.max(0,...bundles.filter(v=>v.id===bundle.id).map(v=>v.version));
+      if(bundle.version!==latestVersion+1)
+        throw new Error("Manifest version must follow locally recorded source history.");
+      await commit({type:"register_creative_evaluator",bundle});
+      setSelected(bundle.id+":"+bundle.version);setBase(project.revision+1);
+      setImportText("");setConfirmImport(false);setTransferStatus("Data-only manifest registered. Source rights remain author-declared.");
+    }catch(e){setError(explanation(e));}
+  };
+  const copyManifest=async()=>{
+    if(!latest)return;
+    setTransferStatus(null);
+    try{await navigator.clipboard.writeText(JSON.stringify(latest,null,2));
+      setTransferStatus("Versioned data-only JSON copied.");
     }catch(e){setError(explanation(e));}
   };
   const evaluate=async()=>{
@@ -139,6 +165,24 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
     <button className="primary-button" disabled={!enabled||!!preflight} onClick={()=>void submit()}>
       <Save size={14}/> Register data-only evaluator
     </button>
+    <div className="production-section-title"><h3>Reuse an exact original evaluator</h3></div>
+    <p className="production-help">Copy a versioned JSON recipe or import an author-authorized data-only
+      manifest. Import never runs instructions or installs execution capabilities.
+      A new project starts with version one; updates retain historical source versions.</p>
+    <label className="production-field"><span>Versioned evaluator JSON</span>
+      <textarea aria-label="Import evaluator JSON" rows={4} value={importText}
+        onChange={e=>setImportText(e.target.value)} spellCheck={false}/>
+    </label>
+    <label className="production-check">
+      <input aria-label="Confirm evaluator source rights" type="checkbox" checked={confirmImport}
+        onChange={e=>setConfirmImport(e.target.checked)}/>
+      I have permission to use this original data-only evaluator.
+    </label>
+    <button className="secondary-button" disabled={!enabled||!importText.trim()||!confirmImport}
+      onClick={()=>void importManifest()}>Import original evaluator JSON</button>
+    <button className="secondary-button" disabled={!latest}
+      onClick={()=>void copyManifest()}>Copy selected evaluator JSON</button>
+    {transferStatus && <p role="status" className="production-help">{transferStatus}</p>}
     <div className="production-section-title"><h3>Evaluate current scene</h3></div>
     <label className="production-field"><span>Immutable evaluator version</span>
       <select aria-label="Evaluator source version" value={selected} onChange={e=>setSelected(e.target.value)}>
