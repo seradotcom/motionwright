@@ -53,7 +53,7 @@ fn property(path: &str, fidelity: Fidelity, note: Option<&str>) -> NativePropert
 }
 
 #[test]
-fn one_property_classification_is_a_real_revisioned_native_sdk_change() {
+fn one_property_classification_roundtrips_without_allocating_a_domain_revision() {
     let (mut p, mut c) = base();
     let source = p.assets[0].clone();
     let before = p.revision;
@@ -66,7 +66,11 @@ fn one_property_classification_is_a_real_revisioned_native_sdk_change() {
         .push(property("geometry.mesh", Fidelity::Native, None));
     p.apply_change(&Change::UpsertNativeCapsule { capsule: c.clone() })
         .unwrap();
-    assert_eq!(p.revision, before + 1);
+    // In-memory Project::apply_change validates and stages a candidate, but
+    // does not allocate a persistent revision. The StudioService SQLite CAS
+    // contract owns the single revision increment, tested separately by
+    // crates/service/tests/native_property_fidelity.rs against a real GLB.
+    assert_eq!(p.revision, before);
     let saved = &p.production_design.capsules[0];
     assert_eq!(saved.property_fidelity, c.property_fidelity);
     assert_eq!(saved.source_sha256, source.content_sha256.unwrap());
