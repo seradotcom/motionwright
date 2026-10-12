@@ -13,6 +13,8 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_failure_guard.py'
+      - 'tooling/tests/test_native_av_failure_guard.py'
       - 'tooling/native_av_media_probe.py'
       - 'tooling/native_provider_lifecycle.py'
       - 'tooling/tests/test_native_av_media_probe.py'
@@ -67,6 +69,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
           python3 tooling/source_policy.py
+
+      - name: Reject raw CLI/owner secrets in native AV command-failure diagnostics
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_failure_guard.py' -v
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:

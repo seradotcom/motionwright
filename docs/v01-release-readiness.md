@@ -74,6 +74,9 @@ aesthetic review, or unrestricted creative capability.
    It does not satisfy the required foreground Broker authorization. The bounded v0.1 [read-only original-job
    status observation](reliability/v01-owner-native-status-read.md) does not
    fix provider lifecycle, verify native media or authorize a release.
+   The [sanitized native AV CI failure receipt](reliability/v01-native-av-failure-redaction.md)
+   also preserves Timeout-to-inactive-generation evidence without publishing
+   owner paths or opaque job IDs, but does not remediate the provider.
 5. Resolve the transitive glib unsoundness and macro-stack maintenance
    warnings that remain open in
    docs/security/known-rustsec-advisories.json. An unchanged advisory set
