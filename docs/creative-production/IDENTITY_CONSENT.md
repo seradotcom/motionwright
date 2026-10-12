@@ -40,6 +40,27 @@ publish a presenter. The advisory preflight can only return blocked states
 (revoked, expired, outside scope) or a requirement for owner approval /
 independent human consent verification. It never returns an execution grant.
 
+## Admission of the original declaration bytes
+
+The existing SQLite CAS now re-reads the exact imported JSON provenance file
+(64 KiB maximum) after authorizing the project generation and revision.
+A strictly versioned source manifest must match the identity ID, original
+project and generation, category, author statement, expiry, modalities,
+purposes, consent digest and mandatory synthetic disclosure **field by field**.
+A valid file hash alone cannot substitute different declared permissions.
+
+For a human likeness, SQLite also reads a second, independently imported
+consent-declaration JSON and checks that its actual bytes name the same
+subject, exact permitted scope, identity ID, modalities, purposes and
+validity interval. The consent file's digest is referenced by the provenance
+manifest, making the relationship one-way and avoiding circular hashes.
+
+These comparisons establish **content correspondence, not authenticated
+human consent**: a forged but structurally valid signed-looking JSON is
+still only an unverified declaration. The usage preflight returns
+HumanConsentNeedsIndependentReview for every human likeness, never a
+provider grant. No executor or rendering route has been added.
+
 ## Immutable evidence and revocation
 
 The project's versioned ProductionDesign holds up to 32 original identity
