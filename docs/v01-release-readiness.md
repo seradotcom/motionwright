@@ -65,7 +65,9 @@ aesthetic review, or unrestricted creative capability.
    same-revision Film and local CLI checks, but is not native owner evidence.
 4. Resolve or explicitly adjudicate open provider lifecycle/cleanup issues
    #49 and #91 and document release implications. No undocumented deletion
-   of native MLT projects is allowed.
+   of native MLT projects is allowed. The bounded v0.1 [read-only original-job
+   status observation](reliability/v01-owner-native-status-read.md) does not
+   fix provider lifecycle, verify native media or authorize a release.
 5. Resolve the transitive glib unsoundness and macro-stack maintenance
    warnings that remain open in
    docs/security/known-rustsec-advisories.json. An unchanged advisory set

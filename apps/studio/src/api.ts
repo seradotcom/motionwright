@@ -37,6 +37,7 @@ import type {
   Project,
   ProjectEvent,
   ProductionJobProjection,
+  OwnerMotionStatusObservation,
   ProductionJobsHistoryCursor,
   ProductionJobsHistoryPage,
   ProductionRuntimeCompatibility,
@@ -601,6 +602,27 @@ export async function productionJobs(
     request: {
       project_id: project.id,
       limit,
+    },
+  });
+}
+
+/** Explicit owner gesture; the installed backend resolves this local job to
+ * its original acknowledged source receipt before making ONE read-only
+ * canonical Semwright Broker status query. Never result/verify/retry. */
+export async function readOriginalNativeJobStatus(
+  project: Project,
+  jobRef: string,
+): Promise<OwnerMotionStatusObservation> {
+  if (!isTauri()) throw new Error("Original native job status requires installed desktop authority.");
+  if (!jobRef || jobRef.length > 512 || !/^[\x21-\x7e]+$/.test(jobRef)) {
+    throw new Error("An exact bounded original job reference is required.");
+  }
+  return invoke<OwnerMotionStatusObservation>("read_original_native_job_status", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      job_ref: jobRef,
     },
   });
 }

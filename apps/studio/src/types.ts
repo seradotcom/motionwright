@@ -340,6 +340,23 @@ export interface ProductionJobProjection {
   last_observation: ProductionObservationState;
 }
 
+/** One explicit same-original-job Semwright Broker status read. This is
+ * NOT a verified media artifact, terminal receipt or retry permission. */
+export interface OwnerMotionStatusObservation {
+  schema: "motionwright.v01-owner-native-status/1";
+  job_ref: string;
+  provider_state: "unknown" | "queued" | "starting" | "rendering"
+    | "succeeded_unverified" | "failed_unverified" | "cancelled_unverified";
+  diagnostic: string;
+  provider_generation_matches_original_start: boolean;
+  source_authority_checked: boolean;
+  broker_observed: boolean;
+  read_only: true;
+  native_result_verified: false;
+  output_bytes_verified: false;
+  automatic_retry_permitted: false;
+}
+
 /** Cursor issued by the local Tauri service for a frozen app-owned receipt
  * snapshot. A changed receipt stream makes this cursor stale, even when the
  * creative revision is unchanged.

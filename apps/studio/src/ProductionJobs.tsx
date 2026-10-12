@@ -7,11 +7,12 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { productionJobs, productionJobsHistory } from "./api";
+import { productionJobs, productionJobsHistory, readOriginalNativeJobStatus } from "./api";
 import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
 import { nativeRecoveryWarning } from "./nativeRecovery";
 import type {
   ProductionJobProjection,
+  OwnerMotionStatusObservation,
   ProductionJobsHistoryCursor,
   ProductionJobsHistoryPage,
   ProductionJobState,
@@ -68,7 +69,15 @@ function StateMark({ state }: { state: ProductionJobState }) {
   return <CircleDashed size={14} aria-hidden="true" />;
 }
 
-function JobRow({ job }: { job: ProductionJobProjection }) {
+function JobRow({
+  job, desktopMode, ownerReadBusy, ownerObservation, onReadOriginalStatus,
+}: {
+  job: ProductionJobProjection;
+  desktopMode: boolean;
+  ownerReadBusy: boolean;
+  ownerObservation: OwnerMotionStatusObservation | undefined;
+  onReadOriginalStatus: (job: ProductionJobProjection) => void;
+}) {
   const progress = job.progress
     ? job.progress.total == null
       ? String(job.progress.completed)
@@ -95,6 +104,27 @@ function JobRow({ job }: { job: ProductionJobProjection }) {
         </span>
         {job.cancellation_requested && job.state !== "cancelled" && (
           <span className="job-secondary-state">Cancellation is not confirmed</span>
+        )}
+        {desktopMode && job.applicability === "current"
+          && job.provider === "driver:motion-canvas"
+          && (job.state === "outcome_unknown" || job.state === "cancel_requested") && (
+            <button type="button" className="button compact"
+              aria-label="Check original native job status"
+              disabled={ownerReadBusy}
+              onClick={() => onReadOriginalStatus(job)}>
+              {ownerReadBusy ? "Reading original status…" : "Check original status"}
+            </button>
+          )}
+        {ownerObservation && (
+          <span role="status" aria-label="Original native job status observation"
+            className="job-secondary-state">
+            Broker observation: {ownerObservation.provider_state.replaceAll("_", " ")}.
+            {ownerObservation.broker_observed
+              ? " Original provider generation and job identity matched."
+              : " Original provider state was not confirmed."}
+            {" "}This is read-only status only; no result, verified pixels,
+            mastered audio or automatic retry has been authorized.
+          </span>
         )}
       </div>
       <div role="cell">
@@ -132,6 +162,9 @@ export default function ProductionJobsWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ownerReadBusy, setOwnerReadBusy] = useState<string | null>(null);
+  const [ownerReadError, setOwnerReadError] = useState<string | null>(null);
+  const [ownerStatusByJob, setOwnerStatusByJob] = useState<Record<string, OwnerMotionStatusObservation>>({});
   const refreshRef = useRef<() => void>(() => {});
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historicalJobs, setHistoricalJobs] = useState<ProductionJobProjection[]>([]);
@@ -237,6 +270,9 @@ export default function ProductionJobsWorkspace({
     setJobs([]);
     setLastReadAt(null);
     setError(null);
+    setOwnerReadBusy(null);
+    setOwnerReadError(null);
+    setOwnerStatusByJob({});
     setLoading(desktopMode);
     setRefreshing(false);
     refreshRef.current = () => { void readReceipts(false); };
@@ -312,6 +348,38 @@ export default function ProductionJobsWorkspace({
     void readHistory(null, epoch);
   }
 
+  // An explicit owner gesture issues one read-only Broker status request
+  // for a locally acknowledged original job. It does not update durable
+  // receipt projections or retry a native mutation.
+  async function readOwnerOriginal(job: ProductionJobProjection) {
+    if (!desktopMode || ownerReadBusy || job.applicability !== "current"
+      || job.provider !== "driver:motion-canvas"
+      || !["outcome_unknown", "cancel_requested"].includes(job.state)) return;
+    const currentKey = historyKey;
+    setOwnerReadBusy(job.job_ref);
+    setOwnerReadError(null);
+    try {
+      const observation = await readOriginalNativeJobStatus(project, job.job_ref);
+      if (historyKeyRef.current !== currentKey) return;
+      if (observation.job_ref !== job.job_ref
+        || observation.schema !== "motionwright.v01-owner-native-status/1"
+        || observation.source_authority_checked !== true
+        || observation.read_only !== true
+        || observation.native_result_verified !== false
+        || observation.output_bytes_verified !== false
+        || observation.automatic_retry_permitted !== false) {
+        throw new Error("Original source status returned untrusted evidence.");
+      }
+      setOwnerStatusByJob((prior) => ({ ...prior, [job.job_ref]: observation }));
+    } catch {
+      if (historyKeyRef.current === currentKey) {
+        setOwnerReadError("Original read-only status was not confirmed. The local job stays UNKNOWN or cancellation pending. Do not retry the render automatically.");
+      }
+    } finally {
+      if (historyKeyRef.current === currentKey) setOwnerReadBusy(null);
+    }
+  }
+
   const visibleJobs = historyOpen ? historicalJobs : jobs;
   const recovery = nativeRecoveryWarning(project, visibleJobs);
   const waitingForFirstPage = historyOpen ? historicalLoading && historicalJobs.length === 0 : loading;
@@ -371,8 +439,9 @@ export default function ProductionJobsWorkspace({
           <strong>Execution state and result applicability are separate.</strong>
           <span>
             A late successful render can be STALE. A cancellation request stays unconfirmed until
-            the canonical driver reports CANCELLED. This panel rereads local receipts while active
-            jobs are visible; it never queries or advances the native job itself.
+            the canonical driver reports CANCELLED. Automatic refresh only rereads local receipts.
+            The optional Check original status button makes one explicit read-only Broker
+            observation for the original acknowledged job; it never restarts or advances it.
           </span>
         </div>
       </div>
@@ -398,6 +467,12 @@ export default function ProductionJobsWorkspace({
               Historical snapshots can be incomplete until all pages are loaded.
             </span>
           </div>
+        </div>
+      )}
+      {ownerReadError && (
+        <div className="jobs-inline-error" role="alert" aria-label="Original native status read not confirmed">
+          <TriangleAlert size={15} aria-hidden="true" />
+          <span>{ownerReadError}</span>
         </div>
       )}
       {historyOpen && (
@@ -464,7 +539,11 @@ export default function ProductionJobsWorkspace({
               <span role="columnheader">Applicability</span>
               <span role="columnheader">Last observation</span>
             </div>
-            {visibleJobs.map((job) => <JobRow key={job.job_ref} job={job} />)}
+            {visibleJobs.map((job) => <JobRow key={job.job_ref} job={job}
+              desktopMode={desktopMode} ownerReadBusy={ownerReadBusy !== null}
+              ownerObservation={ownerStatusByJob[job.job_ref]}
+              onReadOriginalStatus={(entry) => { void readOwnerOriginal(entry); }}
+            />)}
           </div>
         </div>
       )}

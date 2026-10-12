@@ -20,7 +20,8 @@ receipt as a successful native output.
 2. Reconcile that **same** job only through the authorized original Semwright
    Broker / Driver Host. A different job, provider generation, project
    revision or existing local PNG cannot prove the original outcome.
-3. If the provider generation is unavailable or the terminal result cannot
+3. For an existing acknowledged Motion Canvas job, the optional [owner-initiated original status read](v01-owner-native-status-read.md) checks the same job and provider generation through one read-only Semwright Broker operation after owner action. This is a status observation, not media verification or a mutation. The local persisted Jobs ledger remains unchanged.
+4. If the provider generation is unavailable or the terminal result cannot
    be verified, leave the original state UNKNOWN and avoid automatic mutation.
    An independently approved new production request must be a deliberately
    new operation and not a covert retry of the prior mutation.
