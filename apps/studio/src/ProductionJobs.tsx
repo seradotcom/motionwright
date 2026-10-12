@@ -398,7 +398,10 @@ export default function ProductionJobsWorkspace({
       if (historyKeyRef.current !== scoped) return;
       if (report.project_id !== project.id || report.generation !== project.generation
           || report.revision !== project.revision || !report.complete_source_receipt_snapshot
-          || report.verified_native_project_cleanup !== false) {
+          || report.native_provider_liveness_verified !== false
+          || report.foreground_cleanup_consent_obtained !== false
+          || report.verified_native_project_cleanup !== false
+          || report.automatic_destructive_cleanup_allowed !== false) {
         throw new Error("Unverified source receipt scope.");
       }
       setMltInventory(report);

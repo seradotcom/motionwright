@@ -65,7 +65,7 @@ fn confirmed_identity(receipt: &ProductionReceipt) -> Option<(Uuid, u64, u64, St
         || revision.len() != 64
         || !revision
             .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     {
         return None;
     }
@@ -104,11 +104,11 @@ pub(crate) fn derive_mlt_cleanup_inventory(
         ) {
             continue;
         }
-        match latest.get(receipt.request_id.as_str()) {
-            Some(old) if old.id >= receipt.id => {}
-            _ => {
-                latest.insert(receipt.request_id.as_str(), receipt);
-            }
+        if latest
+            .get(receipt.request_id.as_str())
+            .is_none_or(|old| old.id < receipt.id)
+        {
+            latest.insert(receipt.request_id.as_str(), receipt);
         }
     }
     let mut created = BTreeSet::new();
