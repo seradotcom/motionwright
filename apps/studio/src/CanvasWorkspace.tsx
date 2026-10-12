@@ -113,6 +113,7 @@ export default function CanvasWorkspace({
   const [nativeStartX, setNativeStartX] = useState(scene?.nodes[0] ? scene.nodes[0].x - 100 : 0);
   const [nativeStartY, setNativeStartY] = useState(scene?.nodes[0]?.y ?? 0);
   const [nativeEndFrame, setNativeEndFrame] = useState(30);
+  const [nativeMotionCurve, setNativeMotionCurve] = useState<"linear" | "ease_out_cubic">("linear");
   const drag = useRef<{
     pointerId: number;
     nodeId: string;
@@ -632,13 +633,13 @@ export default function CanvasWorkspace({
                 <div className="motion-editor-heading">
                   <div>
                     <span className="field-label">Native Film · Position</span>
-                    <strong>Linear X/Y move</strong>
+                    <strong>Frame-exact X/Y move</strong>
                   </div>
                   <span className="mono">{profile?.name ?? "No profile"}</span>
                 </div>
                 <p className="inspector-note">
                   One frame-aligned movement from a starting position to this object's
-                  unchanged base X/Y. Exactly four linear keys in one revision.
+                  unchanged base X/Y. Four paired keys in one revision; the selected native easing is preserved without sampling or rounding.
                 </p>
                 <div className="canvas-field-grid motion-fields">
                   <label>
@@ -663,6 +664,14 @@ export default function CanvasWorkspace({
                       onChange={(event) =>
                         setNativeEndFrame(numberValue(event.target.value, nativeEndFrame))} />
                   </label>
+                  <label>
+                    <span>Native curve</span>
+                    <select aria-label="Native move easing" value={nativeMotionCurve}
+                      onChange={event=>setNativeMotionCurve(event.target.value as "linear" | "ease_out_cubic")}>
+                      <option value="linear">Linear</option>
+                      <option value="ease_out_cubic">Cubic ease-out · exact</option>
+                    </select>
+                  </label>
                 </div>
                 <div className="inspector-note">
                   {profile ? "Output " + profile.name + " · " + profile.frame_rate.num + "/"
@@ -671,12 +680,12 @@ export default function CanvasWorkspace({
                     : "Select a saved delivery profile with a valid frame rate."}
                 </div>
                 <button className="button full" type="button"
-                  aria-label="Create native linear move"
+                  aria-label={nativeMotionCurve==="linear"?"Create native linear move":"Create native ease-out cubic move"}
                   disabled={!nativeMoveAllowed}
                   onClick={() => {
                     if (!selectedNode || !profile || !nativeMoveAllowed) return;
                     void commit({
-                      type: "set_canvas_linear_position_motion",
+                      type: nativeMotionCurve==="linear"?"set_canvas_linear_position_motion":"set_canvas_out_cubic_position_motion",
                       scene_id: scene.id,
                       node_id: selectedNode.id,
                       deliverable_id: profile.id,
@@ -685,7 +694,7 @@ export default function CanvasWorkspace({
                       end_frame: nativeEndFrame,
                     });
                   }}>
-                  Create native linear move
+                  {nativeMotionCurve==="linear"?"Create native linear move":"Create native ease-out cubic move"}
                 </button>
                 <p className="inspector-note">
                   Existing motion keys, scene beats, nested objects and locked positions

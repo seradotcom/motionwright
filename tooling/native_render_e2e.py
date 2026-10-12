@@ -73,6 +73,80 @@ def native_opacity_tile_rgb(frame: Path) -> bytes:
     return process.stdout
 
 
+def source_bound_cubic_roi(frame: Path, *, kind: str) -> bytes:
+    """Sample an isolated source-authored native cubic-out tile via FFmpeg.
+
+    The exact regions correspond to the two added Rust CanvasNode fixtures.
+    This is inspection of original native PNGs, never a fabricated renderer.
+    """
+    regions = {
+        "position": (1450, 775, 12, 16),
+        "opacity": (1540, 912, 30, 24),
+    }
+    if kind not in regions:
+        raise AssertionError("unrecognized source-bound cubic ROI")
+    x, y, width, height = regions[kind]
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", str(frame),
+        "-vf", f"crop={width}:{height}:{x}:{y}",
+        "-frames:v", "1", "-pix_fmt", "rgb24",
+        "-f", "rawvideo", "pipe:1",
+    ]
+    try:
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AssertionError("native cubic ROI decoder unavailable") from error
+    if result.returncode != 0 or len(result.stdout) != width * height * 3:
+        raise AssertionError("native cubic ROI invalid or missing frame pixels")
+    return result.stdout
+
+
+def verify_source_cubic_frames(
+    position: tuple[bytes, bytes, bytes, bytes],
+    opacity: tuple[bytes, bytes, bytes],
+) -> dict:
+    """Reject a static or linear approximation of the two native curves."""
+    p0, p2, p8, p30 = position
+    o0, o15, o30 = opacity
+    position_delta = mean_byte_distance(p0, p30)
+    near_start = mean_byte_distance(p0, p2)
+    near_end = mean_byte_distance(p8, p30)
+    opacity_delta = mean_byte_distance(o0, o30)
+    opacity_half_remaining = mean_byte_distance(o15, o30)
+    if not (
+        position_delta >= 20.0
+        and near_start < position_delta * 0.4
+        and near_end < position_delta * 0.4
+    ):
+        raise AssertionError(
+            "native cubic-out position ROI is static, linear, or not aligned with original source at frames 0/2/8/30"
+        )
+    if not (
+        opacity_delta >= 18.0
+        and 0.5 <= opacity_half_remaining < opacity_delta * 0.45
+    ):
+        raise AssertionError(
+            "native cubic-out opacity ROI is not the original rapid-out fade at frames 0/15/30"
+        )
+    return {
+        "native_original_pixels_verified": True,
+        "interpolation": "ease_out_cubic",
+        "native_motion_easing": "out_cubic",
+        "position_sampled_frames": [0, 2, 8, 30],
+        "opacity_sampled_frames": [0, 15, 30],
+        "position_full_mean_rgb_distance": round(position_delta, 3),
+        "position_early_to_start_mean_rgb_distance": round(near_start, 3),
+        "position_quarter_to_final_mean_rgb_distance": round(near_end, 3),
+        "opacity_full_mean_rgb_distance": round(opacity_delta, 3),
+        "opacity_half_to_final_mean_rgb_distance": round(opacity_half_remaining, 3),
+        "pixel_difference_interpreted_as_visual_approval": False,
+    }
+
+
 def mean_byte_distance(left: bytes, right: bytes) -> float:
     if len(left) != len(right) or not left:
         raise AssertionError("decoded native ROI byte dimensions differ")
@@ -477,6 +551,15 @@ def main() -> None:
                     "native opacity tile ROI does not show a bounded progressive 0-to-1 fade across native frames 0/15/30"
                 )
 
+            # Two MORE source-authored tiles prove the native cubic-out
+            # path itself, not merely that the Film serialized an easing tag.
+            # The old linear tile/ROI checks above remain unchanged.
+            cubic_evidence = verify_source_cubic_frames(
+                tuple(source_bound_cubic_roi(frames[i], kind="position")
+                      for i in (0, 2, 8, 30)),
+                tuple(source_bound_cubic_roi(frames[i], kind="opacity")
+                      for i in (0, 15, 30)),
+            )
             mediated_readback_micros = elapsed_us(
                 mediated_readback_started_ns, time.perf_counter_ns()
             )
@@ -577,6 +660,8 @@ def main() -> None:
                     "compared_properties": [
                         "exact_linear_xy_position",
                         "exact_linear_opacity_fade",
+                        "exact_out_cubic_xy_position",
+                        "exact_out_cubic_opacity_fade",
                         "static_geometry_and_native_text",
                     ],
                     "pixels": parity,
@@ -608,6 +693,7 @@ def main() -> None:
                     "frame_count": len(frames),
                     "linear_position_motion_sampled": True,
                     "linear_opacity_motion_sampled": True,
+                    "native_cubic_out_region": cubic_evidence,
                     "direct_mediated_native_frame_parity": "PASS",
                     "direct_mediated_same_film_sha256": direct["film_sha256"],
                     "native_linear_opacity_region": {
