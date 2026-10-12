@@ -748,6 +748,7 @@ enum OperationKind {
     SetCanvasKeyframe,
     SetCanvasPositionKeyframe,
     SetCanvasLinearPositionMotion,
+    SetCanvasOutCubicPositionMotion,
     RemoveCanvasKeyframe,
     UpdateCanvasText,
     UpdateCanvasStyle,
@@ -1151,7 +1152,8 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 interpolation,
             })
         }
-        OperationKind::SetCanvasLinearPositionMotion => {
+        OperationKind::SetCanvasLinearPositionMotion
+        | OperationKind::SetCanvasOutCubicPositionMotion => {
             let end_frame = args.get("end_frame")
                 .and_then(Value::as_u64)
                 .and_then(|value| u32::try_from(value).ok())
@@ -1159,14 +1161,30 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 .ok_or_else(|| Error::invalid(
                     "Native linear position move endpoint must be a bounded positive frame index",
                 ))?;
-            Ok(Change::SetCanvasLinearPositionMotion {
-                scene_id: uuid(args, "scene_id")?,
-                node_id: uuid(args, "node_id")?,
-                deliverable_id: uuid(args, "deliverable_id")?,
-                start_x: number(args, "start_x")?,
-                start_y: number(args, "start_y")?,
-                end_frame,
-            })
+            let scene_id = uuid(args, "scene_id")?;
+            let node_id = uuid(args, "node_id")?;
+            let deliverable_id = uuid(args, "deliverable_id")?;
+            let start_x = number(args, "start_x")?;
+            let start_y = number(args, "start_y")?;
+            if matches!(kind, OperationKind::SetCanvasOutCubicPositionMotion) {
+                Ok(Change::SetCanvasOutCubicPositionMotion {
+                    scene_id,
+                    node_id,
+                    deliverable_id,
+                    start_x,
+                    start_y,
+                    end_frame,
+                })
+            } else {
+                Ok(Change::SetCanvasLinearPositionMotion {
+                    scene_id,
+                    node_id,
+                    deliverable_id,
+                    start_x,
+                    start_y,
+                    end_frame,
+                })
+            }
         }
         OperationKind::RemoveCanvasKeyframe => {
             let at = serde_json::from_value(
@@ -1883,6 +1901,33 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             descriptor(
                 "canvas.motion.linear-position.set",
                 "Create four exact paired linear X/Y keys from source pose to unchanged base in one revision, frame-bound to the saved deliverable",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "scene_id":{"type":"string","maxLength":64},
+                        "node_id":{"type":"string","maxLength":64},
+                        "deliverable_id":{"type":"string","maxLength":64},
+                        "start_x":{"type":"number"},
+                        "start_y":{"type":"number"},
+                        "end_frame":{"type":"integer","minimum":1,"maximum":36000}
+                    }),
+                    &[
+                        "ref",
+                        "scene_id",
+                        "node_id",
+                        "deliverable_id",
+                        "start_x",
+                        "start_y",
+                        "end_frame",
+                    ],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetCanvasOutCubicPositionMotion,
+            descriptor(
+                "canvas.motion.out-cubic-position.set",
+                "Commit four exact paired X/Y keys with source-authorized cubic-out easing through the pinned Semwright Native SDK",
                 schema(
                     json!({
                         "ref":{"type":"string","maxLength":512},
@@ -2836,6 +2881,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.canvas.node.relations.set"));
         assert!(names.contains(&"driver.motionwright.scene.duration.set"));
         assert!(names.contains(&"driver.motionwright.scene.music.cut.snap"));
+        assert!(names.contains(&"driver.motionwright.canvas.motion.out-cubic-position.set"));
         assert!(names.contains(&"driver.motionwright.asset.register"));
         assert!(names.contains(&"driver.motionwright.asset.remove"));
         assert!(names.contains(&"driver.motionwright.alternatives.select"));
@@ -2864,7 +2910,66 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         // The unified composition admission exposed 61 operations; the music
         // cut adds one scoped, owner-source-bound Native SDK operation.
-        assert_eq!(capabilities.len(), 62);
+        // 62 existing first-party operations plus the exact cubic-out source motion.
+        assert_eq!(capabilities.len(), 63);
+    }
+
+    #[test]
+    fn exact_out_cubic_native_sdk_operation_is_typed_and_fails_closed() {
+        let scene_id = Uuid::now_v7();
+        let node_id = Uuid::now_v7();
+        let deliverable_id = Uuid::now_v7();
+        let original = json!({
+            "scene_id": scene_id.to_string(),
+            "node_id": node_id.to_string(),
+            "deliverable_id": deliverable_id.to_string(),
+            "start_x": 125.0,
+            "start_y": 330.0,
+            "end_frame": 30
+        });
+        match change_from_args(OperationKind::SetCanvasOutCubicPositionMotion, &original).unwrap() {
+            Change::SetCanvasOutCubicPositionMotion {
+                scene_id: id,
+                node_id: n,
+                deliverable_id: p,
+                start_x,
+                start_y,
+                end_frame,
+            } => {
+                assert_eq!((id, n, p), (scene_id, node_id, deliverable_id));
+                assert_eq!((start_x, start_y, end_frame), (125.0, 330.0, 30));
+            }
+            _ => panic!("Native SDK lost exact authoring operation identity"),
+        }
+        for field in [
+            "scene_id",
+            "node_id",
+            "deliverable_id",
+            "start_x",
+            "start_y",
+            "end_frame",
+        ] {
+            let mut tampered = original.clone();
+            tampered.as_object_mut().unwrap().remove(field);
+            assert!(
+                change_from_args(OperationKind::SetCanvasOutCubicPositionMotion, &tampered)
+                    .is_err(),
+                "required source field cannot be omitted: {field}"
+            );
+        }
+        for value in [json!(-1), json!(0), json!(36001), json!(1.5), json!("30")] {
+            let mut tampered = original.clone();
+            tampered["end_frame"] = value;
+            assert!(
+                change_from_args(OperationKind::SetCanvasOutCubicPositionMotion, &tampered)
+                    .is_err()
+            );
+        }
+        let mut tampered = original;
+        tampered["start_x"] = json!("NaN");
+        assert!(
+            change_from_args(OperationKind::SetCanvasOutCubicPositionMotion, &tampered).is_err()
+        );
     }
 
     #[tokio::test]

@@ -281,6 +281,18 @@ struct NativeLinearPositionMotion {
     duration: RationalTime,
     start_x: f64,
     start_y: f64,
+    easing: MotionEasing,
+}
+
+/// Only curves that are mathematically identical in Studio's authored
+/// preview and the *pinned* Semwright MotionEasing grammar are admissible.
+/// Studio's ease_in_out uses smoothstep, NOT native InOutCubic/Sine.
+fn exact_native_easing(interpolation: MotionInterpolation) -> Option<MotionEasing> {
+    match interpolation {
+        MotionInterpolation::Linear => Some(MotionEasing::Linear),
+        MotionInterpolation::EaseOutCubic => Some(MotionEasing::OutCubic),
+        MotionInterpolation::Hold | MotionInterpolation::EaseInOut => None,
+    }
 }
 
 /// Admit only the exact single-property native FadeIn contract: source opacity
@@ -290,7 +302,7 @@ fn native_linear_opacity_entrance(
     node: &CanvasNode,
     scene: &Scene,
     frame_rate: Rate,
-) -> NativeResult<Option<RationalTime>> {
+) -> NativeResult<Option<(RationalTime, MotionEasing)>> {
     if node.keyframes.is_empty()
         || node
             .keyframes
@@ -325,12 +337,11 @@ fn native_linear_opacity_entrance(
         || keys[1].at >= scene.duration
         || keys[0].value != 0.0
         || keys[1].value != 1.0
-        || keys
-            .iter()
-            .any(|key| key.interpolation != MotionInterpolation::Linear)
+        || keys[0].interpolation != MotionInterpolation::Linear
     {
         return Err(fail());
     }
+    let easing = exact_native_easing(keys[1].interpolation).ok_or_else(&fail)?;
     let numerator = i128::from(keys[1].at.num)
         .checked_mul(i128::from(frame_rate.num))
         .ok_or_else(&fail)?;
@@ -340,7 +351,7 @@ fn native_linear_opacity_entrance(
     if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
         return Err(fail());
     }
-    Ok(Some(keys[1].at))
+    Ok(Some((keys[1].at, easing)))
 }
 
 /// A deliberately narrow *exact* mapping to Semwright Primitive::Settle:
@@ -404,13 +415,13 @@ fn native_linear_position_motion(
         || xs[1].at >= scene.duration
         || xs[1].value != node.x
         || ys[1].value != node.y
-        || node
-            .keyframes
-            .iter()
-            .any(|keyframe| keyframe.interpolation != MotionInterpolation::Linear)
+        || xs[0].interpolation != MotionInterpolation::Linear
+        || ys[0].interpolation != MotionInterpolation::Linear
+        || xs[1].interpolation != ys[1].interpolation
     {
         return Err(fail());
     }
+    let easing = exact_native_easing(xs[1].interpolation).ok_or_else(&fail)?;
     // Unlike CSS-preview time in floating point, this exact rational check
     // rejects timestamps that would need silent frame quantization.
     let numerator = i128::from(xs[1].at.num)
@@ -426,6 +437,7 @@ fn native_linear_position_motion(
         duration: xs[1].at,
         start_x: xs[0].value,
         start_y: ys[0].value,
+        easing,
     }))
 }
 
@@ -951,7 +963,7 @@ fn attach_entrance_motion(
                 "Authored entrance motion on source hierarchies requires a dedicated mapping",
             ));
         }
-        if let Some(duration) = native_linear_opacity_entrance(node, scene, frame_rate)? {
+        if let Some((duration, easing)) = native_linear_opacity_entrance(node, scene, frame_rate)? {
             let span_id = format!("linear-opacity-{}", node.id.simple());
             spans.push(TemporalSpan {
                 id: span_id.clone(),
@@ -964,7 +976,7 @@ fn attach_entrance_motion(
             shot.motion.push(Invocation {
                 id: format!("native-fade-{}", node.id.simple()),
                 span_id,
-                easing: MotionEasing::Linear,
+                easing,
                 primitive: Primitive::FadeIn {
                     target: subject_id(node.id, None),
                 },
@@ -1208,7 +1220,7 @@ fn build_segment(
                 shot.motion.push(Invocation {
                     id: format!("key-motion-{}", node.id.simple()),
                     span_id: motion_span,
-                    easing: MotionEasing::Linear,
+                    easing: motion.easing,
                     primitive: Primitive::Settle {
                         target: subject_id(node.id, None),
                         offset: Point {
@@ -2095,6 +2107,115 @@ mod tests {
             // than silently flattening the authored opacity keys.
             assert!(build_motion_canvas_segments(&variant, deliverable_id, &opts).is_err());
         }
+    }
+
+    #[test]
+    fn exact_cubic_out_opacity_reaches_native_tween_without_curve_approximation() {
+        let mut project = fixture_project();
+        set_exact_linear_opacity_keys(&mut project.scenes[0].nodes[0]);
+        project.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::EaseOutCubic;
+        let source = project.scenes[0].nodes[0].clone();
+        let segment = &build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &fixture_options(&project),
+        )
+        .unwrap()[0];
+        let shot = &segment.film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.motion.len(), 1);
+        assert_eq!(shot.motion[0].easing, MotionEasing::OutCubic);
+        let compiled = realize(&segment.film).unwrap();
+        let fade = compiled
+            .instructions
+            .iter()
+            .find(|instruction| {
+                matches!(
+                    instruction.operation,
+                    semwright_motion_authoring::NativeOp::Tween {
+                        channel: semwright_motion_authoring::Channel::Opacity,
+                        ..
+                    }
+                )
+            })
+            .expect("native opacity tween from exact source");
+        assert_eq!(fade.easing, MotionEasing::OutCubic);
+        assert_eq!(fade.duration, RationalTime::new(1, 1).unwrap());
+        assert_eq!(project.scenes[0].nodes[0], source);
+    }
+
+    #[test]
+    fn exact_cubic_out_xy_keys_generate_native_settle_with_source_identity() {
+        let mut project = fixture_project();
+        let node_id = project.scenes[0].nodes[0].id;
+        let pose = (project.scenes[0].nodes[0].x, project.scenes[0].nodes[0].y);
+        set_exact_linear_position_keys(&mut project.scenes[0].nodes[0]);
+        for key in &mut project.scenes[0].nodes[0].keyframes {
+            if key.at != RationalTime::ZERO {
+                key.interpolation = MotionInterpolation::EaseOutCubic;
+            }
+        }
+        let segment = &build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &fixture_options(&project),
+        )
+        .unwrap()[0];
+        let shot = &segment.film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.motion.len(), 1);
+        assert_eq!(shot.motion[0].easing, MotionEasing::OutCubic);
+        match &shot.motion[0].primitive {
+            Primitive::Settle {
+                target, rotation, ..
+            } => {
+                assert_eq!(target, &subject_id(node_id, None));
+                assert_eq!(*rotation, 0.0);
+            }
+            other => panic!("Expected source-bound native Settle: {other:?}"),
+        }
+        let compiled = realize(&segment.film).unwrap();
+        let position = compiled
+            .instructions
+            .iter()
+            .find(|instruction| {
+                matches!(
+                    instruction.operation,
+                    semwright_motion_authoring::NativeOp::Tween {
+                        channel: semwright_motion_authoring::Channel::Position,
+                        ..
+                    }
+                )
+            })
+            .expect("native position tween from source");
+        assert_eq!(position.easing, MotionEasing::OutCubic);
+        assert_eq!(
+            (project.scenes[0].nodes[0].x, project.scenes[0].nodes[0].y),
+            pose
+        );
+    }
+
+    #[test]
+    fn one_axis_cubic_and_one_axis_linear_are_not_silently_approximated() {
+        let mut project = fixture_project();
+        let id = project.deliverables[0].id;
+        set_exact_linear_position_keys(&mut project.scenes[0].nodes[0]);
+        project.scenes[0].nodes[0].keyframes[2].interpolation = MotionInterpolation::EaseOutCubic;
+        let error =
+            build_motion_canvas_segments(&project, id, &fixture_options(&project)).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic() {
+        let mut project = fixture_project();
+        set_exact_linear_opacity_keys(&mut project.scenes[0].nodes[0]);
+        project.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::EaseInOut;
+        let error = build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &fixture_options(&project),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
     }
 
     #[test]

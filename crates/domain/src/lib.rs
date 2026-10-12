@@ -1644,7 +1644,23 @@ impl Project {
                 start_x,
                 start_y,
                 end_frame,
+            }
+            | Change::SetCanvasOutCubicPositionMotion {
+                scene_id,
+                node_id,
+                deliverable_id,
+                start_x,
+                start_y,
+                end_frame,
             } => {
+                // One semantic edit with two admitted native easing contracts.
+                // The linear variant remains byte-for-byte backward compatible.
+                let terminal_curve =
+                    if matches!(change, Change::SetCanvasOutCubicPositionMotion { .. }) {
+                        MotionInterpolation::EaseOutCubic
+                    } else {
+                        MotionInterpolation::Linear
+                    };
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Position])?;
                 MotionProperty::X.validate_value(*start_x)?;
@@ -1741,13 +1757,13 @@ impl Project {
                         at: end_at,
                         property: MotionProperty::X,
                         value: node.x,
-                        interpolation: MotionInterpolation::Linear,
+                        interpolation: terminal_curve,
                     },
                     CanvasKeyframe {
                         at: end_at,
                         property: MotionProperty::Y,
                         value: node.y,
-                        interpolation: MotionInterpolation::Linear,
+                        interpolation: terminal_curve,
                     },
                 ];
                 for key in &keys {
@@ -2520,6 +2536,16 @@ pub enum Change {
         start_y: f64,
         end_frame: u32,
     },
+    /// Exact cubic-out progression (1-(1-t)^3) from a source pose to the
+    /// unchanged authored base; four paired keys in one locked/CAS edit.
+    SetCanvasOutCubicPositionMotion {
+        scene_id: Uuid,
+        node_id: Uuid,
+        deliverable_id: Uuid,
+        start_x: f64,
+        start_y: f64,
+        end_frame: u32,
+    },
     RemoveCanvasKeyframe {
         scene_id: Uuid,
         node_id: Uuid,
@@ -2905,6 +2931,112 @@ mod tests {
         );
         assert!(project.apply_change(&change).is_err());
         assert_eq!(project.scenes[0].nodes[0].keyframes.len(), 4);
+    }
+
+    #[test]
+    fn native_out_cubic_position_motion_is_one_atomic_and_editable_source_change() {
+        let mut project = Project::new("Cubic motion source").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Unparented moving subject".into(),
+                objective: "Maintain the original drawable and its identity".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let mut node = canvas_node("Exact cubic subject");
+        node.x = 310.0;
+        node.y = 240.0;
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        let base = project.clone();
+        let profile = project.deliverables[0].id;
+        let change = Change::SetCanvasOutCubicPositionMotion {
+            scene_id,
+            node_id,
+            deliverable_id: profile,
+            start_x: 170.0,
+            start_y: 210.0,
+            end_frame: 30,
+        };
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!(json["type"], "set_canvas_out_cubic_position_motion");
+        project.apply_change(&change).unwrap();
+        let n = &project.scenes[0].nodes[0];
+        assert_eq!((n.x, n.y), (310.0, 240.0));
+        assert_eq!(n.keyframes.len(), 4);
+        assert_eq!(n.keyframes[0].at, RationalTime::ZERO);
+        assert_eq!(n.keyframes[1].interpolation, MotionInterpolation::Linear);
+        assert_eq!(n.keyframes[2].at, RationalTime::new(1, 1).unwrap());
+        assert_eq!(
+            n.keyframes[2].interpolation,
+            MotionInterpolation::EaseOutCubic
+        );
+        assert_eq!(
+            n.keyframes[3].interpolation,
+            MotionInterpolation::EaseOutCubic
+        );
+        assert_eq!(project.revision, base.revision);
+        assert!(
+            project.apply_change(&change).is_err(),
+            "the same atomic change must not overwrite its previous keys"
+        );
+        assert_eq!(project.scenes[0].nodes[0].keyframes.len(), 4);
+        let reopened: Change = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened).unwrap(),
+            serde_json::to_value(change).unwrap()
+        );
+    }
+
+    #[test]
+    fn native_out_cubic_move_rejects_invalid_frames_locks_and_unsafe_source_edits() {
+        let mut project = Project::new("No silent source overwrite").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Short".into(),
+                objective: "Bounded fractional native motion".into(),
+                duration_seconds: 2,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let mut node = canvas_node("Protected");
+        node.x = 260.0;
+        node.y = 240.0;
+        let node_id = node.id;
+        project
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        let profile = project.deliverables[0].id;
+        let make = |end_frame, start_x| Change::SetCanvasOutCubicPositionMotion {
+            scene_id,
+            node_id,
+            deliverable_id: profile,
+            start_x,
+            start_y: 240.0,
+            end_frame,
+        };
+        for invalid in [
+            make(0, 210.0),
+            make(60, 210.0),
+            make(30, f64::NAN),
+            make(30, 260.0),
+        ] {
+            assert!(project.apply_change(&invalid).is_err());
+        }
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
+        project
+            .apply_change(&Change::SetNodePropertyLock {
+                scene_id,
+                node_id,
+                property: NodeProperty::Position,
+                locked: true,
+            })
+            .unwrap();
+        assert!(project.apply_change(&make(30, 210.0)).is_err());
+        assert!(project.scenes[0].nodes[0].keyframes.is_empty());
     }
 
     #[test]

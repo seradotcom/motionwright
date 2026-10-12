@@ -194,6 +194,43 @@ fn real_linear_fade_tile() -> CanvasNode {
     node
 }
 
+/// Real owner-authored cubic-out X/Y source edit; the terminal keys use
+/// MotionInterpolation::EaseOutCubic, not a fake prerendered preview tile.
+fn real_out_cubic_motion_tile() -> CanvasNode {
+    let mut node = real_linear_motion_tile();
+    node.id = Uuid::now_v7();
+    node.name = "Native exact cubic-out position tile".into();
+    node.x = 1510.0;
+    node.y = 750.0;
+    node.width = 140.0;
+    node.height = 90.0;
+    node.z_index = 4;
+    node.style.fill = Some("#77C6FA".into());
+    node.keyframes[0].value = 1410.0;
+    node.keyframes[1].value = node.y;
+    node.keyframes[2].value = node.x;
+    node.keyframes[3].value = node.y;
+    node.keyframes[2].interpolation = MotionInterpolation::EaseOutCubic;
+    node.keyframes[3].interpolation = MotionInterpolation::EaseOutCubic;
+    node
+}
+
+/// Separately visible exact cubic-out FadeIn, final opacity still 1.0.
+/// Existing linear opacity fixture stays untouched as its control.
+fn real_out_cubic_opacity_tile() -> CanvasNode {
+    let mut node = real_linear_fade_tile();
+    node.id = Uuid::now_v7();
+    node.name = "Native exact cubic-out opacity tile".into();
+    node.x = 1500.0;
+    node.y = 890.0;
+    node.width = 170.0;
+    node.height = 90.0;
+    node.z_index = 5;
+    node.style.fill = Some("#46CBAA".into());
+    node.keyframes[1].interpolation = MotionInterpolation::EaseOutCubic;
+    node
+}
+
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     if !service.projects(2)?.is_empty() {
@@ -249,7 +286,7 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             },
         )?
         .project;
-    let project = service
+    let with_linear_fade = service
         .apply(
             with_position.id,
             &RevisionStamp::from(&with_position),
@@ -257,6 +294,28 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             &Change::AddCanvasNode {
                 scene_id,
                 node: real_linear_fade_tile(),
+            },
+        )?
+        .project;
+    let with_cubic_move = service
+        .apply(
+            with_linear_fade.id,
+            &RevisionStamp::from(&with_linear_fade),
+            "native-render-seed-out-cubic-position",
+            &Change::AddCanvasNode {
+                scene_id,
+                node: real_out_cubic_motion_tile(),
+            },
+        )?
+        .project;
+    let project = service
+        .apply(
+            with_cubic_move.id,
+            &RevisionStamp::from(&with_cubic_move),
+            "native-render-seed-out-cubic-opacity",
+            &Change::AddCanvasNode {
+                scene_id,
+                node: real_out_cubic_opacity_tile(),
             },
         )?
         .project;

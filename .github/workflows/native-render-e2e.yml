@@ -129,10 +129,16 @@ jobs:
           cargo test --locked -p motionwright-native --lib \
             noncanonical_linear_opacity_keys_fail_without_approximation \
             -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            exact_cubic_out_ -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
 
       - name: Verify direct-vs-mediated parity invariants before native rendering
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_direct_mediated_parity.py' -v
 
+      - name: Reject synthetic or incorrectly interpolated cubic ROI evidence
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_out_cubic_pixels.py' -v
       - name: Reject invented render stage timing claims
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_render_stage_cost.py' -v
 
@@ -176,6 +182,13 @@ jobs:
           assert result["linear_position_motion_sampled"] is True
           assert result["native_motion_frame_sha256"]["start"] != result["native_motion_frame_sha256"]["end_of_linear_tween"]
           assert result["linear_opacity_motion_sampled"] is True
+          cubic = result["native_cubic_out_region"]
+          assert cubic["native_original_pixels_verified"] is True
+          assert cubic["interpolation"] == "ease_out_cubic"
+          assert cubic["native_motion_easing"] == "out_cubic"
+          assert cubic["position_sampled_frames"] == [0, 2, 8, 30]
+          assert cubic["opacity_sampled_frames"] == [0, 15, 30]
+          assert cubic["pixel_difference_interpreted_as_visual_approval"] is False
           assert result["direct_mediated_native_frame_parity"] == "PASS"
           assert len(result["direct_mediated_same_film_sha256"]) == 64
           comparison = json.loads((root / "native-direct-mediated-parity.json").read_text())
@@ -198,6 +211,8 @@ jobs:
           assert all(len(value) == 64 for value in pixels["checked_frame_rgba_sha256"])
           assert comparison["human_visual_acceptance"] == "NOT_RUN"
           assert comparison["arbitrary_renderer_property_parity"] == "NOT_PROVEN"
+          assert "exact_out_cubic_xy_position" in comparison["compared_properties"]
+          assert "exact_out_cubic_opacity_fade" in comparison["compared_properties"]
           stage = json.loads((root / "native-render-stage-cost.json").read_text())
           assert stage["schema"] == "motionwright.native-render-stage-cost/1"
           assert stage["source_sha"] == os.environ["GITHUB_SHA"]

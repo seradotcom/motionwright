@@ -1334,7 +1334,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       });
       break;
     }
-    case "set_canvas_linear_position_motion": {
+    case "set_canvas_linear_position_motion":
+    case "set_canvas_out_cubic_position_motion": {
       assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       const profile = next.deliverables.find((entry) => entry.id === change.deliverable_id);
@@ -1381,8 +1382,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       const keys: CanvasKeyframe[] = [
         { at: start, property: "x", value: change.start_x, interpolation: "linear" },
         { at: start, property: "y", value: change.start_y, interpolation: "linear" },
-        { at: end, property: "x", value: node.x, interpolation: "linear" },
-        { at: end, property: "y", value: node.y, interpolation: "linear" },
+        { at: end, property: "x", value: node.x, interpolation: change.type === "set_canvas_out_cubic_position_motion" ? "ease_out_cubic" : "linear" },
+        { at: end, property: "y", value: node.y, interpolation: change.type === "set_canvas_out_cubic_position_motion" ? "ease_out_cubic" : "linear" },
       ];
       node.keyframes.push(...keys);
       break;
