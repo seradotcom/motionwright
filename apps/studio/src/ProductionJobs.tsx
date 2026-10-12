@@ -7,11 +7,12 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { productionJobs, productionJobsHistory, readOriginalNativeJobStatus } from "./api";
+import { inspectMltCleanupInventory, productionJobs, productionJobsHistory, readOriginalNativeJobStatus } from "./api";
 import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
 import { nativeRecoveryWarning } from "./nativeRecovery";
 import type {
   ProductionJobProjection,
+  MltCleanupInventory,
   OwnerMotionStatusObservation,
   ProductionJobsHistoryCursor,
   ProductionJobsHistoryPage,
@@ -162,6 +163,9 @@ export default function ProductionJobsWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mltInventory, setMltInventory] = useState<MltCleanupInventory | null>(null);
+  const [mltInventoryBusy, setMltInventoryBusy] = useState(false);
+  const [mltInventoryError, setMltInventoryError] = useState<string | null>(null);
   const [ownerReadBusy, setOwnerReadBusy] = useState<string | null>(null);
   const [ownerReadError, setOwnerReadError] = useState<string | null>(null);
   const [ownerStatusByJob, setOwnerStatusByJob] = useState<Record<string, OwnerMotionStatusObservation>>({});
@@ -270,6 +274,9 @@ export default function ProductionJobsWorkspace({
     setJobs([]);
     setLastReadAt(null);
     setError(null);
+    setMltInventory(null);
+    setMltInventoryBusy(false);
+    setMltInventoryError(null);
     setOwnerReadBusy(null);
     setOwnerReadError(null);
     setOwnerStatusByJob({});
@@ -380,6 +387,28 @@ export default function ProductionJobsWorkspace({
     }
   }
 
+  async function readMltInventory() {
+    if (!desktopMode || mltInventoryBusy) return;
+    const scoped = historyKey;
+    setMltInventoryBusy(true);
+    setMltInventoryError(null);
+    setMltInventory(null);
+    try {
+      const report = await inspectMltCleanupInventory(project);
+      if (historyKeyRef.current !== scoped) return;
+      if (report.project_id !== project.id || report.generation !== project.generation
+          || report.revision !== project.revision || !report.complete_source_receipt_snapshot
+          || report.verified_native_project_cleanup !== false) {
+        throw new Error("Unverified source receipt scope.");
+      }
+      setMltInventory(report);
+    } catch {
+      if (historyKeyRef.current === scoped) setMltInventoryError("MLT receipt inventory could not be verified.");
+    } finally {
+      if (historyKeyRef.current === scoped) setMltInventoryBusy(false);
+    }
+  }
+
   const visibleJobs = historyOpen ? historicalJobs : jobs;
   const recovery = nativeRecoveryWarning(project, visibleJobs);
   const waitingForFirstPage = historyOpen ? historicalLoading && historicalJobs.length === 0 : loading;
@@ -417,6 +446,12 @@ export default function ProductionJobsWorkspace({
           >
             {historyOpen ? "Recent jobs" : "Full history"}
           </button>
+          <button type="button" className="button compact"
+            aria-label="Inspect MLT receipt inventory"
+            disabled={!desktopMode || mltInventoryBusy}
+            onClick={() => { void readMltInventory(); }}>
+            {mltInventoryBusy ? "Inspecting…" : "MLT lifetime"}
+          </button>
           <button
             type="button"
             className="button compact"
@@ -446,6 +481,22 @@ export default function ProductionJobsWorkspace({
         </div>
       </div>
 
+      {mltInventoryError && (
+        <div className="jobs-inline-error" role="alert" aria-label="MLT inventory unavailable">
+          <TriangleAlert size={15} aria-hidden="true" />
+          <span>{mltInventoryError}</span>
+        </div>
+      )}
+      {mltInventory && (
+        <div role="region" aria-label="Native MLT inventory" className="jobs-history-banner">
+          <div>
+            <strong>MLT receipt inventory</strong>
+            <span>{mltInventory.confirmed_native_creations_current_revision} current creations</span>
+            <span>{mltInventory.confirmed_native_creations_historical} historical creations</span>
+            <span>Native cleanup remains unverified.</span>
+          </div>
+        </div>
+      )}
       {recovery && (
         <div className="jobs-inline-error" role="alert" aria-label="Unconfirmed native render recovery">
           <TriangleAlert size={15} aria-hidden="true" />

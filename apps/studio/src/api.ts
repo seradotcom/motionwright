@@ -43,6 +43,7 @@ import type {
   ProductionRuntimeCompatibility,
   CreativeRuntimeDoctorReport,
   WaveformPage,
+  MltCleanupInventory,
   WorkflowAction,
   WorkflowActionResult,
   WorkflowOverview,
@@ -590,6 +591,13 @@ export async function assetIntegrityPage(
       offset,
       limit,
     },
+  });
+}
+
+export async function inspectMltCleanupInventory(project: Project): Promise<MltCleanupInventory> {
+  if (!isTauri()) throw new Error("Installed desktop runtime is required.");
+  return invoke<MltCleanupInventory>("mlt_cleanup_inventory", {
+    request: { project_id: project.id, generation: project.generation, revision: project.revision },
   });
 }
 

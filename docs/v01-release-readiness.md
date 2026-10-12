@@ -68,7 +68,10 @@ aesthetic review, or unrestricted creative capability.
    native CI reproducibility check](reliability/v01-native-provider-repeat.md)
    gathers controlled process and frame evidence but cannot prove provider
    generation loss is fixed or authenticate an installed owner's session. No undocumented deletion
-   of native MLT projects is allowed. The bounded v0.1 [read-only original-job
+   of native MLT projects is allowed. The read-only [MLT lifetime receipt
+   inventory](reliability/v01-mlt-cleanup-inventory.md) now exposes an
+   incomplete closure disposition without querying or deleting live resources.
+   It does not satisfy the required foreground Broker authorization. The bounded v0.1 [read-only original-job
    status observation](reliability/v01-owner-native-status-read.md) does not
    fix provider lifecycle, verify native media or authorize a release.
 5. Resolve the transitive glib unsoundness and macro-stack maintenance

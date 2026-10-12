@@ -340,6 +340,26 @@ export interface ProductionJobProjection {
   last_observation: ProductionObservationState;
 }
 
+/** Read-only source-scoped lifecycle receipt inventory, never evidence
+ * that native MLT projects are live, closed or safe for auto cleanup. */
+export interface MltCleanupInventory {
+  schema: "motionwright.v01-mlt-cleanup-inventory/1";
+  project_id: string;
+  generation: string;
+  revision: number;
+  source_receipts_scanned: number;
+  confirmed_native_creations_current_revision: number;
+  confirmed_native_creations_historical: number;
+  unconfirmed_or_invalid_creation_requests: number;
+  observed_close_request_identities: number;
+  disposition: string;
+  complete_source_receipt_snapshot: true;
+  native_provider_liveness_verified: false;
+  foreground_cleanup_consent_obtained: false;
+  verified_native_project_cleanup: false;
+  automatic_destructive_cleanup_allowed: false;
+}
+
 /** One explicit same-original-job Semwright Broker status read. This is
  * NOT a verified media artifact, terminal receipt or retry permission. */
 export interface OwnerMotionStatusObservation {
