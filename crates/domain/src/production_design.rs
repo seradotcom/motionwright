@@ -287,6 +287,49 @@ impl FidelityReport {
     }
 }
 
+/// Owner-authored, source-linked property conversion classification.
+/// This is NOT an independent native readback or a provider operation grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativePropertyFidelity {
+    /// Dotted, bounded semantic path (e.g. camera.focal_length).
+    pub path: String,
+    pub fidelity: Fidelity,
+    /// An explicit description of baked/approximate/unavailable losses.
+    pub loss_note: Option<String>,
+}
+impl NativePropertyFidelity {
+    pub fn validate(&self) -> Result<()> {
+        if self.path.len() > 128
+            || self.path.is_empty()
+            || self.path.split('.').count() > 5
+            || self.path.split('.').any(|part| {
+                part.is_empty()
+                    || matches!(part, "__proto__" | "prototype" | "constructor")
+                    || !part.as_bytes()[0].is_ascii_alphabetic()
+                    || !part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            })
+        {
+            return Err(DomainError::Invalid(
+                "invalid semantic native property path".into(),
+            ));
+        }
+        if let Some(note) = &self.loss_note {
+            design_text(note, 500, "property loss note")?;
+        }
+        if matches!(
+            self.fidelity,
+            Fidelity::Baked | Fidelity::Approximate | Fidelity::Unavailable
+        ) && self.loss_note.is_none()
+        {
+            return Err(DomainError::Invalid(
+                "lossy property negotiation must describe the original information lost".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeCapsule {
@@ -299,6 +342,9 @@ pub struct NativeCapsule {
     pub fidelity: FidelityReport,
     pub editable_parameters: Vec<String>,
     pub native_editor_hint: String,
+    /// Optional for legacy capsules. New entries are claims, not source readback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub property_fidelity: Vec<NativePropertyFidelity>,
 }
 impl NativeCapsule {
     pub fn validate(&self, scenes: &[Scene], assets: &[Asset]) -> Result<()> {
@@ -306,6 +352,20 @@ impl NativeCapsule {
         design_text(&self.native_editor_hint, 256, "native editor label")?;
         self.fidelity.validate()?;
         text_list(&self.editable_parameters, 64)?;
+        if self.property_fidelity.len() > 64 {
+            return Err(DomainError::Invalid(
+                "native source property fidelity exceeds 64 entries".into(),
+            ));
+        }
+        let mut semantic_paths = BTreeSet::new();
+        for property in &self.property_fidelity {
+            property.validate()?;
+            if !semantic_paths.insert(&property.path) {
+                return Err(DomainError::Invalid(
+                    "duplicate native property fidelity path".into(),
+                ));
+            }
+        }
         if !digest(&self.source_sha256)
             || !scenes.iter().any(|scene| scene.id == self.scene_id)
             || !assets.iter().any(|asset| {
