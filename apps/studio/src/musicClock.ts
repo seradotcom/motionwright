@@ -190,3 +190,144 @@ export function applyMusicCutToProject(project: Project, proposal: MusicCutPropo
   // Important: absolute-time cues, markers and transcript segments remain
   // unchanged; the operator must manually resolve the disclosed impacts.
 }
+
+
+export interface MusicConformTarget {scene_id:string;beat_index:number}
+export interface MusicConformSceneChange {
+  scene_id:string;
+  old_start:RationalTime;
+  new_start:RationalTime;
+  old_duration:RationalTime;
+  new_duration:RationalTime;
+  beat_index:number|null;
+  changed:boolean;
+}
+export interface MusicConformReview {
+  project_id:string;
+  generation:string;
+  base_revision:number;
+  asset_id:string;
+  source_sha256:string;
+  targets:MusicConformTarget[];
+  scenes:MusicConformSceneChange[];
+  changed_scene_count:number;
+  original_duration:RationalTime;
+  conformed_duration:RationalTime;
+  affected_cue_count:number;
+  affected_marker_count:number;
+  affected_transcript_count:number;
+  approval_invalidated:boolean;
+  anchors_need_acknowledgement:boolean;
+}
+
+/** Mirrors the trusted Rust review for the responsive Studio demo only.
+ * The real service always re-evaluates this independently before CAS. */
+export function inspectMusicConform(
+  project:Project,targets:MusicConformTarget[],expectedDigest:string,
+):MusicConformReview {
+  if(targets.length<2||targets.length>16)
+    throw new Error("Choose 2–16 explicit music cut boundaries.");
+  if(!SHA.test(expectedDigest))throw new Error("Audio source SHA-256 is invalid.");
+  const plan=project.production_design?.plan;
+  if(!plan||plan.clock.kind!=="music")
+    throw new Error("Save an author-marked production music clock first.");
+  const clock=plan.clock;
+  const source=project.assets.find(asset=>asset.id===clock.asset_id
+    && asset.media_type.startsWith("audio/"));
+  if(!source||source.content_sha256!==expectedDigest)
+    throw new Error("Owner music source digest changed; review this clock again.");
+  const indices=new Map(project.scenes.map((scene,index)=>[scene.id,index]));
+  const selected=new Map<string,{beat:number;at:Fraction}>();
+  let previous=-1;
+  for(const target of targets){
+    const pos=indices.get(target.scene_id);
+    if(pos===undefined)throw new Error("Scene is not present in this project.");
+    if(pos<=previous)throw new Error("Music targets must be unique in source scene order.");
+    if(!Number.isInteger(target.beat_index)||target.beat_index<0||
+       target.beat_index>=clock.beats.length)
+      throw new Error("Music beat index is outside the saved source grid.");
+    const at=fraction(clock.beats[target.beat_index]);
+    if(compare(at,ZERO)<0||compare(at,MAX_DURATION)>0)
+      throw new Error("Selected beat exceeds project timing bounds.");
+    selected.set(target.scene_id,{beat:target.beat_index,at});
+    previous=pos;
+  }
+  let cursor:Fraction=ZERO;
+  let originalEnd:Fraction=ZERO;
+  let earliest:Fraction|null=null;
+  const changes:MusicConformSceneChange[]=[];
+  for(const scene of project.scenes){
+    const beforeStart=fraction(scene.start),beforeDuration=fraction(scene.duration);
+    const oldEnd=add(beforeStart,beforeDuration);
+    originalEnd=oldEnd;
+    const selectedBoundary=selected.get(scene.id);
+    const duration=selectedBoundary?subtract(selectedBoundary.at,cursor):beforeDuration;
+    if(compare(duration,ZERO)<=0||compare(duration,MAX_DURATION)>0)
+      throw new Error("Music conform requires positive bounded scene durations.");
+    if(selectedBoundary) {
+      if(scene.nodes.some(node=>node.keyframes.some(key=>
+         compare(fraction(key.at),duration)>=0)))
+        throw new Error("Music conform would strand a scene-local canvas keyframe.");
+      if(scene.beats.some(beat=>
+        compare(add(fraction(beat.start),fraction(beat.duration)),duration)>0))
+        throw new Error("Music conform would strand an authored scene beat.");
+    }
+    const newEnd=add(cursor,duration);
+    if(selectedBoundary&&compare(newEnd,selectedBoundary.at)!==0)
+      throw new Error("Conformed scene end does not equal the selected beat.");
+    if(selectedBoundary&&compare(newEnd,oldEnd)!==0){
+      const boundary=compare(newEnd,oldEnd)<0?newEnd:oldEnd;
+      if(!earliest||compare(boundary,earliest)<0)earliest=boundary;
+    }
+    const changed=compare(cursor,beforeStart)!==0||compare(duration,beforeDuration)!==0;
+    changes.push({
+      scene_id:scene.id,old_start:asTime(beforeStart),new_start:asTime(cursor),
+      old_duration:asTime(beforeDuration),new_duration:asTime(duration),
+      beat_index:selectedBoundary?.beat??null,changed,
+    });
+    cursor=newEnd;
+  }
+  const affected=changes.filter(change=>change.changed);
+  if(!affected.length)throw new Error("All selected music cuts already match.");
+  if(project.locks.some(lock=>lock.kind==="timing"&&(
+    lock.resource==="project:"+project.id ||
+    affected.some(scene=>lock.resource==="scene:"+scene.scene_id)
+  )))throw new Error("Protected project or scene timing prevents the music conform.");
+  if(project.deliverables.some(profile=>profile.timing_locked&&(
+    !profile.included_scene_ids.length ||
+    affected.some(scene=>profile.included_scene_ids.includes(scene.scene_id))
+  )))throw new Error("A timing-locked delivery profile blocks the music conform.");
+  if(!earliest)throw new Error("No selected boundary actually changed.");
+  const threshold:Fraction=earliest;
+  const cues=project.audio.cues.filter(cue=>
+    compare(fraction(cue.at),threshold)>=0).length;
+  const markers=project.markers.filter(marker=>
+    compare(fraction(marker.at),threshold)>=0).length;
+  const transcript=project.audio.transcript.filter(segment=>
+    compare(fraction(segment.end),threshold)>0).length;
+  return {
+    project_id:project.id,generation:project.generation,base_revision:project.revision,
+    asset_id:source.id,source_sha256:expectedDigest,
+    targets:targets.map(target=>({...target})),scenes:changes,
+    changed_scene_count:affected.length,
+    original_duration:asTime(originalEnd),conformed_duration:asTime(cursor),
+    affected_cue_count:cues,affected_marker_count:markers,
+    affected_transcript_count:transcript,approval_invalidated:!!plan.approval,
+    anchors_need_acknowledgement:cues+markers+transcript>0,
+  };
+}
+
+export function applyMusicConformToProject(project:Project,review:MusicConformReview):void {
+  if(project.id!==review.project_id||project.generation!==review.generation||
+     project.revision!==review.base_revision)
+    throw new Error("Music conform source project changed during review.");
+  for(let i=0;i<project.scenes.length;i++){
+    const scene=project.scenes[i],after=review.scenes[i];
+    if(scene.id!==after?.scene_id)throw new Error("Conform scene order became stale.");
+    scene.start=structuredClone(after.new_start);
+    scene.duration=structuredClone(after.new_duration);
+    if(after.changed)scene.status="draft";
+  }
+  if(project.production_design?.plan)project.production_design.plan.approval=null;
+  // Recorded global audio cues/transcripts/markers NEVER move implicitly.
+}

@@ -10,6 +10,7 @@ mod history;
 mod integrations;
 mod measured_data;
 mod music_clock;
+mod music_conform;
 mod procedural;
 mod product_stage;
 mod production_design;
@@ -25,6 +26,7 @@ pub use history::*;
 pub use integrations::*;
 pub use measured_data::*;
 pub use music_clock::*;
+pub use music_conform::*;
 pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
@@ -1362,6 +1364,17 @@ impl Project {
                     return Err(DomainError::NotFound(format!("beat:{beat_id}")));
                 }
             }
+            Change::ConformScenesToMusic {
+                targets,
+                source_sha256,
+                base_revision,
+                acknowledge_absolute_anchors,
+            } => self.conform_scenes_to_music(
+                targets,
+                source_sha256,
+                *base_revision,
+                *acknowledge_absolute_anchors,
+            )?,
             Change::SnapSceneCutToMusic {
                 scene_id,
                 beat_index,
@@ -2464,6 +2477,14 @@ pub enum Change {
     SetSceneDuration {
         scene_id: Uuid,
         duration: RationalTime,
+    },
+    /// Exactly one bounded CAS revision for 2–16 author-mapped music cuts.
+    /// All affected scenes are revalidated before any source mutation.
+    ConformScenesToMusic {
+        targets: Vec<MusicConformTarget>,
+        source_sha256: String,
+        base_revision: u64,
+        acknowledge_absolute_anchors: bool,
     },
     /// Explicit edit of a single cut against the persisted, owner-marked
     /// music grid; never move existing absolute audio/marker timestamps.
