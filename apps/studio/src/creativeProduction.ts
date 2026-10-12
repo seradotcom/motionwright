@@ -122,7 +122,7 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
     ["body",body,split&&!portrait&&!square?w*.57:left,bodyY,split&&!portrait&&!square?w*.35:textWidth,(split&&portrait?h*.14:split&&square?h*.20:split?h*.31:portrait?h*.13:h*.17),(split&&portrait?31:split&&square?29:split?38:30)*scale,400,460,1260,24*scale,0],
     ["wordmark",config.wordmark,markX,markY,markW,markH,(split&&portrait?54:split&&square?47:split?50:portrait?246:square?186:276)*scale,600,160,1460,(split?26:86)*scale,split?0:-5],
     ["rule","",split&&!portrait&&!square?w*.50:left,split&&portrait?h*.50:split&&square?h*.49:split?h*.25:h*.87,split&&!portrait&&!square?3*scale:split?w*.82:portrait?w*.18:w*.09,split&&!portrait&&!square?h*.50:3*scale,0,400,600,1360,10*scale,0],
-    ["disclosure",split?"SPLIT EXPLANATION / GRAPHIC STUDY Â· NOT A CAPTURE":"GRAPHIC STUDY / NOT A PRODUCT CAPTURE",left,h*.905,w*.82,28*scale,17*scale,400,740,1500,10*scale,0],
+    ["disclosure",split?"SPLIT EXPLANATION / GRAPHIC STUDY Ã‚Â· NOT A CAPTURE":"GRAPHIC STUDY / NOT A PRODUCT CAPTURE",left,h*.905,w*.82,28*scale,17*scale,400,740,1500,10*scale,0],
   ];
   return Promise.all(entries.map(async ([role,text,x,y,width,height,fontSize,weight,start,end,offset,rotation], index) => {
     const isText = role !== "rule";
@@ -202,7 +202,8 @@ async function realizeCraftHero(id:string,config:HeroConfig,w:number,h:number):P
 export async function validateCraftDisclosures(project:Project):Promise<void>{
   for(const hero of project.production_design?.heroes??[]){
     if(!["contrast_comparison","editorial_quote"].includes(hero.config.layout??""))continue;
-    const expected=hero.baseline.find(n=>n.id===await heroNodeId(hero.id,"disclosure"));
+    const disclosureId=await heroNodeId(hero.id,"disclosure");
+    const expected=hero.baseline.find(n=>n.id===disclosureId);
     const scene=project.scenes.find(scene=>scene.id===hero.scene_id);
     const actual=scene?.nodes.find(n=>n.id===expected?.id);
     if(!expected || !actual || actual.kind!=="text" || actual.text!==expected.text)
@@ -356,7 +357,7 @@ async function realizeMetricEvidence(id: string, config: HeroConfig, w: number, 
     ["body",explanation,wide?w*.62:left,bodyY,wide?w*.30:w*.82,wide?h*.28:h*.16,(wide?34:30)*scale,400,460,1260,24*scale],
     ["wordmark",config.wordmark,wide?w*.62:left,wordmarkY,wide?w*.30:w*.50,wide?h*.065:square?h*.050:h*.045,(wide?40:square?35:40)*scale,600,160,1460,26*scale],
     ["rule","",wide?w*.55:left,ruleY,wide?3*scale:w*.82,wide?h*.48:3*scale,0,400,600,1360,10*scale],
-    ["disclosure","METRIC EVIDENCE / EDITORIAL STUDY Â· SOURCE NOT VERIFIED",left,h*.905,w*.83,28*scale,17*scale,400,740,1500,10*scale],
+    ["disclosure","METRIC EVIDENCE / EDITORIAL STUDY Ã‚Â· SOURCE NOT VERIFIED",left,h*.905,w*.83,28*scale,17*scale,400,740,1500,10*scale],
   ];
   return Promise.all(entries.map(async ([role,text,x,y,width,height,fontSize,weight,start,end,offset],index) => {
     const isText = role !== "rule";
