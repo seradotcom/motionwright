@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AudioLines, MoveRight, ShieldAlert } from "lucide-react";
+import MusicConformWorkbench from "./MusicConformWorkbench";
 import type { Change, Project, RationalTime } from "./types";
 import { seconds } from "./types";
 import type { ProductionClock, ProductionPlan } from "./creativeProduction";
@@ -191,5 +192,8 @@ export default function MusicClockWorkbench({
       {cutError && <p className="production-error" role="alert">{cutError}</p>}
       {cutNote && <p className="production-help" role="status">{cutNote}</p>}
     </div>
+    <MusicConformWorkbench project={project} savedClock={savedClock}
+      draftMatchesSaved={draftMatchesSaved} baseRevision={baseRevision}
+      busy={busy} commit={commit} onSeek={onSeek}/>
   </section>;
 }
