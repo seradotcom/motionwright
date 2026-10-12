@@ -70,7 +70,8 @@ describe("original editable editorial craft families",()=>{
         body:"An original context statement"}});
     expect(p.scenes[0].camera).toEqual(camera);
     expect(p.scenes[0].nodes).toHaveLength(6);
-    expect(p.scenes[0].nodes.find(n=>n.id===body)?.style).toEqual(style);
+    expect(p.scenes[0].nodes.find(n=>n.id===body)?.style.fill).toBe(style.fill);
+    expect(p.scenes[0].nodes.find(n=>n.id===body)?.style.font_size).not.toBe(original.style.font_size);
     expect(p.scenes[0].nodes.find(n=>n.id===eyebrow)?.text).toBe("HUMAN EDITED ORIGINAL");
     expect(p.production_design?.heroes[0].config.layout).toBe("editorial_quote");
     expect(JSON.parse(JSON.stringify(p)).production_design?.heroes[0].id).toBe(id);

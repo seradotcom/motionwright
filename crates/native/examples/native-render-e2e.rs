@@ -92,7 +92,7 @@ fn text_node(parent_id: Uuid) -> CanvasNode {
 }
 
 /// Visible unparented rectangle: the native Film contract now maps this
-/// exact paired 0â†’base position transition via a Semwright Settle primitive.
+/// exact paired 0→base position transition via a Semwright Settle primitive.
 fn real_linear_motion_tile() -> CanvasNode {
     let mut node = CanvasNode {
         id: Uuid::now_v7(),
@@ -1246,7 +1246,7 @@ fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std
     };
     let bar = CanvasNode {
         id: bar_id,
-        name: "Explicit 0â€“100% synthetic bar".into(),
+        name: "Explicit 0–100% synthetic bar".into(),
         kind: "rectangle".into(),
         parent_id: None,
         x: 340.0,
@@ -1358,7 +1358,7 @@ fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std
         .iter()
         .find(|node| node.id == bar_id)
         .ok_or("missing projected bar")?;
-    if projected_label.text.as_deref() != Some("Synthetic rate Â· 37.5%")
+    if projected_label.text.as_deref() != Some("Synthetic rate · 37.5%")
         || projected_bar.width != 300.0
         || project
             .production_design

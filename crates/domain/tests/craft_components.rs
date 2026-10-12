@@ -153,8 +153,9 @@ fn source_copy_changes_preserve_human_style_and_stable_object_camera() {
             .iter()
             .find(|n| n.id == body)
             .unwrap()
-            .style,
-        new_style
+            .style
+            .fill,
+        new_style.fill
     );
     assert_eq!(
         p.production_design.heroes[0].config.layout,

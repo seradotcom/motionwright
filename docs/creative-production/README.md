@@ -16,13 +16,13 @@ Only use desktop candidates built by an exact-source successful Candidate Packag
 
 The established native evidence workflow produces separate editable project bundles and six-second H.264/AAC masters for ProductHeroReveal and SplitExplanation across 16:9, 9:16 and 1:1. This branch extends the same source-pinned native evidence workflow to three additional MetricEvidence cases (nine total). Until the exact PR SHA finishes successfully, MetricEvidence native verification remains pending. It must pass at the exact source SHA before these extra split outputs are considered technically verified; even passing these checks does not constitute aesthetic approval or human acceptance. Each successful case produces:
 
-- `hero.motionwright/manifest.json`: an actual portable project bundle, not a loose scene mock. In **Deliver Ã¢â€ â€™ Inspect and import**, select the absolute path of the `hero.motionwright` directory, inspect it, then import the verified bundle.
+- `hero.motionwright/manifest.json`: an actual portable project bundle, not a loose scene mock. In **Deliver â†’ Inspect and import**, select the absolute path of the `hero.motionwright` directory, inspect it, then import the verified bundle.
 - `motionwright-master.mp4`: a real six-second H.264/AAC master produced through Semwright's Motion Canvas and MLT providers. Its audio is deterministic **synthetic 440/660 Hz stereo test tones** for decoded H.264/AAC transport verification, **not sound design**.
 - `native-contact-sheet.png`, sampled PNGs, onion and difference images, native layout inspection, and immutable source/evidence manifests. These are generated from native renderer frames, never substituted with the editorial SVG preview.
 
 Import preserves internal scene/component identities and authored values while creating a fresh project generation. Existing native render readback tokens are not included in the portable bundle. Generate a new preview before using native inspection in the restored desktop project. Import refuses an already-existing project ID rather than overwriting it.
 
-Open **Production Ã¢â€ â€™ Components** and select the imported scene. The **Composition family** selector switches among a product reveal, a two-part explanatory graphic and an authored MetricEvidence study. The metric uses a dominant typographic fact, explanatory context and a permanent unverified-source disclosure; it never fabricates a data source or elevates a claim to verified evidence. In landscape the second family uses two columns separated by an intentional vertical rule; portrait and square reflow to stacked sections. Its six object identities remain stable, permitting per-property edits and conflict-aware family changes without flattening the project. A layout switch is an authored project revision only when explicitly saved, not when changing the preview. The existing default is preserved for old projects with no layout field. Change one bounded copy field or the accent, compare aspects, scrub the shared playhead, and update the component. Use **Edit objects** for ordinary object editing. Compatible human overrides survive subsequent component updates; conflicting copy, ambiguous reflow or a deleted component object produces an explicit error instead of regeneration.
+Open **Production â†’ Components** and select the imported scene. The **Composition family** selector switches among a product reveal, a two-part explanatory graphic and an authored MetricEvidence study. The metric uses a dominant typographic fact, explanatory context and a permanent unverified-source disclosure; it never fabricates a data source or elevates a claim to verified evidence. In landscape the second family uses two columns separated by an intentional vertical rule; portrait and square reflow to stacked sections. Its six object identities remain stable, permitting per-property edits and conflict-aware family changes without flattening the project. A layout switch is an authored project revision only when explicitly saved, not when changing the preview. The existing default is preserved for old projects with no layout field. Change one bounded copy field or the accent, compare aspects, scrub the shared playhead, and update the component. Use **Edit objects** for ordinary object editing. Compatible human overrides survive subsequent component updates; conflicting copy, ambiguous reflow or a deleted component object produces an explicit error instead of regeneration.
 
 In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, then apply once. The reversible history can preview undo or redo. Every inverse is a new CAS-protected revision. An intervening conflicting edit, property lock, missing object or incompatible new scene duration blocks the inverse. The original journal is never rewound.
 
@@ -51,7 +51,7 @@ constitute a 36-component library or human creative acceptance.
 
 ## Original generic ProductStage (MW05-E07-01)
 
-Production Ã¢â€ â€™ ProductStage stages an original, author-attested semantic UI
+Production â†’ ProductStage stages an original, author-attested semantic UI
 within neutral browser, flat-panel and handset outlines. Its source Canvas
 objects, normalized screen focus, original-content disclosure, optional
 native entrance keys and existing scene camera survive compatible text
@@ -85,7 +85,7 @@ approval. The v0.5 requirement remains partially implemented.
 
 ## Source-bound measured graphics (MW05-E06-03)
 
-**Production Ã¢â€ â€™ Measured data** adds bounded, source-identified tables and
+**Production â†’ Measured data** adds bounded, source-identified tables and
 editable Canvas counter, label and explicitly ranged bar outputs. No metric
 or axis values are invented. Updating a table flags only dependent scenes
 and profiles whose displayed values **or underlying measurement labels/units**

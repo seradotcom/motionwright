@@ -599,7 +599,7 @@ fn realize_craft_hero(id: Uuid, config: &HeroConfig, w: f64, h: f64) -> Result<V
             } else if compact {
                 h * 0.570
             } else {
-                h * 0.318
+                h * 0.320
             },
             if quote {
                 w * 0.73
