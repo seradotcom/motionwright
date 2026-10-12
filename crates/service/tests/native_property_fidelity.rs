@@ -6,7 +6,7 @@ use uuid::Uuid;
 /// source-content CAS admission, never created by forging a hash in Project.
 fn write_minimal_original_glb(path: &std::path::Path) {
     let mut json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[]}]}"#.to_vec();
-    while json.len() % 4 != 0 {
+    while !json.len().is_multiple_of(4) {
         json.push(b' ');
     }
     let length: u32 = u32::try_from(json.len()).unwrap();
