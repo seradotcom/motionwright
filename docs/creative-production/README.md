@@ -157,3 +157,15 @@ density without altering caption export or the saved project. It can open
 the real Audio editor. NO_AUTOMATED_FLAGS is not an accessible, creative,
 native pixel, rights or human-acceptance PASS; burn-in still requires a
 source-bound native frame inspection.
+
+
+## Source-bound delivery variant impact comparison
+
+The [delivery variant impact ledger](DELIVERY_VARIANT_IMPACT.md) in Deliver
+compares an unsaved draft with its saved profile and a recorded derivative
+with its actual parent. It explains source-authored differences and
+potential picture/sound/caption/mastering review stages, preserving the
+original project and avoiding a false native cache or render PASS.
+The original separate cut continuity validator remains authoritative
+for scene/claim structural validity. Independent native readback and
+human visual approval are not inferred from the ledger.

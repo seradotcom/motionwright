@@ -10,6 +10,8 @@ Alternate aspect ratios default to **replan**, not crop. Canonical Film projects
 
 A vertical or square profile therefore does not silently stretch a 16:9 render or hide content off-frame. Unsupported geometry fails closed and requires an authored adjustment.
 
+The read-only [delivery variant impact comparison](creative-production/DELIVERY_VARIANT_IMPACT.md) sits beside narrative continuity in Deliver. It shows current unsaved changes against the saved profile and any derivative profile against its exact saved parent, classifying source-authored differences by potential picture, sound, caption, AV mastering and editorial review stage. These are conservative reviewer hints, not physical cache invalidation, Native SDK dispatch or actual native media equivalence.
+
 ## Localization and voice timing
 
 A locale derivative is a real variant, not a relabeled export:
