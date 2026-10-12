@@ -38,6 +38,10 @@ struct DatasetMetric {
     brief: String,
     size: String,
     scene_count: usize,
+    fresh_store_open_micros: u128,
+    fresh_project_create_micros: u128,
+    first_editable_scene_micros: u128,
+    first_scene_preserved_after_revision_ten: bool,
     seed_micros: u128,
     revision_start: u64,
     revision_end: u64,
@@ -106,12 +110,19 @@ fn database_bytes(path: &Path) -> u64 {
 fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetric {
     let temp = tempdir().expect("temporary benchmark directory");
     let db_path = temp.path().join("motionwright.sqlite3");
+    let open_started = Instant::now();
     let service = StudioService::open(&db_path).expect("benchmark store");
+    let fresh_store_open_micros = open_started.elapsed().as_micros();
+    let create_started = Instant::now();
     let mut project = service
         .create_project(&format!("{} · {size}", brief.title))
         .expect("benchmark project");
+    let fresh_project_create_micros = create_started.elapsed().as_micros();
 
+    // This starts AFTER project creation, not at user installation or human
+    // decision time. It is strictly a first EDITABLE SCENE proxy.
     let seed_started = Instant::now();
+    let mut first_editable_scene_micros = None;
     commit(
         &service,
         &mut project,
@@ -137,8 +148,16 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
                 duration_seconds: 4 + (index % 5) as i64,
             },
         );
+        if index == 0 {
+            assert_eq!(project.scenes.len(), 1);
+            first_editable_scene_micros = Some(seed_started.elapsed().as_micros());
+        }
     }
+    let first_editable_scene_micros =
+        first_editable_scene_micros.expect("the first original scene was saved");
     let seed_micros = seed_started.elapsed().as_micros();
+    assert!(first_editable_scene_micros <= seed_micros);
+    let first_scene_id = project.scenes[0].id;
     let revision_start = project.revision;
 
     let scene_a = project.scenes[0].id;
@@ -275,6 +294,10 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
         "Tenth predefined change persisted after reopen."
     );
     assert_eq!(reopened.scenes.len(), scene_count);
+    assert_eq!(
+        reopened.scenes[0].id, first_scene_id,
+        "the exact first editable scene survives revision ten and SQLite reopen"
+    );
 
     let profile_id = reopened
         .deliverables
@@ -361,6 +384,10 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
         brief: brief.slug.into(),
         size: size.into(),
         scene_count,
+        fresh_store_open_micros,
+        fresh_project_create_micros,
+        first_editable_scene_micros,
+        first_scene_preserved_after_revision_ten: true,
         seed_micros,
         revision_start,
         revision_end,

@@ -50,6 +50,8 @@ jobs:
           python3 tooling/acceptance_policy.py
       - name: Reject fabricated creative stage-cost evidence
         run: python3 -m unittest discover -s tooling/tests -p test_creative_stage_cost.py -v
+      - name: Reject first editable scene and ten-revision evidence tampering
+        run: python3 -m unittest discover -s tooling/tests -p test_first_scene_reuse.py -v
       - name: S M L × three unrelated briefs × revision ten
         env:
           MOTIONWRIGHT_LATENCY_BUDGET_MS: "2000"
@@ -71,6 +73,10 @@ jobs:
           assert len({r["brief"] for r in rows})==3
           assert all(r["revision_delta"]==10 for r in rows)
           assert all(len(r["operations"])==10 for r in rows)
+          assert all(r["fresh_store_open_micros"]>0 for r in rows)
+          assert all(r["fresh_project_create_micros"]>0 for r in rows)
+          assert all(0<r["first_editable_scene_micros"]<=r["seed_micros"] for r in rows)
+          assert all(r["first_scene_preserved_after_revision_ten"] is True for r in rows)
           assert report["human_feedback"].startswith("NOT_RUN")
           assert report["comparative_claims"].startswith("NONE")
           cache=report["cache_evidence"]
@@ -107,6 +113,28 @@ jobs:
           assert report["human_interaction_evaluated"]=="NOT_RUN"
           assert report["claims"]["release_ready"] is False
           print("creative-stage-cost=verified nine_datasets=9 no_false_render_speedup")
+          PY
+      - name: Bind technical first editable scene and reuse to source revision
+        run: |
+          python3 tooling/first_scene_reuse.py \
+            --input verification/performance/report.json \
+            --source-sha "$(git rev-parse HEAD)" \
+            --output verification/performance/first-scene-reuse.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path("verification/performance/first-scene-reuse.json").read_text())
+          assert p["schema"]=="motionwright.v05-first-scene-reuse/1"
+          assert p["source_sha"]==__import__("subprocess").check_output(
+              ["git","rev-parse","HEAD"],text=True).strip()
+          assert p["projects"]==9 and p["recorded_revisions_per_project"]==10
+          assert p["first_scene_identity_preserved_across_reopen"] is True
+          assert p["end_user_first_useful_result"]=="NOT_MEASURED"
+          assert p["installed_desktop_first_frame"]=="NOT_MEASURED"
+          assert p["human_first_use"]=="NOT_RUN"
+          assert p["reuse"]["renderer_saved_wallclock_micros"] is None
+          assert p["claims"]["release_ready"] is False
+          print("first-scene-reuse=source_verified human=NOT_RUN first_value=NOT_MEASURED")
           PY
       - uses: actions/upload-artifact@v4
         with:
