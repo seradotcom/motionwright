@@ -729,6 +729,8 @@ enum OperationKind {
     DetachMeasuredBinding,
     UpsertNativeCapsule,
     RegisterCaptureSource,
+    RegisterIdentityOrigin,
+    RevokeIdentityOrigin,
     ApplyCreativePatch,
     RenameProject,
     SetBrief,
@@ -940,6 +942,22 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .ok_or_else(|| Error::invalid("capture record is required"))?,
             )
             .map_err(|_| Error::invalid("invalid bounded first-party capture source record"))?,
+        }),
+        OperationKind::RegisterIdentityOrigin => Ok(Change::RegisterIdentityOrigin {
+            record: serde_json::from_value(
+                args.get("record")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("identity declaration is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid scoped identity source declaration"))?,
+        }),
+        OperationKind::RevokeIdentityOrigin => Ok(Change::RevokeIdentityOrigin {
+            revocation: serde_json::from_value(
+                args.get("revocation")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("identity revocation is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid immutable identity revocation"))?,
         }),
         OperationKind::UpsertMeasuredTable => Ok(Change::UpsertMeasuredTable {
             table: serde_json::from_value(
@@ -2484,6 +2502,78 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::RegisterIdentityOrigin,
+            descriptor(
+                "identity-origin.register",
+                "Append a scoped synthetic-identity origin and declared consent references without authorizing media synthesis",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "record":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.identity-origin/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "source_project_id":{"type":"string","format":"uuid"},
+                                "source_generation":{"type":"string","format":"uuid"},
+                                "origin":{"type":"string","enum":["original_fictional","human_likeness"]},
+                                "display_label":{"type":"string","minLength":1,"maxLength":96},
+                                "origin_description":{"type":"string","minLength":1,"maxLength":300},
+                                "created_by_declaration":{"type":"string","minLength":1,"maxLength":160},
+                                "created_at_utc":{"type":"string","format":"date-time","maxLength":20},
+                                "expires_at_utc":{"type":"string","format":"date-time","maxLength":20},
+                                "allowed_modalities":{"type":"array","minItems":1,"maxItems":3,"uniqueItems":true,
+                                    "items":{"type":"string","enum":["voice","face","presenter"]}},
+                                "allowed_purposes":{"type":"array","minItems":1,"maxItems":4,"uniqueItems":true,
+                                    "items":{"type":"string","enum":["product_demonstration","marketing","education","internal_review"]}},
+                                "provenance_asset_id":{"type":"string","format":"uuid"},
+                                "provenance_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "consent_asset_id":{"anyOf":[{"type":"null"},{"type":"string","format":"uuid"}]},
+                                "consent_sha256":{"anyOf":[{"type":"null"},{"type":"string","pattern":"^[0-9a-f]{64}$"}]},
+                                "consent_subject_declaration":{"anyOf":[{"type":"null"},{"type":"string","maxLength":160}]},
+                                "consent_scope_declaration":{"anyOf":[{"type":"null"},{"type":"string","maxLength":300}]},
+                                "synthetic_disclosure":{"type":"string","enum":[
+                                    "SYNTHETIC ORIGINAL CHARACTER / NOT A REAL PERSON",
+                                    "SYNTHETIC HUMAN LIKENESS / CONSENT REQUIRES INDEPENDENT REVIEW"]}
+                            },
+                            "required":["schema","id","source_project_id","source_generation","origin",
+                                "display_label","origin_description","created_by_declaration",
+                                "created_at_utc","expires_at_utc","allowed_modalities","allowed_purposes",
+                                "provenance_asset_id","provenance_sha256","consent_asset_id",
+                                "consent_sha256","consent_subject_declaration","consent_scope_declaration",
+                                "synthetic_disclosure"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "record"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RevokeIdentityOrigin,
+            descriptor(
+                "identity-origin.revoke",
+                "Append an irreversible identity revocation without deleting historical source evidence",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "revocation":{
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","format":"uuid"},
+                                "identity_id":{"type":"string","format":"uuid"},
+                                "revoked_at_utc":{"type":"string","format":"date-time","maxLength":20},
+                                "reason":{"type":"string","minLength":1,"maxLength":240}
+                            },
+                            "required":["id","identity_id","revoked_at_utc","reason"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "revocation"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertMeasuredTable,
             descriptor(
                 "measured-table.upsert",
@@ -2863,7 +2953,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         // The unified composition admission exposed 61 operations; the music
         // cut adds one scoped, owner-source-bound Native SDK operation.
-        assert_eq!(capabilities.len(), 62);
+        assert!(names.contains(&"driver.motionwright.identity-origin.register"));
+        assert!(names.contains(&"driver.motionwright.identity-origin.revoke"));
+        assert_eq!(capabilities.len(), 64);
     }
 
     #[tokio::test]

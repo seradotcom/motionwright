@@ -28,6 +28,17 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## Synthetic identity and consent boundaries (MW05-E12-04)
+
+Production → Identity & consent introduces source-bound, versioned declarations
+for entirely fictional characters or human likenesses. Each requires scoped
+purposes, modalities, expiry and immutable origin evidence; a human likeness
+also requires a distinct consent source. Revocations remain append-only.
+Neither a declaration nor a valid asset SHA-256 authenticates consent, and no
+provider is granted generation rights by this feature. See
+[Identity and consent](IDENTITY_CONSENT.md) for the exact trust boundaries
+and incomplete human approval/rendering requirements.
+
 ## Integrated original composition contracts
 
 The existing production model now admits four distinct source-bound creative

@@ -725,10 +725,22 @@
     },
     {
       "id": "MW05-E12-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No synthetic identity pipeline added",
-      "remaining_scope": "Origin, purpose and consent receipts remain required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Project-versioned source and consent declarations distinguish entirely fictional originals from real human likenesses, require distinct imported JSON source/consent assets where applicable, pin modality, purpose, author declaration, UTC expiry and mandatory synthetic disclosure, and support immutable revocation through existing CAS, Native SDK and Studio; no generator permission is issued",
+      "remaining_scope": "Independent verification of actual human identity and consent signatures, source-document semantic audit, authenticated owner approval, provider-side access revocation, actual presenter/voice/face generation and on-output disclosure acceptance remain open",
+      "source_paths": [
+        "crates/domain/src/identity_origin.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/src/production_design.rs",
+        "crates/domain/tests/identity_origin.rs",
+        "crates/service/tests/identity_origin.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/identityOrigin.ts",
+        "apps/studio/src/identityOrigin.test.ts",
+        "apps/studio/src/IdentityOriginWorkbench.tsx",
+        "apps/studio/tests/identity-consent.spec.ts",
+        "docs/creative-production/IDENTITY_CONSENT.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

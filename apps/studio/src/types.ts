@@ -4,6 +4,7 @@ import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 import type { ProductStageConfig } from "./productStage";
 import type { CaptureSourceRecord } from "./captureSource";
+import type { IdentityOriginRecord, IdentityRevocation } from "./identityOrigin";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
 export type RendererKind =
@@ -586,6 +587,8 @@ export type Change =
   | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
   | { type: "detach_product_stage"; instance_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
+  | { type: "register_identity_origin"; record: IdentityOriginRecord }
+  | { type: "revoke_identity_origin"; revocation: IdentityRevocation }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
   | { type: "upsert_measured_table"; table: MeasuredTable }
   | { type: "upsert_measured_binding"; binding_id: string; scene_id: string; node_id: string; table_id: string; datum_key: string; view: MeasuredView }

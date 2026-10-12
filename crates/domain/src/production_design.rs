@@ -38,6 +38,12 @@ pub struct ProductionDesign {
     /// Latest scoped invalidation notice, not a completed render-cache purge.
     #[serde(default)]
     pub last_measured_impact: Option<MeasuredDataImpact>,
+    /// Versioned rights declarations for proposed fictional/human likenesses.
+    #[serde(default)]
+    pub identity_origins: Vec<IdentityOriginRecord>,
+    /// Append-only identity revocation receipts; never a silent grant reset.
+    #[serde(default)]
+    pub identity_revocations: Vec<IdentityRevocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
