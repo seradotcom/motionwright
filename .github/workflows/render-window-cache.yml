@@ -1,0 +1,83 @@
+name: Render Window Derived Cache Eviction
+
+on:
+  push:
+    branches: ['feat/**', main]
+    paths:
+      - 'crates/storage/**'
+      - 'crates/service/src/lib.rs'
+      - 'crates/domain/src/render_tail_impact.rs'
+      - '.github/workflows/render-window-cache.yml'
+  pull_request:
+    paths:
+      - 'crates/storage/**'
+      - 'crates/service/src/lib.rs'
+      - 'crates/domain/src/render_tail_impact.rs'
+      - '.github/workflows/render-window-cache.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  source-bound-physical-eviction:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: render-window-cache-1.98.1
+          cache-on-failure: true
+      - name: Verify source policy and formatting
+        run: |
+          python3 tooling/source_policy.py
+          cargo fmt --all -- --check
+      - name: Check atomic SQLite revocation and transaction rollback
+        run: python3 -m unittest tooling.tests.test_render_window_sql_guard -v
+      - name: Execute physical eviction, authority and recovery tests
+        run: |
+          set -euo pipefail
+          mkdir -p verification/render-window-cache
+          cargo test -p motionwright-storage --test render_window_cache -- --nocapture 2>&1 | tee verification/render-window-cache/storage-tests.txt
+          cargo test -p motionwright-storage --lib derived_cache -- --nocapture 2>&1 | tee verification/render-window-cache/cache-integrity-tests.txt
+      - name: Enforce strict Rust on all new cache APIs
+        run: |
+          set -euo pipefail
+          cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings 2>&1 | tee verification/render-window-cache/clippy.txt
+      - name: Bind evidence to source commit without claiming native frame speedups
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('verification/render-window-cache')
+          root.mkdir(parents=True,exist_ok=True)
+          sources=[{'path':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.iterdir()) if p.is_file()]
+          (root/'manifest.json').write_text(json.dumps({
+            'schema':'motionwright.render-window-cache-ci/1',
+            'source_sha':os.environ['GITHUB_SHA'],
+            'tests_attempted':bool(sources),
+            'native_incremental_equivalence':'NOT_RUN',
+            'native_renderer_time_saved':'NOT_MEASURED',
+            'evidence':sources
+          },indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: render-window-cache
+          path: verification/render-window-cache/
+          if-no-files-found: error
+          retention-days: 7

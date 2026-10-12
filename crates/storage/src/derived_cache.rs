@@ -1,4 +1,7 @@
-use super::{Result, StorageError, Store, ensure_regular_file, validate_digest};
+use super::{
+    Result, StorageError, Store, create_checked_blob_directory, ensure_regular_directory,
+    ensure_regular_file, validate_digest,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -80,6 +83,41 @@ impl Store {
             .join("derived-cache")
     }
 
+    /// No derived-cache operation may traverse an application-owned symlink
+    /// at the cache root, shard or owner directory. Lookup stays read-only.
+    fn checked_derived_cache_dirs(&self, scope_sha256: &str, create: bool) -> Result<bool> {
+        validate_digest(scope_sha256)?;
+        let root = self.derived_cache_root();
+        let parent = root
+            .parent()
+            .ok_or_else(|| invalid("cache root has no parent"))?;
+        ensure_regular_directory(parent, "derived cache trusted parent")?;
+        let dirs = [
+            root.clone(),
+            root.join("sha256"),
+            root.join("sha256").join(&scope_sha256[..2]),
+            root.join("sha256")
+                .join(&scope_sha256[..2])
+                .join(scope_sha256),
+        ];
+        for directory in dirs {
+            if create {
+                create_checked_blob_directory(&directory)?;
+            } else {
+                match ensure_regular_directory(&directory, "derived cache directory") {
+                    Ok(_) => {}
+                    Err(StorageError::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        return Ok(false);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn derived_cache_manifest_path(
         &self,
         scope_sha256: &str,
@@ -112,9 +150,20 @@ impl Store {
         let scope_sha256 = digest_text(scope);
         let destination =
             self.derived_cache_manifest_path(&scope_sha256, kind, fingerprint_sha256)?;
+        self.checked_derived_cache_dirs(&scope_sha256, true)?;
+        let existing = match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => true,
+            Ok(_) => {
+                return Err(StorageError::UnsafeSourcePath(
+                    "derived cache manifest cannot be a symlink or special file".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
         let blob = self.ingest_blob_file(source)?;
 
-        if destination.exists() {
+        if existing {
             match self.lookup_derived_cache(scope, kind, fingerprint_sha256)? {
                 Some(existing) => {
                     if existing.record.blob_sha256 != blob.sha256
@@ -150,7 +199,8 @@ impl Store {
         let parent = destination
             .parent()
             .ok_or_else(|| invalid("cache manifest has no parent directory"))?;
-        fs::create_dir_all(parent)?;
+        // No create_dir_all: that silently follows an existing symlink.
+        self.checked_derived_cache_dirs(&record.scope_sha256, true)?;
         let staging = parent.join(format!(".{}.part", Uuid::now_v7()));
         let mut output = OpenOptions::new()
             .write(true)
@@ -161,7 +211,8 @@ impl Store {
         output.sync_all()?;
         drop(output);
 
-        if destination.exists() {
+        if existing {
+            ensure_regular_file(&destination, "derived cache old manifest")?;
             fs::remove_file(&destination)?;
         }
         fs::rename(&staging, &destination)?;
@@ -179,11 +230,14 @@ impl Store {
         validate_digest(fingerprint_sha256)?;
         let scope_sha256 = digest_text(scope);
         let manifest = self.derived_cache_manifest_path(&scope_sha256, kind, fingerprint_sha256)?;
-        if !manifest.exists() {
+        if !self.checked_derived_cache_dirs(&scope_sha256, false)? {
             return Ok(None);
         }
-
-        let size = ensure_regular_file(&manifest, "derived cache manifest")?.len();
+        let size = match fs::symlink_metadata(&manifest) {
+            Ok(_) => ensure_regular_file(&manifest, "derived cache manifest")?.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
         if size > MAX_DERIVED_CACHE_MANIFEST_BYTES {
             return Err(StorageError::BlobTooLarge {
                 size,
@@ -217,6 +271,38 @@ impl Store {
             blob_path,
             validated_bytes: descriptor.size_bytes,
         }))
+    }
+}
+
+impl Store {
+    /// Evict exactly one verified *derived manifest*, never its CAS blob.
+    /// A corrupt or symlinked entry is an error instead of a silent purge.
+    pub fn evict_derived_cache_exact(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+    ) -> Result<bool> {
+        validate_scope(scope)?;
+        validate_kind(kind)?;
+        validate_digest(fingerprint_sha256)?;
+        let digest = digest_text(scope);
+        let location = self.derived_cache_manifest_path(&digest, kind, fingerprint_sha256)?;
+        if !self.checked_derived_cache_dirs(&digest, false)? {
+            return Ok(false);
+        }
+        match fs::symlink_metadata(&location) {
+            Ok(_) => {
+                // Deleting a derived manifest cannot grant access to bytes:
+                // a corrupt manifest is still safe to delete, while symlinks
+                // and special files must fail closed.
+                ensure_regular_file(&location, "derived cache eviction manifest")?;
+                fs::remove_file(location)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -327,5 +413,94 @@ mod tests {
             store.lookup_derived_cache("scope", "master", "not-a-digest"),
             Err(StorageError::InvalidBlobDigest)
         ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod cache_symlink_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
+
+    #[test]
+    fn cache_shard_symlink_cannot_exfiltrate_manifest_or_become_a_hit() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+        let scope = "project:owner";
+        let fingerprint = digest_text("source-recipe");
+        let source = dir.path().join("derived.bin");
+        fs::write(&source, b"derived bytes").unwrap();
+        let outside = dir.path().join("foreign");
+        fs::create_dir(&outside).unwrap();
+        let root = dir.path().join("derived-cache");
+        fs::create_dir(&root).unwrap();
+        symlink(&outside, root.join("sha256")).unwrap();
+        let put =
+            store.put_derived_cache_file(scope, "render-window-proxy", &fingerprint, &source, 30);
+        assert!(matches!(put, Err(StorageError::UnsafeSourcePath(_))));
+        assert!(matches!(
+            store.lookup_derived_cache(scope, "render-window-proxy", &fingerprint),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(matches!(
+            store.evict_derived_cache_exact(scope, "render-window-proxy", &fingerprint),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn dangling_manifest_symlink_is_never_silent_miss_or_repaired_through_link() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+        let scope = "project:owner";
+        let fingerprint = digest_text("manifest-recipe");
+        let source = dir.path().join("source.bin");
+        fs::write(&source, b"source bytes").unwrap();
+        store
+            .put_derived_cache_file(scope, "render-window-proxy", &fingerprint, &source, 1)
+            .unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&digest_text(scope), "render-window-proxy", &fingerprint)
+            .unwrap();
+        fs::remove_file(&manifest).unwrap();
+        let foreign = dir.path().join("not-created");
+        symlink(&foreign, &manifest).unwrap();
+        assert!(matches!(
+            store.lookup_derived_cache(scope, "render-window-proxy", &fingerprint),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(matches!(
+            store.put_derived_cache_file(scope, "render-window-proxy", &fingerprint, &source, 1),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(matches!(
+            store.evict_derived_cache_exact(scope, "render-window-proxy", &fingerprint),
+            Err(StorageError::UnsafeSourcePath(_))
+        ));
+        assert!(!foreign.exists());
+    }
+}
+
+#[cfg(test)]
+mod cache_missing_path_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn read_only_miss_does_not_create_derived_cache_directories() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+        assert!(
+            store
+                .lookup_derived_cache(
+                    "project:missing",
+                    "render-window-proxy",
+                    &digest_text("missing")
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(!dir.path().join("derived-cache").exists());
     }
 }

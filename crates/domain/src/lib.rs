@@ -13,6 +13,7 @@ mod music_clock;
 mod procedural;
 mod product_stage;
 mod production_design;
+mod render_tail_impact;
 pub use brand_governance::*;
 pub use canvas::*;
 pub use capture_source::*;
@@ -28,6 +29,7 @@ pub use music_clock::*;
 pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
+pub use render_tail_impact::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
