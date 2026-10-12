@@ -12,7 +12,7 @@ Cached payloads use the existing content-addressed blob store. The manifest reco
 
 Admission ingests the source through the verified blob store before publishing a cache manifest. If the same scope, kind and fingerprint already resolve to valid bytes, a later write must resolve to the same blob. Different bytes for the same exact fingerprint are rejected as nondeterministic output rather than silently replacing the prior result.
 
-Lookup validates scope, kind and fingerprint syntax; derives the manifest path without user-controlled path components; rejects symlink or special manifests and oversized manifests; requires manifest identity to match the requested key; and verifies the referenced content-addressed blob plus byte length. A missing manifest is a miss. A manifest whose blob is absent is also a miss and can be rebuilt. A digest mismatch, malformed manifest or identity mismatch is an error, not a hit.
+Lookup validates scope, kind and fingerprint syntax; derives the manifest path without user-controlled path components; rejects symlinked cache roots, shards and owner directories, as well as symlink or special manifests and oversized manifests; requires manifest identity to match the requested key; and verifies the referenced content-addressed blob plus byte length. A missing manifest is a miss. A manifest whose blob is absent is also a miss and can be rebuilt. A digest mismatch, malformed manifest or identity mismatch is an error, not a hit.
 
 ## Invalidation
 

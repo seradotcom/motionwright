@@ -9,6 +9,7 @@
 - A storage/service method consumes a fresh canonical domain impact request, re-derives exact source-frame windows, and physically removes overlapping derived manifests and registration rows. It is idempotent. It does not touch project revisions, source files, historical receipts or CAS blobs.
 - All entries from a different revision are evicted conservatively. Scoped montage profiles or tail spill past film duration invalidate their whole profile rather than using unproven output-frame remapping.
 - Explicit bounds: at most 4,096 indexed entries per project, at most 4,096 source frames per derived window, and 1,080,000 source frames for the project. An overfull index stops without partial eviction.
+- Derived cache directory creation, lookup and eviction now verify the cache root and each shard/owner component independently; existing symlinks and dangling manifest symlinks fail closed, without traversing the target.
 - Partial eviction caused by a filesystem or database error results in a cache miss, not a stale hit: lookup requires both an active SQL registration and its verified manifest. A stray manifest is not authoritative. The store also attempts a bounded drain at reopen and on successful edits. Cleanup may be explicitly retried with `drain_render_window_evictions(1..=256)` after crashes or transient failures; oversized or symlinked entries fail closed and never suppress the successful project commit.
 
 ## Why this is not a native incremental renderer
