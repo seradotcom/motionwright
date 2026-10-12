@@ -517,10 +517,29 @@
     },
     {
       "id": "MW05-E08-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No semantic event-driven sound choreography",
-      "remaining_scope": "SFX placement, energy curves and tails must reach an actual mix",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Versioned project semantic SFX events anchored to real scene/beat at exactly 30fps, bounded original WAV digest/rights claim, source frame/offset and 48kHz stereo PCM gain/attack/release envelopes, source-scoped scene review and CAS/Native SDK operations; owner-only actual imported WAV reads; deterministic native PCM16 mixing with clipping refusal, independent 48k source/mixed sample CI evidence (pending exact SHA)",
+      "remaining_scope": "Exact source Native SFX PCM job must pass CI at pushed SHA; injection and independent decoding into a pinned Semwright H264/AAC MLT AV master, optional music/narration tracks, real LUFS/true peak and ducking acceptance, source rights and human listening review remain open",
+      "source_paths": [
+        "crates/domain/src/semantic_sfx.rs",
+        "crates/domain/src/creative.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/tests/semantic_sfx.rs",
+        "crates/service/src/lib.rs",
+        "crates/service/tests/semantic_sfx.rs",
+        "crates/native/src/sfx_mix.rs",
+        "crates/native/tests/semantic_sfx_mix.rs",
+        "crates/native/examples/semantic-sfx-e2e.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/semanticSfx.ts",
+        "apps/studio/src/semanticSfx.test.ts",
+        "apps/studio/src/SemanticSfxWorkbench.tsx",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "apps/studio/tests/semantic-sfx.spec.ts",
+        "tooling/semantic_sfx_evidence.py",
+        ".github/workflows/semantic-sfx-e2e.yml",
+        "docs/creative-production/SEMANTIC_SFX.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

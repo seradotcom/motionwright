@@ -22,6 +22,7 @@ pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
 pub mod multi_renderer;
 pub mod production;
+pub mod sfx_mix;
 
 pub const APP_ID: &str = "motionwright";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -763,6 +764,8 @@ enum OperationKind {
     RemoveTranscriptSegment,
     UpsertAudioCue,
     RemoveAudioCue,
+    UpsertSemanticSfx,
+    RemoveSemanticSfx,
     SetMixIntent,
     SetVisualLanguage,
     AddProposalSet,
@@ -1360,6 +1363,17 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             Ok(Change::UpsertAudioCue { cue })
         }
         OperationKind::RemoveAudioCue => Ok(Change::RemoveAudioCue {
+            cue_id: uuid(args, "cue_id")?,
+        }),
+        OperationKind::UpsertSemanticSfx => Ok(Change::UpsertSemanticSfx {
+            cue: serde_json::from_value(
+                args.get("cue")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("semantic SFX cue is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid bounded original SFX source cue"))?,
+        }),
+        OperationKind::RemoveSemanticSfx => Ok(Change::RemoveSemanticSfx {
             cue_id: uuid(args, "cue_id")?,
         }),
         OperationKind::SetMixIntent => {
@@ -2269,6 +2283,56 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::UpsertSemanticSfx,
+            descriptor(
+                "audio.sfx.upsert",
+                "Author a source-hashed original stereo effect cue anchored to a scene or beat",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "cue":{
+                            "type":"object",
+                            "properties":{
+                                "schema":{"type":"string","const":"motionwright.semantic-sfx/1"},
+                                "id":{"type":"string","format":"uuid"},
+                                "scene_id":{"type":"string","format":"uuid"},
+                                "event":{"type":"string","enum":["scene_reveal","beat_emphasis","ui_focus","confirmation","impact","transition"]},
+                                "anchor":{"type":"object"},
+                                "offset_frames":{"type":"integer","minimum":-15,"maximum":30},
+                                "source_asset_id":{"type":"string","format":"uuid"},
+                                "source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                                "source_frames":{"type":"integer","minimum":1,"maximum":180},
+                                "gain_milli_db":{"type":"integer","minimum":-36000,"maximum":0},
+                                "attack_frames":{"type":"integer","minimum":0,"maximum":30},
+                                "release_frames":{"type":"integer","minimum":0,"maximum":90},
+                                "original_source_attestation":{"type":"string","minLength":1,"maxLength":160}
+                            },
+                            "required":["schema","id","scene_id","event","anchor",
+                                "offset_frames","source_asset_id","source_sha256","source_frames",
+                                "gain_milli_db","attack_frames","release_frames",
+                                "original_source_attestation"],
+                            "additionalProperties":false
+                        }
+                    }),
+                    &["ref", "cue"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::RemoveSemanticSfx,
+            descriptor(
+                "audio.sfx.remove",
+                "Remove an original source-bound SFX placement by stable identity",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "cue_id":{"type":"string","format":"uuid"}
+                    }),
+                    &["ref", "cue_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::SetMixIntent,
             descriptor(
                 "audio.mix.set",
@@ -2862,7 +2926,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
         // The unified composition admission exposed 61 operations; the music
         // cut adds one scoped, owner-source-bound Native SDK operation.
-        assert_eq!(capabilities.len(), 62);
+        assert!(names.contains(&"driver.motionwright.audio.sfx.upsert"));
+        assert!(names.contains(&"driver.motionwright.audio.sfx.remove"));
+        assert_eq!(capabilities.len(), 64);
     }
 
     #[tokio::test]

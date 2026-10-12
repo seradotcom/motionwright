@@ -86,6 +86,17 @@ measurement truth/rights. The SQLite CAS re-parses the exact imported bytes
 before committing declared rows; Studio requires the same file SHA-256.
 A separate pinned native CI experiment renders an explicitly synthetic two-version JSON source into editable measured Canvas primitives and decodes a six-second H.264/AAC MP4; this proof is not admitted until the exact branch SHA passes. General ETL/series, cache regeneration and creative approval remain open.
 
+## Original semantic SFX choreography (MW05-E08-03)
+
+Audio now has bounded source-hashed semantic sound event placements: explicit
+scene/beat anchors, original-stereo-WAV references, millidecibel gain and
+native attack/release sample envelopes, all through canonical Studio CAS and
+Semwright Native SDK. A separate exact-source native run prepares actual
+stereo 48 kHz PCM16 and independently checks decoded sample positions.
+This is a **partial sound-production workflow**, not a completed A/V mux,
+measured LUFS master or certified third-party soundtrack. See
+[Semantic SFX](SEMANTIC_SFX.md) for evidence and supported limits.
+
 ## Data and migration contracts
 
 Format 1 is read without changing revision or generation. Its first successful edit writes format 2 in the same existing transaction. A failed operation does not upgrade or alter the stored project. New creative state cannot be labeled format 1, and unknown future formats are rejected. The UI exposes the upgrade boundary before editing. This is not an implementation of cross-product legacy import.
