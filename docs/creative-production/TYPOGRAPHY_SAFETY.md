@@ -35,7 +35,9 @@ based on real target layout; the preflight reports an **unresolved**
 format-specific projection instead of stretching 16:9 coordinates and
 pretending that portrait typography is correct.
 
-Nested objects, coordinate-space changes, relationship constraints,
+Text overrides and crop-mode profiles also require native inspection,
+even when the declared output has the source aspect ratio. Nested
+objects, coordinate-space changes, relationship constraints,
 invalid cameras, incomplete fonts, oversized motion sets and excluded
 scenes fail closed to **Needs native review**. A sampled_inside
 finding proves **only** that sampled rectangle bounds did not cross

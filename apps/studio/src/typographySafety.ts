@@ -104,6 +104,12 @@ export function evaluateTypeSafety(
     if (!sameAspect) {
       return unresolved(node,"This output changes aspect ratio. Native replan/crop positions are not inferred from the 1920 × 1080 editor.");
     }
+    if (profile.framing_strategy==="crop") {
+      return unresolved(node,"This output uses a crop strategy. Actual target framing requires native visual review.");
+    }
+    if (!profile.text_overrides || Object.keys(profile.text_overrides).length>0) {
+      return unresolved(node,"This output has profile-specific text overrides. Source copy cannot prove delivered typography.");
+    }
     if (profile.included_scene_ids.length > 0 &&
         !profile.included_scene_ids.includes(scene.id)) {
       return unresolved(node,"This scene is excluded from the selected deliverable profile.");

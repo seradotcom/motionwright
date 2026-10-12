@@ -113,3 +113,24 @@ describe("source-bound typography framing preflight",()=>{
     expect(result.warningCount).toBe(0);
   });
 });
+
+
+describe("variant-specific typography provenance",()=>{
+  it("does not reuse source text geometry when a profile replaces the copy",()=>{
+    const {project,scene,profile,node}=setup();
+    profile.text_overrides[node.id]="A much longer translated phrase, not independently laid out";
+    const result=evaluateTypeSafety(project,scene,profile,1);
+    expect(result.findings[0].status).toBe("unresolved");
+    expect(result.findings[0].reason).toContain("profile-specific text overrides");
+    expect(result.warningCount).toBe(0);
+    expect(result.unresolvedCount).toBe(1);
+  });
+  it("treats source-aspect crop strategy as unknown instead of safe",()=>{
+    const {project,scene,profile}=setup();
+    profile.framing_strategy="crop";
+    profile.crop_approved=true;
+    const result=evaluateTypeSafety(project,scene,profile,1);
+    expect(result.findings[0].status).toBe("unresolved");
+    expect(result.findings[0].reason).toContain("crop strategy");
+  });
+});
