@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn source_scope_counts_historical_project_lifetimes_without_current_claim() {
-        let (mut project, mut receipts) = project_and_receipts();
+        let (mut project, receipts) = project_and_receipts();
         project.revision += 1;
         let inventory = derive(&project, &receipts).unwrap();
         assert_eq!(inventory.confirmed_native_creations_current_revision, 0);
