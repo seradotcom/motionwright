@@ -137,7 +137,7 @@ fn different_exact_rational_frame_rates_do_not_round_or_invent_output_cut_times(
 }
 #[test]
 fn audit_scope_rejects_stale_generation_revision_duplicate_scene_and_missing_tail_source() {
-    let mut p = source();
+    let p = source();
     let mut query = request(&p, RenderImpactCause::SceneVisual, vec![p.scenes[0].id]);
     query.expected_revision = p.revision + 1;
     assert!(
