@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import sys
 import struct
 import tempfile
 import zlib
@@ -13,6 +14,10 @@ import unittest
 from unittest.mock import patch
 
 MODULE = Path(__file__).resolve().parents[1] / "native_direct_mediated_parity.py"
+# Allow the actual production script's pure sibling clock module when loaded
+# under a dynamic test spec (the ordinary python tooling/... entrypoint already
+# includes its source directory in sys.path).
+sys.path.insert(0, str(MODULE.parent))
 spec = importlib.util.spec_from_file_location("native_direct_mediated_parity", MODULE)
 assert spec and spec.loader
 parity = importlib.util.module_from_spec(spec)
@@ -240,6 +245,18 @@ class SourceBoundComparisonTests(unittest.TestCase):
                 )
                 self.assertEqual(result["native_validation_checks"], 1)
                 self.assertTrue(result["independent_job_confirmed"])
+                # New measured phases must observe only the six original,
+                # allowed direct commands and the existing terminal wait.
+                subtimings = result["measured_direct_substages_micros"]
+                self.assertEqual(
+                    set(subtimings),
+                    {"plan", "apply", "start", "terminal_wait", "result", "verify"},
+                )
+                self.assertTrue(all(type(v) is int and v >= 0 for v in subtimings.values()))
+                self.assertGreaterEqual(
+                    result["measured_direct_total_micros"] + len(subtimings),
+                    sum(subtimings.values()),
+                )
                 with self.assertRaisesRegex(parity.DirectParityError, "reused"):
                     parity.run_direct_native_film(
                         film_file=film, executable=Path("semwright"),

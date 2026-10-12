@@ -19,6 +19,7 @@ import tomllib
 from pathlib import Path
 
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
+from native_render_stage_cost import assemble_native_stage_report, elapsed_us
 from native_direct_mediated_parity import (
     DirectParityError, checked_direct_artifact, compare_native_pngs,
     run_direct_native_film,
@@ -389,6 +390,7 @@ def main() -> None:
                 },
             )
 
+            mediated_started_ns = time.perf_counter_ns()
             try:
                 result = run_json(
                     [
@@ -404,6 +406,8 @@ def main() -> None:
             except (AssertionError, subprocess.TimeoutExpired):
                 preserve_native_failure_evidence(root)
                 raise
+            mediated_render_micros = elapsed_us(mediated_started_ns, time.perf_counter_ns())
+            mediated_readback_started_ns = time.perf_counter_ns()
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 
@@ -473,6 +477,10 @@ def main() -> None:
                     "native opacity tile ROI does not show a bounded progressive 0-to-1 fade across native frames 0/15/30"
                 )
 
+            mediated_readback_micros = elapsed_us(
+                mediated_readback_started_ns, time.perf_counter_ns()
+            )
+
             # A SECOND, DISTINCT, explicitly requested CI-only render follows
             # the direct Semwright Broker/Driver Host path, using precisely the
             # Film exported from the same Motionwright project/generation/
@@ -508,6 +516,7 @@ def main() -> None:
                     direct_root / "frames" / frame_file,
                     EVIDENCE / f"direct-native-frame-{frame_index:06}.png",
                 )
+            parity_started_ns = time.perf_counter_ns()
             try:
                 parity = compare_native_pngs(artifact_root, direct_root, expected_frames=60)
             except DirectParityError as error:
@@ -530,6 +539,23 @@ def main() -> None:
                     },
                 )
                 raise
+            parity_micros = elapsed_us(parity_started_ns, time.perf_counter_ns())
+            write_private_json(
+                EVIDENCE / "native-render-stage-cost.json",
+                assemble_native_stage_report(
+                    source_sha=GITHUB_SHA,
+                    semwright_sha=PIN,
+                    film_sha256=direct["film_sha256"],
+                    mediated_job=result["job_ref"],
+                    direct_is_separate_job=direct["independent_job_confirmed"],
+                    mediated_micros=mediated_render_micros,
+                    manifest_review_micros=mediated_readback_micros,
+                    direct_micros=direct["measured_direct_total_micros"],
+                    parity_micros=parity_micros,
+                    direct_stage_micros=direct["measured_direct_substages_micros"],
+                    frame_comparison=parity,
+                ),
+            )
             write_private_json(
                 EVIDENCE / "native-direct-mediated-parity.json",
                 {

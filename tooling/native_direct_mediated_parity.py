@@ -19,6 +19,8 @@ import subprocess
 import time
 from typing import Any
 
+from native_render_stage_cost import elapsed_us
+
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_MANIFEST = 2 * 1024 * 1024
@@ -315,6 +317,9 @@ def run_direct_native_film(
             timeout_seconds=timeout_seconds,
         )
 
+    overall_started_ns = time.perf_counter_ns()
+    stage_started_ns = overall_started_ns
+    measured_substages: dict[str, int] = {}
     planned = execute("composition.plan", {
         "film": film,
         "budget": {
@@ -323,10 +328,13 @@ def run_direct_native_film(
             "max_elapsed_ms": 120000,
         },
     }, 150)
+    measured_substages["plan"] = elapsed_us(stage_started_ns, time.perf_counter_ns())
     plan_ref = planned.get("plan_ref")
     if not isinstance(plan_ref, str) or not plan_ref:
         raise DirectParityError("Direct Film plan has no native reference")
+    stage_started_ns = time.perf_counter_ns()
     applied = execute("composition.apply", {"plan_ref": plan_ref, "dry_run": False}, 150)
+    measured_substages["apply"] = elapsed_us(stage_started_ns, time.perf_counter_ns())
     fingerprint = applied.get("fingerprint")
     if (
         applied.get("applied") is not True
@@ -335,6 +343,7 @@ def run_direct_native_film(
         or not HEX_SHA256.fullmatch(fingerprint)
     ):
         raise DirectParityError("Direct Film apply is not canonically completed")
+    stage_started_ns = time.perf_counter_ns()
     started = execute("render.start", {
         "expected_fingerprint": fingerprint,
         "profile": {
@@ -342,11 +351,13 @@ def run_direct_native_film(
             "scale": "full", "transparent": False, "timeout_ms": 300_000,
         },
     }, 120)
+    measured_substages["start"] = elapsed_us(stage_started_ns, time.perf_counter_ns())
     acknowledged_job = started.get("job_ref")
     if not isinstance(acknowledged_job, str) or not acknowledged_job:
         raise DirectParityError("Direct native render has no acknowledged job reference")
     if acknowledged_job == mediated_job_ref:
         raise DirectParityError("Direct comparison unexpectedly reused the mediated render job")
+    stage_started_ns = time.perf_counter_ns()
     deadline = time.monotonic() + 330
     poll_count = 0
     terminal: dict[str, Any] | None = None
@@ -373,9 +384,12 @@ def run_direct_native_film(
         raise DirectParityError(
             "Direct native render deadline expired; job outcome UNKNOWN, no redispatch"
         )
+    measured_substages["terminal_wait"] = elapsed_us(stage_started_ns, time.perf_counter_ns())
     if not isinstance(terminal.get("artifact"), dict) or terminal["artifact"].get("frame_count") != expected_frames:
         raise DirectParityError("Direct terminal render artifact has mismatched frame count")
+    stage_started_ns = time.perf_counter_ns()
     completed = execute("render.result", {"job_ref": acknowledged_job}, 90)
+    measured_substages["result"] = elapsed_us(stage_started_ns, time.perf_counter_ns())
     _require_job(completed, acknowledged_job)
     artifact = completed.get("artifact")
     if (
@@ -384,9 +398,11 @@ def run_direct_native_film(
         or artifact.get("frame_count") != expected_frames
     ):
         raise DirectParityError("Direct render.result is not a complete source-bound native artifact")
+    stage_started_ns = time.perf_counter_ns()
     verified = execute("composition.verify", {
         "plan_ref": plan_ref, "job_ref": acknowledged_job,
     }, 150)
+    measured_substages["verify"] = elapsed_us(stage_started_ns, time.perf_counter_ns())
     report = verified.get("report")
     measurement = verified.get("measurement")
     validation = measurement.get("validation") if isinstance(measurement, dict) else None
@@ -406,6 +422,8 @@ def run_direct_native_film(
         "artifact": artifact,
         "film_sha256": sha256_path(film_file),
         "status_reads": poll_count,
+        "measured_direct_total_micros": elapsed_us(overall_started_ns, time.perf_counter_ns()),
+        "measured_direct_substages_micros": measured_substages,
         "independent_job_confirmed": True,
         "native_validation_checks": len(checks),
         "scope": "ci_direct_broker_vs_motionwright_mediated_same_film",

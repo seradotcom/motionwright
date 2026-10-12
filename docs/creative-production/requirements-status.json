@@ -94,15 +94,18 @@
     {
       "id": "MW05-E01-02",
       "implementation": "partial",
-      "implemented_scope": "Narrow exact-SHA native Motion Canvas direct-Broker versus Motionwright-mediated frame comparison implemented for one identical source Film (text, geometry, linear X/Y position, linear opacity); result depends on passing real CI, not source code alone",
-      "remaining_scope": "Rich masks, blend/effect profiles, broader property/media fixtures, cross-editor independently realized baselines and human visual comparison remain unimplemented",
+      "implemented_scope": "Narrow exact-SHA native Motion Canvas direct-Broker versus Motionwright-mediated frame comparison for one identical source Film (text, geometry, exact XY position and opacity). Its same native CI lane now additionally measures bounded monotonic planning, apply, start, terminal observation, result, verification, native readback and decoded RGBA equality stages; no faster renderer or cache savings are inferred from the sequential design.",
+      "remaining_scope": "Rich masks, blend/effect profiles, broader media fixtures, independently realized cross-editor baselines, controlled cold/warm trials, actual cache speedup and human visual acceptance remain open.",
       "source_paths": [
         "crates/native/examples/native-render-e2e.rs",
         "tooling/native_render_e2e.py",
         "tooling/native_direct_mediated_parity.py",
+        "tooling/native_render_stage_cost.py",
         "tooling/tests/test_native_direct_mediated_parity.py",
+        "tooling/tests/test_native_render_stage_cost.py",
         ".github/workflows/native-render-e2e.yml",
-        "docs/native-direct-mediated-parity.md"
+        "docs/native-direct-mediated-parity.md",
+        "docs/creative-production/NATIVE_RENDER_PHASE_COST.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
