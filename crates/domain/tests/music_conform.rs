@@ -99,7 +99,11 @@ fn two_distinct_cut_boundaries_reflow_exactly_in_one_atomic_revision() {
     project
         .apply_change(&change(&project, &ids, false))
         .unwrap();
-    assert_eq!(project.revision, revision + 1);
+    // Domain apply_change mutates the in-memory candidate but deliberately
+    // does not mint a persistent revision. Exactly one revision is allocated
+    // by StudioService's authenticated CAS transaction, which the separate
+    // music_conform_persistence test verifies against real SQLite storage.
+    assert_eq!(project.revision, revision);
     assert_eq!(project.scenes[0].duration, at(8));
     assert_eq!(project.scenes[1].duration, at(10));
     assert_eq!(project.scenes[2].start, at(18));
