@@ -146,3 +146,14 @@ reflows, glyph shaping, font installation, visual legibility and native
 pixel fidelity are **not** inferred: these require the existing pinned
 Semwright Native SDK readback and independent human acceptance.
 See [Typography safety preflight](TYPOGRAPHY_SAFETY.md).
+
+
+## Caption reading safety (bounded, source-bound)
+
+The read-only [caption reading review](CAPTION_READING_REVIEW.md) in Deliver
+inspects the active profile draft, selected voice transcript, exact source
+times, retained scene cut, alignment provenance and editorial reading
+density without altering caption export or the saved project. It can open
+the real Audio editor. NO_AUTOMATED_FLAGS is not an accessible, creative,
+native pixel, rights or human-acceptance PASS; burn-in still requires a
+source-bound native frame inspection.

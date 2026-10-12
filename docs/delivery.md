@@ -43,6 +43,8 @@ The desktop application can write WebVTT and SubRip sidecars from the selected p
 
 A profile can also request caption burn-in. Dependency fingerprints distinguish the two cases: a sidecar-only wording change invalidates caption evidence but does not invalidate source frames; a burn-in wording change invalidates frame inputs.
 
+A [read-only caption reading preflight](creative-production/CAPTION_READING_REVIEW.md) is available in Deliver before sidecar export. It checks exact source timing, explicit cut membership, selected voice and measured-source digests, and surfaces nonbinding editorial notices for potential reading-speed and line-length issues. The companion action opens the actual Audio editor without changing the project. This advisory does not replace trusted Rust export validation, language-specific typography, native burn-in evidence, or human accessibility review.
+
 ## Dependency fingerprints
 
 Motionwright computes bounded SHA-256 fingerprints for frame inputs, caption inputs, audio inputs, mastering inputs and the complete profile. This allows downstream caches and receipts to reject stale work without invalidating unrelated stages.

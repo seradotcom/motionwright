@@ -6,6 +6,7 @@ import {
   type ScopedRuntimeObservation,
 } from "./firstNativeProduction";
 import VariantContinuityReview from "./VariantContinuityReview";
+import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import {
   assembleNativeAvMaster,
   assembleNativeMultisegmentAvMaster,
@@ -116,10 +117,12 @@ export default function DeliveryProfiles({
   onAvEvidence,
   exportEvidence,
   onExportEvidence,
+  onOpenAudio,
 }: {
   project: Project;
   commit: Commit;
   desktopMode: boolean;
+  onOpenAudio: () => void;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
@@ -1376,6 +1379,10 @@ export default function DeliveryProfiles({
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> {unknownTimings} transcript segment{unknownTimings === 1 ? "" : "s"} still have UNKNOWN timing.</div>
               )}
               {dirty && <div className="delivery-truth-note">Save the profile before exporting its sidecar.</div>}
+              <CaptionReadabilityReview
+                project={project} profile={draft} saved={selected}
+                onOpenAudio={onOpenAudio}
+              />
             </section>
 
             <section className="caption-export-panel" aria-label="OpenTimelineIO export">

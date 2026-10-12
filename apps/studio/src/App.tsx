@@ -604,6 +604,7 @@ function DeliverView({
   commit,
   desktopMode,
   onImported,
+  onOpenAudio,
   renderEvidence,
   onRenderEvidence,
   avEvidence,
@@ -615,6 +616,7 @@ function DeliverView({
   commit: (change: Change) => Promise<void>;
   desktopMode: boolean;
   onImported: (project: Project) => void;
+  onOpenAudio: () => void;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
@@ -694,6 +696,7 @@ function DeliverView({
       </header>
 
       <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
+        onOpenAudio={onOpenAudio}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
@@ -2043,6 +2046,7 @@ export default function App() {
           <DeliverView
             project={project}
             commit={commit}
+            onOpenAudio={() => setWorkspace("Audio")}
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}
