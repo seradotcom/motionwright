@@ -1,0 +1,63 @@
+name: Editable Creative Alternative Evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/studio/src/creativeAlternativeEvidence*"
+      - "apps/studio/src/CreativeAlternativesPanel.tsx"
+      - "apps/studio/src/HistoryWorkspaces.tsx"
+      - "apps/studio/src/creative-alternatives.css"
+      - "apps/studio/tests/creative-alternatives.spec.ts"
+      - "docs/creative-production/CREATIVE_ALTERNATIVE_EVIDENCE.md"
+      - "docs/creative-production/requirements-status.json"
+      - ".github/workflows/creative-alternatives.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/studio/src/creativeAlternativeEvidence*"
+      - "apps/studio/src/CreativeAlternativesPanel.tsx"
+      - "apps/studio/src/HistoryWorkspaces.tsx"
+      - ".github/workflows/creative-alternatives.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python tooling/source_policy.py
+      - run: python tooling/creative_status_policy.py
+      - run: python tooling/acceptance_policy.py
+
+  real-saved-branch-review:
+    needs: source
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/creativeAlternativeEvidence.test.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/creative-alternatives.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: editable-alternatives-browser-evidence
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore
