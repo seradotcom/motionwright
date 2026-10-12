@@ -108,7 +108,7 @@ test("foreign response with fake verified media is rejected, never becomes succe
   await page.getByRole("button",{name:"Jobs",exact:true}).click();
   await page.getByRole("button",{name:"Check original native job status"}).click();
   await expect(page.getByLabel("Original native status read not confirmed")).toContainText(
-    "original"
+    "Original read-only status was not confirmed"
   );
   await expect(page.getByRole("table",{name:"Canonical production job receipts"})).toContainText("OUTCOME UNKNOWN");
   await expect(page.getByRole("status",{name:"Original native job status observation"})).toHaveCount(0);
