@@ -133,8 +133,10 @@ export default function NativeFrameStage({
     };
     // Transport may update at 10Hz; polling does no I/O unless the
     // source-bound pure policy admits a new frame request.
+    // Do not issue I/O synchronously during effect setup: React StrictMode
+    // replays mount effects in development. The first 45ms tick prevents
+    // duplicate concurrent readbacks across that lifecycle boundary.
     const timer=window.setInterval(tick,45);
-    tick();
     return ()=>{
       disposed=true;
       window.clearInterval(timer);
