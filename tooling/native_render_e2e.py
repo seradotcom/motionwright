@@ -33,7 +33,15 @@ SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_BIN = ROOT / "target" / "debug" / "examples" / "native-render-e2e"
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
-EVIDENCE = ROOT / "verification" / "native-render-e2e" / GITHUB_SHA
+# A repeated CI-owned full render gets a distinct durable evidence directory,
+# preserving both immutable receipts without overwriting the original run.
+# This is deliberately not an arbitrary user-supplied filesystem suffix.
+RUN_LABEL = os.environ.get("MOTIONWRIGHT_NATIVE_RUN_LABEL", "")
+if RUN_LABEL not in {"", "repeat-02"}:
+    raise SystemExit("Unrecognized CI-only native render evidence label")
+EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
+    GITHUB_SHA if not RUN_LABEL else GITHUB_SHA + "-" + RUN_LABEL
+)
 
 
 def digest(path: Path) -> str:

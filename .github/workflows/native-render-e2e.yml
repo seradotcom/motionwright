@@ -2,6 +2,12 @@ name: Native Motion Canvas production
 
 on:
   workflow_dispatch:
+    inputs:
+      v01_provider_repeat:
+        description: "Run a second fresh Broker/Driver Host/owner project and compare native receipts (v0.1 reliability)"
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -14,6 +20,8 @@ on:
       - 'apps/desktop/src-tauri/**'
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
+      - 'tooling/native_provider_repeat.py'
+      - 'tooling/tests/test_native_provider_repeat.py'
       - 'tooling/native_direct_mediated_parity.py'
       - 'tooling/native_render_stage_cost.py'
       - 'tooling/tests/test_native_render_stage_cost.py'
@@ -43,7 +51,7 @@ env:
 jobs:
   real-native-render:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -130,6 +138,9 @@ jobs:
 
       - name: Verify bounded provider lifecycle diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
+
+      - name: Reject fabricated independent-run reliability evidence
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_repeat.py' -v
 
       - name: Render application-owned revision through real Broker and Driver Host
         env:
@@ -218,6 +229,28 @@ jobs:
           assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
           assert health["sample_count"] >= 1
           assert health["daemon_exit_before_owner_cleanup"] is None
+          PY
+
+      - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci')) }}
+        env:
+          MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
+          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+        run: |
+          set -euo pipefail
+          python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/repeat-run.log
+          python3 tooling/native_provider_repeat.py             --source-sha "$GITHUB_SHA"             --semwright-pin "${{ steps.pin.outputs.sha }}"             --first "verification/native-render-e2e/$GITHUB_SHA"             --second "verification/native-render-e2e/$GITHUB_SHA-repeat-02"             --output "verification/native-render-e2e/$GITHUB_SHA/v01-independent-provider-repeat.json"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          report=json.loads((Path("verification/native-render-e2e")/os.environ["GITHUB_SHA"]/"v01-independent-provider-repeat.json").read_text())
+          assert report["status"]=="TWO_INDEPENDENT_NATIVE_E2E_RUNS_VERIFIED"
+          assert report["same_pinned_native_provider_bytes"] is True
+          assert report["fresh_owner_project_and_generation_each_run"] is True
+          assert report["intermittent_driver_host_loss_fixed"] == "NOT_PROVEN"
+          assert report["real_owner_installed_acceptance"]=="NOT_RUN"
+          assert report["motionwright_v01_release_ready"] is False
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
