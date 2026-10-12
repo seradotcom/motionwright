@@ -323,10 +323,18 @@
     },
     {
       "id": "MW05-E05-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No automatic component distillation admission",
-      "remaining_scope": "Positive/negative variation evidence and owner review required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Real read-only comparison of two preserved creative branch states in Review: source scene/object differences, timing, keyframes, visuals and narrative intent, stable IDs with revision provenance, plus explicit editor-authored positive/negative studies committed as anchored creative reviews through existing project CAS. No fabricated renderer evidence or automatic branch merge.",
+      "remaining_scope": "Independent owner/editor acceptance, positive/negative evaluation corpus across original media, reusable component extraction, component lineage, cross-renderer conformance and automated distillation admission remain unimplemented.",
+      "source_paths": [
+        "apps/studio/src/creativeAlternativeEvidence.ts",
+        "apps/studio/src/creativeAlternativeEvidence.test.ts",
+        "apps/studio/src/CreativeAlternativesPanel.tsx",
+        "apps/studio/src/HistoryWorkspaces.tsx",
+        "apps/studio/tests/creative-alternatives.spec.ts",
+        "docs/creative-production/CREATIVE_ALTERNATIVE_EVIDENCE.md",
+        ".github/workflows/creative-alternatives.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

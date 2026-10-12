@@ -1,6 +1,7 @@
 import { Braces, CircleDashed, Clock3, GitBranch, MessageSquareText, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { projectHistoryRecent } from "./api";
+import CreativeAlternativesPanel from "./CreativeAlternativesPanel";
 import { HISTORY_PAGE_SIZE, validateRecentHistoryPage } from "./historyPaging";
 import type { Change, Project, ProjectEvent, ReviewKind, ReviewStatus, Scene } from "./types";
 import { rationalSeconds, seconds } from "./types";
@@ -342,6 +343,8 @@ export function ReviewWorkspace({
         </div>
         <span className="count-label">{project.reviews.length} anchored</span>
       </header>
+
+      <CreativeAlternativesPanel project={project} commit={commit} />
 
       <div className="review-columns">
         <section>
