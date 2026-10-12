@@ -323,10 +323,18 @@
     },
     {
       "id": "MW05-E05-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No automatic component distillation admission",
-      "remaining_scope": "Positive/negative variation evidence and owner review required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Versioned immutable project-local component candidates resolved from two-plus genuinely varied positive original Canvas scenes, objectively verified negative examples, source generation/revision and explicit requirements; independent one-time compatibility review through existing CAS and Native SDK, no execution/admission",
+      "remaining_scope": "Fully automatic parameter distillation, visual regression fixtures, source rights attestation audit, human craft evaluation, signed package/renderer compatibility assessment and separate explicit admission are open",
+      "source_paths": [
+        "crates/domain/src/component_distillation.rs",
+        "crates/domain/tests/component_distillation.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/componentDistillation.ts",
+        "apps/studio/src/componentDistillation.test.ts",
+        "apps/studio/src/ComponentDistillationWorkbench.tsx",
+        "docs/creative-production/DISTILLATION.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

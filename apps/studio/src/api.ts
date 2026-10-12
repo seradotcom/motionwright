@@ -3,6 +3,7 @@ import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
+import { applyDistillationChange, validateDistillations } from "./componentDistillation";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
@@ -979,6 +980,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design ??= emptyProductionDesign();
       detachMeasuredBinding(next,change.binding_id);
       break;
+    case "propose_component_distillation":
+    case "review_component_distillation":
+      applyDistillationChange(next,change);
+      break;
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();
@@ -1877,6 +1882,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  validateDistillations(next);
   await validateProductStages(next);
   validateCaptureRecords(next);
   validateMeasuredData(next);

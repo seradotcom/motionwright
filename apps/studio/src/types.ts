@@ -2,6 +2,7 @@ import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, Creat
 import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
+import type { ComponentDistillationInput, DistillationReview } from "./componentDistillation";
 import type { ProductStageConfig } from "./productStage";
 import type { CaptureSourceRecord } from "./captureSource";
 export type ProjectState = "current" | "stale" | "unknown";
@@ -583,6 +584,8 @@ export type Change =
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
+  | { type: "propose_component_distillation"; input: ComponentDistillationInput }
+  | { type: "review_component_distillation"; id: string; review: DistillationReview }
   | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
   | { type: "detach_product_stage"; instance_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }

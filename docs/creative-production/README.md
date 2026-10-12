@@ -86,6 +86,15 @@ measurement truth/rights. The SQLite CAS re-parses the exact imported bytes
 before committing declared rows; Studio requires the same file SHA-256.
 A separate pinned native CI experiment renders an explicitly synthetic two-version JSON source into editable measured Canvas primitives and decodes a six-second H.264/AAC MP4; this proof is not admitted until the exact branch SHA passes. General ETL/series, cache regeneration and creative approval remain open.
 
+## Evidence-backed component distillation (MW05-E05-04)
+
+Production → Distillation stores immutable component proposals backed by
+real positive Canvas variations, verified negative counterexamples,
+source project revision and independent compatibility review.
+This does not install a skill, promote executable code or waive source rights.
+See [Validated Distillation](DISTILLATION.md) for source restrictions,
+adversarial tests and the remaining admission work.
+
 ## Data and migration contracts
 
 Format 1 is read without changing revision or generation. Its first successful edit writes format 2 in the same existing transaction. A failed operation does not upgrade or alter the stored project. New creative state cannot be labeled format 1, and unknown future formats are rejected. The UI exposes the upgrade boundary before editing. This is not an implementation of cross-product legacy import.

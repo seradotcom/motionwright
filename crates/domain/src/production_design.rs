@@ -38,6 +38,9 @@ pub struct ProductionDesign {
     /// Latest scoped invalidation notice, not a completed render-cache purge.
     #[serde(default)]
     pub last_measured_impact: Option<MeasuredDataImpact>,
+    /// Source-bound, non-executable semantic component candidates.
+    #[serde(default)]
+    pub distillations: Vec<ComponentDistillationProposal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
