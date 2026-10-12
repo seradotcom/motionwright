@@ -81,7 +81,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBe(1);
   await expect(preview).toContainText("Verified native PNG · sampled frames");
-  await expect(frame).toContainText("SHA-256 checked · sampled PNG, not real-time playback");
+  await expect(frame).toContainText("Settled exact source PNG · no synthesized frames");
   const revision = await page.locator(".revision-chip").first().innerText();
 
   await page.getByRole("button", { name: "Step forward one frame" }).click();
@@ -167,5 +167,5 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
   await page.getByRole("button", { name: "Show native frames" }).click();
   await expect(page.getByRole("alert")).toContainText("Native frame readback unavailable");
   await expect(page.getByRole("alert")).toContainText("valid PNG");
-  await expect(page.getByRole("button", { name: "Retry frame" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry this frame" })).toBeVisible();
 });

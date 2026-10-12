@@ -320,7 +320,7 @@ function PreviewSurface({
           )}
           {showingNative && nativeFrame && (
             <NativeFrameStage key={nativeFrame.token + ":" + (scene?.id ?? "")}
-              project={project} selection={nativeFrame} />
+              project={project} selection={nativeFrame} editorialPlaying={editorialPlaying} />
           )}
           {showingAv && nativeAv && (
             <NativeAvReview
