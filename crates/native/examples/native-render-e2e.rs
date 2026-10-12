@@ -801,9 +801,11 @@ fn seed_hero(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let split = aspect.starts_with("split-");
     let metric = aspect.starts_with("metric-");
+    let step = aspect.starts_with("step-");
     let shape = aspect
         .strip_prefix("split-")
         .or_else(|| aspect.strip_prefix("metric-"))
+        .or_else(|| aspect.strip_prefix("step-"))
         .unwrap_or(aspect);
     let (width, height) = match shape {
         "landscape" => (1920, 1080),
@@ -819,6 +821,8 @@ fn seed_hero(
         "SplitExplanation"
     } else if metric {
         "MetricEvidence"
+    } else if step {
+        "StepSequence"
     } else {
         "ProductHeroReveal"
     };
@@ -851,6 +855,16 @@ fn seed_hero(
                         headline: "42% growth".into(),
                         body: "An editorial statement is not measured evidence until its source is attached and verified.".into(),
                         wordmark: "DATA".into(),
+                        accent: "#D9A46E".into(),
+                        ..motionwright_domain::HeroConfig::default()
+                    }
+                } else if step {
+                    motionwright_domain::HeroConfig {
+                        layout: motionwright_domain::HeroLayout::StepSequence,
+                        eyebrow: "WORKFLOW / AUTHOR WRITTEN STEP".into(),
+                        headline: "Inspect the result".into(),
+                        body: "Review the native source state and confirm what changed before proceeding to the next action.".into(),
+                        wordmark: "02".into(),
                         accent: "#D9A46E".into(),
                         ..motionwright_domain::HeroConfig::default()
                     }
@@ -952,7 +966,7 @@ fn seed_hero(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "fixture": if split { "split-explanation/1" } else if metric { "metric-evidence/1" } else { "product-hero-reveal/1" }, "project_id": project.id, "resource": project.resource_key(),
+            "fixture": if split { "split-explanation/1" } else if metric { "metric-evidence/1" } else if step { "step-sequence/1" } else { "product-hero-reveal/1" }, "project_id": project.id, "resource": project.resource_key(),
             "generation": project.generation, "revision": project.revision, "scene_id": scene_id,
             "deliverable_id": deliverable.id, "width": width, "height": height, "frame_count": 180,
             "creative_approval": "required"

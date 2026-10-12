@@ -57,7 +57,8 @@ def inspect_native_frames(frames: list[Path], destination: Path, size: tuple[int
     draw = ImageDraw.Draw(sheet)
     family = {"split-explanation/1": "SPLITEXPLANATION",
               "product-hero-reveal/1": "PRODUCTHEROREVEAL",
-              "metric-evidence/1": "METRICEVIDENCE"}.get(project.get("fixture"))
+              "metric-evidence/1": "METRICEVIDENCE",
+              "step-sequence/1": "STEPSEQUENCE"}.get(project.get("fixture"))
     if family is None:
         raise AssertionError("Unsupported creative fixture identity")
     draw.text((gutter,18), f"{family} / NATIVE FRAME CONTACT SHEET", fill="#F2F4F3")

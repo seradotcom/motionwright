@@ -33,7 +33,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
 }) {
   const instance = project.production_design?.heroes.find(hero => hero.scene_id === scene?.id);
   const [draft,setDraft] = useState<HeroConfig>(() => structuredClone(instance?.config ?? defaultHeroConfig()));
-  const familyName = draft.layout === "split_explanation" ? "SplitExplanation" : draft.layout === "metric_evidence" ? "MetricEvidence" : "ProductHeroReveal";
+  const familyName = draft.layout === "split_explanation" ? "SplitExplanation" : draft.layout === "metric_evidence" ? "MetricEvidence" : draft.layout === "step_sequence" ? "StepSequence" : "ProductHeroReveal";
   const [base,setBase] = useState(project.revision);
   const [aspect,setAspect] = useState(aspects[0]);
   const [nodes,setNodes] = useState<CanvasNode[]>([]);
@@ -70,9 +70,10 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
         <option value="product_hero_reveal">ProductHeroReveal · product statement</option>
         <option value="split_explanation">SplitExplanation · two-part explanation</option>
         <option value="metric_evidence">MetricEvidence · authored fact and context</option>
+        <option value="step_sequence">StepSequence · one editable procedural step</option>
       </select></label>
       <RevisionNotice base={base} current={project.revision} onReload={reload}/>
-      {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":draft.layout==="metric_evidence"?"Authored fact / metric":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":draft.layout==="metric_evidence"?"Evidence context":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":draft.layout==="metric_evidence"?"Evidence label":"Wordmark",8] ] as const).map(([field,label,max]) =>
+      {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":draft.layout==="metric_evidence"?"Authored fact / metric":draft.layout==="step_sequence"?"Step heading":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":draft.layout==="metric_evidence"?"Evidence context":draft.layout==="step_sequence"?"What happens at this step":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":draft.layout==="metric_evidence"?"Evidence label":draft.layout==="step_sequence"?"Step index (e.g. 01 / 03)":"Wordmark",8] ] as const).map(([field,label,max]) =>
         <label className="production-field" key={field}><span>{label}<small>{Array.from(draft[field]).length}/{max}</small></span>
           {field === "headline" || field === "body" ? <textarea aria-label={label} rows={field==="headline"?3:4} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>
             : <input aria-label={label} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>} </label>)}
@@ -81,7 +82,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
         <label className="production-field"><span>Accent</span><input aria-label="Hero accent" type="color" value={draft.accent} onChange={e => setDraft({...draft,accent:e.target.value})}/></label>
       </div>
       <label className="production-check"><input type="checkbox" checked={draft.motion} onChange={e => setDraft({...draft,motion:e.target.checked})}/> Animate entrance</label>
-      <p className="production-help">Turning motion off creates a static equivalent. Changing family reflows the same six stable object identities; updating preserves compatible human overrides and rejects conflicts. Split and metric layouts read left-to-right in landscape and reflow top-to-bottom on compact formats. MetricEvidence text is user supplied and carries an explicit unverified-source disclosure.</p>
+      <p className="production-help">Turning motion off creates a static equivalent. Changing family reflows the same six stable object identities; updating preserves compatible human overrides and rejects conflicts. Split, MetricEvidence and StepSequence layouts reflow from landscape to square and portrait. StepSequence is one authored process step per scene, not a recorded product walkthrough; its persistent disclosure says the action was not observed. MetricEvidence text is user supplied and carries an explicit unverified-source disclosure.</p>
       {error && <p className="production-error" role="alert">{error}</p>}
       {!scene && <button className="primary-button" disabled={busy} onClick={() => commit({type:"add_scene",name:"Product hero",objective:"An original, editable product reveal",duration_seconds:6})}><Plus size={14}/> Create a six-second scene</button>}
       {scene && (scene.renderer!=="motion-canvas" || seconds(scene.duration)<2) && <p className="production-error">Select a Motion Canvas scene at least two seconds long. Existing scene settings will not be replaced automatically.</p>}
