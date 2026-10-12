@@ -917,54 +917,53 @@ fn projected_shot(
             .stages
             .iter()
             .find(|stage| stage.scene_id == scene.id && node.id == stage_node_id(stage.id, "card"));
-        if let Some(stage) = linked_stage {
-            if let Some(link) = context
+        if let Some(stage) = linked_stage
+            && let Some(link) = context
                 .project
                 .production_design
                 .stage_capture_cards
                 .iter()
                 .find(|binding| binding.stage_id == stage.id)
-            {
-                let source = context
-                    .project
-                    .production_design
-                    .captures
-                    .iter()
-                    .find(|capture| capture.id == link.capture_id)
-                    .ok_or_else(|| invalid("Stage screenshot source was removed"))?;
-                let mut tile = node.clone();
-                tile.id = stage_node_id(stage.id, "source_capture_tile");
-                tile.name = "Source-bound first-party synthetic screenshot tile".into();
-                tile.x = node.x + node.width * 0.39;
-                tile.y = node.y + node.height * 0.08;
-                tile.width = node.width * 0.57;
-                tile.height = node.height * 0.82;
-                validate_static_safe_area(&tile, projection, context.output)?;
-                let image = Subject {
-                    id: subject_id(tile.id, identity.beat_scope),
-                    role: "first-party-synthetic-source-tile".into(),
-                    parent: None,
-                    layer: layer_names
-                        .get(&node.z_index)
-                        .cloned()
-                        .ok_or_else(|| invalid("Source tile Canvas card layer is missing"))?,
-                    content: SubjectContent::Image {
-                        asset_id: uid("asset", source.screenshot_asset_id),
-                        fit: MediaFit::Contain,
-                        ratio: f64::from(source.viewport_width) / f64::from(source.viewport_height),
+        {
+            let source = context
+                .project
+                .production_design
+                .captures
+                .iter()
+                .find(|capture| capture.id == link.capture_id)
+                .ok_or_else(|| invalid("Stage screenshot source was removed"))?;
+            let mut tile = node.clone();
+            tile.id = stage_node_id(stage.id, "source_capture_tile");
+            tile.name = "Source-bound first-party synthetic screenshot tile".into();
+            tile.x = node.x + node.width * 0.39;
+            tile.y = node.y + node.height * 0.08;
+            tile.width = node.width * 0.57;
+            tile.height = node.height * 0.82;
+            validate_static_safe_area(&tile, projection, context.output)?;
+            let image = Subject {
+                id: subject_id(tile.id, identity.beat_scope),
+                role: "first-party-synthetic-source-tile".into(),
+                parent: None,
+                layer: layer_names
+                    .get(&node.z_index)
+                    .cloned()
+                    .ok_or_else(|| invalid("Source tile Canvas card layer is missing"))?,
+                content: SubjectContent::Image {
+                    asset_id: uid("asset", source.screenshot_asset_id),
+                    fit: MediaFit::Contain,
+                    ratio: f64::from(source.viewport_width) / f64::from(source.viewport_height),
+                },
+                layout: SpatialIntent::Fixed {
+                    position: canonical_position(&tile, projection, context.output),
+                    size: Size {
+                        width: tile.width * projection.object_scale,
+                        height: tile.height * projection.object_scale,
                     },
-                    layout: SpatialIntent::Fixed {
-                        position: canonical_position(&tile, projection, context.output),
-                        size: Size {
-                            width: tile.width * projection.object_scale,
-                            height: tile.height * projection.object_scale,
-                        },
-                    },
-                    initially_visible: true,
-                    clip_intentional: false,
-                };
-                subjects.push(image);
-            }
+                },
+                initially_visible: true,
+                clip_intentional: false,
+            };
+            subjects.push(image);
         }
         if subjects.len() > 512 {
             return Err(unsupported(
