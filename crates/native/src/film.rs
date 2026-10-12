@@ -961,6 +961,7 @@ fn projected_shot(
                         },
                     },
                     initially_visible: true,
+                    clip_intentional: false,
                 };
                 subjects.push(image);
             }
