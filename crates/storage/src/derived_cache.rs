@@ -220,6 +220,31 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Evict exactly one verified *derived manifest*, never its CAS blob.
+    /// A corrupt or symlinked entry is an error instead of a silent purge.
+    pub fn evict_derived_cache_exact(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+    ) -> Result<bool> {
+        validate_scope(scope)?;
+        validate_kind(kind)?;
+        validate_digest(fingerprint_sha256)?;
+        let location =
+            self.derived_cache_manifest_path(&digest_text(scope), kind, fingerprint_sha256)?;
+        if !location.exists() {
+            return Ok(false);
+        }
+        // Re-hash existing content before declaring it a safe candidate to evict.
+        let _ = self.lookup_derived_cache(scope, kind, fingerprint_sha256)?;
+        ensure_regular_file(&location, "derived cache eviction manifest")?;
+        fs::remove_file(location)?;
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

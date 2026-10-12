@@ -16,11 +16,13 @@ mod capture_evidence;
 mod derived_cache;
 mod integrity;
 mod production;
+mod render_window_cache;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
+pub use render_window_cache::{RenderWindowCacheKey, RenderWindowPurgeReport};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -406,6 +408,22 @@ impl Store {
               created_at TEXT NOT NULL,
               FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
+
+            -- Derived proxy metadata is disposable, and never grants render authority.
+            CREATE TABLE IF NOT EXISTS render_window_cache_entries(
+              project_id TEXT NOT NULL,
+              generation TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK(revision >= 0),
+              deliverable_id TEXT NOT NULL,
+              source_start INTEGER NOT NULL CHECK(source_start >= 0),
+              source_end INTEGER NOT NULL CHECK(source_end > source_start),
+              fingerprint_sha256 TEXT NOT NULL,
+              PRIMARY KEY(project_id, generation, revision, deliverable_id,
+                          source_start, source_end, fingerprint_sha256),
+              FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS render_window_cache_by_owner
+              ON render_window_cache_entries(project_id, generation, deliverable_id);
 
             CREATE INDEX IF NOT EXISTS events_by_project_revision
               ON events(project_id, revision);

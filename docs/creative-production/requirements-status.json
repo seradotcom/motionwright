@@ -214,8 +214,8 @@
     {
       "id": "MW05-E03-03",
       "implementation": "partial",
-      "implemented_scope": "Read-only exact-rational source-frame dependency windows for scene visual edits, owner-declared source-audio tails, conservative timing ripple and global mix; selective delivery scoping, explicit stale generation/revision rejection and Studio inspector with Rust/TypeScript/browser regression gates",
-      "remaining_scope": "Actual independent native full-versus-incremental render/decoded-frame equivalence, measured audio/transition tail sources, downstream cut-frame mapping, real cache purging and wallclock saved-time proof remain NOT_COMPLETED",
+      "implemented_scope": "Exact-rational source-frame dependency windows, Studio preflight and adversarial tests; now also includes bounded SQLite-indexed derived render-window proxy admission, revision-scoped lookup and physical eviction of affected manifests without deleting source blobs, with conservative montage/revision fallbacks",
+      "remaining_scope": "Native renderer producer/receipt admission and automatic invalidation at the production boundary, full-versus-incremental decoded-frame/audio equivalence, measured tails, output cut mapping and measured renderer wallclock savings remain NOT_COMPLETED. Physical derived proxy cache purging is a bounded partial implementation, not native cache acceleration.",
       "source_paths": [
         "crates/domain/src/production_design.rs",
         "crates/domain/src/creative_revisions.rs",
@@ -227,7 +227,10 @@
         "apps/studio/src/renderTailImpact.test.ts",
         "apps/studio/src/RenderTailWorkbench.tsx",
         "apps/studio/tests/render-impact.spec.ts",
-        "docs/creative-production/RENDER_TAIL_IMPACT.md"
+        "docs/creative-production/RENDER_TAIL_IMPACT.md",
+        "crates/storage/src/render_window_cache.rs",
+        "crates/storage/tests/render_window_cache.rs",
+        "docs/creative-production/V05_RENDER_WINDOW_CACHE_EXECUTION.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
