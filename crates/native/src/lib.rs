@@ -2447,7 +2447,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                             "original_rights_attestation":{"type":"string","minLength":1,"maxLength":480},
                             "source_project_id":{"type":"string","format":"uuid"},
                             "source_generation":{"type":"string","format":"uuid"},
-                            "source_revision":{"type":"integer","minimum":1},
+                            "source_revision":{"type":"integer","minimum":0},
                             "roles":{"type":"array","minItems":2,"maxItems":12,"items":{
                                 "type":"object","properties":{
                                     "key":{"type":"string","pattern":"^[a-z][a-z0-9_]{1,31}$"},
@@ -2489,7 +2489,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                             "reviewer":{"type":"string","minLength":1,"maxLength":120},
                             "rationale":{"type":"string","minLength":1,"maxLength":1600},
                             "verdict":{"type":"string","enum":["compatible_proposal","rejected"]},
-                            "source_revision":{"type":"integer","minimum":1},
+                            "source_revision":{"type":"integer","minimum":0},
                             "compatibility":{"type":"string","const":"motion_canvas_original_nodes_v1"}
                         },"required":["reviewer","rationale","verdict","source_revision","compatibility"],
                         "additionalProperties":false}

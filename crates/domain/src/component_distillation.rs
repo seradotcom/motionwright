@@ -109,7 +109,6 @@ impl ComponentDistillationProposal {
             || !bounded(&input.label, 120)
             || !bounded(&input.author, 120)
             || !bounded(&input.original_rights_attestation, 480)
-            || input.source_revision == 0
             || !(2..=12).contains(&input.roles.len())
             || !(2..=4).contains(&input.positives.len())
             || !(1..=4).contains(&input.negatives.len())

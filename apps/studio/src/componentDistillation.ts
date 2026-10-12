@@ -63,7 +63,7 @@ export function validateDistillationProposal(value:ComponentDistillationProposal
   if(review)exact(review,["reviewer","rationale","verdict","source_revision","compatibility"]);
   if(value.schema!==DISTILLATION_SCHEMA || !input.id ||
     !input.source_project_id || !input.source_generation ||
-    !Number.isSafeInteger(input.source_revision) || input.source_revision<1 ||
+    !Number.isSafeInteger(input.source_revision) || input.source_revision<0 ||
     !bounded(input.label,120) || !bounded(input.author,120) ||
     !bounded(input.original_rights_attestation,480) ||
     input.roles.length<2 || input.roles.length>12 ||
@@ -99,7 +99,7 @@ export function validateDistillationProposal(value:ComponentDistillationProposal
       normalized.push(roleSignature(node));
     }
     const semantic=JSON.stringify(normalized);
-    if(variations.has(semantic))reject("at least two genuinely varied authored source examples required");
+    if(variations.has(semantic))reject("positive source variation requires genuinely different authored examples");
     variations.add(semantic);
   }
   const negativeIds=new Set<string>();
