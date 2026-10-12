@@ -48,6 +48,8 @@ jobs:
         run: |
           python3 tooling/source_policy.py
           python3 tooling/acceptance_policy.py
+      - name: Reject fabricated creative stage-cost evidence
+        run: python3 -m unittest discover -s tooling/tests -p test_creative_stage_cost.py -v
       - name: S M L × three unrelated briefs × revision ten
         env:
           MOTIONWRIGHT_LATENCY_BUDGET_MS: "2000"
@@ -84,6 +86,27 @@ jobs:
               f"cache_hits={cache['hits']} avoided_units={cache['avoided_work_count']} "
               "human=NOT_RUN"
           )
+          PY
+      - name: Account for measured creative stage costs without invented render savings
+        run: |
+          python3 tooling/creative_stage_cost.py \
+            --input verification/performance/report.json \
+            --source-sha "$(git rev-parse HEAD)" \
+            --output verification/performance/creative-stage-cost.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path("verification/performance/creative-stage-cost.json").read_text())
+          assert report["schema"]=="motionwright.v05-creative-stage-cost/1"
+          assert report["status"]=="BOUNDED_EDIT_COST_OBSERVED"
+          assert report["dataset_count"]==9
+          assert len(report["per_dataset"])==9
+          assert report["cache_evidence"]["wallclock_render_time_saved_micros"] is None
+          assert report["cache_evidence"]["actual_renderer_frames_avoided"] is None
+          assert report["real_native_renderer_evaluated"]=="NOT_RUN"
+          assert report["human_interaction_evaluated"]=="NOT_RUN"
+          assert report["claims"]["release_ready"] is False
+          print("creative-stage-cost=verified nine_datasets=9 no_false_render_speedup")
           PY
       - uses: actions/upload-artifact@v4
         with:
