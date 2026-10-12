@@ -1,0 +1,150 @@
+/* Cut Room Ledger caption evidence panel: compact, no invented creative score. */
+.caption-reading-preflight {
+  border-top: 1px solid var(--border-soft);
+  margin-top: 12px;
+}
+.caption-reading-preflight details > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  list-style: none;
+  cursor: pointer;
+  min-height: 46px;
+  padding: 7px 3px;
+}
+.caption-reading-preflight summary::-webkit-details-marker { display: none; }
+.caption-reading-preflight summary > strong {
+  font-size: 12px;
+  font-weight: 630;
+  color: var(--text);
+}
+.caption-reading-preflight summary svg { color: var(--muted); flex: 0 0 auto; }
+.caption-reading-preflight summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.caption-reading-result {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+}
+.caption-reading-body {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border-soft);
+  padding: 12px 1px 4px;
+}
+.caption-reading-body p { margin: 0; }
+.caption-reading-provenance {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text);
+}
+.caption-reading-provenance .mono { font-size: 10px; color: var(--muted); }
+.caption-reading-intro, .caption-reading-empty {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.caption-reading-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 17px;
+  font-size: 10px;
+  padding: 7px 0;
+  color: var(--muted);
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+.caption-reading-metrics strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+}
+.caption-reading-findings ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.caption-reading-finding {
+  padding: 11px 0 12px;
+  border-bottom: 1px solid var(--border-soft);
+  display: grid;
+  gap: 7px;
+}
+.caption-reading-finding-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.caption-reading-finding-header svg { color: var(--muted); flex: 0 0 auto; }
+.caption-reading-finding.block .caption-reading-finding-header svg { color: var(--accent); }
+.caption-reading-finding-header strong {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.caption-reading-finding-header span {
+  font-size: 10px;
+  color: var(--muted);
+}
+.caption-reading-finding > p {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.caption-reading-finding blockquote {
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+  margin: 0;
+  max-height: 72px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  font-size: 11px;
+  color: var(--text);
+  font-style: normal;
+}
+.caption-reading-finding .mono {
+  font-size: 10px;
+  color: var(--muted);
+}
+.caption-reading-more { font-size: 11px; color: var(--muted); }
+.caption-reading-foot { display: flex; align-items: center; justify-content: flex-start; }
+.caption-reading-foot .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  font-size: 11px;
+}
+.caption-reading-truth {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+}
+.caption-reading-truth svg { flex: 0 0 auto; color: var(--muted); }
+.caption-reading-truth p {
+  font-size: 10px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+@media (max-width: 880px) {
+  .caption-reading-metrics { gap: 8px 12px; }
+  .caption-reading-provenance { display: grid; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .caption-reading-preflight * { transition: none !important; }
+}
