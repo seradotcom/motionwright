@@ -183,6 +183,27 @@ jobs:
               assert evidence["native_frame_count_observed"] == 33
           assert evidence["provider_project_cleanup"] == "not_requested_requires_foreground_broker_consent"
           assert result["provider_project_cleanup"] == evidence["provider_project_cleanup"]
+          inventory_file = root / "native-mlt-lifetime-inventory.json"
+          inventory_bytes = inventory_file.read_bytes()
+          inventory = json.loads(inventory_bytes)
+          assert hashlib.sha256(inventory_bytes).hexdigest() == result["native_mlt_lifetime_inventory_sha256"]
+          assert inventory["schema"] == "motionwright.v01-mlt-cleanup-inventory/1"
+          assert inventory["project_id"] == result["project"]["project_id"]
+          assert inventory["generation"] == result["project"]["generation"]
+          assert inventory["revision"] == result["project"]["revision"]
+          assert inventory["confirmed_native_creations_current_revision"] >= 1
+          assert inventory["confirmed_native_creations_current_revision"] <= 4
+          assert result["native_mlt_lifetime_confirmed_current_creations"] == inventory["confirmed_native_creations_current_revision"]
+          assert result["native_mlt_lifetime_receipts_scanned"] == inventory["source_receipts_scanned"]
+          assert inventory["unconfirmed_or_invalid_creation_requests"] == 0
+          assert inventory["observed_close_request_identities"] == 0
+          assert inventory["disposition"] == "project_lifetime_unverified_foreground_consent_required"
+          assert inventory["complete_source_receipt_snapshot"] is True
+          assert inventory["native_provider_liveness_verified"] is False
+          assert inventory["foreground_cleanup_consent_obtained"] is False
+          assert inventory["verified_native_project_cleanup"] is False
+          assert inventory["automatic_destructive_cleanup_allowed"] is False
+          assert result["native_mlt_cleanup_verified"] is False
           scope = ("actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
                    if video_only else "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master")
           assert evidence["evidence_scope"] == result["evidence_scope"] == scope
