@@ -15,6 +15,8 @@ on:
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
       - 'tooling/native_direct_mediated_parity.py'
+      - 'tooling/native_render_stage_cost.py'
+      - 'tooling/tests/test_native_render_stage_cost.py'
       - 'tooling/tests/test_native_direct_mediated_parity.py'
       - 'tooling/native_provider_lifecycle.py'
       - 'tooling/tests/test_native_provider_lifecycle.py'
@@ -123,6 +125,9 @@ jobs:
       - name: Verify direct-vs-mediated parity invariants before native rendering
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_direct_mediated_parity.py' -v
 
+      - name: Reject invented render stage timing claims
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_render_stage_cost.py' -v
+
       - name: Verify bounded provider lifecycle diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
 
@@ -144,6 +149,7 @@ jobs:
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-lifecycle.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-direct-parity-film.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-direct-mediated-parity.json"
+          test -s "verification/native-render-e2e/${GITHUB_SHA}/native-render-stage-cost.json"
           for frame in 000000 000015 000030 000059; do
             test -s "verification/native-render-e2e/${GITHUB_SHA}/mediated-native-frame-${frame}.png"
             test -s "verification/native-render-e2e/${GITHUB_SHA}/direct-native-frame-${frame}.png"
@@ -181,6 +187,21 @@ jobs:
           assert all(len(value) == 64 for value in pixels["checked_frame_rgba_sha256"])
           assert comparison["human_visual_acceptance"] == "NOT_RUN"
           assert comparison["arbitrary_renderer_property_parity"] == "NOT_PROVEN"
+          stage = json.loads((root / "native-render-stage-cost.json").read_text())
+          assert stage["schema"] == "motionwright.native-render-stage-cost/1"
+          assert stage["source_sha"] == os.environ["GITHUB_SHA"]
+          assert stage["semwright_sha"] == result["semwright_sha"]
+          assert stage["canonical_film_sha256"] == comparison["source_film_sha256"]
+          assert stage["verified_frames_per_leg"] == 60
+          assert stage["verified_rgba_frames_across_both_legs"] == 120
+          assert stage["ordered_rgba_frame_digests_sha256"] == comparison["pixels"]["ordered_rgba_frame_digests_sha256"]
+          assert set(stage["direct_broker_substage_micros"]) == {"plan", "apply", "start", "terminal_wait", "result", "verify"}
+          assert all(type(us) is int and us >= 0 for us in stage["observations_micros"].values())
+          assert stage["comparison"]["cache_savings"] is None
+          assert stage["comparison"]["saved_native_renderer_frames"] is None
+          assert stage["comparison"]["cross_run_wallclock_speedup_claim"] == "NOT_COMPARABLE_SEQUENTIAL_RUNS"
+          assert stage["comparison"]["actual_human_creative_approval"] == "NOT_RUN"
+          assert stage["v05_requirement_complete"] is False
           region = result["native_linear_opacity_region"]
           assert region["scope"] == "actual_pinned_motion_canvas_png_rgb24_region_only"
           assert region["rect"] == [1150, 750, 180, 90]
