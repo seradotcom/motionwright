@@ -8,7 +8,7 @@ import type { MeasuredTable, MeasuredBinding, MeasuredDataImpact } from "./measu
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
-export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence";
+export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence" | "step_sequence";
 export interface HeroConfig {
   /** Optional for legacy format-2 projects. Rust defaults absent layouts to ProductHeroReveal. */
   layout?: HeroLayout;
@@ -58,7 +58,7 @@ function textBudget(value: string, max: number, label: string) {
   if (!value.trim() || new TextEncoder().encode(value).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid " + label);
 }
 export function validateHero(config: HeroConfig) {
-  if (config.layout !== undefined && config.layout !== "product_hero_reveal" && config.layout !== "split_explanation" && config.layout !== "metric_evidence") throw new Error("Unsupported semantic component layout.");
+  if (config.layout !== undefined && config.layout !== "product_hero_reveal" && config.layout !== "split_explanation" && config.layout !== "metric_evidence" && config.layout !== "step_sequence") throw new Error("Unsupported semantic component layout.");
   for (const [key, max] of [["eyebrow", 48], ["headline", 64], ["body", 150], ["wordmark", 8]] as const) {
     if (!config[key].trim() || Array.from(config[key]).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(config[key])) throw new Error("Hero " + key + " exceeds the layout budget or contains control characters.");
   }
@@ -105,6 +105,7 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
   validateHero(config);
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 320 || h < 320 || w > 7680 || h > 7680) throw new Error("Hero output dimensions are out of bounds.");
   if (config.layout === "metric_evidence") return realizeMetricEvidence(id,config,w,h);
+  if (config.layout === "step_sequence") return realizeStepSequence(id,config,w,h);
   const portrait = h > w, square = h === w, split = config.layout === "split_explanation", scale = Math.min(w,h) / 1080, left = w * .09;
   const [headlineY, bodyY, markX, markY, markW, markH] = split && portrait ? [h*.20,h*.67,left,h*.565,w*.60,h*.045]
     : split && square ? [h*.17,h*.65,left,h*.55,w*.65,h*.07]
@@ -299,6 +300,69 @@ async function realizeMetricEvidence(id: string, config: HeroConfig, w: number, 
       relations:[],property_locks:[],keyframes:[],
     };
     if (config.motion) node.keyframes = entryKeys(node,start,end,offset,0);
+    return node;
+  }));
+}
+
+
+/** Rust-mirrored editable single process step. Editorial authored copy only;
+ * no product observation, source verification, recorded click or screenshot.
+ */
+async function realizeStepSequence(
+  id: string, config: HeroConfig, w: number, h: number,
+): Promise<CanvasNode[]> {
+  const portrait=h>w, square=h===w, wide=!portrait&&!square;
+  const scale=Math.min(w,h)/1080, left=w*.085;
+  const title=wrapCopy(config.headline,wide?19:square?17:22,3);
+  const explanation=wrapCopy(config.body,wide?36:square?37:38,4);
+  const entries: Array<[
+    string,string,number,number,number,number,number,number,number,number,number
+  ]> = [
+    ["eyebrow",config.eyebrow,left,h*.085,w*.82,h*.045,23*scale,500,0,500,14*scale],
+    ["headline",title,wide?w*.53:square?w*.43:left,
+      wide?h*.265:square?h*.27:h*.47,
+      wide?w*.39:square?w*.48:w*.83,
+      wide?h*.28:square?h*.30:h*.16,
+      (wide?80:square?70:75)*scale,600,240,1120,50*scale],
+    ["body",explanation,wide?w*.53:left,
+      wide?h*.65:square?h*.69:h*.69,
+      wide?w*.39:w*.83,wide?h*.17:h*.15,
+      (wide?32:30)*scale,400,520,1380,22*scale],
+    ["wordmark",config.wordmark,left,
+      wide?h*.28:square?h*.28:h*.21,
+      wide?w*.32:square?w*.30:w*.80,
+      wide?h*.38:square?h*.29:h*.17,
+      (wide?230:square?175:190)*scale*Math.min(1,3/Array.from(config.wordmark).length),700,120,850,58*scale],
+    ["rule","",wide?w*.48:left,
+      wide?h*.24:square?h*.63:h*.43,
+      wide?3*scale:w*.83,wide?h*.52:3*scale,0,400,450,1300,12*scale],
+    ["disclosure","STEP SEQUENCE / EDITORIAL STUDY · NOT AN OBSERVED WORKFLOW",
+      left,h*.915,w*.84,h*.03,17*scale,400,780,1570,10*scale],
+  ];
+  return Promise.all(entries.map(async (
+    [role,text,x,y,width,height,fontSize,weight,start,end,offset],index
+  )=>{
+    const isText=role!=="rule";
+    const node:CanvasNode={
+      id:await heroNodeId(id,role),
+      name:"StepSequence / "+role,
+      kind:isText?"text":"rectangle",
+      parent_id:null,x,y,width,height,
+      rotation_deg:0,opacity:1,
+      text:isText?text:null,
+      coordinate_space:"project_pixels",
+      z_index:10+index,
+      style:{
+        fill:role==="wordmark"||role==="rule"?config.accent:config.foreground,
+        stroke:null,stroke_width:0,
+        font_family:isText?"Instrument Sans Variable":null,
+        font_size:isText?fontSize:null,
+        font_weight:isText?weight:null,
+        line_height:isText?1.12:null,blend_mode:"normal",
+      },
+      relations:[],property_locks:[],keyframes:[],
+    };
+    if(config.motion)node.keyframes=entryKeys(node,start,end,offset,0);
     return node;
   }));
 }

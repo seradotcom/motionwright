@@ -35,7 +35,9 @@ HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (
                 "split-landscape": (1920, 1080), "split-portrait": (1080, 1920),
                 "split-square": (1080, 1080),
                 "metric-landscape": (1920, 1080), "metric-portrait": (1080, 1920),
-                "metric-square": (1080, 1080)}
+                "metric-square": (1080, 1080),
+                "step-landscape": (1920, 1080), "step-portrait": (1080, 1920),
+                "step-square": (1080, 1080)}
 STAGE_MODES = {"stage-browser", "stage-handset"}
 PROCEDURAL_MODES = {"procedural-static", "procedural-motion", "procedural-orbit"}
 IS_STAGE = FIXTURE in STAGE_MODES
@@ -186,6 +188,7 @@ def main() -> None:
             raise AssertionError(f"unexpected master profile: {seeded}")
         expected_family = ("metric-evidence/1" if FIXTURE.startswith("metric-") else
                            "split-explanation/1" if FIXTURE.startswith("split-") else
+                           "step-sequence/1" if FIXTURE.startswith("step-") else
                            "product-hero-reveal/1")
         if IS_HERO and seeded.get("fixture") != expected_family:
             raise AssertionError("Native composition fixture does not match the requested semantic family")

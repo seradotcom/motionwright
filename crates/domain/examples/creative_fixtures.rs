@@ -18,6 +18,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         headline:"42% growth".into(),
         body:"An editorial statement is not measured evidence until its source is attached and verified.".into(),
         wordmark:"DATA".into(), accent:"#D9A46E".into(), ..HeroConfig::default()
+    }, HeroConfig {layout:HeroLayout::StepSequence,
+        eyebrow:"EXPLAINER / AUTHORED STEP".into(),
+        headline:"Inspect the intended result".into(),
+        body:"Review the native scene state and confirm what changed before approving the next step.".into(),
+        wordmark:"02 / 04".into(), accent:"#D9A46E".into(), ..HeroConfig::default()
     }];
     let mut heroes = vec![];
     for config in &configs {

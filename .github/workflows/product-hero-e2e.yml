@@ -147,14 +147,19 @@ jobs:
             motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
             -- --nocapture
 
+      - name: Verify editable StepSequence layout and actual native Film mapping
+        run: |
+          cargo test --locked -p motionwright-domain --test step_sequence -- --nocapture
+          cargo test --locked -p motionwright-native --test step_sequence -- --nocapture
+
       - name: Exercise spatial regression guardrails against synthetic failures
         run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
 
-      - name: Render and inspect nine native semantic composition variants
+      - name: Render and inspect twelve native semantic composition variants
         run: |
           set -euo pipefail
           mkdir -p verification/product-hero-e2e
-          for aspect in landscape portrait square split-landscape split-portrait split-square metric-landscape metric-portrait metric-square; do
+          for aspect in landscape portrait square split-landscape split-portrait split-square metric-landscape metric-portrait metric-square step-landscape step-portrait step-square; do
             MOTIONWRIGHT_E2E_FIXTURE="$aspect" python3 tooling/native_av_master_e2e.py \
               | tee "verification/product-hero-e2e/$aspect.log"
           done
@@ -168,7 +173,8 @@ jobs:
           root = Path("verification/product-hero-e2e") / os.environ["GITHUB_SHA"]
           for aspect, size in {"landscape":(1920,1080), "portrait":(1080,1920), "square":(1080,1080),
                                "split-landscape":(1920,1080), "split-portrait":(1080,1920), "split-square":(1080,1080),
-                               "metric-landscape":(1920,1080), "metric-portrait":(1080,1920), "metric-square":(1080,1080)}.items():
+                               "metric-landscape":(1920,1080), "metric-portrait":(1080,1920), "metric-square":(1080,1080),
+                               "step-landscape":(1920,1080), "step-portrait":(1080,1920), "step-square":(1080,1080)}.items():
               folder = root / aspect
               result = json.loads((folder / "result.json").read_text())
               inspection = json.loads((folder / "creative-frame-inspection.json").read_text())
@@ -176,7 +182,9 @@ jobs:
               assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
               assert result["frame_count"] == 180
               expected_family = ("metric-evidence/1" if aspect.startswith("metric-") else
-                                 "split-explanation/1" if aspect.startswith("split-") else "product-hero-reveal/1")
+                                 "split-explanation/1" if aspect.startswith("split-") else
+                                 "step-sequence/1" if aspect.startswith("step-") else
+                                 "product-hero-reveal/1")
               assert result["project"]["fixture"] == expected_family
               assert (result["project"]["width"], result["project"]["height"]) == size
               assert inspection["revision"] == result["project"]["revision"]
