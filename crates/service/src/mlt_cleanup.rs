@@ -259,7 +259,9 @@ mod tests {
     #[test]
     fn invalid_provenance_and_forged_project_reference_are_rejected() {
         let (project, mut receipts) = project_and_receipts();
-        receipts.pop();
+        // Isolate the forged create; the other dispatching request is tested
+        // separately and would correctly count as a second unknown.
+        receipts.clear();
         let mut forged = start(&project, "untrusted", "foreign-ref");
         forged.payload["result"]["execution"]["provenance"]["provider"] = json!("driver:browser");
         receipts.push(forged);
