@@ -19,7 +19,9 @@ test("StepSequence is an editable persisted native procedure card across 16:9, 9
   for(const aspect of ["16:9","9:16","1:1"]) {
     await page.getByRole("button",{name:aspect,exact:true}).click();
     const preview=page.getByRole("img",{name:new RegExp("StepSequence "+aspect)});
-    await expect(preview).toContainText("Inspect the intended result");
+    // SVG wraps lines into independent tspans; textContent does not insert
+    // a space between lines even though the source text contains it.
+    await expect(preview).toContainText(/Inspect the\s*intended\s*result/);
     await expect(preview).toContainText("02 / 04");
     await expect(preview).toContainText("NOT AN OBSERVED WORKFLOW");
     await page.screenshot({

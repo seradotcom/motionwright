@@ -1005,13 +1005,7 @@ fn realize_step_sequence(id: Uuid, config: &HeroConfig, w: f64, h: f64) -> Resul
             "body",
             explanation,
             if wide { w * 0.53 } else { left },
-            if wide {
-                h * 0.65
-            } else if square {
-                h * 0.69
-            } else {
-                h * 0.69
-            },
+            if wide { h * 0.65 } else { h * 0.69 },
             if wide { w * 0.39 } else { w * 0.83 },
             if wide { h * 0.17 } else { h * 0.15 },
             (if wide { 32.0 } else { 30.0 }) * scale,
@@ -1024,13 +1018,7 @@ fn realize_step_sequence(id: Uuid, config: &HeroConfig, w: f64, h: f64) -> Resul
             "wordmark",
             config.wordmark.clone(),
             left,
-            if wide {
-                h * 0.28
-            } else if square {
-                h * 0.28
-            } else {
-                h * 0.21
-            },
+            if wide || square { h * 0.28 } else { h * 0.21 },
             if wide {
                 w * 0.32
             } else if square {
