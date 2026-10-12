@@ -2,6 +2,7 @@ import { previewTransform } from "./canvasMotion";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import CanvasStructureEditor from "./CanvasStructureEditor";
+import TypographySafetyReview from "./TypographySafetyReview";
 import {
   cameraLayerTransform, cameraPointerDelta,
   PROJECT_CANVAS_HEIGHT as PROJECT_HEIGHT,
@@ -784,6 +785,10 @@ export default function CanvasWorkspace({
               <CanvasStructureEditor scene={scene} node={selectedNode} commit={commit} />
             </>
           )}
+          <TypographySafetyReview
+            project={project} scene={scene} profile={profile}
+            sceneTime={scenePlayhead} onSelectNode={selectNode}
+          />
           <VisualLanguageEditor project={project} commit={commit} />
         </aside>
       </div>

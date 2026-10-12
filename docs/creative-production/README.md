@@ -133,3 +133,16 @@ inspectable without claiming unmeasured frame-render speedups, human
 preference, or independent product acceptance. The original requirement
 remains partial until actual provider renders and comparable no-cache
 baselines have been measured.
+
+
+## Typography and delivery safety (bounded preflight)
+
+Canvas now includes a read-only **Typography safety** inspector for
+source-frame geometry, camera safe margins, keyframe endpoints/midpoints
+and declared multi-line text boxes. It stays attached to the current
+project revision and selected delivery profile, and can focus each
+affected original object without committing a change. Portrait/square
+reflows, glyph shaping, font installation, visual legibility and native
+pixel fidelity are **not** inferred: these require the existing pinned
+Semwright Native SDK readback and independent human acceptance.
+See [Typography safety preflight](TYPOGRAPHY_SAFETY.md).

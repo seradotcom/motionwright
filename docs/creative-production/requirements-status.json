@@ -358,14 +358,19 @@
     {
       "id": "MW05-E06-02",
       "implementation": "partial",
-      "implemented_scope": "Bounded authored lines and content-aware three-aspect reflow",
-      "remaining_scope": "Multilingual and general layout-constraint coverage remain open",
+      "implemented_scope": "Bounded authored lines and content-aware three-aspect reflow, plus read-only source-bound semantic text framing preflight with camera/keyframe samples and explicit unsupported-format refusal",
+      "remaining_scope": "Multilingual glyph shaping, exact rendered font bounds, general constraints, native target-aspect reflow and independent human visual review remain open",
       "source_paths": [
         "crates/domain/src/hero.rs",
         "crates/native/src/expressive.rs",
         "crates/native/src/component_text.rs",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
-        "crates/native/tests/product_hero.rs"
+        "crates/native/tests/product_hero.rs",
+        "apps/studio/src/typographySafety.ts",
+        "apps/studio/src/TypographySafetyReview.tsx",
+        "apps/studio/src/typographySafety.test.ts",
+        "apps/studio/tests/typography-safety.spec.ts",
+        "docs/creative-production/TYPOGRAPHY_SAFETY.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
