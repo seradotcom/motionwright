@@ -205,17 +205,16 @@ impl ComponentDistillationProposal {
                 ));
             }
         }
-        if let Some(review) = &self.review {
-            if !bounded(&review.reviewer, 120)
+        if let Some(review) = &self.review
+            && (!bounded(&review.reviewer, 120)
                 || !bounded(&review.rationale, 1600)
                 || review.reviewer.eq_ignore_ascii_case(&input.author)
                 || review.source_revision != input.source_revision
-                || review.compatibility != DISTILLATION_RENDERER
-            {
-                return Err(DomainError::Invalid(
-                    "distillation review must be independently authored and version-bound".into(),
-                ));
-            }
+                || review.compatibility != DISTILLATION_RENDERER)
+        {
+            return Err(DomainError::Invalid(
+                "distillation review must be independently authored and version-bound".into(),
+            ));
         }
         Ok(())
     }

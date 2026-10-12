@@ -1,4 +1,4 @@
-import { FileCheck2, Save } from " lucide-react\;
+import { FileCheck2, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import type { ComponentDistillationInput, DistillationNegative, DistillationReview, DistillationVerdict } from "./componentDistillation";
@@ -97,7 +97,7 @@ export default function ComponentDistillationWorkbench({project,busy,commit}:Pro
     <section className="production-inspector" aria-label="Component distillation proposal controls">
       <div className="production-section-title"><div>
         <h2>Component distillation</h2>
-        <p>Evidence-bound proposals · no code installation</p>
+        <p>Evidence-bound proposals Â· no code installation</p>
       </div></div>
       <p className="production-help">Extract source-owned semantic Canvas roles from two genuinely varied
         original scenes. Provide an actually rejected counterexample and an author rights declaration.
@@ -127,7 +127,7 @@ export default function ComponentDistillationWorkbench({project,busy,commit}:Pro
           <option value="">Choose actually incompatible or locked source</option>
           {negativeScenes.filter(n=>n.scene.id!==a?.id && n.scene.id!==b?.id).map(item=>
             <option value={item.scene.id} key={item.scene.id}>
-              {item.scene.name} · {item.negative.rejection}</option>)}
+              {item.scene.name} Â· {item.negative.rejection}</option>)}
         </select>
       </label>
       {!negativeScenes.length && <p role="status" className="production-help">
@@ -154,7 +154,7 @@ export default function ComponentDistillationWorkbench({project,busy,commit}:Pro
           onChange={e=>setReviewId(e.target.value)}>
           <option value="">Choose an immutable source proposal</option>
           {proposals.filter(p=>!p.review).map(p=><option key={p.input.id} value={p.input.id}>
-            {p.input.label} · revision {p.input.source_revision}</option>)}
+            {p.input.label} Â· revision {p.input.source_revision}</option>)}
         </select>
       </label>
       <label className="production-field"><span>Independent reviewer</span>
@@ -163,7 +163,7 @@ export default function ComponentDistillationWorkbench({project,busy,commit}:Pro
       <label className="production-field"><span>Verdict</span>
         <select aria-label="Distillation verdict" value={verdict}
           onChange={e=>setVerdict(e.target.value as DistillationVerdict)}>
-          <option value="compatible_proposal">Compatible proposal · not admitted</option>
+          <option value="compatible_proposal">Compatible proposal Â· not admitted</option>
           <option value="rejected">Reject source candidate</option>
         </select></label>
       <label className="production-field"><span>Review rationale</span>
@@ -177,7 +177,7 @@ export default function ComponentDistillationWorkbench({project,busy,commit}:Pro
     <section className="production-viewer" aria-label="Distillation source evidence">
       <div className="production-viewer-toolbar"><div>
         <strong>Frozen proposal registry</strong>
-        <span>{proposals.length} source proposals · no automatic installation</span>
+        <span>{proposals.length} source proposals Â· no automatic installation</span>
       </div></div>
       <div className="production-capsule-list">
         {proposals.map(candidate=><article key={candidate.input.id}>
@@ -185,19 +185,19 @@ export default function ComponentDistillationWorkbench({project,busy,commit}:Pro
             {candidate.review?candidate.review.verdict==="compatible_proposal"?
               "Reviewed proposal / not admitted":"Rejected":"Pending independent review"}
           </span></header>
-          <p>{candidate.samples.length} frozen positive source variations ·
-            {candidate.input.negatives.length} observed negative sample(s) ·
+          <p>{candidate.samples.length} frozen positive source variations Â·
+            {candidate.input.negatives.length} observed negative sample(s) Â·
             {candidate.input.roles.length} original roles</p>
-          <p className="mono">Source revision {candidate.input.source_revision} ·
+          <p className="mono">Source revision {candidate.input.source_revision} Â·
             generation {candidate.input.source_generation}</p>
-          <p>{candidate.input.requirements.join(" · ")}</p>
+          <p>{candidate.input.requirements.join(" Â· ")}</p>
           {candidate.review && <p>{candidate.review.reviewer}: {candidate.review.rationale}</p>}
         </article>)}
         {!proposals.length && <p className="production-help">
           No proposals exist. Compatible variations, observed rejection and a rights
           declaration are necessary to create a record.</p>}
       </div>
-      <div className="production-evidence-note"><strong>Proposal ≠ admission</strong>
+      <div className="production-evidence-note"><strong>Proposal â‰  admission</strong>
         <p>Reviews never install code, expand SDK permissions, certify IP rights
           or promote this candidate to the executable component registry.</p></div>
     </section>
