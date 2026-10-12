@@ -32,9 +32,17 @@ export interface FidelityReport {
   renderer: string; renderer_version: string; visual: Fidelity; temporal: Fidelity;
   structural: Fidelity; editable: Fidelity; losses: string[]; evidence_sha256: string | null;
 }
+export interface NativePropertyFidelity {
+  /** Author-declared semantic source property, never a verified provider edit. */
+  path: string;
+  fidelity: Fidelity;
+  loss_note: string | null;
+}
 export interface NativeCapsule {
   id: string; scene_id: string; source_asset_id: string; source_sha256: string; label: string;
   fidelity: FidelityReport; editable_parameters: string[]; native_editor_hint: string;
+  /** Absent on older capsules; empty reports serialize without changing source. */
+  property_fidelity?: NativePropertyFidelity[];
 }
 export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; }
 export type ScopedCanvasEdit =
@@ -44,6 +52,29 @@ export type ScopedCanvasEdit =
   | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe };
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
 export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
+
+export function validateNativePropertyFidelity(properties: NativePropertyFidelity[]) {
+  if (properties.length > 64) throw new Error("At most 64 native property classifications are permitted.");
+  const seen = new Set<string>();
+  for (const entry of properties) {
+    const parts = entry.path.split(".");
+    if (new TextEncoder().encode(entry.path).length > 128 || parts.length > 5 ||
+        parts.some(part => !/^[A-Za-z][A-Za-z0-9_]*$/.test(part) ||
+          ["__proto__", "constructor", "prototype"].includes(part))) {
+      throw new Error("Native source property path is invalid.");
+    }
+    if (seen.has(entry.path)) throw new Error("Duplicate native property classification.");
+    seen.add(entry.path);
+    if (!["native", "translated", "baked", "approximate", "unavailable"].includes(entry.fidelity)) {
+      throw new Error("Unknown native property fidelity.");
+    }
+    if (entry.loss_note !== null) textBudget(entry.loss_note, 500, "property loss note");
+    if (["baked", "approximate", "unavailable"].includes(entry.fidelity) &&
+        entry.loss_note === null) {
+      throw new Error("Lossy or unavailable native properties need a specific loss note.");
+    }
+  }
+}
 
 export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [], brand_profile: null, taste_profile: null, brand_exceptions: [], project_decisions: [], stages: [], captures: [], procedural_fields: [], measured_tables: [], measured_bindings: [], last_measured_impact: null });
 export const defaultHeroConfig = (): HeroConfig => ({
@@ -254,6 +285,7 @@ export async function applyProductionDesignChange(project: Project, change: Prod
         || !project.assets.some(a => a.id === capsule.source_asset_id && a.content_sha256 === capsule.source_sha256)
         || capsule.editable_parameters.length > 64 || f.losses.length > 128 || (f.evidence_sha256 !== null && !digestPattern.test(f.evidence_sha256))) throw new Error("Native capsule needs an existing digest-bound source asset.");
       capsule.editable_parameters.forEach(v => textBudget(v,2000,"parameter")); f.losses.forEach(v => textBudget(v,2000,"loss"));
+      validateNativePropertyFidelity(capsule.property_fidelity ?? []);
       if ([f.visual,f.temporal,f.structural,f.editable].some(v => !["native","translated"].includes(v)) && !f.losses.length) throw new Error("Losses must be explicit.");
       if (!design.capsules.some(c => c.id === capsule.id) && design.capsules.length >= 256) throw new Error("Capsule budget exceeded.");
       const index = design.capsules.findIndex(c => c.id === capsule.id);

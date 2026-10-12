@@ -439,6 +439,7 @@ fn capsule_is_an_attachment_not_a_runtime_grant() {
         },
         editable_parameters: vec![],
         native_editor_hint: "Open in the source application's trusted environment".into(),
+        property_fidelity: vec![],
     };
     p.apply_change(&Change::UpsertNativeCapsule {
         capsule: capsule.clone(),

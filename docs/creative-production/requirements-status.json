@@ -249,12 +249,20 @@
     {
       "id": "MW05-E04-02",
       "implementation": "partial",
-      "implemented_scope": "Declared multidimensional fidelity and explicit loss metadata",
-      "remaining_scope": "Per-property independently verified negotiation remains open",
+      "implemented_scope": "Native source capsules preserve digest-bound original files with aggregate visual/temporal/structural/editable fidelity. Editors can now record, amend and remove strict per-property native/translated/baked/approximate/unavailable classifications with explicit losses through the existing Native SDK upsert and StudioService CAS; legacy capsules remain readable. This is an authored negotiation ledger, not independent provider proof.",
+      "remaining_scope": "Measured native property readback, provider-specific transformation/edit execution, independently verified round-trip of values, mixed renderer fidelity and human source/aesthetic acceptance remain open. A source digest and owner classification alone are not proof of render editability.",
       "source_paths": [
         "crates/domain/src/production_design.rs",
+        "crates/domain/tests/production_design.rs",
+        "crates/domain/tests/native_property_fidelity.rs",
+        "crates/service/tests/native_property_fidelity.rs",
+        "apps/studio/src/creativeProduction.ts",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
-        "crates/domain/tests/production_design.rs"
+        "apps/studio/src/NativePropertyFidelityWorkbench.tsx",
+        "apps/studio/src/nativePropertyFidelity.test.ts",
+        "apps/studio/tests/native-property-fidelity.spec.ts",
+        "docs/creative-production/NATIVE_PROPERTY_FIDELITY.md",
+        ".github/workflows/native-property-fidelity.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
