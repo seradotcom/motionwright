@@ -90,6 +90,18 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
 
   const revision=await page.locator(".revision-chip").first().innerText();
   expect(revision).toBe("r"+boot.project.revision);
-  await page.getByRole("button",{name:"Show design"}).click();
+
+  // Remove the source grant by switching profile WHILE a read is in flight.
+  // Its later completion must never resurrect a PNG from the prior profile.
+  await page.getByRole("button",{name:"Step forward one frame"}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {
+    __READ_STATS__:{active:number};
+  }).__READ_STATS__.active)).toBe(1);
+  await page.getByLabel("Editor preview timebase").selectOption(
+    boot.project.deliverables[1].id,
+  );
   await expect(stage).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await expect(stage).toHaveCount(0);
+  expect(await page.locator(".revision-chip").first().innerText()).toBe(revision);
 });
