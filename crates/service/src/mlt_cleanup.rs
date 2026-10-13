@@ -101,13 +101,13 @@ pub(crate) fn derive_mlt_cleanup_inventory(
     let mut confirmed_creations: BTreeMap<&str, BTreeSet<_>> = BTreeMap::new();
     let mut latest: BTreeMap<&str, &ProductionReceipt> = BTreeMap::new();
     for receipt in receipts {
-        if receipt.command == "driver.mlt-video.project.create" {
-            if let Some(identity) = confirmed_identity(receipt) {
-                confirmed_creations
-                    .entry(receipt.request_id.as_str())
-                    .or_default()
-                    .insert(identity);
-            }
+        if receipt.command == "driver.mlt-video.project.create"
+            && let Some(identity) = confirmed_identity(receipt)
+        {
+            confirmed_creations
+                .entry(receipt.request_id.as_str())
+                .or_default()
+                .insert(identity);
         }
         if !matches!(
             receipt.command.as_str(),
