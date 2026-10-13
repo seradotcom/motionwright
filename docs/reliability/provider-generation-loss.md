@@ -32,6 +32,8 @@ Five lightweight adversarial Python tests cover role isolation, redaction, paren
 
 **v0.1 two-lifetime repeat diagnostic (not a provider fix):** An opt-in [two-independent-owner-native-lifetimes CI gate](v01-native-provider-repeat.md) rebuilds two separate disposable Broker/Driver Host sessions under the same source pin, independently verifies native PNG frames and full direct-vs-mediated RGBA parity, and compares exact artifact/lifecycle receipts. It does not automatically retry an uncertain job or infer installed-owner acceptance from a CI runner. Its distinct owner generations and explicit non-comparability of differing generated Film sources guard against fabricated deterministic claims.
 
+**v0.1 passive CI process correlation (not a fix):** The [source-bound numeric-only process correlation](v01-provider-loss-correlation.md) adds a separate report before owner cleanup. For the real run 38301150251, Semwright daemon was observed in all 37 passive samples while bounded isolated sandbox process counts varied and decreased; OOM evidence was unavailable. This is only a signal to investigate. Process-role count changes do not establish which generation exited or why, and no automatic native render restart is authorized.
+
 **Outstanding:** determine why the pinned Driver Host generation disappeared (provider process exit, sandbox/Firefox resource pressure, lifecycle timeout or Broker behavior) using a genuinely instrumented recurrence. Do not close [issue #49](https://github.com/seradotcom/motionwright/issues/49) or upgrade Semwright's immutable pin speculatively.
 
 ## Acknowledged job identity and terminal-read uncertainty

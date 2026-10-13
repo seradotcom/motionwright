@@ -71,15 +71,16 @@ aesthetic review, or unrestricted creative capability.
    of native MLT projects is allowed. The read-only [MLT lifetime receipt
    inventory](reliability/v01-mlt-cleanup-inventory.md) now exposes an
    incomplete closure disposition without querying or deleting live resources.
-   An additional [real-provider lifetime check](reliability/v01-real-mlt-lifetime-evidence.md)
-   requires authentic MLT creation receipts in every actual native E2E mode;
-   it still does not satisfy the required foreground Broker authorization. The bounded v0.1 [read-only original-job
+   It does not satisfy the required foreground Broker authorization. The bounded v0.1 [read-only original-job
    status observation](reliability/v01-owner-native-status-read.md) does not
    fix provider lifecycle, verify native media or authorize a release.
    The [sanitized native AV CI failure receipt](reliability/v01-native-av-failure-redaction.md)
    also preserves Timeout-to-inactive-generation evidence without publishing
    owner paths or opaque job IDs, but does not remediate the provider. The
-   [shared native CLI error redaction](reliability/v01-native-cli-failure-redaction.md)
+   [passive process correlation](reliability/v01-provider-loss-correlation.md)
+   records daemon/sandbox count changes without identifying an individual
+   provider exit, repairing the generation, or verifying the original job.
+   The [shared native CLI error redaction](reliability/v01-native-cli-failure-redaction.md)
    additionally protects baseline Motion Canvas, MLT and Native SDK CI
    failures from leaking argv or untrusted native status payloads. It
    neither retries an uncertain mutation nor resolves provider lifecycle.
