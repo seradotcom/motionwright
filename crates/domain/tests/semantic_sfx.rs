@@ -165,7 +165,7 @@ fn invalid_source_rights_gain_release_position_and_unknown_keys_are_denied() {
     external["unlicensed_audio_url"] = serde_json::json!("https://audio.invalid/file.wav");
     assert!(serde_json::from_value::<SemanticSfxCue>(external).is_err());
     let mut bad_anchor = serde_json::to_value(&base).unwrap();
-    bad_anchor["anchor"]["callback"] = "unsafe";
+    bad_anchor["anchor"]["callback"] = serde_json::json!("unsafe");
     assert!(serde_json::from_value::<SemanticSfxCue>(bad_anchor).is_err());
 }
 #[test]
