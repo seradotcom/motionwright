@@ -27,13 +27,16 @@ pub struct VerifiedMasterVoice {
     pub size_bytes: u64,
 }
 
-use motionwright_domain::{Asset, Change, DomainError, Project, RevisionStamp, VoiceTrack};
+use motionwright_domain::{
+    Asset, Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp, VoiceTrack,
+};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
     BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan, PortableBlob,
     ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark, ProjectBackup,
     ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };
 use parking_lot::Mutex;
 use std::{
@@ -305,6 +308,42 @@ impl StudioService {
         self.store
             .lock()
             .lookup_derived_cache(scope, kind, fingerprint_sha256)
+    }
+
+    /// Source-window derived proxy admission: not a native renderer cache grant.
+    pub fn put_render_window_proxy(
+        &self,
+        key: &RenderWindowCacheKey,
+        source: impl AsRef<Path>,
+        work_units: u64,
+    ) -> StorageResult<DerivedCacheRecord> {
+        self.store
+            .lock()
+            .put_render_window_proxy(key, source, work_units)
+    }
+
+    pub fn lookup_render_window_proxy(
+        &self,
+        key: &RenderWindowCacheKey,
+    ) -> StorageResult<Option<DerivedCacheHit>> {
+        self.store.lock().lookup_render_window_proxy(key)
+    }
+
+    pub fn purge_render_window_proxies(
+        &self,
+        project_id: Uuid,
+        request: &RenderTailInspectRequest,
+    ) -> StorageResult<RenderWindowPurgeReport> {
+        self.store
+            .lock()
+            .purge_render_window_proxies(project_id, request)
+    }
+
+    pub fn drain_render_window_evictions(
+        &self,
+        limit: usize,
+    ) -> StorageResult<RenderWindowEvictionDrainReport> {
+        self.store.lock().drain_render_window_evictions(limit)
     }
 
     pub fn import_asset_file(

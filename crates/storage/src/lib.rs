@@ -16,11 +16,15 @@ mod capture_evidence;
 mod derived_cache;
 mod integrity;
 mod production;
+mod render_window_cache;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
+pub use render_window_cache::{
+    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
+};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -407,6 +411,53 @@ impl Store {
               FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
 
+            -- Derived proxy metadata is disposable, and never grants render authority.
+            CREATE TABLE IF NOT EXISTS render_window_cache_entries(
+              project_id TEXT NOT NULL,
+              generation TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK(revision >= 0),
+              deliverable_id TEXT NOT NULL,
+              source_start INTEGER NOT NULL CHECK(source_start >= 0),
+              source_end INTEGER NOT NULL CHECK(source_end > source_start),
+              fingerprint_sha256 TEXT NOT NULL,
+              PRIMARY KEY(project_id, generation, revision, deliverable_id,
+                          source_start, source_end, fingerprint_sha256),
+              FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS render_window_cache_by_owner
+              ON render_window_cache_entries(project_id, generation, deliverable_id);
+
+            -- A commit atomically revokes cache registrations. Recoverable
+            -- eviction records retain only derived-artifact keys, never source.
+            CREATE TABLE IF NOT EXISTS render_window_cache_evictions(
+              project_id TEXT NOT NULL,
+              generation TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK(revision >= 0),
+              deliverable_id TEXT NOT NULL,
+              source_start INTEGER NOT NULL CHECK(source_start >= 0),
+              source_end INTEGER NOT NULL CHECK(source_end > source_start),
+              fingerprint_sha256 TEXT NOT NULL,
+              PRIMARY KEY(project_id, generation, revision, deliverable_id,
+                          source_start, source_end, fingerprint_sha256),
+              FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE TRIGGER IF NOT EXISTS render_window_cache_invalidate_revision
+            AFTER UPDATE OF generation, revision ON projects
+            WHEN OLD.generation<>NEW.generation OR OLD.revision<>NEW.revision
+            BEGIN
+              INSERT OR IGNORE INTO render_window_cache_evictions(
+                project_id,generation,revision,deliverable_id,
+                source_start,source_end,fingerprint_sha256)
+                SELECT project_id,generation,revision,deliverable_id,
+                       source_start,source_end,fingerprint_sha256
+                FROM render_window_cache_entries
+                WHERE project_id=NEW.id
+                  AND (generation<>NEW.generation OR revision<>NEW.revision);
+              DELETE FROM render_window_cache_entries
+              WHERE project_id=NEW.id
+                AND (generation<>NEW.generation OR revision<>NEW.revision);
+            END;
+
             CREATE INDEX IF NOT EXISTS events_by_project_revision
               ON events(project_id, revision);
             CREATE INDEX IF NOT EXISTS production_receipts_by_project
@@ -420,11 +471,16 @@ impl Store {
         }
         fs::create_dir_all(&blob_root)?;
         ensure_regular_directory(&blob_root, "content-addressed storage root")?;
-        Ok(Self {
+        let store = Self {
             conn,
             path,
             blob_root,
-        })
+        };
+        // Recover a bounded number of obsolete derived manifests after an
+        // interrupted edit. Tombstones and misses remain authoritative even
+        // if filesystem cleanup encounters an unsafe or inaccessible file.
+        let _ = store.drain_render_window_evictions(64);
+        Ok(store)
     }
 
     pub fn path(&self) -> &Path {
@@ -1161,6 +1217,11 @@ impl Store {
         )?;
 
         tx.commit()?;
+        // The SQLite trigger revoked stale cache registrations *inside* the
+        // successful edit transaction. Physical derived-manifest cleanup is
+        // best-effort: its durable tombstones will be retried, and failure
+        // must never turn a successfully committed user edit into an error.
+        let _ = self.drain_render_window_evictions(64);
         Ok(outcome)
     }
 

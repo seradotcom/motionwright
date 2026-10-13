@@ -35,9 +35,17 @@ test("renderer and locks mutate the same visible project revision", async ({ pag
 
 test("keyboard focus is visible and workspace navigation remains operable", async ({ page }) => {
   await page.goto("/");
+  // Anchor focus in a hydrated editor control before traversing with Tab.
+  // A bare Tab immediately after navigation can target browser chrome before
+  // React mounts; that is not an accessibility failure in the workspace.
+  const timeline = page.getByRole("button", { name: "Timeline", exact: true });
+  await expect(timeline).toBeVisible();
+  await timeline.focus();
+  await expect(timeline).toBeFocused();
   await page.keyboard.press("Tab");
   const active = page.locator(":focus");
   await expect(active).toBeVisible();
+  await expect(active).not.toHaveText("Timeline");
 
   await page.getByRole("button", { name: "Dependencies", exact: true }).focus();
   await page.keyboard.press("Enter");

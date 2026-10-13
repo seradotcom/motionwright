@@ -15,6 +15,7 @@ mod music_conform;
 mod procedural;
 mod product_stage;
 mod production_design;
+mod render_tail_impact;
 mod semantic_sfx;
 pub use brand_governance::*;
 pub use camera_reframe::*;
@@ -33,6 +34,7 @@ pub use music_conform::*;
 pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
+pub use render_tail_impact::*;
 pub use semantic_sfx::*;
 
 use chrono::{DateTime, Utc};
