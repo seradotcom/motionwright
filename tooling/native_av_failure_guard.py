@@ -7,6 +7,7 @@ This helper NEVER converts an uncertain started native render into success.
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import Any
 
 SCHEMA = "motionwright.v01-native-command-failure/1"
@@ -30,6 +31,48 @@ class NativeCommandFailure(AssertionError):
             + " source_outcome=" + diagnostic["source_outcome"]
             + " (never automatically retry a mutating render)"
         )
+
+
+def run_sanitized_json(
+    argv: list[str], *, env: dict[str, str], timeout: int = 30,
+) -> dict[str, Any]:
+    """Canonical subprocess JSON contract, no private stderr/argv exceptions.
+
+    Used by CI-only native render wrappers. Always refuse a failed or malformed
+    command; never issue an automatic second native operation.
+    """
+    try:
+        result = subprocess.run(
+            argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"", exit_code=None, deadline_exceeded=True,
+        )) from None
+    except OSError:
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"", exit_code=None,
+        )) from None
+
+    if result.returncode != 0:
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=result.stdout, stderr=result.stderr,
+            exit_code=result.returncode,
+        )) from None
+    try:
+        parsed = json.loads(result.stdout)
+    except (ValueError, UnicodeError, TypeError):
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"invalid-native-response",
+            exit_code=result.returncode,
+        )) from None
+    if not isinstance(parsed, dict):
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"invalid-native-response",
+            exit_code=result.returncode,
+        )) from None
+    return parsed
 
 
 def _known_code(value: Any) -> str:
@@ -67,26 +110,46 @@ def classify_native_command_failure(
     if deadline_exceeded:
         return report
 
-    raw = stderr.strip() or stdout.strip()
-    if not raw:
+    # A native executable may write a canonical typed JSON failure to
+    # stdout while its stderr contains unrelated diagnostic noise. Inspect
+    # both bounded streams in-memory; never log either raw channel.
+    raw_streams = (stdout.strip(), stderr.strip())
+    if not any(raw_streams):
         report["reason"] = "empty_native_response"
         return report
-    if len(raw) > MAX_INPUT_BYTES:
+    if any(len(raw) > MAX_INPUT_BYTES for raw in raw_streams):
         report["reason"] = "oversized_native_failure_response"
         return report
-    try:
-        parsed = json.loads(raw)
-    except (UnicodeError, ValueError, TypeError):
-        report["reason"] = "malformed_native_failure_response"
-        return report
-    if not isinstance(parsed, dict):
-        report["reason"] = "unexpected_native_failure_shape"
+
+    typed: list[dict[str, Any]] = []
+    untyped_object = False
+    unexpected_shape = False
+    for raw in raw_streams:
+        if not raw:
+            continue
+        try:
+            candidate = json.loads(raw)
+        except (UnicodeError, ValueError, TypeError):
+            continue
+        if isinstance(candidate, dict):
+            if isinstance(candidate.get("error"), dict):
+                typed.append(candidate)
+            else:
+                untyped_object = True
+        else:
+            unexpected_shape = True
+    if not typed:
+        report["reason"] = (
+            "typed_error_missing" if untyped_object
+            else "unexpected_native_failure_shape" if unexpected_shape
+            else "malformed_native_failure_response"
+        )
         return report
 
-    error = parsed.get("error")
-    if not isinstance(error, dict):
-        report["reason"] = "typed_error_missing"
-        return report
+    # The canonical application JSON stdout wins when both streams contain
+    # typed errors. Later stderr errors can only make outcome *less* certain.
+    parsed = typed[0]
+    error = parsed["error"]
     code = _known_code(error.get("code"))
     report["reported_error_code"] = code
     if error.get("outcome_known") is False:
@@ -94,11 +157,24 @@ def classify_native_command_failure(
     elif error.get("outcome_known") is True:
         report["source_outcome"] = "FAILED_NOT_MEDIA_VERIFIED"
 
-    if _matches_generation_loss(error.get("message")):
-        report["provider_generation_inactive_observed"] = True
+    any_typed_timeout = False
+    has_bounded_journal = False
+    for envelope in typed:
+        observed_error = envelope["error"]
+        if observed_error.get("outcome_known") is False:
+            # A secondary typed stream may only weaken certainty, never
+            # turn the already-started native operation into known failure.
+            report["source_outcome"] = "UNKNOWN"
+        if observed_error.get("code") == "Timeout":
+            any_typed_timeout = True
+        if _matches_generation_loss(observed_error.get("message")):
+            report["provider_generation_inactive_observed"] = True
 
-    receipts = parsed.get("receipts")
-    if isinstance(receipts, list) and len(receipts) <= MAX_RECEIPTS:
+        receipts = envelope.get("receipts")
+        if not isinstance(receipts, list) or len(receipts) > MAX_RECEIPTS:
+            continue
+        has_bounded_journal = True
+        starts_in_envelope = 0
         for item in receipts:
             if not isinstance(item, dict):
                 continue
@@ -110,7 +186,7 @@ def classify_native_command_failure(
             observed = payload.get("error")
             receipt_error = observed if isinstance(observed, dict) else {}
             if command == "driver.motion-canvas.render.start" and stage == "completed":
-                report["original_render_start_receipts_observed"] += 1
+                starts_in_envelope += 1
             if command == "driver.motion-canvas.render.status":
                 if receipt_error.get("code") == "Timeout":
                     report["read_only_status_timeout_observed"] = True
@@ -118,7 +194,12 @@ def classify_native_command_failure(
                     report["read_only_status_unavailable_observed"] = True
                 if _matches_generation_loss(receipt_error.get("message")):
                     report["provider_generation_inactive_observed"] = True
-    else:
+        # Different streams can describe the same durable request history.
+        # Never double count original native mutation acknowledgements.
+        report["original_render_start_receipts_observed"] = max(
+            report["original_render_start_receipts_observed"], starts_in_envelope
+        )
+    if not has_bounded_journal:
         report["reason"] = "native_journal_missing_or_unbounded"
 
     if report["provider_generation_inactive_observed"]:
@@ -126,7 +207,7 @@ def classify_native_command_failure(
         # Provider resource loss following timeout does not prove what
         # occurred in the ORIGINAL mutating render.
         report["source_outcome"] = "UNKNOWN"
-    elif code == "Timeout" or (
+    elif any_typed_timeout or (
         report["read_only_status_timeout_observed"]
         and report["read_only_status_unavailable_observed"]
     ):

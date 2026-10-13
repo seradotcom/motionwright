@@ -18,6 +18,7 @@ import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from native_av_failure_guard import run_sanitized_json
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -36,26 +37,7 @@ def digest(path: Path) -> str:
 
 
 def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 20) -> dict:
-    result = subprocess.run(
-        argv,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"command failed ({result.returncode}): {argv!r}\n"
-            f"stdout={result.stdout[:4096]!r}\nstderr={result.stderr[:4096]!r}"
-        )
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise AssertionError(
-            f"command did not return JSON: {argv!r}\n"
-            f"stdout={result.stdout[:4096]!r}\nstderr={result.stderr[:4096]!r}"
-        ) from error
+    return run_sanitized_json(argv, env=env, timeout=timeout)
 
 
 def write_json(path: Path, value: object) -> None:

@@ -9,6 +9,8 @@ on:
       - "crates/native/**"
       - "apps/desktop/src-tauri/**"
       - "tooling/native_host_shared_state.py"
+      - "tooling/native_av_failure_guard.py"
+      - "tooling/tests/test_native_cli_failure_redaction.py"
       - "docs/native-sdk.md"
       - ".github/workflows/native-sdk.yml"
   push:
@@ -20,6 +22,8 @@ on:
       - "crates/native/**"
       - "apps/desktop/src-tauri/**"
       - "tooling/native_host_shared_state.py"
+      - "tooling/native_av_failure_guard.py"
+      - "tooling/tests/test_native_cli_failure_redaction.py"
       - "docs/native-sdk.md"
       - ".github/workflows/native-sdk.yml"
   workflow_dispatch:
@@ -66,6 +70,8 @@ jobs:
         with:
           key: motionwright-native-sdk-1.98.1
           cache-on-failure: true
+      - name: Verify source-bound JSON command failure redaction
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
       - name: Upstream public Native SDK contract tests
         working-directory: _semwright
         run: cargo test --locked -p semwright-native-sdk --features driver --test cooperation
