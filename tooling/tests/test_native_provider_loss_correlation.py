@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from native_provider_loss_correlation import (
     CorrelationEvidenceError, inspect_provider_lifetime,
 )
+from native_provider_lifecycle import summarize_render_receipts
 
 
 PRIVATE = "mc1:private-native-job:secret-ticket=/owner/media/project.mp4"
@@ -57,6 +58,7 @@ def failed_status() -> dict:
         "render_outcome": "unconfirmed",
         "timeout_then_provider_unavailable_observed": True,
         "same_acknowledged_job_status_chain_verified": True,
+        "unresolved_same_job_status_loss_verified": True,
         "render_start_dispatch_count": 1,
         "status_events": [{"message": PRIVATE}],
     }
@@ -117,6 +119,66 @@ class ProviderLossCorrelationTests(unittest.TestCase):
             self.assertFalse(result["read_only_timeout_then_unavailable_observed"])
             self.assertFalse(result["operator_owner_reconciliation_required_if_unknown"])
             self.assert_no_private_or_false_release(result)
+
+    def test_recovered_original_cannot_be_assigned_to_other_unknown(self) -> None:
+        # A historic loss chain can remain in the audit trail, even though
+        # every job with that chain obtained a later matching terminal result.
+        # The remaining UNKNOWN outcome must not inherit that old loss.
+        for bound in (False, None, "false"):
+            response = failed_status()
+            if bound is None:
+                response.pop("unresolved_same_job_status_loss_verified")
+            else:
+                response["unresolved_same_job_status_loss_verified"] = bound
+            outcome = inspect_provider_lifetime(baseline(), response)
+            self.assertFalse(outcome["render_outcome_unknown_after_status_loss"])
+            self.assertFalse(outcome["operator_owner_reconciliation_required_if_unknown"])
+            self.assert_no_private_or_false_release(outcome)
+
+    def test_actual_reconciliation_is_not_cross_attributed_to_other_unknown(self) -> None:
+        def record(operation: str, stage: str, second: int, job: str,
+                   code: str = "", known=None) -> dict:
+            return {
+                "command": "driver.motion-canvas.render." + operation,
+                "stage": stage,
+                "created_at": f"2026-10-13T01:00:{second:02d}Z",
+                "payload": {"job_ref": job,
+                            "error": {"code": code, "outcome_known": known}},
+            }
+
+        a, b = "private-previous-job", "private-new-unknown-job"
+        events = [
+            record("start", "completed", 0, a),
+            record("status", "outcome_unknown", 1, a, "Timeout", False),
+            record("status", "failed_known", 2, a, "Unavailable", True),
+            record("result", "completed", 3, a),
+            record("start", "completed", 4, b),
+            record("status", "outcome_unknown", 5, b, "Timeout", False),
+        ]
+        events[3]["payload"]["result"] = {
+            "data": {"job_ref": a, "state": "succeeded",
+                     "artifact": {"sha256": "c" * 64}},
+        }
+        reconciliation = summarize_render_receipts(events)
+        self.assertEqual(reconciliation["render_outcome"], "unconfirmed")
+        self.assertTrue(reconciliation["same_acknowledged_job_status_chain_verified"])
+        self.assertFalse(reconciliation["unresolved_same_job_status_loss_verified"])
+        outcome = inspect_provider_lifetime(baseline(), reconciliation)
+        self.assertFalse(outcome["render_outcome_unknown_after_status_loss"])
+        self.assertFalse(outcome["operator_owner_reconciliation_required_if_unknown"])
+        self.assert_no_private_or_false_release(outcome)
+        self.assertNotIn(a, json.dumps(outcome))
+        self.assertNotIn(b, json.dumps(outcome))
+
+        events.append(record("status", "failed_known", 6, b,
+                             "Unavailable", True))
+        actual_loss = summarize_render_receipts(events)
+        self.assertTrue(actual_loss["unresolved_same_job_status_loss_verified"])
+        correlated = inspect_provider_lifetime(baseline(), actual_loss)
+        self.assertTrue(correlated["render_outcome_unknown_after_status_loss"])
+        self.assert_no_private_or_false_release(correlated)
+        self.assertNotIn(a, json.dumps(correlated))
+        self.assertNotIn(b, json.dumps(correlated))
 
     def test_missing_root_is_not_silently_reported_as_healthy(self) -> None:
         report = baseline()

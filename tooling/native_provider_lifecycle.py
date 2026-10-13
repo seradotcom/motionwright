@@ -231,7 +231,7 @@ def summarize_render_receipts(receipts: object) -> dict[str, Any]:
     terminal_refs: set[str] = set()
     unresolved_refs: set[str] = set()
     timed_out_refs: set[str] = set()
-    loss_pattern = False
+    loss_pattern_refs: set[str] = set()
     for command, stage, code, known, timestamp, job_ref, artifact in ordered:
         if command == "start" and stage == "completed" and job_ref:
             started_refs.add(job_ref)
@@ -248,8 +248,13 @@ def summarize_render_receipts(receipts: object) -> dict[str, Any]:
                     timed_out_refs.add(job_ref)
                 elif (stage == "failed_known" and code == "Unavailable"
                       and known is True and job_ref in timed_out_refs):
-                    loss_pattern = True
+                    # Remember the historical chain, but attach it to the
+                    # exact native job. A later terminal receipt resolves the
+                    # original job's uncertainty without erasing the event.
+                    loss_pattern_refs.add(job_ref)
 
+    loss_pattern = bool(loss_pattern_refs)
+    unresolved_loss_pattern = bool(loss_pattern_refs - terminal_refs)
     result_confirmed = bool(started_refs) and started_refs.issubset(terminal_refs)
     unknown = bool(started_refs & (unresolved_refs - terminal_refs))
     starts = sum(1 for command, stage, *_ in ordered
@@ -276,6 +281,7 @@ def summarize_render_receipts(receipts: object) -> dict[str, Any]:
         ),
         "timeout_then_provider_unavailable_observed": loss_pattern,
         "same_acknowledged_job_status_chain_verified": loss_pattern,
+        "unresolved_same_job_status_loss_verified": unresolved_loss_pattern,
         "status_events": status_events,
     }
 
