@@ -28,6 +28,15 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## Source-timeline render dependency preflight (MW05-E03-03)
+
+Production ? Render impact computes conservative source-frame dirty windows
+for visual edits, owner-declared sound tails, time ripples and global mixes,
+at each deliverable's exact rational frame rate. Its output is READ-ONLY:
+no native frames are regenerated/avoided and no cache speedup is claimed.
+See [Render dependency impact](RENDER_TAIL_IMPACT.md) for explicit
+source-versus-output time-coordinate distinctions, limits and acceptance.
+
 ## Original planar camera reframe (MW05-E07-03)
 
 Production ? Camera now authors a bounded source-owned 2D camera pan using
