@@ -12,6 +12,7 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -34,6 +35,16 @@ IMPLEMENTATIONS = {
 }
 VERIFICATIONS = {"CI_PARTIAL", "NOT_RUN", "BLOCKED_UPSTREAM", "VERIFIED"}
 ACCEPTANCE = {"NOT_RUN", "PASS", "FAIL", "BLOCKED"}
+# Only tracked source metadata used for a v0.1 readiness determination.
+# Deliberately exclude output receipts, caches and private acceptance assets.
+SOURCE_METADATA_PATHS = (
+    "Cargo.toml",
+    "apps/desktop/src-tauri/tauri.conf.json",
+    "SOURCE_LOCK.json",
+    "docs/acceptance/requirements-status.json",
+    "docs/acceptance/acceptance-status.json",
+    "docs/security/known-rustsec-advisories.json",
+)
 
 
 class ReadinessError(ValueError):
@@ -53,6 +64,46 @@ def no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
         need(key not in result, "duplicate_json_field")
         result[key] = value
     return result
+
+
+def _git_read(root: Path, code: str, *args: str) -> str:
+    """Run a bounded, read-only Git query; never expose Git stderr or owner paths."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReadinessError(code) from exc
+    need(result.returncode == 0, code)
+    return result.stdout.strip()
+
+
+def verify_local_checkout(root: Path, expected_sha: str) -> None:
+    """Bind a *local* source report to HEAD and unchanged tracked inputs.
+
+    This is not a remote provenance attestation, CI-run signature or release
+    authorization. Call both before and after computing a report.
+    """
+    need(bool(SHA40.fullmatch(expected_sha)), "source_sha_invalid")
+    top = _git_read(root, "source_checkout_unavailable", "rev-parse", "--show-toplevel")
+    try:
+        is_root = Path(top).resolve() == root.resolve()
+    except (OSError, ValueError):
+        is_root = False
+    need(is_root, "source_checkout_root_mismatch")
+    head = _git_read(root, "source_checkout_unavailable", "rev-parse",
+                     "--verify", "HEAD")
+    need(head == expected_sha, "source_checkout_sha_mismatch")
+    _git_read(root, "source_metadata_not_tracked", "ls-files",
+              "--error-unmatch", "--", *SOURCE_METADATA_PATHS)
+    _git_read(root, "source_metadata_dirty", "diff", "--quiet",
+              "HEAD", "--")
 
 
 def source_json(path: Path, code: str) -> dict:
@@ -237,12 +288,24 @@ def write_receipt(output: Path, payload: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--verify-checkout", action="store_true",
+                        help="require exact local Git HEAD and unchanged tracked source inputs")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expect-blocked", action="store_true",
                         help="CI guard: an unexpected automatic release verdict is a failure")
     args = parser.parse_args(argv)
     try:
+        if args.verify_checkout:
+            verify_local_checkout(ROOT, args.source_sha)
         report = summarize(ROOT, args.source_sha)
+        if args.verify_checkout:
+            # Recheck after parsing to reject concurrent checkout/source changes.
+            verify_local_checkout(ROOT, args.source_sha)
+        report["checkout_binding"] = {
+            "local_git_head_and_tracked_inputs_checked": args.verify_checkout,
+            "remote_commit_attestation": False,
+            "installed_binary_attestation": False,
+        }
         need(not args.expect_blocked or
              report["status"] == "BLOCKED_PENDING_EXTERNAL_EVIDENCE",
              "unexpected_release_authorization")

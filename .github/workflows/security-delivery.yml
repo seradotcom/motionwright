@@ -89,6 +89,7 @@ jobs:
         run: |
           python3 tooling/v01_release_readiness.py \
             --source-sha "$(git rev-parse HEAD)" \
+            --verify-checkout \
             --expect-blocked \
             --output ci-evidence/v01-release-readiness.json
           python3 -m json.tool ci-evidence/v01-release-readiness.json > /dev/null

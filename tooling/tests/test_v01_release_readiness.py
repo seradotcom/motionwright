@@ -10,6 +10,7 @@ import copy
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -110,6 +111,26 @@ class ReadinessGateTests(unittest.TestCase):
         }
         for name, value in files.items():
             (self.root / name).write_text(json.dumps(value), encoding="utf-8")
+
+    def committed_checkout(self) -> str:
+        """Use actual Git objects rather than stubbing the source-binding check."""
+        def git(*args: str) -> str:
+            proc = subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True, text=True, encoding="utf-8", check=True,
+            )
+            return proc.stdout.strip()
+
+        git("init", "-q")
+        git("config", "core.autocrlf", "false")
+        (self.root / "README.md").write_text("original tracked source\n")
+        git("add", "--", "Cargo.toml", "apps/desktop/src-tauri/tauri.conf.json",
+            "SOURCE_LOCK.json", "docs/acceptance/requirements-status.json",
+            "docs/acceptance/acceptance-status.json",
+            "docs/security/known-rustsec-advisories.json", "README.md")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "v0.1 fixture")
+        return git("rev-parse", "HEAD")
 
     def summary(self) -> dict:
         return gate.summarize(self.root, SHA)
@@ -281,6 +302,90 @@ class ReadinessGateTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertFalse(json.loads(output.read_text())["claims"]["stable_release_authorized"])
         self.assertEqual(self.summary()["status"], "BLOCKED_PENDING_EXTERNAL_EVIDENCE")
+
+    def test_verified_checkout_exact_head_and_unrelated_receipts(self):
+        sha = self.committed_checkout()
+        (self.root / "ci-evidence").mkdir()
+        (self.root / "ci-evidence" / "untracked.json").write_text("{}")
+        target = self.root / "ci-evidence" / "report.json"
+        with patch.object(gate, "ROOT", self.root):
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = gate.main(["--source-sha", sha, "--verify-checkout",
+                                    "--expect-blocked", "--output", str(target)])
+        self.assertEqual(result, 0)
+        report = json.loads(target.read_text())
+        self.assertEqual(report["source_sha"], sha)
+        self.assertTrue(report["checkout_binding"]
+                        ["local_git_head_and_tracked_inputs_checked"])
+        self.assertFalse(report["checkout_binding"]["remote_commit_attestation"])
+        self.assertFalse(report["claims"]["stable_release_authorized"])
+
+    def test_verified_checkout_rejects_forged_commit(self):
+        self.committed_checkout()
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.verify_local_checkout(self.root, SHA)
+        self.assertEqual(raised.exception.code, "source_checkout_sha_mismatch")
+
+    def test_verified_checkout_rejects_dirty_source_metadata(self):
+        sha = self.committed_checkout()
+        self.requirements["requirements"][0]["verification_status"] = "VERIFIED"
+        self.store()
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_dirty")
+
+    def test_verified_checkout_rejects_unrelated_tracked_changes(self):
+        sha = self.committed_checkout()
+        (self.root / "README.md").write_text("new tracked source\\n")
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_dirty")
+
+    def test_verified_checkout_rejects_untracked_metadata(self):
+        sha = self.committed_checkout()
+        subprocess.run(
+            ["git", "-C", str(self.root), "rm", "-q", "--cached",
+             "SOURCE_LOCK.json"], capture_output=True, check=True,
+        )
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_not_tracked")
+
+    def test_verified_checkout_rejects_parent_git_repository(self):
+        sha = self.committed_checkout()
+        nested = self.root / "nested"
+        nested.mkdir()
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.verify_local_checkout(nested, sha)
+        self.assertEqual(raised.exception.code, "source_checkout_root_mismatch")
+
+    def test_verified_checkout_fails_closed_without_git(self):
+        with patch.object(gate.subprocess, "run",
+                          side_effect=FileNotFoundError("private path")):
+            with self.assertRaises(gate.ReadinessError) as raised:
+                gate.verify_local_checkout(self.root, SHA)
+        self.assertEqual(raised.exception.code, "source_checkout_unavailable")
+
+    def test_verified_checkout_rechecks_after_source_read(self):
+        sha = self.committed_checkout()
+        target = self.root / "forbidden-output.json"
+        old_summarize = gate.summarize
+
+        def mutate_after_source_read(root: Path, tested_sha: str) -> dict:
+            report = old_summarize(root, tested_sha)
+            (root / "SOURCE_LOCK.json").write_text("{}")
+            return report
+
+        with patch.object(gate, "ROOT", self.root), patch.object(
+            gate, "summarize", side_effect=mutate_after_source_read
+        ):
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                result = gate.main(["--source-sha", sha, "--verify-checkout",
+                                    "--output", str(target)])
+        self.assertEqual(result, 2)
+        self.assertIn("source_metadata_dirty", stderr.getvalue())
+        self.assertNotIn(str(self.root), stderr.getvalue())
+        self.assertFalse(target.exists())
 
     def test_cli_bad_input_emits_stable_code_never_private_json(self):
         stderr = io.StringIO()
