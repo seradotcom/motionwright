@@ -14,7 +14,7 @@ import re
 import sys
 
 from cross_app_public_artifact import (
-    PublicationError, read_bounded, require, strict_object,
+    PRIVATE_TEXT, PublicationError, read_bounded, require, strict_object,
 )
 
 SCHEMA = "motionwright.v01-native-av-public-evidence/1"
@@ -61,6 +61,14 @@ def publish_av(root: Path, out: Path, source_sha: str,
                 and master_sha == result.get("master_sha256"),
                 "native_av_media_digest_mismatch")
         proof = strict_object(artifacts["decoded-media-proof.json"])
+        # This filename is not one of the shared cross-app text names:
+        # validate the full native AV JSON independently before publishing it.
+        require(
+            PRIVATE_TEXT.search(
+                artifacts["decoded-media-proof.json"].decode("utf-8")
+            ) is None,
+            "private_metadata_in_public_source",
+        )
         require(proof.get("evidence_scope")
                 == "actual_decoded_h264_aac_two_second_fixture_only"
                 and proof.get("master_sha256") == master_sha

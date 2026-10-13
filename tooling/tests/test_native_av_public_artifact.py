@@ -130,6 +130,13 @@ class NativeAVPublicArtifactTests(unittest.TestCase):
         )
         self.refused("native_av_decoded_media_mismatch")
 
+    def test_private_decoded_media_extra_field_refused(self):
+        proof_path = self.private / "decoded-media-proof.json"
+        proof = json.loads(proof_path.read_text())
+        proof["job_ref"] = "secret-original-native-job"
+        proof_path.write_text(json.dumps(proof), encoding="utf-8")
+        self.refused("private_metadata_in_public_source")
+
     def test_invalid_native_mp4_container_rejected(self):
         (self.private / "motionwright-master.mp4").write_bytes(
             b"definitely-not-a-real-mp4-container"
