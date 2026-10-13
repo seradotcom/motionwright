@@ -371,6 +371,28 @@ class ReadinessGateTests(unittest.TestCase):
                 gate.verify_local_checkout(self.root, sha)
         self.assertEqual(raised.exception.code, "source_metadata_link_refused")
 
+    def test_verified_checkout_rejects_windows_reparse_parent(self):
+        sha = self.committed_checkout()
+        target = self.root / "docs" / "acceptance"
+        actual_lstat = Path.lstat
+
+        def synthetic_junction(path: Path):
+            result = actual_lstat(path)
+            if path == target:
+                # Inject NTFS reparse attributes without requiring privileges
+                # or a Windows-specific Python runtime in hosted CI.
+                from types import SimpleNamespace
+                return SimpleNamespace(
+                    st_mode=result.st_mode, st_file_attributes=0x400
+                )
+            return result
+
+        with patch.object(Path, "lstat", autospec=True,
+                          side_effect=synthetic_junction):
+            with self.assertRaises(gate.ReadinessError) as raised:
+                gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_link_refused")
+
     def test_verified_checkout_rejects_missing_regular_source(self):
         sha = self.committed_checkout()
         (self.root / "SOURCE_LOCK.json").unlink()

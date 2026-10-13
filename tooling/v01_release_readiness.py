@@ -12,6 +12,7 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -111,7 +112,24 @@ def verify_local_checkout(root: Path, expected_sha: str) -> None:
         path = root
         for part in Path(relative).parts:
             path = path / part
-            need(not path.is_symlink(), "source_metadata_link_refused")
+            try:
+                # NTFS junctions are reparse points but are not necessarily
+                # classified as symbolic links. st_file_attributes is
+                # available on Windows even before Python 3.12.
+                try:
+                    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+                except FileNotFoundError:
+                    attributes = 0
+                link_free = (
+                    not path.is_symlink()
+                    and not bool(
+                        attributes
+                        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                    )
+                )
+            except OSError:
+                link_free = False
+            need(link_free, "source_metadata_link_refused")
         need(path.is_file(), "source_metadata_not_regular_file")
     _git_read(root, "source_metadata_dirty", "diff", "--quiet",
               "HEAD", "--")
