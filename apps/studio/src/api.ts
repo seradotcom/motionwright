@@ -4,6 +4,7 @@ import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusi
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { applyProductStageChange, validateProductStages } from "./productStage";
+import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
@@ -966,6 +967,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "upsert_camera_reframe":
+    case "detach_camera_reframe":
+      applyCameraReframeChange(next,change);
+      break;
     case "upsert_product_stage":
     case "detach_product_stage":
       await applyProductStageChange(next,change);
@@ -1923,6 +1928,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   }
   await validateBrandGovernance(next);
   await validateProductStages(next);
+  validateCameraReframes(next);
   validateCaptureRecords(next);
   validateMeasuredData(next);
   next.revision += 1;

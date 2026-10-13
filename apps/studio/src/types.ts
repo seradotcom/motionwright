@@ -3,6 +3,7 @@ import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 import type { ProductStageConfig } from "./productStage";
+import type { CameraReframe } from "./cameraReframe";
 import type { CaptureSourceRecord } from "./captureSource";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
@@ -622,6 +623,8 @@ export type Change =
   | { type: "detach_product_hero"; instance_id: string }
   | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
   | { type: "detach_product_stage"; instance_id: string }
+  | { type: "upsert_camera_reframe"; reframe: CameraReframe }
+  | { type: "detach_camera_reframe"; id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
   | { type: "upsert_measured_table"; table: MeasuredTable }
