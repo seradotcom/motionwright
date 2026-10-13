@@ -76,6 +76,46 @@ class NativeOwnerSocketRedactionTests(unittest.TestCase):
                     ))
             self.assertEqual(process.polls, 1)
 
+    def test_ci_only_90_second_observation_accepts_readiness_after_30(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+
+            class Alive:
+                polls = 0
+
+                def poll(self):
+                    self.polls += 1
+                    return None
+
+            daemon = Alive()
+            with patch.object(native.time, "monotonic",
+                              side_effect=[0.0, 31.0, 45.0]):
+                with patch.object(Path, "is_socket",
+                                  side_effect=[False, True]):
+                    with patch.object(native.time, "sleep", return_value=None):
+                        self.assertIsNone(native.wait_for_socket(
+                            daemon, root / "delayed.sock", root / "private.log",
+                            startup_timeout_seconds=90
+                        ))
+            self.assertEqual(daemon.polls, 2)
+
+    def test_observation_window_is_bounded_and_does_not_accept_boolean(self):
+        class NotCalled:
+            def poll(self):
+                raise AssertionError("must not touch owner process")
+
+        for invalid in (0, -1, 121, True, "90"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(AssertionError) as raised:
+                    native.wait_for_socket(
+                        NotCalled(), Path("fixture.sock"),
+                        Path("secret.log"), startup_timeout_seconds=invalid,
+                    )
+                self.assertEqual(
+                    str(raised.exception),
+                    "invalid bounded native Broker startup observation window",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

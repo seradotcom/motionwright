@@ -229,14 +229,24 @@ def preserve_native_failure_evidence(sandbox_root: Path) -> None:
             shutil.copyfile(source, EVIDENCE / name)
 
 
-def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -> None:
+def wait_for_socket(
+    process: subprocess.Popen[bytes],
+    socket: Path,
+    log: Path,
+    *,
+    startup_timeout_seconds: int = 30,
+) -> None:
     """Check local Broker readiness without publishing its private daemon log.
 
+    The default 30-second window is unchanged. A test harness may explicitly
+    allow a larger bounded read-only startup observation without reissuing a
+    render, restart or effect grant. No arbitrary user timeout is accepted.
     This helper never opens the supplied daemon-log path or copies its bytes
     into an exception. Artifact redaction and retention are separate gates.
-    This read-only probe never starts or restarts a native mutation.
     """
-    deadline = time.monotonic() + 30
+    if type(startup_timeout_seconds) is not int or not 1 <= startup_timeout_seconds <= 120:
+        raise AssertionError("invalid bounded native Broker startup observation window")
+    deadline = time.monotonic() + startup_timeout_seconds
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise AssertionError(
