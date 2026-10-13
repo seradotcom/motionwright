@@ -341,6 +341,43 @@ class ReadinessGateTests(unittest.TestCase):
             gate.verify_local_checkout(self.root, sha)
         self.assertEqual(raised.exception.code, "source_metadata_dirty")
 
+    def test_verified_checkout_rejects_linked_source_file(self):
+        sha = self.committed_checkout()
+        target = self.root / "SOURCE_LOCK.json"
+        actual_is_symlink = Path.is_symlink
+
+        def pretend_linked(path: Path) -> bool:
+            return path == target or actual_is_symlink(path)
+
+        # No OS-specific privilege to create symlinks is needed: simulate a
+        # committed metadata link whose target bytes are outside Git's control.
+        with patch.object(Path, "is_symlink", autospec=True,
+                          side_effect=pretend_linked):
+            with self.assertRaises(gate.ReadinessError) as raised:
+                gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_link_refused")
+
+    def test_verified_checkout_rejects_linked_parent_directory(self):
+        sha = self.committed_checkout()
+        target = self.root / "docs" / "acceptance"
+        actual_is_symlink = Path.is_symlink
+
+        def pretend_linked(path: Path) -> bool:
+            return path == target or actual_is_symlink(path)
+
+        with patch.object(Path, "is_symlink", autospec=True,
+                          side_effect=pretend_linked):
+            with self.assertRaises(gate.ReadinessError) as raised:
+                gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_link_refused")
+
+    def test_verified_checkout_rejects_missing_regular_source(self):
+        sha = self.committed_checkout()
+        (self.root / "SOURCE_LOCK.json").unlink()
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.verify_local_checkout(self.root, sha)
+        self.assertEqual(raised.exception.code, "source_metadata_not_regular_file")
+
     def test_verified_checkout_rejects_untracked_metadata(self):
         sha = self.committed_checkout()
         subprocess.run(

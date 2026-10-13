@@ -102,6 +102,17 @@ def verify_local_checkout(root: Path, expected_sha: str) -> None:
     need(head == expected_sha, "source_checkout_sha_mismatch")
     _git_read(root, "source_metadata_not_tracked", "ls-files",
               "--error-unmatch", "--", *SOURCE_METADATA_PATHS)
+    # Git tracks a symlink's TARGET STRING, not the bytes the reporter would
+    # read by following it. A clean checkout can therefore still read external
+    # mutable content through a committed link or a link in a parent directory.
+    # Verify every component, including intermediate directories, on both
+    # sides of source parsing. Do not trust an untracked symlink target.
+    for relative in SOURCE_METADATA_PATHS:
+        path = root
+        for part in Path(relative).parts:
+            path = path / part
+            need(not path.is_symlink(), "source_metadata_link_refused")
+        need(path.is_file(), "source_metadata_not_regular_file")
     _git_read(root, "source_metadata_dirty", "diff", "--quiet",
               "HEAD", "--")
 
