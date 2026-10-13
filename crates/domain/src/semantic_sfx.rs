@@ -28,11 +28,78 @@ pub enum SfxEvent {
     Transition,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SfxAnchor {
     SceneStart,
     BeatStart { beat_id: Uuid },
+}
+
+// Serde's internally tagged *unit* variants can ignore extra map keys even
+// with deny_unknown_fields. An anchor is source authority, so accept only the
+// canonical keys of its exact variant without changing its serialized shape.
+impl<'de> Deserialize<'de> for SfxAnchor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StrictAnchorVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for StrictAnchorVisitor {
+            type Value = SfxAnchor;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a source-bound SFX anchor with exact variant keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut kind: Option<String> = None;
+                let mut beat_id: Option<Uuid> = None;
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "kind" => {
+                            if kind.is_some() {
+                                return Err(serde::de::Error::duplicate_field("kind"));
+                            }
+                            kind = Some(map.next_value()?);
+                        }
+                        "beat_id" => {
+                            if beat_id.is_some() {
+                                return Err(serde::de::Error::duplicate_field("beat_id"));
+                            }
+                            beat_id = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(
+                                &field,
+                                &["kind", "beat_id"],
+                            ));
+                        }
+                    }
+                }
+                match kind.as_deref() {
+                    Some("scene_start") if beat_id.is_none() => Ok(SfxAnchor::SceneStart),
+                    Some("scene_start") => {
+                        Err(serde::de::Error::unknown_field("beat_id", &["kind"]))
+                    }
+                    Some("beat_start") => Ok(SfxAnchor::BeatStart {
+                        beat_id: beat_id
+                            .ok_or_else(|| serde::de::Error::missing_field("beat_id"))?,
+                    }),
+                    Some(other) => Err(serde::de::Error::unknown_variant(
+                        other,
+                        &["scene_start", "beat_start"],
+                    )),
+                    None => Err(serde::de::Error::missing_field("kind")),
+                }
+            }
+        }
+
+        deserializer.deserialize_map(StrictAnchorVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
