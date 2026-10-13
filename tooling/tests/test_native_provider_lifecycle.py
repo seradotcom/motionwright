@@ -20,6 +20,98 @@ def status(role: str, ppid: int, rss: int = 2048) -> str:
 
 
 class ProviderDiagnosticTests(unittest.TestCase):
+    @staticmethod
+    def _native_event(command, stage, second, job, *, code=None, known=None):
+        return {
+            "command": "driver.motion-canvas.render." + command,
+            "stage": stage,
+            "created_at": f"2026-10-13T01:00:{second:02d}Z",
+            "payload": {
+                "job_ref": job,
+                "error": {
+                    "code": code, "outcome_known": known,
+                    "message": "/private/session-never-export",
+                },
+            },
+        }
+
+    def test_interleaved_different_jobs_never_claim_same_job_generation_loss(self):
+        a = "opaque-A-credential"
+        b = "opaque-B-credential"
+        rows = [
+            self._native_event("start", "completed", 0, a),
+            self._native_event("start", "completed", 1, b),
+            self._native_event("status", "outcome_unknown", 2, a,
+                               code="Timeout", known=False),
+            self._native_event("status", "failed_known", 3, b,
+                               code="Unavailable", known=True),
+        ]
+        report = mod.summarize_render_receipts(rows)
+        self.assertEqual(report["render_outcome"], "unconfirmed")
+        self.assertFalse(report["timeout_then_provider_unavailable_observed"])
+        self.assertFalse(report["same_acknowledged_job_status_chain_verified"])
+        self.assertNotIn(a, str(report))
+        self.assertNotIn(b, str(report))
+        self.assertNotIn("/private", str(report))
+
+    def test_same_acknowledged_job_loss_is_source_scoped_and_redacted(self):
+        job = "private-job-ref"
+        rows = [
+            self._native_event("start", "completed", 0, job),
+            self._native_event("status", "outcome_unknown", 1, job,
+                               code="Timeout", known=False),
+            self._native_event("status", "failed_known", 2, job,
+                               code="Unavailable", known=True),
+        ]
+        report = mod.summarize_render_receipts(rows)
+        self.assertTrue(report["timeout_then_provider_unavailable_observed"])
+        self.assertTrue(report["same_acknowledged_job_status_chain_verified"])
+        self.assertEqual(report["render_outcome"], "unconfirmed")
+        self.assertNotIn(job, str(report))
+
+    def test_unacknowledged_or_mistyped_loss_is_not_native_generation_evidence(self):
+        job = "private-job-ref"
+        start = self._native_event("start", "dispatching", 0, job)
+        timeout = self._native_event("status", "outcome_unknown", 1, job,
+                                     code="Timeout", known=False)
+        unavailable = self._native_event("status", "failed_known", 2, job,
+                                         code="Unavailable", known=True)
+        for events in (
+            [start, timeout, unavailable],
+            [self._native_event("start", "completed", 0, job), timeout,
+             self._native_event("status", "completed", 2, job,
+                                code="Unavailable", known=True)],
+            [self._native_event("start", "completed", 0, job), timeout,
+             self._native_event("status", "failed_known", 2, job,
+                                code="Unavailable", known=False)],
+            [self._native_event("start", "completed", 0, job),
+             self._native_event("status", "outcome_unknown", 1, job,
+                                code="Timeout", known=True), unavailable],
+            [self._native_event("start", "completed", 0, job), unavailable,
+             self._native_event("status", "outcome_unknown", 3, job,
+                                code="Timeout", known=False)],
+        ):
+            report = mod.summarize_render_receipts(events)
+            self.assertFalse(report["timeout_then_provider_unavailable_observed"])
+            self.assertFalse(report["same_acknowledged_job_status_chain_verified"])
+
+    def test_conflicting_terminal_identity_cannot_clear_unknown_original_job(self):
+        a = "private-original-job"
+        b = "private-other-job"
+        start = self._native_event("start", "completed", 0, a)
+        timeout = self._native_event("status", "outcome_unknown", 1, a,
+                                     code="Timeout", known=False)
+        forged = self._native_event("result", "completed", 2, a)
+        forged["payload"]["result"] = {
+            "data": {"job_ref": b, "state": "succeeded",
+                     "artifact": {"sha256": "c" * 64}},
+        }
+        report = mod.summarize_render_receipts([start, timeout, forged])
+        self.assertEqual(report["render_outcome"], "unconfirmed")
+        self.assertFalse(report["result_observed_completed"])
+        self.assertNotIn(a, str(report))
+        self.assertNotIn(b, str(report))
+
     def test_only_read_safe_structured_proc_fields_no_secrets(self):
         parsed = mod.parse_status(status("unknown-private-application", 75))
         self.assertEqual(parsed["role"], "other")

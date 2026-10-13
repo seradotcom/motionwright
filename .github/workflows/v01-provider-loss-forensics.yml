@@ -3,13 +3,17 @@ name: v0.1 Native Provider Loss Correlation
 on:
   pull_request:
     paths:
+      - 'tooling/native_provider_lifecycle.py'
+      - 'tooling/tests/test_native_provider_lifecycle.py'
       - 'tooling/native_provider_loss_correlation.py'
       - 'tooling/tests/test_native_provider_loss_correlation.py'
       - 'tooling/native_av_master_e2e.py'
       - '.github/workflows/v01-provider-loss-forensics.yml'
   push:
-    branches: ['main', 'feat/v01-provider-loss-forensics-*']
+    branches: ['main', 'feat/v01-provider-loss-forensics-*', 'fix/v01-provider-loss-*']
     paths:
+      - 'tooling/native_provider_lifecycle.py'
+      - 'tooling/tests/test_native_provider_lifecycle.py'
       - 'tooling/native_provider_loss_correlation.py'
       - 'tooling/tests/test_native_provider_loss_correlation.py'
       - '.github/workflows/v01-provider-loss-forensics.yml'
@@ -33,7 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 tooling/source_policy.py
-          python3 -m py_compile tooling/native_provider_loss_correlation.py tooling/native_av_master_e2e.py
+          python3 -m py_compile tooling/native_provider_lifecycle.py tooling/native_provider_loss_correlation.py tooling/native_av_master_e2e.py
+          python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
           python3 -m unittest discover -s tooling/tests -p 'test_native_provider_loss_correlation.py' -v
       - name: Abstain from driver root-cause and user acceptance claims
         run: |
