@@ -536,10 +536,26 @@
     },
     {
       "id": "MW05-E07-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No arc, dolly or focal camera rigs added",
-      "remaining_scope": "Provider limits and real temporal previews required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Bounded original planar 2D camera source with start/end center, 12?180 30fps frames, 80px displacement limit, safe-area preflight, native per-subject Film Settle projection and explicit Studio + Native SDK CAS edit/detach; source-pinned real native 180-frame CameraReframe PNG and independently decoded H264 pixel evidence workflow (exact-HEAD CI pending)",
+      "remaining_scope": "Actual CameraReframe native MP4 must pass exact-head CI and human review; 3D orbit, optical dolly, lens and lighting, other rates and concurrent object moves remain unimplemented",
+      "source_paths": [
+        "crates/domain/src/camera_reframe.rs",
+        "crates/domain/tests/camera_reframe.rs",
+        "crates/native/src/film.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/tests/camera_reframe.rs",
+        "apps/studio/src/cameraReframe.ts",
+        "apps/studio/src/cameraReframe.test.ts",
+        "apps/studio/src/CameraReframeWorkbench.tsx",
+        "apps/studio/tests/camera-reframe.spec.ts",
+        "docs/creative-production/CAMERA_REFRAME.md",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/camera_reframe_native_evidence.py",
+        "tooling/native_tests/test_camera_reframe_native_evidence.py",
+        ".github/workflows/camera-reframe-e2e.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

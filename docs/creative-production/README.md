@@ -37,6 +37,14 @@ no native frames are regenerated/avoided and no cache speedup is claimed.
 See [Render dependency impact](RENDER_TAIL_IMPACT.md) for explicit
 source-versus-output time-coordinate distinctions, limits and acceptance.
 
+## Original planar camera reframe (MW05-E07-03)
+
+Production ? Camera now authors a bounded source-owned 2D camera pan using
+the existing Semwright Native SDK and Film timeline. See
+[Camera Reframe](CAMERA_REFRAME.md). It is an original, editable planar
+camera translation, not 3D optics, dolly, lens simulation, native MP4 or
+human creative approval until corresponding proofs have passed.
+
 ## Integrated original composition contracts
 
 The existing production model now admits four distinct source-bound creative
