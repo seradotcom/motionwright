@@ -142,7 +142,10 @@ fn native_mix_rejects_clipping_instead_of_silent_mastering() {
 #[test]
 fn unsupported_master_fps_or_length_cannot_be_silently_resampled() {
     let (mut p, src) = project(4000, -12000);
-    assert!(mix_source_bound_semantic_sfx(&p, p.deliverables[0].id, &[src.clone()], 901).is_err());
+    assert!(
+        mix_source_bound_semantic_sfx(&p, p.deliverables[0].id, std::slice::from_ref(&src), 901)
+            .is_err()
+    );
     p.deliverables[0].frame_rate = RationalTime::new(24, 1).unwrap();
     assert!(mix_source_bound_semantic_sfx(&p, p.deliverables[0].id, &[src], 180).is_err());
 }
