@@ -84,6 +84,7 @@ def inspect_provider_lifetime(lifecycle: dict[str, Any],
     pattern = (
         reconciliation is not None
         and reconciliation.get("timeout_then_provider_unavailable_observed") is True
+        and reconciliation.get("same_acknowledged_job_status_chain_verified") is True
         and reconciliation.get("render_outcome") == "unconfirmed"
         and reconciliation.get("read_only") is True
     )

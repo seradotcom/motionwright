@@ -56,6 +56,7 @@ def failed_status() -> dict:
         "read_only": True,
         "render_outcome": "unconfirmed",
         "timeout_then_provider_unavailable_observed": True,
+        "same_acknowledged_job_status_chain_verified": True,
         "render_start_dispatch_count": 1,
         "status_events": [{"message": PRIVATE}],
     }
@@ -103,6 +104,19 @@ class ProviderLossCorrelationTests(unittest.TestCase):
         result = inspect_provider_lifetime(baseline(), response)
         self.assert_no_private_or_false_release(result)
         self.assertFalse(result["render_outcome_unknown_after_status_loss"])
+
+    def test_cross_job_or_missing_scope_does_not_infer_generation_loss(self) -> None:
+        for value in (False, None, "true"):
+            response = failed_status()
+            if value is None:
+                response.pop("same_acknowledged_job_status_chain_verified")
+            else:
+                response["same_acknowledged_job_status_chain_verified"] = value
+            result = inspect_provider_lifetime(baseline(), response)
+            self.assertFalse(result["render_outcome_unknown_after_status_loss"])
+            self.assertFalse(result["read_only_timeout_then_unavailable_observed"])
+            self.assertFalse(result["operator_owner_reconciliation_required_if_unknown"])
+            self.assert_no_private_or_false_release(result)
 
     def test_missing_root_is_not_silently_reported_as_healthy(self) -> None:
         report = baseline()
