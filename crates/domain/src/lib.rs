@@ -15,6 +15,7 @@ mod music_conform;
 mod procedural;
 mod product_stage;
 mod production_design;
+mod semantic_sfx;
 pub use brand_governance::*;
 pub use camera_reframe::*;
 pub use canvas::*;
@@ -32,6 +33,7 @@ pub use music_conform::*;
 pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
+pub use semantic_sfx::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -719,6 +721,7 @@ impl Project {
             ));
         }
         self.audio.validate()?;
+        self.validated_sfx_schedule()?;
         for track in &self.audio.voice_tracks {
             let asset = self
                 .assets
@@ -2023,6 +2026,17 @@ impl Project {
                 }
                 if self
                     .audio
+                    .sfx_cues
+                    .iter()
+                    .any(|cue| cue.source_asset_id == *asset_id)
+                {
+                    return Err(DomainError::Invalid(
+                        "asset is referenced by an authored SFX cue; detach before deleting source"
+                            .into(),
+                    ));
+                }
+                if self
+                    .audio
                     .voice_tracks
                     .iter()
                     .any(|track| track.asset_id == *asset_id)
@@ -2195,6 +2209,8 @@ impl Project {
                     return Err(DomainError::NotFound(format!("audio-cue:{cue_id}")));
                 }
             }
+            Change::UpsertSemanticSfx { cue } => self.upsert_semantic_sfx(cue)?,
+            Change::RemoveSemanticSfx { cue_id } => self.remove_semantic_sfx(*cue_id)?,
             Change::SetMixIntent { mix } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.audio.mix = mix.clone();
@@ -2658,6 +2674,12 @@ pub enum Change {
         cue: AudioCue,
     },
     RemoveAudioCue {
+        cue_id: Uuid,
+    },
+    UpsertSemanticSfx {
+        cue: SemanticSfxCue,
+    },
+    RemoveSemanticSfx {
         cue_id: Uuid,
     },
     SetMixIntent {

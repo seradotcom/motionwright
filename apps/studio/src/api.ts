@@ -3,6 +3,7 @@ import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
+import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
@@ -1502,6 +1503,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
         throw new Error("Asset is referenced by an immutable capture provenance record.");
       if(next.production_design?.measured_tables?.some(table=>table.source_asset_id===change.asset_id))
         throw new Error("Asset remains bound to a measured table; relink data before deleting source.");
+      if(next.audio.sfx_cues?.some(cue=>cue.source_asset_id===change.asset_id))
+        throw new Error("Asset is referenced by a semantic SFX cue; remove the event before deleting its WAV.");
       if (
         next.audio.voice_tracks.some((track) => track.asset_id === change.asset_id) ||
         next.brief.claims.some((claim) => claim.source?.kind === "asset" && claim.source.asset_id === change.asset_id)
@@ -1700,6 +1703,24 @@ async function simulateChange(project: Project, change: Change, requestId: strin
         throw new Error("resource not found: audio-cue:" + change.cue_id);
       }
       next.audio.cues = next.audio.cues.filter((cue) => cue.id !== change.cue_id);
+      break;
+    }
+    case "upsert_semantic_sfx": {
+      assertUnlocked(next,projectResource(next),["content","timing"]);
+      assertUnlocked(next,"scene:"+change.cue.scene_id,["content","timing"]);
+      upsertSfxCue(next,change.cue);
+      const scene=next.scenes.find(s=>s.id===change.cue.scene_id);
+      if(scene)scene.status="draft";
+      break;
+    }
+    case "remove_semantic_sfx": {
+      assertUnlocked(next,projectResource(next),["content","timing"]);
+      const previous=next.audio.sfx_cues?.find(c=>c.id===change.cue_id);
+      if(!previous)throw new Error("Missing original semantic SFX source cue.");
+      assertUnlocked(next,"scene:"+previous.scene_id,["content","timing"]);
+      next.audio.sfx_cues=next.audio.sfx_cues?.filter(c=>c.id!==change.cue_id)??[];
+      const scene=next.scenes.find(s=>s.id===previous.scene_id);
+      if(scene)scene.status="draft";
       break;
     }
     case "set_mix_intent": {
@@ -1927,6 +1948,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
   }
   await validateBrandGovernance(next);
+  validateSfxProject(next);
   await validateProductStages(next);
   validateCameraReframes(next);
   validateCaptureRecords(next);
