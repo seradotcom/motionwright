@@ -13,6 +13,9 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_mlt_sequence_e2e.py'
+      - 'tooling/native_mlt_public_artifact.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/tests/test_native_mlt_public_artifact.py'
       - 'tooling/native_av_failure_guard.py'
       - 'tooling/tests/test_native_cli_failure_redaction.py'
       - 'tooling/mlt_failure_diagnostic.py'
@@ -76,6 +79,9 @@ jobs:
 
       - name: Verify v0.1 native CLI failures never expose private job receipts
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
+
+      - name: Reject private MLT CI uploads and false success before native execution
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_mlt_public_artifact.py' -v
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
@@ -236,10 +242,23 @@ jobs:
               assert (root / "native-multisegment-av-master-evidence.json").is_file()
           PY
 
+      - name: Publish only verified v0.1 MLT media, not owner/Broker receipts
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/native_mlt_public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --mode "$MOTIONWRIGHT_MLT_MODE" \
+            --evidence-root "verification/native-mlt-sequence-e2e/$GITHUB_SHA" \
+            --output-root "verification/native-mlt-sequence-public" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-mlt-sequence-public/public-evidence.json >/dev/null
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: motionwright-native-mlt-sequence-${{ matrix.mode }}-${{ github.sha }}
-          path: verification/native-mlt-sequence-e2e
+          path: verification/native-mlt-sequence-public
           if-no-files-found: error
           retention-days: 14
