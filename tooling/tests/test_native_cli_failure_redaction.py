@@ -120,5 +120,102 @@ class NativeCliErrorSanitization(unittest.TestCase):
         self.assert_closed(ctx.exception)
 
 
+class MixedNativeResponseStreamTests(unittest.TestCase):
+    def test_typed_stdout_error_survives_noisy_secret_bearing_stderr(self) -> None:
+        typed = json.dumps({
+            "error": {
+                "code": "Unavailable", "outcome_known": False,
+                "message": "Provider capability generation is inactive " + SECRET,
+            },
+            "receipts": [{
+                "command": "driver.motion-canvas.render.start",
+                "stage": "completed", "payload": {},
+            }],
+        }).encode()
+        with patch("native_av_failure_guard.subprocess.run",
+                   return_value=SimpleNamespace(returncode=1, stdout=typed,
+                                                stderr=b"runtime warning: " + SECRET.encode())) as spy:
+            with self.assertRaises(NativeCommandFailure) as captured:
+                run_sanitized_json([SECRET], env={"PRIVATE": SECRET})
+        report = captured.exception.diagnostic
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(report["reason"], "provider_generation_inactive")
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+        self.assertEqual(report["reported_error_code"], "Unavailable")
+        self.assertEqual(report["original_render_start_receipts_observed"], 1)
+        self.assertNotIn(SECRET, json.dumps(report) + str(captured.exception))
+
+    def test_typed_stderr_used_when_stdout_is_unstructured(self) -> None:
+        typed = json.dumps({
+            "error": {"code": "Timeout", "outcome_known": False,
+                      "message": SECRET},
+            "receipts": [],
+        }).encode()
+        with patch("native_av_failure_guard.subprocess.run",
+                   return_value=SimpleNamespace(returncode=1,
+                                                stdout=b"stray native logging " + SECRET.encode(),
+                                                stderr=typed)):
+            with self.assertRaises(NativeCommandFailure) as captured:
+                run_sanitized_json([SECRET], env={})
+        report = captured.exception.diagnostic
+        self.assertEqual(report["reported_error_code"], "Timeout")
+        self.assertEqual(report["reason"], "native_status_unconfirmed")
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+        self.assertNotIn(SECRET, json.dumps(report) + str(captured.exception))
+
+    def test_conflicting_bounded_typed_streams_cannot_upgrade_unknown_to_known(self) -> None:
+        stdout = json.dumps({
+            "error": {"code": "PermissionDenied", "outcome_known": True,
+                      "message": SECRET},
+            "receipts": [],
+        }).encode()
+        stderr = json.dumps({
+            "error": {"code": "Unavailable", "outcome_known": False,
+                      "message": "Provider capability generation is inactive " + SECRET},
+            "receipts": [{
+                "command": "driver.motion-canvas.render.start",
+                "stage": "completed", "payload": {},
+            }],
+        }).encode()
+        with patch("native_av_failure_guard.subprocess.run",
+                   return_value=SimpleNamespace(returncode=1,
+                                                stdout=stdout, stderr=stderr)):
+            with self.assertRaises(NativeCommandFailure) as captured:
+                run_sanitized_json([SECRET], env={})
+        report = captured.exception.diagnostic
+        self.assertEqual(report["reported_error_code"], "PermissionDenied")
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+        self.assertEqual(report["reason"], "provider_generation_inactive")
+        self.assertEqual(report["original_render_start_receipts_observed"], 1)
+        self.assertNotIn(SECRET, json.dumps(report) + str(captured.exception))
+
+    def test_oversized_secondary_stream_cannot_be_published_or_ignored(self) -> None:
+        typed = json.dumps({
+            "error": {"code": "Unavailable", "outcome_known": False},
+            "receipts": [],
+        }).encode()
+        noisy = SECRET.encode() * 10000
+        with patch("native_av_failure_guard.subprocess.run",
+                   return_value=SimpleNamespace(returncode=1,
+                                                stdout=typed, stderr=noisy)):
+            with self.assertRaises(NativeCommandFailure) as captured:
+                run_sanitized_json([SECRET], env={})
+        report = captured.exception.diagnostic
+        self.assertEqual(report["reason"], "oversized_native_failure_response")
+        self.assertFalse(report["terminal_native_result_verified"])
+        self.assertNotIn(SECRET, json.dumps(report) + str(captured.exception))
+
+    def test_nonzero_with_success_stdout_can_never_be_reported_as_success(self) -> None:
+        stdout = b'{"ok":true,"data":{"artifact":{"verified":true}}}'
+        with patch("native_av_failure_guard.subprocess.run",
+                   return_value=SimpleNamespace(returncode=1, stdout=stdout, stderr=b"")):
+            with self.assertRaises(NativeCommandFailure) as captured:
+                run_sanitized_json([SECRET], env={})
+        report = captured.exception.diagnostic
+        self.assertEqual(report["result"], "FAIL")
+        self.assertEqual(report["reason"], "typed_error_missing")
+        self.assertFalse(report["decoded_media_verified"])
+
+
 if __name__ == "__main__":
     unittest.main()
