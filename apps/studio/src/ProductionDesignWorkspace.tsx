@@ -15,6 +15,7 @@ import ProductStageWorkbench from "./ProductStageWorkbench";
 import CaptureSourceWorkbench from "./CaptureSourceWorkbench";
 import MeasuredDataWorkbench from "./MeasuredDataWorkbench";
 import RenderTailWorkbench from "./RenderTailWorkbench";
+import NativePropertyFidelityWorkbench from "./NativePropertyFidelityWorkbench";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import "./production-design.css";
 
@@ -187,6 +188,7 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
     <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
       <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>
       {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small></article>)}</div>
+    <NativePropertyFidelityWorkbench project={project} commit={commit} busy={busy}/>
   </div>;
 }
 
