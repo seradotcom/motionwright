@@ -13,8 +13,12 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_failure_guard.py'
+      - 'tooling/tests/test_native_av_failure_guard.py'
       - 'tooling/native_av_media_probe.py'
       - 'tooling/native_provider_lifecycle.py'
+      - 'tooling/native_provider_loss_correlation.py'
+      - 'tooling/tests/test_native_provider_loss_correlation.py'
       - 'tooling/tests/test_native_av_media_probe.py'
       - 'tooling/tests/test_native_provider_lifecycle.py'
       - '.github/workflows/native-av-master-e2e.yml'
@@ -67,6 +71,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
           python3 tooling/source_policy.py
+
+      - name: Reject raw CLI/owner secrets in native AV command-failure diagnostics
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_failure_guard.py' -v
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
@@ -175,6 +182,9 @@ jobs:
       - name: Verify provider lifecycle diagnostics do not record secrets or imply recovery
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
 
+      - name: Validate passive provider-generation correlation is not root-cause proof
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_loss_correlation.py' -v
+
       - name: Produce a real application-owned AV master through Broker and Driver Host
         run: |
           set -euo pipefail
@@ -195,6 +205,7 @@ jobs:
           test -s "$root/motionwright-master.mp4"
           test -s "$root/decoded-media-proof.json"
           test -s "$root/native-provider-lifecycle.json"
+          test -s "$root/native-provider-loss-correlation.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -213,6 +224,18 @@ jobs:
           assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
           assert health["sample_count"] >= 1
           assert health["daemon_exit_before_owner_cleanup"] is None
+          correlation = json.loads((root / "native-provider-loss-correlation.json").read_text())
+          assert correlation["schema"] == "motionwright.v01-provider-loss-correlation/1"
+          assert correlation["authority"] == "passive-ci-process-correlation-not-driver-host-causation"
+          assert correlation["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
+          assert correlation["semwright_source_pin"] == json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"]
+          assert correlation["samples_bounded"] == health["sample_count"]
+          assert correlation["provider_generation_exit_cause_established"] is False
+          assert correlation["specific_provider_process_exit_verified"] is False
+          assert correlation["oom_cause_established"] is False
+          assert correlation["automatic_native_mutation_retry"] is False
+          assert correlation["installed_owner_acceptance"] == "NOT_RUN"
+          assert correlation["v01_release_ready"] is False
           probe = json.loads((root / "decoded-media-proof.json").read_text())
           assert probe["evidence_scope"] == "actual_decoded_h264_aac_two_second_fixture_only"
           assert probe["master_sha256"] == result["master_sha256"]

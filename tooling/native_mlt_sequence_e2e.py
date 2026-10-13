@@ -555,6 +555,58 @@ def main() -> None:
                 raise
             if result.get("native_mlt_multisegment_e2e") != "PASS":
                 raise AssertionError("Real source-bound MLT timeline was not successful: " + repr(result))
+
+            # Inspect the actual source journal produced by Semwright-backed
+            # native MLT project.create. This is not a mock allocation count
+            # and never claims the provider project was actually closed.
+            inventory_path = EVIDENCE / "native-mlt-lifetime-inventory.json"
+            if (not inventory_path.is_file() or inventory_path.is_symlink()
+                or not 1 <= inventory_path.stat().st_size <= 16_384):
+                raise AssertionError("Native MLT lifetime source evidence was missing or oversized")
+            inventory_bytes = inventory_path.read_bytes()
+            if (result.get("native_mlt_lifetime_inventory_sha256")
+                != hashlib.sha256(inventory_bytes).hexdigest()):
+                raise AssertionError("Native MLT lifetime receipt bytes differ from Rust source")
+            inventory = json.loads(inventory_bytes)
+            expected_keys = {
+                "schema", "project_id", "generation", "revision",
+                "source_receipts_scanned", "confirmed_native_creations_current_revision",
+                "confirmed_native_creations_historical",
+                "unconfirmed_or_invalid_creation_requests",
+                "observed_close_request_identities", "disposition",
+                "complete_source_receipt_snapshot",
+                "native_provider_liveness_verified",
+                "foreground_cleanup_consent_obtained",
+                "verified_native_project_cleanup",
+                "automatic_destructive_cleanup_allowed",
+            }
+            if not isinstance(inventory, dict) or set(inventory) != expected_keys:
+                raise AssertionError("Native MLT lifetime receipt schema exposes untrusted fields")
+            current = inventory.get("confirmed_native_creations_current_revision")
+            receipt_total = inventory.get("source_receipts_scanned")
+            if (
+                inventory["schema"] != "motionwright.v01-mlt-cleanup-inventory/1"
+                or inventory["project_id"] != seeded["project_id"]
+                or inventory["generation"] != seeded["generation"]
+                or inventory["revision"] != seeded["revision"]
+                or type(current) is not int or not 1 <= current <= 4
+                or type(receipt_total) is not int or receipt_total < current
+                or result.get("native_mlt_lifetime_confirmed_current_creations") != current
+                or result.get("native_mlt_lifetime_receipts_scanned") != receipt_total
+                or result.get("native_mlt_lifetime_close_requests_observed") != 0
+                or result.get("native_mlt_cleanup_verified") is not False
+                or inventory["unconfirmed_or_invalid_creation_requests"] != 0
+                or inventory["observed_close_request_identities"] != 0
+                or inventory["disposition"] != "project_lifetime_unverified_foreground_consent_required"
+                or inventory["complete_source_receipt_snapshot"] is not True
+                or any(inventory[key] is not False for key in (
+                    "native_provider_liveness_verified",
+                    "foreground_cleanup_consent_obtained",
+                    "verified_native_project_cleanup",
+                    "automatic_destructive_cleanup_allowed",
+                ))
+            ):
+                raise AssertionError("Real MLT project creation provenance/lifetime is unconfirmed")
             if result.get("frame_count") != 33 or result.get("segment_count") != 2:
                 raise AssertionError("Native timeline lost the 32+1 source partition")
             if result.get("evidence_scope") != EXPECTED_SCOPE or result.get("native_render_profile") != PROFILE:
@@ -701,6 +753,11 @@ def main() -> None:
                     "evidence_scope": EXPECTED_SCOPE,
                     "native_render_profile": PROFILE,
                     "provider_project_cleanup": evidence["provider_project_cleanup"],
+                    "native_mlt_lifetime_inventory_sha256": digest(inventory_path),
+                    "native_mlt_lifetime_confirmed_current_creations": current,
+                    "native_mlt_lifetime_receipts_scanned": receipt_total,
+                    "native_mlt_lifetime_close_requests_observed": 0,
+                    "native_mlt_cleanup_verified": False,
                     "assembled_video_codec": "ffv1",
                     "assembled_video_has_audio": not VIDEO_ONLY,
                     "transport_audio_codec": None if VIDEO_ONLY else "pcm_s16le",
