@@ -14,6 +14,10 @@ A real 2026-10-12 native AV master E2E [run](https://github.com/seradotcom/motio
 - A failed native render exits the CI job nonzero. The producer saves native-render-failure-diagnostic.json tied to the exact Motionwright and Semwright source hashes. UNKNOWN is preserved for an unconfirmed started render; no automatic mutation or second render.start occurs.
 - Normal successful commands retain the same parsed JSON and downstream frame/audio integrity requirements. Never substitute this diagnostic for terminal render.result, verified PNGs, audio samples or a mastered MP4.
 
+## Baseline native runner convergence
+
+The [v0.1 native CLI failure guard](v01-native-cli-failure-redaction.md) also consolidates the original AV runner and the independently executed Motion Canvas, MLT and Native SDK shared-host baseline runners onto the same bounded redaction helper. The underlying native commands and their successful output contracts are unchanged. Experimental v0.5 runners are not modified by this narrow v0.1 change.
+
 ## Tests and limitations
 
 Nine standalone synthetic Python tests cover an adversarial receipt containing private-looking paths and tokens, status Timeout then lost generation, no secret leakage into exceptions/JSON, oversized/malformed responses, failed process deadline, unrecognized error code, strict no-auto-retry and unchanged successful-command behavior. The dedicated fast GitHub Actions workflow does not require an active native provider; the existing full native AV job also runs these tests before rendering.

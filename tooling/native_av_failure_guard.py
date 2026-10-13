@@ -7,6 +7,7 @@ This helper NEVER converts an uncertain started native render into success.
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import Any
 
 SCHEMA = "motionwright.v01-native-command-failure/1"
@@ -30,6 +31,48 @@ class NativeCommandFailure(AssertionError):
             + " source_outcome=" + diagnostic["source_outcome"]
             + " (never automatically retry a mutating render)"
         )
+
+
+def run_sanitized_json(
+    argv: list[str], *, env: dict[str, str], timeout: int = 30,
+) -> dict[str, Any]:
+    """Canonical subprocess JSON contract, no private stderr/argv exceptions.
+
+    Used by CI-only native render wrappers. Always refuse a failed or malformed
+    command; never issue an automatic second native operation.
+    """
+    try:
+        result = subprocess.run(
+            argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"", exit_code=None, deadline_exceeded=True,
+        )) from None
+    except OSError:
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"", exit_code=None,
+        )) from None
+
+    if result.returncode != 0:
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=result.stdout, stderr=result.stderr,
+            exit_code=result.returncode,
+        )) from None
+    try:
+        parsed = json.loads(result.stdout)
+    except (ValueError, UnicodeError, TypeError):
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"invalid-native-response",
+            exit_code=result.returncode,
+        )) from None
+    if not isinstance(parsed, dict):
+        raise NativeCommandFailure(classify_native_command_failure(
+            stdout=b"", stderr=b"invalid-native-response",
+            exit_code=result.returncode,
+        )) from None
+    return parsed
 
 
 def _known_code(value: Any) -> str:

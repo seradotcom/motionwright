@@ -78,7 +78,11 @@ aesthetic review, or unrestricted creative capability.
    fix provider lifecycle, verify native media or authorize a release.
    The [sanitized native AV CI failure receipt](reliability/v01-native-av-failure-redaction.md)
    also preserves Timeout-to-inactive-generation evidence without publishing
-   owner paths or opaque job IDs, but does not remediate the provider.
+   owner paths or opaque job IDs, but does not remediate the provider. The
+   [shared native CLI error redaction](reliability/v01-native-cli-failure-redaction.md)
+   additionally protects baseline Motion Canvas, MLT and Native SDK CI
+   failures from leaking argv or untrusted native status payloads. It
+   neither retries an uncertain mutation nor resolves provider lifecycle.
 5. Resolve the transitive glib unsoundness and macro-stack maintenance
    warnings that remain open in
    docs/security/known-rustsec-advisories.json. An unchanged advisory set

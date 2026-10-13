@@ -20,6 +20,7 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
+from native_av_failure_guard import run_sanitized_json
 
 from mlt_failure_diagnostic import safe_observation_diagnostic
 
@@ -129,26 +130,7 @@ def write_private_json(path: Path, value: object) -> None:
 
 
 def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 30) -> dict:
-    result = subprocess.run(
-        argv,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"command failed ({result.returncode}): {argv!r}\n"
-            f"stdout={result.stdout[:8192]!r}\nstderr={result.stderr[:8192]!r}"
-        )
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise AssertionError(
-            f"command returned non-JSON: {argv!r}\n"
-            f"stdout={result.stdout[:8192]!r}\nstderr={result.stderr[:8192]!r}"
-        ) from error
+    return run_sanitized_json(argv, env=env, timeout=timeout)
 
 
 def exact_inputs() -> None:

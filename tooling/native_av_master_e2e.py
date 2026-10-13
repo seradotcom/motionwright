@@ -22,7 +22,7 @@ from pathlib import Path
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_av_failure_guard import (
-    NativeCommandFailure, classify_native_command_failure,
+    NativeCommandFailure, run_sanitized_json,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,35 +75,7 @@ def write_private_json(path: Path, value: object) -> None:
 
 
 def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 30) -> dict:
-    try:
-        result = subprocess.run(
-            argv,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise NativeCommandFailure(classify_native_command_failure(
-            stdout=b"", stderr=b"", exit_code=None, deadline_exceeded=True,
-        )) from None
-    except OSError:
-        raise NativeCommandFailure(classify_native_command_failure(
-            stdout=b"", stderr=b"", exit_code=None,
-        )) from None
-    if result.returncode != 0:
-        raise NativeCommandFailure(classify_native_command_failure(
-            stdout=result.stdout, stderr=result.stderr,
-            exit_code=result.returncode,
-        )) from None
-    try:
-        return json.loads(result.stdout)
-    except (ValueError, UnicodeError):
-        raise NativeCommandFailure(classify_native_command_failure(
-            stdout=b"", stderr=b"invalid-native-response",
-            exit_code=result.returncode,
-        )) from None
+    return run_sanitized_json(argv, env=env, timeout=timeout)
 
 
 def exact_inputs() -> None:

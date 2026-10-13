@@ -20,6 +20,8 @@ on:
       - 'apps/desktop/src-tauri/**'
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
+      - 'tooling/native_av_failure_guard.py'
+      - 'tooling/tests/test_native_cli_failure_redaction.py'
       - 'tooling/native_provider_repeat.py'
       - 'tooling/tests/test_native_provider_repeat.py'
       - 'tooling/native_direct_mediated_parity.py'
@@ -76,6 +78,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
           python3 tooling/source_policy.py
+
+      - name: Verify v0.1 native CLI failures never expose private job receipts
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
