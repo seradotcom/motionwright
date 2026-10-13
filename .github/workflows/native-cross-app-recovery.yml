@@ -12,6 +12,8 @@ on:
       - 'crates/service/**'
       - 'crates/storage/**'
       - 'tooling/native_cross_app_recovery_e2e.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/tests/test_cross_app_public_artifact.py'
       - 'tooling/cross_app_demo_report.py'
       - 'tooling/tests/test_cross_app_demo_report.py'
       - 'tooling/native_blender_e2e.py'
@@ -118,6 +120,9 @@ jobs:
             -p semwright-driver-blender --bin semwright-blender-driver --bin semwright-blender-session-runner \
             -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver
 
+      - name: Assert v0.1 public cross-app artifacts cannot leak owner receipts
+        run: python3 -m unittest discover -s tooling/tests -p 'test_cross_app_public_artifact.py' -v
+
       - name: Test recovery semantics and build integration binary
         run: |
           cargo test --locked -p motionwright-native recovery -- --nocapture
@@ -184,10 +189,22 @@ jobs:
           assert result["motion_canvas_manifest_sha256"] == sha(p / "artifact-manifest.json")
           PY
 
+      - name: Stage only verified public v0.1 artifacts, never raw private logs
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/cross_app_public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root "verification/native-cross-app-recovery/$GITHUB_SHA" \
+            --output-root "verification/native-cross-app-public" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-cross-app-public/public-evidence.json >/dev/null
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: cross-app-selective-recovery-${{ github.sha }}
-          path: verification/native-cross-app-recovery
+          path: verification/native-cross-app-public
           if-no-files-found: error
           retention-days: 14
