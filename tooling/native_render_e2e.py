@@ -230,10 +230,18 @@ def preserve_native_failure_evidence(sandbox_root: Path) -> None:
 
 
 def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -> None:
+    """Check local Broker readiness without publishing its private daemon log.
+
+    This helper never opens the supplied daemon-log path or copies its bytes
+    into an exception. Artifact redaction and retention are separate gates.
+    This read-only probe never starts or restarts a native mutation.
+    """
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise AssertionError(log.read_text(encoding="utf-8", errors="replace"))
+            raise AssertionError(
+                "semwrightd exited before owner socket readiness; native_bootstrap=NOT_VERIFIED"
+            )
         if socket.is_socket():
             return
         time.sleep(0.05)
