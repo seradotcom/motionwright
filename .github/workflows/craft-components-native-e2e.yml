@@ -1,0 +1,217 @@
+name: Original craft layouts native design evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/domain/src/hero.rs'
+      - 'crates/domain/tests/craft_components.rs'
+      - 'crates/native/src/film.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'crates/native/tests/craft_components.rs'
+      - 'apps/studio/src/creativeProduction.ts'
+      - 'apps/studio/src/craftComponents.test.ts'
+      - 'apps/studio/tests/craft-components.spec.ts'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/creative_frame_evidence.py'
+      - '.github/workflows/craft-components-native-e2e.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'crates/domain/src/hero.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'tooling/native_av_master_e2e.py'
+      - '.github/workflows/craft-components-native-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: original-craft-native-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+
+jobs:
+  original-craft-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-av-master-1.98.1
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cache-workspace-crates: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install pinned native runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            melt ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/native-av-master-e2e
+          {
+            melt -version | head -5
+            ffmpeg -version | head -3
+            ffprobe -version | head -3
+            bwrap --version
+          } > verification/native-av-master-e2e/native-runtime-versions.txt
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          set -euo pipefail
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-av-master-e2e/sandbox-profile.txt"
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build exact Semwright Broker and native providers
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          test -x target/debug/semwright
+          test -x target/debug/semwrightd
+          test -x target/debug/semwright-sandbox
+          test -x target/debug/semwright-motion-canvas-driver
+          test -x target/debug/semwright-mlt-video-driver
+          test -x target/debug/semwright-mlt-runtime-runner
+
+      - name: Build Motionwright native AV acceptance
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-render-e2e
+          cargo test --locked -p motionwright-native \
+            motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
+            -- --nocapture
+
+      - name: Reject missing, shifted or blank native component source regions
+        run: python3 -m unittest discover -s tooling/native_tests -p 'test_creative_frame_evidence.py' -v
+
+      - name: Render two original editable native craft compositions through pinned Semwright
+        run: |
+          set -euo pipefail
+          mkdir -p verification/original-craft-native
+          for fixture in contrast-landscape quote-landscape; do
+            MOTIONWRIGHT_E2E_FIXTURE="$fixture" python3 tooling/native_av_master_e2e.py |
+              tee "verification/original-craft-native/$fixture.log"
+          done
+
+      - name: Independently verify exact-sourced native frame and decoded media evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_CRAFT'
+          import hashlib, json, os
+          from pathlib import Path
+          root=Path("verification/product-hero-e2e")/os.environ["GITHUB_SHA"]
+          digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          for fixture,family in (
+              ("contrast-landscape","contrast-comparison/1"),
+              ("quote-landscape","editorial-quote/1"),
+          ):
+              folder=root/fixture
+              result=json.loads((folder/"result.json").read_text())
+              inspection=json.loads((folder/"creative-frame-inspection.json").read_text())
+              project=json.loads((folder/"editable-project.json").read_text())
+              layout=json.loads((folder/"expected-component-layout.json").read_text())
+              portable=json.loads((folder/"bundle-import-check.json").read_text())
+              assert result["native_av_master_e2e"]=="PASS"
+              assert result["motionwright_sha"]==os.environ["GITHUB_SHA"]
+              assert result["fixture"]==fixture
+              assert result["project"]["fixture"]==family
+              assert result["frame_count"]==result["decoded_video_frames"]==180
+              assert result["decoded_stereo_channel_identity"]=="confirmed_distinct_source_tones"
+              assert project["production_design"]["heroes"][0]["config"]["layout"]==(
+                  "contrast_comparison" if family=="contrast-comparison/1" else "editorial_quote")
+              assert project["revision"]==layout["revision"]==inspection["revision"]
+              assert project["generation"]==layout["generation"]==inspection["generation"]
+              assert len(layout["nodes"])==6
+              assert len(project["scenes"][0]["nodes"])==6
+              safety=layout["nodes"][-1]["text"]
+              assert safety==(
+                  "CONCEPTUAL COMPARISON / NOT MEASURED EVIDENCE" if fixture.startswith("contrast")
+                  else "ILLUSTRATIVE QUOTE / ATTRIBUTION NOT VERIFIED")
+              assert inspection["technical_sampling"]=="PASS"
+              assert inspection["layout_regression"]=="PASS"
+              assert inspection["creative_approval"]=="required"
+              assert inspection["source_project"]["sha256"]==digest(folder/"editable-project.json")
+              assert inspection["contact_sheet"]["sha256"]==digest(folder/inspection["contact_sheet"]["path"])
+              assert portable["generation_rotated"] is True
+              assert portable["old_generation_write_rejected"] is True
+              assert portable["semantic_state_preserved"] is True
+              assert digest(folder/"motionwright-master.mp4")==result["master_sha256"]
+              assert (folder/"hero.motionwright"/"manifest.json").is_file()
+              print(fixture,"source-authoritative semantic nodes, native pixels, decoded H264",
+                    "and portable generation: TECHNICAL PASS / HUMAN CREATIVE REVIEW REQUIRED")
+          PY_CRAFT
+
+      - name: Upload source-bound original craft Film and H264 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: original-craft-native-${{ github.sha }}
+          path: |
+            verification/original-craft-native/
+            verification/product-hero-e2e/
+          if-no-files-found: ignore
+          retention-days: 7

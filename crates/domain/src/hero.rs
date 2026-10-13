@@ -15,6 +15,10 @@ pub enum HeroLayout {
     MetricEvidence,
     /// An editable single-step explainer, NOT an observed product capture.
     StepSequence,
+    /// Two equal-authority conceptual states, not a measured improvement.
+    ContrastComparison,
+    /// An illustrative quote, not an authorized third-party testimonial.
+    EditorialQuote,
 }
 
 pub const HERO_ROLES: [&str; 6] = [
@@ -197,6 +201,12 @@ pub fn realize_product_hero(
     }
     if config.layout == HeroLayout::StepSequence {
         return realize_step_sequence(id, config, w, h);
+    }
+    if matches!(
+        config.layout,
+        HeroLayout::ContrastComparison | HeroLayout::EditorialQuote
+    ) {
+        return realize_craft_hero(id, config, w, h);
     }
     let portrait = height > width;
     let square = height == width;
@@ -476,6 +486,256 @@ pub fn realize_product_hero(
         };
         if config.motion {
             node.keyframes = entry_keys(&node, start, end, offset, rotation);
+        }
+        node.validate()?;
+        nodes.push(node);
+    }
+    Ok(nodes)
+}
+
+/// Two purpose-built six-object editorial grammars over the existing typed
+/// ProductHero instance/IDs. No new execution path, source asset, or renderer.
+/// One is an authored conceptual contrast; the other is illustrative copy,
+/// explicitly not measured evidence or a real attributed endorsement.
+///
+/// All objects remain regular Canvas nodes (including native text). Switching
+/// layouts uses the existing three-way component merge, so human edits are
+/// retained when compatible and field conflicts are surfaced, not overwritten.
+fn realize_craft_hero(id: Uuid, config: &HeroConfig, w: f64, h: f64) -> Result<Vec<CanvasNode>> {
+    let portrait = h > w;
+    let square = h == w;
+    let compact = portrait || square;
+    let quote = config.layout == HeroLayout::EditorialQuote;
+    let scale = w.min(h) / 1080.0;
+    let left = w * 0.09;
+    let before = wrap_copy(
+        &config.headline,
+        if quote && compact {
+            20
+        } else if quote {
+            31
+        } else if compact {
+            19
+        } else {
+            15
+        },
+        if quote { 4 } else { 3 },
+    )?;
+    let after = wrap_copy(
+        &config.body,
+        if quote && compact {
+            33
+        } else if quote {
+            48
+        } else if compact {
+            30
+        } else {
+            23
+        },
+        if quote { 3 } else { 4 },
+    )?;
+    let divider = if quote {
+        (left, h * 0.213, w * 0.16, 3.0 * scale)
+    } else if compact {
+        (left, h * 0.505, w * 0.82, 3.0 * scale)
+    } else {
+        (w * 0.495, h * 0.218, 3.0 * scale, h * 0.557)
+    };
+    // Semantic source order is unchanged across three aspects and both
+    // grammars: six original editable text/shape objects with stable IDs.
+    // (role, source, x, y, width, height, fontSize, weight, startMs, endMs)
+    let entries = [
+        (
+            "eyebrow",
+            config.eyebrow.clone(),
+            left,
+            h * 0.095,
+            w * 0.81,
+            h * 0.050,
+            22.0 * scale,
+            500,
+            0,
+            500,
+        ),
+        (
+            "headline",
+            before,
+            if quote { w * 0.13 } else { left },
+            if quote {
+                h * 0.275
+            } else if compact {
+                h * 0.210
+            } else {
+                h * 0.305
+            },
+            if quote {
+                w * 0.75
+            } else if compact {
+                w * 0.82
+            } else {
+                w * 0.375
+            },
+            if quote {
+                h * 0.340
+            } else if compact {
+                h * 0.245
+            } else {
+                h * 0.365
+            },
+            if quote { 68.0 * scale } else { 70.0 * scale },
+            600,
+            170,
+            1120,
+        ),
+        (
+            "body",
+            after,
+            if quote {
+                w * 0.16
+            } else if compact {
+                left
+            } else {
+                w * 0.55
+            },
+            if quote {
+                h * 0.674
+            } else if compact {
+                h * 0.570
+            } else {
+                h * 0.320
+            },
+            if quote {
+                w * 0.73
+            } else if compact {
+                w * 0.82
+            } else {
+                w * 0.355
+            },
+            if quote {
+                h * 0.145
+            } else if compact {
+                h * 0.210
+            } else {
+                h * 0.333
+            },
+            if quote { 27.0 * scale } else { 42.0 * scale },
+            if quote { 400 } else { 500 },
+            480,
+            1450,
+        ),
+        (
+            "wordmark",
+            config.wordmark.clone(),
+            if quote { w * 0.77 } else { left },
+            if quote { h * 0.835 } else { h * 0.828 },
+            w * 0.16,
+            h * 0.050,
+            32.0 * scale,
+            600,
+            640,
+            1540,
+        ),
+        (
+            "rule",
+            String::new(),
+            divider.0,
+            divider.1,
+            divider.2,
+            divider.3,
+            0.0,
+            400,
+            0,
+            900,
+        ),
+        (
+            "disclosure",
+            (if quote {
+                "ILLUSTRATIVE QUOTE / ATTRIBUTION NOT VERIFIED"
+            } else {
+                "CONCEPTUAL COMPARISON / NOT MEASURED EVIDENCE"
+            })
+            .into(),
+            left,
+            h * 0.916,
+            w * 0.82,
+            h * 0.033,
+            15.0 * scale,
+            400,
+            760,
+            1460,
+        ),
+    ];
+    let family = if quote {
+        "EditorialQuote"
+    } else {
+        "ContrastComparison"
+    };
+    let mut nodes = Vec::with_capacity(HERO_ROLES.len());
+    for (index, (role, text, x, y, width, height, font_size, weight, start, end)) in
+        entries.into_iter().enumerate()
+    {
+        let is_text = role != "rule";
+        let mut node = CanvasNode {
+            id: hero_node_id(id, role),
+            name: format!("{family} / {role}"),
+            kind: (if is_text { "text" } else { "rectangle" }).into(),
+            parent_id: None,
+            x,
+            y,
+            width,
+            height,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: is_text.then_some(text),
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 10 + index as i32,
+            style: NodeStyle {
+                fill: Some(
+                    (if role == "wordmark" || role == "rule" {
+                        &config.accent
+                    } else {
+                        &config.foreground
+                    })
+                    .clone(),
+                ),
+                font_family: is_text.then(|| "Instrument Sans Variable".into()),
+                font_size: is_text.then_some(font_size),
+                font_weight: is_text.then_some(weight),
+                line_height: is_text.then_some(1.12),
+                ..Default::default()
+            },
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+            keyframes: vec![],
+        };
+        if config.motion {
+            node.keyframes = entry_keys(&node, start, end, 18.0 * scale, 0.0);
+        }
+        // Typography is a declared conservative bound, never fabricated
+        // glyph measurement or automatic shrinking at rendering time.
+        if let Some(copy) = &node.text {
+            let max_line = copy
+                .split('\n')
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0);
+            let lines = copy.lines().count().max(1);
+            if (max_line as f64) * font_size * 0.56 > width * 0.96
+                || (lines as f64) * font_size * 1.12 > height * 0.96
+            {
+                return Err(DomainError::Invalid(format!(
+                    "{family} {role} text exceeds the native editable screen anchor; shorten copy"
+                )));
+            }
+        }
+        if node.x < w * 0.05
+            || node.y < h * 0.05
+            || node.x + node.width > w * 0.96
+            || node.y + node.height > h * 0.96
+        {
+            return Err(DomainError::Invalid(format!(
+                "{family} {role} exceeds original safe area"
+            )));
         }
         node.validate()?;
         nodes.push(node);

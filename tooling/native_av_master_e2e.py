@@ -41,7 +41,9 @@ HERO_ASPECTS = {"landscape": (1920, 1080), "portrait": (1080, 1920), "square": (
                 "metric-landscape": (1920, 1080), "metric-portrait": (1080, 1920),
                 "metric-square": (1080, 1080),
                 "step-landscape": (1920, 1080), "step-portrait": (1080, 1920),
-                "step-square": (1080, 1080)}
+                "step-square": (1080, 1080),
+                "contrast-landscape": (1920, 1080),
+                "quote-landscape": (1920, 1080)}
 STAGE_MODES = {"stage-browser", "stage-handset"}
 PROCEDURAL_MODES = {"procedural-static", "procedural-motion", "procedural-orbit"}
 IS_STAGE = FIXTURE in STAGE_MODES
@@ -175,7 +177,9 @@ def main() -> None:
         seeded = run_json(seed_command, env=env)
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
-        expected_family = ("metric-evidence/1" if FIXTURE.startswith("metric-") else
+        expected_family = ("contrast-comparison/1" if FIXTURE.startswith("contrast-") else
+                           "editorial-quote/1" if FIXTURE.startswith("quote-") else
+                           "metric-evidence/1" if FIXTURE.startswith("metric-") else
                            "split-explanation/1" if FIXTURE.startswith("split-") else
                            "step-sequence/1" if FIXTURE.startswith("step-") else
                            "product-hero-reveal/1")
