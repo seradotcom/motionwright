@@ -163,6 +163,9 @@ pub struct AudioState {
     pub active_voice_track_id: Option<Uuid>,
     pub transcript: Vec<TranscriptSegment>,
     pub cues: Vec<AudioCue>,
+    /// Explicit original WAVs, semantic anchors and authored energy envelopes.
+    #[serde(default)]
+    pub sfx_cues: Vec<crate::SemanticSfxCue>,
     pub mix: MixIntent,
 }
 

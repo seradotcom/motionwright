@@ -2,6 +2,7 @@ import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, Creat
 import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
+import type { SemanticSfxCue } from "./semanticSfx";
 import type { ProductStageConfig } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
 import type { CaptureSourceRecord } from "./captureSource";
@@ -229,7 +230,8 @@ export interface MixIntent {
 }
 export interface AudioState {
   voice_tracks: VoiceTrack[]; active_voice_track_id: string | null;
-  transcript: TranscriptSegment[]; cues: AudioCue[]; mix: MixIntent;
+  transcript: TranscriptSegment[]; cues: AudioCue[];
+  sfx_cues?: SemanticSfxCue[]; mix: MixIntent;
 }
 export interface VisualToken { name: string; value: string; }
 export type ReducedMotionBehavior = "instant" | "fade_only" | "static_equivalent";
@@ -675,6 +677,8 @@ export type Change =
   | { type: "remove_transcript_segment"; segment_id: string }
   | { type: "upsert_audio_cue"; cue: AudioCue }
   | { type: "remove_audio_cue"; cue_id: string }
+  | { type: "upsert_semantic_sfx"; cue: SemanticSfxCue }
+  | { type: "remove_semantic_sfx"; cue_id: string }
   | { type: "set_mix_intent"; mix: MixIntent }
   | { type: "set_visual_language"; visual_language: VisualLanguage }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
