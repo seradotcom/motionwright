@@ -69,6 +69,57 @@ class ProviderDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["render_outcome"], "unconfirmed")
         self.assertNotIn(job, str(report))
 
+    def test_recovered_loss_does_not_leak_into_unrelated_unknown_job(self):
+        a, b = "private-recovered-job", "private-unconfirmed-other-job"
+        rows = [
+            self._native_event("start", "completed", 0, a),
+            self._native_event("status", "outcome_unknown", 1, a,
+                               code="Timeout", known=False),
+            self._native_event("status", "failed_known", 2, a,
+                               code="Unavailable", known=True),
+            self._native_event("result", "completed", 3, a),
+            self._native_event("start", "completed", 4, b),
+            self._native_event("status", "outcome_unknown", 5, b,
+                               code="Timeout", known=False),
+        ]
+        rows[3]["payload"]["result"] = {
+            "data": {"job_ref": a, "state": "succeeded",
+                     "artifact": {"sha256": "a" * 64}},
+        }
+        report = mod.summarize_render_receipts(rows)
+        self.assertEqual(report["render_outcome"], "unconfirmed")
+        # Keep the real historical incident, but do not attribute it to B.
+        self.assertTrue(report["timeout_then_provider_unavailable_observed"])
+        self.assertTrue(report["same_acknowledged_job_status_chain_verified"])
+        self.assertFalse(report["unresolved_same_job_status_loss_verified"])
+        self.assertNotIn(a, str(report))
+        self.assertNotIn(b, str(report))
+
+    def test_unresolved_same_job_loss_remains_diagnosable_after_other_recovery(self):
+        a, b = "private-recovered-job", "private-still-lost-job"
+        rows = [
+            self._native_event("start", "completed", 0, a),
+            self._native_event("status", "outcome_unknown", 1, a,
+                               code="Timeout", known=False),
+            self._native_event("status", "failed_known", 2, a,
+                               code="Unavailable", known=True),
+            self._native_event("result", "completed", 3, a),
+            self._native_event("start", "completed", 4, b),
+            self._native_event("status", "outcome_unknown", 5, b,
+                               code="Timeout", known=False),
+            self._native_event("status", "failed_known", 6, b,
+                               code="Unavailable", known=True),
+        ]
+        rows[3]["payload"]["result"] = {
+            "data": {"job_ref": a, "state": "succeeded",
+                     "artifact": {"sha256": "a" * 64}},
+        }
+        report = mod.summarize_render_receipts(rows)
+        self.assertEqual(report["render_outcome"], "unconfirmed")
+        self.assertTrue(report["unresolved_same_job_status_loss_verified"])
+        self.assertNotIn(a, str(report))
+        self.assertNotIn(b, str(report))
+
     def test_unacknowledged_or_mistyped_loss_is_not_native_generation_evidence(self):
         job = "private-job-ref"
         start = self._native_event("start", "dispatching", 0, job)
