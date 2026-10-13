@@ -239,6 +239,49 @@ impl StudioService {
         self.store.lock().ingest_blob_file(source)
     }
 
+    /// Owner-only verified SFX WAV source read for native PCM mixing. No
+    /// filesystem paths or audio bytes are exposed through WebView/SDK args.
+    /// A referenced Asset and exact project revision must own the SHA-256.
+    pub fn verified_semantic_sfx_wav(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        asset_id: Uuid,
+        digest: &str,
+    ) -> StorageResult<Vec<u8>> {
+        const MAX_SFX_WAV_BYTES: u64 = 4 * 1024 * 1024;
+        let store = self.store.lock();
+        let project = store.load_project(project_id)?;
+        if expected.resource != project.resource_key() || expected.generation != project.generation
+        {
+            return Err(StorageError::GenerationConflict);
+        }
+        if expected.revision != project.revision {
+            return Err(StorageError::Conflict {
+                expected: expected.revision,
+                actual: project.revision,
+            });
+        }
+        if !project
+            .audio
+            .sfx_cues
+            .iter()
+            .any(|cue| cue.source_asset_id == asset_id && cue.source_sha256 == digest)
+            || !project.assets.iter().any(|asset| {
+                asset.id == asset_id
+                    && ["audio/wav", "audio/x-wav", "audio/wave"]
+                        .contains(&asset.media_type.as_str())
+                    && asset.content_sha256.as_deref() == Some(digest)
+            })
+        {
+            return Err(DomainError::Invalid(
+                "SFX content-addressed asset is not attached to this project revision".into(),
+            )
+            .into());
+        }
+        store.read_blob(digest, MAX_SFX_WAV_BYTES)
+    }
+
     pub fn put_derived_cache_file(
         &self,
         scope: &str,
