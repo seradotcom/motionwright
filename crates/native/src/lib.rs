@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use motionwright_domain::{Change, Project, RevisionStamp};
+use motionwright_domain::{
+    Change, MAX_MUSIC_CONFORM_TARGETS, MusicConformTarget, Project, RevisionStamp,
+};
 use motionwright_service::{ProductionReceiptWatermark, StudioService};
 use motionwright_storage::StorageError;
 use semwright_native_sdk::cooperation::{
@@ -742,6 +744,7 @@ enum OperationKind {
     SetSceneStatus,
     SetSceneDuration,
     SnapSceneCutToMusic,
+    ConformScenesToMusic,
     AddCanvasNode,
     RemoveCanvasNode,
     TransformCanvasNode,
@@ -1057,6 +1060,33 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             Ok(Change::SetSceneStatus {
                 scene_id: uuid(args, "scene_id")?,
                 status,
+            })
+        }
+        OperationKind::ConformScenesToMusic => {
+            let targets: Vec<MusicConformTarget> = serde_json::from_value(
+                args.get("targets")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("music conform targets are required"))?,
+            )
+            .map_err(|_| {
+                Error::invalid("music conform targets must be ordered scene IDs and beat indices")
+            })?;
+            if targets.len() < 2 || targets.len() > MAX_MUSIC_CONFORM_TARGETS {
+                return Err(Error::invalid(
+                    "music conform requires 2–16 explicit targets",
+                ));
+            }
+            Ok(Change::ConformScenesToMusic {
+                targets,
+                source_sha256: string(args, "source_sha256", 64)?,
+                base_revision: args
+                    .get("base_revision")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| Error::invalid("base_revision is required"))?,
+                acknowledge_absolute_anchors: args
+                    .get("acknowledge_absolute_anchors")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| Error::invalid("explicit impact acknowledgement is required"))?,
             })
         }
         OperationKind::SnapSceneCutToMusic => Ok(Change::SnapSceneCutToMusic {
@@ -1720,6 +1750,40 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         }
                     }),
                     &["ref", "scene_id", "duration"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ConformScenesToMusic,
+            descriptor(
+                "scene.music.cuts.conform",
+                "Atomically conform 2–16 ordered editable scene boundaries to saved exact music beats; validate all downstream locks and preserve fixed global audio markers",
+                schema(
+                    json!({
+                        "ref": {"type":"string","maxLength":512},
+                        "targets": {
+                            "type":"array","minItems":2,"maxItems":16,
+                            "items": {
+                                "type":"object",
+                                "properties": {
+                                    "scene_id":{"type":"string","format":"uuid","maxLength":64},
+                                    "beat_index":{"type":"integer","minimum":0,"maximum":511}
+                                },
+                                "required":["scene_id","beat_index"],
+                                "additionalProperties":false
+                            }
+                        },
+                        "source_sha256": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+                        "base_revision": {"type":"integer","minimum":0},
+                        "acknowledge_absolute_anchors": {"type":"boolean"}
+                    }),
+                    &[
+                        "ref",
+                        "targets",
+                        "source_sha256",
+                        "base_revision",
+                        "acknowledge_absolute_anchors",
+                    ],
                 ),
             ),
         ),
@@ -2908,10 +2972,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.measured-binding.detach"));
         assert!(names.contains(&"driver.motionwright.procedural-field.upsert"));
         assert!(names.contains(&"driver.motionwright.procedural-field.detach"));
-        // The unified composition admission exposed 61 operations; the music
-        // cut adds one scoped, owner-source-bound Native SDK operation.
-        // 62 existing first-party operations plus the exact cubic-out source motion.
-        assert_eq!(capabilities.len(), 63);
+        // The combined registry includes the original scoped music conform
+        // and the exact cubic-out source motion as two independent operations.
+        assert!(names.contains(&"driver.motionwright.scene.music.cuts.conform"));
+        assert_eq!(capabilities.len(), 64);
     }
 
     #[test]
@@ -3989,5 +4053,84 @@ mod music_clock_contract_tests {
         changed["beat_index"] = json!(0);
         changed["acknowledge_absolute_anchors"] = json!("yes");
         assert!(change_from_args(OperationKind::SnapSceneCutToMusic, &changed).is_err());
+    }
+
+    #[test]
+    fn native_sdk_maps_one_atomic_music_conform_with_two_explicit_cut_targets() {
+        let opening = Uuid::new_v4();
+        let proof = Uuid::new_v4();
+        let args = json!({
+            "ref": "native-sdk-opaque-project-ref",
+            "targets":[
+                {"scene_id":opening.to_string(),"beat_index":2},
+                {"scene_id":proof.to_string(),"beat_index":4}
+            ],
+            "source_sha256":"a".repeat(64),
+            "base_revision":44,
+            "acknowledge_absolute_anchors":true,
+        });
+        match change_from_args(OperationKind::ConformScenesToMusic, &args).unwrap() {
+            Change::ConformScenesToMusic {
+                targets,
+                source_sha256,
+                base_revision,
+                acknowledge_absolute_anchors,
+            } => {
+                assert_eq!(targets.len(), 2);
+                assert_eq!(targets[0].scene_id, opening);
+                assert_eq!(targets[0].beat_index, 2);
+                assert_eq!(targets[1].scene_id, proof);
+                assert_eq!(targets[1].beat_index, 4);
+                assert_eq!(source_sha256, "a".repeat(64));
+                assert_eq!(base_revision, 44);
+                assert!(acknowledge_absolute_anchors);
+            }
+            _ => panic!("incorrect Semwright Native SDK semantic conform intent"),
+        }
+    }
+
+    #[test]
+    fn native_sdk_fails_closed_on_missing_or_forged_multi_cut_fields() {
+        let valid = json!({
+            "ref":"native-sdk-opaque-project-ref",
+            "targets":[
+                {"scene_id":Uuid::new_v4().to_string(),"beat_index":2},
+                {"scene_id":Uuid::new_v4().to_string(),"beat_index":4}
+            ],
+            "source_sha256":"a".repeat(64),
+            "base_revision":5,
+            "acknowledge_absolute_anchors":false,
+        });
+        for key in [
+            "targets",
+            "source_sha256",
+            "base_revision",
+            "acknowledge_absolute_anchors",
+        ] {
+            let mut args = valid.clone();
+            args.as_object_mut().unwrap().remove(key);
+            assert!(
+                change_from_args(OperationKind::ConformScenesToMusic, &args).is_err(),
+                "required field {key} cannot be dropped"
+            );
+        }
+        let mut empty = valid.clone();
+        empty["targets"] = json!([]);
+        assert!(change_from_args(OperationKind::ConformScenesToMusic, &empty).is_err());
+        let mut giant = valid.clone();
+        giant["targets"] = json!(vec![
+            json!({"scene_id":Uuid::new_v4().to_string(),"beat_index":2});
+            MAX_MUSIC_CONFORM_TARGETS + 1
+        ]);
+        assert!(change_from_args(OperationKind::ConformScenesToMusic, &giant).is_err());
+        let mut malformed = valid.clone();
+        malformed["targets"][1]["beat_index"] = json!(-1);
+        assert!(change_from_args(OperationKind::ConformScenesToMusic, &malformed).is_err());
+        malformed["targets"][1]["beat_index"] = json!(1);
+        malformed["targets"][1]["unknown"] = json!("injected");
+        assert!(change_from_args(OperationKind::ConformScenesToMusic, &malformed).is_err());
+        malformed = valid.clone();
+        malformed["acknowledge_absolute_anchors"] = json!("yes");
+        assert!(change_from_args(OperationKind::ConformScenesToMusic, &malformed).is_err());
     }
 }

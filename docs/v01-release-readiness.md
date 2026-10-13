@@ -71,9 +71,14 @@ aesthetic review, or unrestricted creative capability.
    of native MLT projects is allowed. The read-only [MLT lifetime receipt
    inventory](reliability/v01-mlt-cleanup-inventory.md) now exposes an
    incomplete closure disposition without querying or deleting live resources.
-   It does not satisfy the required foreground Broker authorization. The bounded v0.1 [read-only original-job
+   An additional [real-provider lifetime check](reliability/v01-real-mlt-lifetime-evidence.md)
+   requires authentic MLT creation receipts in every actual native E2E mode;
+   it still does not satisfy the required foreground Broker authorization. The bounded v0.1 [read-only original-job
    status observation](reliability/v01-owner-native-status-read.md) does not
    fix provider lifecycle, verify native media or authorize a release.
+   The [sanitized native AV CI failure receipt](reliability/v01-native-av-failure-redaction.md)
+   also preserves Timeout-to-inactive-generation evidence without publishing
+   owner paths or opaque job IDs, but does not remediate the provider.
 5. Resolve the transitive glib unsoundness and macro-stack maintenance
    warnings that remain open in
    docs/security/known-rustsec-advisories.json. An unchanged advisory set

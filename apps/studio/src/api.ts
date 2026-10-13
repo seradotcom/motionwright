@@ -1,6 +1,6 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { browserCreativeDoctor } from "./creativeDoctor";
-import { applyMusicCutToProject, inspectMusicCut } from "./musicClock";
+import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { applyProductStageChange, validateProductStages } from "./productStage";
@@ -1122,6 +1122,15 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       if (scene) scene.status = change.status;
+      break;
+    }
+    case "conform_scenes_to_music": {
+      if (change.base_revision !== project.revision)
+        throw new Error("Multi-scene conform is stale; refresh the project.");
+      const review=inspectMusicConform(next,change.targets,change.source_sha256);
+      if (review.anchors_need_acknowledgement && !change.acknowledge_absolute_anchors)
+        throw new Error("Acknowledge that global cues, markers and transcripts retain absolute times.");
+      applyMusicConformToProject(next,review);
       break;
     }
     case "snap_scene_cut_to_music": {

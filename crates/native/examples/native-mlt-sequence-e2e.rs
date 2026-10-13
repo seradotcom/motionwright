@@ -436,10 +436,50 @@ async fn assemble(
     } else {
         None
     };
+    // Cross-check the real native create(s) against the *persisted*
+    // application receipt stream, not a synthetic mock or the provider's
+    // in-memory project list. An owner-forward MLT close remains prohibited.
+    let reopened = StudioService::open(database)?;
+    let lifecycle = reopened.mlt_cleanup_inventory_snapshot(
+        project.id,
+        project.generation,
+        project.revision,
+    )?;
+    if lifecycle.confirmed_native_creations_current_revision == 0
+        || lifecycle.confirmed_native_creations_current_revision > 4
+        || lifecycle.unconfirmed_or_invalid_creation_requests != 0
+        || lifecycle.observed_close_request_identities != 0
+        || lifecycle.source_receipts_scanned == 0
+        || !lifecycle.complete_source_receipt_snapshot
+        || lifecycle.native_provider_liveness_verified
+        || lifecycle.foreground_cleanup_consent_obtained
+        || lifecycle.verified_native_project_cleanup
+        || lifecycle.automatic_destructive_cleanup_allowed
+    {
+        return Err(
+            "Real native MLT receipts did not establish a bounded, honest project lifecycle".into(),
+        );
+    }
+    let lifecycle_path = evidence_path.with_file_name("native-mlt-lifetime-inventory.json");
+    let lifecycle_bytes = serde_json::to_vec_pretty(&lifecycle)?;
+    let lifecycle_sha256 = hex::encode(Sha256::digest(&lifecycle_bytes));
+    let mut lifecycle_output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lifecycle_path)?;
+    lifecycle_output.write_all(&lifecycle_bytes)?;
+    lifecycle_output.sync_all()?;
+    eprintln!("mlt-e2e-stage: native-lifetime-receipt-verified");
+
     println!(
         "{}",
         serde_json::to_string(&json!({
             "native_mlt_multisegment_e2e":"PASS",
+            "native_mlt_lifetime_inventory_sha256": lifecycle_sha256,
+            "native_mlt_lifetime_receipts_scanned": lifecycle.source_receipts_scanned,
+            "native_mlt_lifetime_confirmed_current_creations": lifecycle.confirmed_native_creations_current_revision,
+            "native_mlt_lifetime_close_requests_observed": lifecycle.observed_close_request_identities,
+            "native_mlt_cleanup_verified": false,
             "project_id":project.id,
             "frame_count":evidence.frame_count,
             "segment_count":evidence.source.verified_video_segments.len(),
