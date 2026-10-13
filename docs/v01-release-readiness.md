@@ -11,15 +11,23 @@ Run against an exact commit checkout:
 
     python3 tooling/v01_release_readiness.py \
       --source-sha "$(git rev-parse HEAD)" \
+      --verify-checkout \
       --expect-blocked \
       --output ci-evidence/v01-release-readiness.json
 
 Use an empty output location. The reporter creates a **new file only** and
 will not replace an existing assessment from another SHA. Without --output,
-only a compact sanitized status is printed. The 40-character SHA is a
-caller-supplied identifier; this tool does not independently authenticate
-the local Git checkout, a GitHub build or an installed binary. The separate
-CI checkout and artifact receipts bind those identities in their own gates.
+only a compact sanitized status is printed. The 40-character SHA is caller-supplied. The `--verify-checkout` flag
+(required by v0.1 security CI) verifies that the local Git HEAD matches
+the requested SHA and the checkout root is exact. The six report metadata
+files must be tracked, and the entire tracked worktree must match that
+commit. The check runs before and after parsing. Dirty or missing inputs and mismatched commits fail closed;
+unrelated untracked CI artifacts are allowed.
+
+This local Git comparison is not remote-origin attestation, a signed
+GitHub workflow receipt, installed-binary provenance, or human review.
+Without `--verify-checkout`, the output explicitly records that checkout
+binding was not checked. CI still relies on separate source/artifact gates.
 
 The report includes the 208 requirement implementation/verification counts,
 the statuses of the 60 private acceptance cases, the exact Semwright Native
@@ -97,7 +105,7 @@ The existing technical pre-release remains a separate proof.
 
 ## Engineering contract
 
-tooling/v01_release_readiness.py is a side-effect-free metadata reader
+tooling/v01_release_readiness.py is a side-effect-free source/Git metadata reader
 except for its explicitly requested new JSON receipt. It fails closed for
 duplicate JSON fields, malformed IDs, inconsistent Cargo/Tauri versions,
 missing Semwright pins, forged VERIFIED requirements, unsupported acceptance
