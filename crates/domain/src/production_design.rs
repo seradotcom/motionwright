@@ -38,6 +38,9 @@ pub struct ProductionDesign {
     /// Latest scoped invalidation notice, not a completed render-cache purge.
     #[serde(default)]
     pub last_measured_impact: Option<MeasuredDataImpact>,
+    /// Original semantic 2D camera pans. No 3D orbit or optical dolly claim.
+    #[serde(default)]
+    pub camera_reframes: Vec<CameraReframe>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

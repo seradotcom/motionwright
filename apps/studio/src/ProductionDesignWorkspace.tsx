@@ -12,6 +12,7 @@ import ProceduralFieldWorkbench from "./ProceduralFieldWorkbench";
 import BrandTasteWorkbench from "./BrandTasteWorkbench";
 import MusicClockWorkbench from "./MusicClockWorkbench";
 import ProductStageWorkbench from "./ProductStageWorkbench";
+import CameraReframeWorkbench from "./CameraReframeWorkbench";
 import CaptureSourceWorkbench from "./CaptureSourceWorkbench";
 import MeasuredDataWorkbench from "./MeasuredDataWorkbench";
 import NativePropertyFidelityWorkbench from "./NativePropertyFidelityWorkbench";
@@ -64,7 +65,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
   const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !busy && !error && !previewLoading && base===project.revision && !locked;
   return <div className="production-split">
     <section className="production-inspector" aria-label={`${familyName} controls`}>
-      <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition · v1</p></div></div>
+      <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition Â· v1</p></div></div>
       <span className="production-status">CREATIVE REVIEW REQUIRED</span>
       <p className="production-help">Six persistent semantic objects, synchronized cubic entrances and a responsive composition. These families are graphic studies, not fabricated screenshots, validated statistics, measured comparisons or claims about actual software.</p>
       <label className="production-field"><span>Composition family</span><select aria-label="Component layout" value={draft.layout ?? "product_hero_reveal"} onChange={e => setDraft({...draft, layout:e.target.value as NonNullable<HeroConfig["layout"]>})}>
@@ -93,16 +94,16 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
         <button className="text-button" disabled={busy || locked} onClick={() => commit({type:"detach_product_hero",instance_id:instance.id})}>Detach, keep objects</button></div>}
     </section>
     <section className="production-viewer" aria-label="Component study viewer">
-      <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{sameValue(draft,instance?.config)?"Stored parameters":"Uncommitted parameters"} · editorial preview</span></div>
+      <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{sameValue(draft,instance?.config)?"Stored parameters":"Uncommitted parameters"} Â· editorial preview</span></div>
         <div className="production-button-row"><div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div><button className="secondary-button" disabled={previewLoading || !!error || !scene} onClick={()=>setExpanded(true)}>Enlarge study</button></div></div>
       <div className={"production-preview-mat " + (aspect.height>aspect.width?"portrait":"")}>
-        {previewLoading ? <p role="status">Preparing the editable study…</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
+        {previewLoading ? <p role="status">Preparing the editable studyâ€¦</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
       </div>
       <div className="production-transport"><span className="mono">{localTime.toFixed(3)} s</span>
         <input aria-label="Component playhead" type="range" min={0} max={scene?seconds(scene.duration):6} step={1/30} value={localTime} disabled={!scene} onChange={e => onSeek(seconds(scene!.start)+Number(e.target.value))}/>
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+.65)}>Entrance</button>
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+Math.min(2,seconds(scene!.duration)-1/30))}>Settled</button></div>
-      <div className="production-evidence-note"><strong>{aspect.width} × {aspect.height} · project revision {project.revision}</strong>
+      <div className="production-evidence-note"><strong>{aspect.width} Ã— {aspect.height} Â· project revision {project.revision}</strong>
         <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. The editorial viewer uses a system fallback when the required font is not installed. Glyph metrics, clipping and creative approval are separate checks.</p></div>
     </section>
     {expanded && scene && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
@@ -132,8 +133,8 @@ function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Comm
     <div className="production-plan-grid"><label className="production-field"><span>Objective</span><textarea rows={3} value={draft.objective} onChange={e => patch({objective:e.target.value})}/></label>
       <label className="production-field"><span>Audience</span><textarea rows={3} value={draft.audience} onChange={e => patch({audience:e.target.value})}/></label></div>
     <label className="production-field"><span>Creative concept</span><textarea rows={4} value={draft.concept} onChange={e => patch({concept:e.target.value})}/></label>
-    <div className="production-plan-grid"><label className="production-field"><span>Reference-derived constraints · one per line</span><textarea rows={4} value={draft.reference_constraints.join("\n")} onChange={e => patch({reference_constraints:e.target.value.split("\n")})}/></label>
-      <label className="production-field"><span>Exclusions · one per line</span><textarea rows={4} value={draft.exclusions.join("\n")} onChange={e => patch({exclusions:e.target.value.split("\n")})}/></label></div>
+    <div className="production-plan-grid"><label className="production-field"><span>Reference-derived constraints Â· one per line</span><textarea rows={4} value={draft.reference_constraints.join("\n")} onChange={e => patch({reference_constraints:e.target.value.split("\n")})}/></label>
+      <label className="production-field"><span>Exclusions Â· one per line</span><textarea rows={4} value={draft.exclusions.join("\n")} onChange={e => patch({exclusions:e.target.value.split("\n")})}/></label></div>
     <label className="production-field"><span>Governing clock</span><select aria-label="Production governing clock" value={draft.clock.kind === "voice" ? draft.clock.voice_track_id : draft.clock.kind} onChange={e => {
       const selection=e.target.value;
       if (selection==="timeline") patch({clock:{kind:"timeline"}});
@@ -144,8 +145,8 @@ function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Comm
       } else patch({clock:{kind:"voice",voice_track_id:selection}});
     }}>
       <option value="timeline">Editorial timeline</option>
-      {project.audio.voice_tracks.map(track => <option key={track.id} value={track.id}>Measured voice · {track.label}</option>)}
-      <option value="music" disabled={!project.assets.some(asset=>asset.media_type.startsWith("audio/") && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""))}>Music · author-marked beat grid</option>
+      {project.audio.voice_tracks.map(track => <option key={track.id} value={track.id}>Measured voice Â· {track.label}</option>)}
+      <option value="music" disabled={!project.assets.some(asset=>asset.media_type.startsWith("audio/") && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""))}>Music Â· author-marked beat grid</option>
     </select></label>
     {draft.clock.kind==="music" && <MusicClockWorkbench project={project} draftClock={draft.clock} storedPlan={stored}
       draftMatchesSaved={sameValue(draft,stored)} baseRevision={base} busy={busy} onSeek={onSeek} commit={commit}
@@ -155,7 +156,7 @@ function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Comm
       <strong>{String(i+1).padStart(2,"0")} / {project.scenes.find(s => s.id===shot.scene_id)?.name ?? "Missing scene"}</strong>
       <label className="production-field"><span>Purpose</span><textarea rows={2} value={shot.purpose} onChange={e => patch({shots:draft.shots.map((s,j)=>j===i?{...s,purpose:e.target.value}:s)})}/></label>
       <label className="production-field"><span>Evidence classification</span><select value={shot.evidence_kind} onChange={e => patch({shots:draft.shots.map((s,j)=>j===i?{...s,evidence_kind:e.target.value as NarrativeEvidenceKind}:s)})}>
-        <option value="graphic_study">Graphic study · not proof of behavior</option><option value="real_capture">Real capture · source required</option><option value="licensed_footage">Licensed footage · source required</option><option value="synthetic_labeled">Synthetic · labeled</option></select></label>
+        <option value="graphic_study">Graphic study Â· not proof of behavior</option><option value="real_capture">Real capture Â· source required</option><option value="licensed_footage">Licensed footage Â· source required</option><option value="synthetic_labeled">Synthetic Â· labeled</option></select></label>
       <label className="production-field"><span>Source asset</span><select value={shot.asset_ids[0] ?? ""} onChange={e => patch({shots:draft.shots.map((s,j)=>j===i?{...s,asset_ids:e.target.value?[e.target.value]:[]}:s)})}><option value="">No source attached</option>{project.assets.filter(a=>a.content_sha256).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       {!!project.brief.claims.length && <fieldset className="production-claims"><legend>Claims this shot supports</legend>{project.brief.claims.map(claim=><label key={claim.id}><input type="checkbox" checked={shot.claim_ids.includes(claim.id)} onChange={e=>patch({shots:draft.shots.map((s,j)=>j===i?{...s,claim_ids:e.target.checked?[...s.claim_ids,claim.id]:s.claim_ids.filter(id=>id!==claim.id)}:s)})}/>{claim.text}</label>)}</fieldset>}
     </div>)}</div>
@@ -164,7 +165,7 @@ function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Comm
     <section className="production-approval"><h3>Content-bound concept approval</h3><p>A creative decision only. It does not approve renderer fidelity, capture provenance, rights or technical delivery.</p>
       <div className="production-plan-grid"><label className="production-field"><span>Reviewer</span><input value={reviewer} onChange={e=>setReviewer(e.target.value)}/></label><label className="production-field"><span>Approval note</span><input value={note} onChange={e=>setNote(e.target.value)}/></label></div>
       <button className="secondary-button" disabled={busy || !reviewer.trim() || !note.trim() || base!==project.revision} onClick={approve}>Approve this concept digest</button>
-      {stored?.approval && <p className="mono">Recorded for {stored.approval.content_sha256.slice(0,16)}… by {stored.approval.reviewer}</p>}{error && <p className="production-error" role="alert">{error}</p>}
+      {stored?.approval && <p className="mono">Recorded for {stored.approval.content_sha256.slice(0,16)}â€¦ by {stored.approval.reviewer}</p>}{error && <p className="production-error" role="alert">{error}</p>}
     </section>
   </div>;
 }
@@ -192,14 +193,14 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
 }
 
 export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
-  const [tab,setTab]=useState<"component"|"stage"|"plan"|"brand"|"sources"|"captures"|"data"|"procedural"|"patch"|"inspection">("component");
+  const [tab,setTab]=useState<"component"|"stage"|"camera"|"plan"|"brand"|"sources"|"captures"|"data"|"procedural"|"patch"|"inspection">("component");
   const [repairDraft,setRepairDraft]=useState<NativeReviewRepairDraft|null>(null);
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);
   return <section className="production-workspace" aria-label="Creative production workstation">
-    <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} · {design.capsules.length} native source{design.capsules.length===1?"":"s"} · revision {props.project.revision}</p></div>
+    <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} Â· {design.capsules.length} native source{design.capsules.length===1?"":"s"} Â· revision {props.project.revision}</p></div>
       <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>{setRepairDraft(null);props.onSelectScene(e.target.value);}}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
-    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["stage","ProductStage"],["plan","Production plan"],["brand","Brand & taste"],["sources","Native sources"],["captures","Capture sources"],["data","Measured data"],["procedural","Procedural"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench {...props}/>:tab==="stage"?<ProductStageWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commit} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
+    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["stage","ProductStage"],["camera","Camera"],["plan","Production plan"],["brand","Brand & taste"],["sources","Native sources"],["captures","Capture sources"],["data","Measured data"],["procedural","Procedural"],["patch","Scoped changes"],["inspection","Native inspection"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
+    {tab==="component"?<HeroWorkbench {...props}/>:tab==="stage"?<ProductStageWorkbench {...props}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commit} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
   </section>;
 }

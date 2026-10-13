@@ -1,8 +1,8 @@
 use crate::component_text::fixed_component_text;
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
-    BlendMode, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy, MeasuredView,
-    MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene,
+    BlendMode, CameraReframe, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy,
+    MeasuredView, MotionInterpolation, MotionProperty, Project, RationalTime, RendererKind, Scene,
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
@@ -937,6 +937,91 @@ fn projected_shot(
     })
 }
 
+/// MW05-E07-03: authored bounded planar camera reframe as native source motion.
+/// The existing canonical Film render path moves every semantic subject by
+/// the same exact scene-camera displacement. All source objects, text groups,
+/// source IDs and layers stay editable. This is not a 3D or optical dolly.
+struct CameraFilmContext<'a> {
+    scene_start: RationalTime,
+    shot_span: &'a str,
+    frame_rate: Rate,
+    projection: LayoutProjection,
+    output: &'a OutputProfile,
+}
+fn attach_camera_reframe(
+    shot: &mut Shot,
+    scene: &Scene,
+    reframe: &CameraReframe,
+    context: &CameraFilmContext<'_>,
+    spans: &mut Vec<TemporalSpan>,
+    constraints: &mut Vec<TemporalConstraint>,
+) -> NativeResult<()> {
+    reframe
+        .validate(scene)
+        .map_err(|err| invalid(err.to_string()))?;
+    if context.frame_rate.num != 30 || context.frame_rate.den != 1 {
+        return Err(unsupported(
+            "Bounded canonical camera reframe supports exact 30fps deliverables only",
+        ));
+    }
+    if spans.len() >= MAX_TEMPORAL_SPANS {
+        return Err(unsupported(
+            "Camera reframe would exceed canonical Film temporal span budget",
+        ));
+    }
+    let mut initial = scene.clone();
+    initial.camera.center_x = reframe.start_center_x;
+    initial.camera.center_y = reframe.start_center_y;
+    let first_projection = scene_layout_projection(&initial, context.projection);
+    let last_projection = scene_layout_projection(scene, context.projection);
+    for node in &scene.nodes {
+        // The original and terminal layouts must be independently valid for
+        // this exact output profile. A linear camera translation is a convex
+        // path between safe endpoints and thus cannot crop in between.
+        validate_static_safe_area(node, first_projection, context.output)?;
+        validate_static_safe_area(node, last_projection, context.output)?;
+    }
+    let span = format!("camera-reframe-{}", reframe.id.simple());
+    let duration = RationalTime::new(i64::from(reframe.duration_frames), 30)
+        .expect("30fps camera frame duration is always a valid rational");
+    spans.push(TemporalSpan {
+        id: span.clone(),
+        minimum: duration,
+        preferred: duration,
+        maximum: duration,
+        anchor: StartAnchor::Absolute {
+            time: context.scene_start,
+        },
+        preference_priority: 0,
+    });
+    constraints.push(TemporalConstraint::Contains {
+        id: format!("camera-shot-contains-{}", reframe.id.simple()),
+        parent: context.shot_span.to_owned(),
+        child: span.clone(),
+    });
+    let shift = Point {
+        x: (reframe.end_center_x - reframe.start_center_x) * context.projection.position_scale_x,
+        y: (reframe.end_center_y - reframe.start_center_y) * context.projection.position_scale_y,
+    };
+    for node in &scene.nodes {
+        shot.motion.push(Invocation {
+            id: format!(
+                "camera-reframe-{}-{}",
+                reframe.id.simple(),
+                node.id.simple()
+            ),
+            span_id: span.clone(),
+            easing: MotionEasing::Linear,
+            primitive: Primitive::Settle {
+                target: subject_id(node.id, None),
+                offset: shift,
+                rotation: 0.0,
+            },
+        });
+    }
+    Ok(())
+}
+
 fn attach_entrance_motion(
     shot: &mut Shot,
     scene: &Scene,
@@ -1124,7 +1209,17 @@ fn build_segment(
         font_family: &options.font_family,
     };
 
-    let span_capacity = scenes.iter().map(scene_span_cost).sum::<usize>();
+    let span_capacity = scenes.iter().map(scene_span_cost).sum::<usize>()
+        + scenes
+            .iter()
+            .filter(|scene| {
+                project
+                    .production_design
+                    .camera_reframes
+                    .iter()
+                    .any(|camera| camera.scene_id == scene.id)
+            })
+            .count();
     if span_capacity > MAX_TEMPORAL_SPANS {
         return Err(unsupported(
             "Canonical Film segment exceeds 128 bounded temporal spans including keyframe motion",
@@ -1230,6 +1325,28 @@ fn build_segment(
                         rotation: 0.0,
                     },
                 });
+            }
+            if let Some(reframe) = project
+                .production_design
+                .camera_reframes
+                .iter()
+                .find(|reframe| reframe.scene_id == scene.id)
+            {
+                let camera = CameraFilmContext {
+                    scene_start: local_start,
+                    shot_span: &shot_span,
+                    frame_rate: options.frame_rate,
+                    projection,
+                    output: &output,
+                };
+                attach_camera_reframe(
+                    &mut shot,
+                    scene,
+                    reframe,
+                    &camera,
+                    &mut spans,
+                    &mut constraints,
+                )?;
             }
             attach_entrance_motion(
                 &mut shot,

@@ -1,4 +1,5 @@
 mod brand_governance;
+mod camera_reframe;
 mod canvas;
 mod capture_source;
 mod creative;
@@ -15,6 +16,7 @@ mod procedural;
 mod product_stage;
 mod production_design;
 pub use brand_governance::*;
+pub use camera_reframe::*;
 pub use canvas::*;
 pub use capture_source::*;
 pub use creative::*;
@@ -656,6 +658,8 @@ impl Project {
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
         self.production_design.validate_capture_sources(self)?;
+        self.production_design
+            .validate_camera_reframes(&self.scenes)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1048,6 +1052,8 @@ impl Project {
             Change::DetachProceduralField { instance_id } => {
                 self.detach_procedural_field(*instance_id)?;
             }
+            Change::UpsertCameraReframe { reframe } => self.upsert_camera_reframe(reframe)?,
+            Change::DetachCameraReframe { id } => self.detach_camera_reframe(*id)?,
             Change::SetProductionPlan { plan } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if let Some(plan) = plan {
@@ -2399,6 +2405,12 @@ pub enum Change {
     },
     DetachProductStage {
         instance_id: Uuid,
+    },
+    UpsertCameraReframe {
+        reframe: CameraReframe,
+    },
+    DetachCameraReframe {
+        id: Uuid,
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
