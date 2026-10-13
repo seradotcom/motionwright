@@ -143,6 +143,41 @@ class ProviderLossCorrelationTests(unittest.TestCase):
         with self.assertRaisesRegex(CorrelationEvidenceError, "unbounded_process_sample"):
             inspect_provider_lifetime(report, failed_status())
 
+    def test_truncated_sample_cannot_create_spurious_provider_exit_count(self) -> None:
+        report = baseline()
+        # The missing role is a sampling truncation, not a verified exit.
+        report["samples"][2]["truncated"] = True
+        report["samples"][2]["processes"] = [
+            {"role": "semwrightd", "pid": 600, "ppid": 1},
+        ]
+        verdict = inspect_provider_lifetime(report, failed_status())
+        self.assertEqual(verdict["samples_with_truncated_process_tree"], 1)
+        self.assertEqual(verdict["consecutive_complete_sample_pairs"], 1)
+        self.assertEqual(verdict["incomparable_sample_pairs"], 1)
+        self.assertEqual(verdict["bwrap_count_decreases_observed"], 0)
+        self.assertEqual(verdict["provider_named_process_count_decreases_observed"], 0)
+        self.assertIsNone(verdict["bwrap_process_count_final"])
+        self.assert_no_private_or_false_release(verdict)
+
+    def test_daemon_disappearance_does_not_verify_child_count_drop(self) -> None:
+        report = baseline()
+        report["samples"][2]["root_observed"] = False
+        report["samples"][2]["processes"] = []
+        verdict = inspect_provider_lifetime(report, failed_status())
+        self.assertEqual(verdict["samples_with_missing_daemon"], 1)
+        self.assertEqual(verdict["incomparable_sample_pairs"], 1)
+        self.assertEqual(verdict["bwrap_count_decreases_observed"], 0)
+        self.assertIsNone(verdict["bwrap_process_count_final"])
+        self.assert_no_private_or_false_release(verdict)
+
+    def test_full_coverage_counts_only_observed_complete_pairs(self) -> None:
+        verdict = inspect_provider_lifetime(baseline(), failed_status())
+        self.assertEqual(verdict["complete_process_samples"], 3)
+        self.assertEqual(verdict["consecutive_complete_sample_pairs"], 2)
+        self.assertEqual(verdict["incomparable_sample_pairs"], 0)
+        self.assertEqual(verdict["bwrap_count_decreases_observed"], 1)
+        self.assertEqual(verdict["bwrap_process_count_final"], 1)
+
     def test_unknown_schema_or_forged_status_evidence_rejected(self) -> None:
         report = baseline()
         report["authority"] = "native-driver-proved-generation-recovery"

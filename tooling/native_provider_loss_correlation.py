@@ -45,6 +45,7 @@ def inspect_provider_lifetime(lifecycle: dict[str, Any],
     truncated_samples = 0
     bwrap_counts = []
     provider_counts = []
+    complete_samples = []
     for sample in samples:
         require(isinstance(sample, dict), "invalid_sample")
         elapsed = sample.get("elapsed_ms")
@@ -58,6 +59,7 @@ def inspect_provider_lifetime(lifecycle: dict[str, Any],
                 "unbounded_process_sample")
         observed_daemon += int(sample["root_observed"])
         truncated_samples += int(sample["truncated"])
+        complete_samples.append(sample["root_observed"] and not sample["truncated"])
         roles = []
         for process in processes:
             require(isinstance(process, dict), "invalid_process_sample")
@@ -87,13 +89,18 @@ def inspect_provider_lifetime(lifecycle: dict[str, Any],
         and reconciliation.get("render_outcome") == "unconfirmed"
         and reconciliation.get("read_only") is True
     )
-    # A child-count drop can be routine lifecycle churn. Never identify the
-    # individual PID or claim its exit caused a native driver generation loss.
+    # A missing daemon or truncated process tree cannot prove any child was
+    # absent. Compare counts only across consecutive, complete observations;
+    # never infer provider exit or upstream root cause from process counts.
+    complete_pairs = [
+        i for i in range(1, len(samples))
+        if complete_samples[i - 1] and complete_samples[i]
+    ]
     peak_bwrap = max(bwrap_counts)
-    drops = sum(1 for i in range(1, len(bwrap_counts))
-                if bwrap_counts[i] < bwrap_counts[i-1])
-    provider_drops = sum(1 for i in range(1, len(provider_counts))
-                         if provider_counts[i] < provider_counts[i-1])
+    drops = sum(1 for i in complete_pairs
+                if bwrap_counts[i] < bwrap_counts[i - 1])
+    provider_drops = sum(1 for i in complete_pairs
+                         if provider_counts[i] < provider_counts[i - 1])
     return {
         "schema": SCHEMA,
         "authority": AUTHORITY,
@@ -104,8 +111,13 @@ def inspect_provider_lifetime(lifecycle: dict[str, Any],
         "samples_bounded": len(samples),
         "samples_with_missing_daemon": len(samples)-observed_daemon,
         "samples_with_truncated_process_tree": truncated_samples,
+        "complete_process_samples": sum(complete_samples),
+        "consecutive_complete_sample_pairs": len(complete_pairs),
+        "incomparable_sample_pairs": len(samples) - 1 - len(complete_pairs),
         "bwrap_process_count_peak": peak_bwrap,
-        "bwrap_process_count_final": bwrap_counts[-1],
+        "bwrap_process_count_final": (
+            bwrap_counts[-1] if complete_samples[-1] else None
+        ),
         "bwrap_count_decreases_observed": drops,
         "provider_named_process_count_decreases_observed": provider_drops,
         "oom_kills_delta_observed": oom_delta,

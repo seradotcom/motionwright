@@ -14,7 +14,7 @@ The existing native AV CI workflow now writes a **redacted numeric-only** report
 
 - Source schema and authority are mandatory; sample count and monotonically increasing time must agree, with at most 720 samples and 64 processes per sample.
 - Process roles are accepted only from a closed vocabulary. Individual PIDs/PPIDs, process paths, sockets, arguments, owner/session data, private media, opaque job refs and full process snapshots are excluded.
-- The report counts bwrap and named-provider process-role decreases, daemon observation gaps, truncated process trees, and the numeric OOM-kill delta **without attributing cause**.
+- The report counts bwrap and named-provider process-role decreases **only between two consecutive complete process-tree samples** with the daemon present. A truncated tree or missing daemon makes that sample pair incomparable; it must not be reported as a child process exit. The report explicitly counts complete samples, comparable pairs and incomparable pairs. When the final sample is incomplete, `bwrap_process_count_final` is `null`, not a fabricated zero. Process count changes, daemon gaps and numeric OOM-kill deltas remain observations **without attributing cause**.
 - The correlated outcome is UNKNOWN only for the typed original Timeout-then-Unavailable pattern. An unrelated completed native result receipt never becomes UNKNOWN solely because a sandbox descendant count changed.
 - The report explicitly states provider_generation_exit_cause_established=false, specific_provider_process_exit_verified=false, native_job_terminal_result_verified_by_this_report=false, automatic_native_mutation_retry=false, installed_owner_acceptance=NOT_RUN and v01_release_ready=false.
 
