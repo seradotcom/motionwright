@@ -20,9 +20,12 @@ will not replace an existing assessment from another SHA. Without --output,
 only a compact sanitized status is printed. The 40-character SHA is caller-supplied. The `--verify-checkout` flag
 (required by v0.1 security CI) verifies that the local Git HEAD matches
 the requested SHA and the checkout root is exact. The six report metadata
-files must be tracked, and the entire tracked worktree must match that
-commit. The check runs before and after parsing. Dirty or missing inputs and mismatched commits fail closed;
-unrelated untracked CI artifacts are allowed.
+files must be tracked regular files (no symbolic links or Windows NTFS
+junctions in files or intermediate directories). The entire tracked worktree
+must also match that commit. The check runs before and after parsing. Dirty or missing inputs,
+linked metadata paths and mismatched commits fail closed; unrelated untracked
+CI artifacts are allowed. This avoids reading metadata through a clean
+Git-tracked symlink whose external target can change outside the commit.
 
 This local Git comparison is not remote-origin attestation, a signed
 GitHub workflow receipt, installed-binary provenance, or human review.
