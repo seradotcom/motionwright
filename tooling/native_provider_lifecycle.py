@@ -148,26 +148,32 @@ def memory_events(cgroup_root: Path = Path("/sys/fs/cgroup")) -> dict[str, int |
 
 
 def summarize_render_receipts(receipts: object) -> dict[str, Any]:
-    """Minimal privacy-preserving failure timeline from application receipts.
+    """Redacted, same-job status timeline from source-bound application receipts.
 
-    Never serializes job references, request IDs, payload JSON, full provider
-    messages, filesystem paths or session material into the incident summary.
+    This is retrospective CI evidence, not live provider authority, a retry
+    instruction, or native media verification. Opaque refs remain in memory.
     """
     if not isinstance(receipts, list):
         raise ValueError("Motionwright failure diagnostic lacks a receipt list")
-    ordered: list[tuple[str, str, str, bool | None, str]] = []
-    started_refs: set[str] = set()
-    terminal_refs: set[str] = set()
-    unresolved_refs: set[str] = set()
+
+    # The private identifier is retained only while correlating events.
+    # Never include it in any exported event or report.
+    ordered: list[tuple[str, str, str, bool | None, str, str | None, bool]] = []
 
     def owned_job_reference(payload: dict) -> str | None:
-        result = payload.get("result")
-        data = result.get("data") if isinstance(result, dict) else None
-        candidate = payload.get("job_ref") or (
-            data.get("job_ref") if isinstance(data, dict) else None
-        )
-        # Identifier is used solely for in-memory equality. Never emit it.
-        return candidate if isinstance(candidate, str) and 0 < len(candidate) <= 512 else None
+        wrapped = payload.get("result")
+        data = wrapped.get("data") if isinstance(wrapped, dict) else None
+        direct = payload.get("job_ref")
+        nested = data.get("job_ref") if isinstance(data, dict) else None
+        for value in (direct, nested):
+            if value is not None and (not isinstance(value, str)
+                                      or not 0 < len(value) <= 512):
+                return None
+        if direct is not None and nested is not None and direct != nested:
+            # Do not let a foreign completed-result identity override the
+            # original job in an otherwise plausible local receipt.
+            return None
+        return direct if direct is not None else nested
 
     for entry in receipts[:512]:
         if not isinstance(entry, dict):
@@ -186,55 +192,82 @@ def summarize_render_receipts(receipts: object) -> dict[str, Any]:
         if not isinstance(payload, dict):
             payload = {}
         job_ref = owned_job_reference(payload)
-        if command.endswith(".start") and stage == "completed" and job_ref:
-            started_refs.add(job_ref)
-        elif command.endswith(".result") and stage == "completed" and job_ref:
-            wrapped = payload.get("result")
-            data = wrapped.get("data") if isinstance(wrapped, dict) else None
-            if isinstance(data, dict) and data.get("state") == "succeeded" and data.get("artifact"):
-                terminal_refs.add(job_ref)
-        elif command.endswith(".status") and stage in {"outcome_unknown", "failed_known"} and job_ref:
-            unresolved_refs.add(job_ref)
+        wrapped = payload.get("result")
+        data = wrapped.get("data") if isinstance(wrapped, dict) else None
+        terminal_artifact = bool(
+            isinstance(data, dict)
+            and data.get("state") == "succeeded"
+            and isinstance(data.get("artifact"), dict)
+            and data["artifact"]
+        )
         error = payload.get("error")
         if not isinstance(error, dict):
             error = {}
         code = error.get("code", "")
-        if code not in {"Timeout", "Unavailable", "BackendFailed", "Cancelled",
-                        "Conflict", "Internal", "StaleReference", "PermissionDenied"}:
-            code = "other" if code else "none"
+        allowed_codes = {
+            "Timeout", "Unavailable", "BackendFailed", "Cancelled",
+            "Conflict", "Internal", "StaleReference", "PermissionDenied",
+        }
+        code = code if isinstance(code, str) and code in allowed_codes else (
+            "other" if code else "none"
+        )
         known = error.get("outcome_known")
-        if not isinstance(known, bool):
+        if type(known) is not bool:
             known = None
         timestamp = entry.get("created_at")
-        # Timestamps are bounded to prevent embedding unexpected provider text.
+        # Reject timestamps carrying untrusted provider prose.
         timestamp = timestamp if isinstance(timestamp, str) and re.fullmatch(
             r"[0-9TZ:\-.+]{10,40}", timestamp,
         ) else "unknown"
-        ordered.append((command.rsplit(".", 1)[1], stage, code, known, timestamp))
+        ordered.append((
+            command.rsplit(".", 1)[1], stage, code, known,
+            timestamp, job_ref, terminal_artifact,
+        ))
+
+    # The journal is ordered; explicit safe timestamps preserve prior
+    # deterministic diagnostics while leaving equal timestamps stable.
     ordered.sort(key=lambda row: row[4])
-    events = [
-        {"command": command, "stage": stage, "error_code": code,
-         "read_outcome_known": known, "time_utc": timestamp}
-        for command, stage, code, known, timestamp in ordered
-    ]
-    starts = [row for row in ordered if row[0] == "start" and row[1] == "dispatching"]
-    statuses = [row for row in ordered if row[0] == "status"]
-    # Only a terminal receipt for the SAME acknowledged native job may
-    # resolve an earlier unknown status. An unrelated segment's result cannot
-    # upgrade another render to SUCCESS.
+    started_refs: set[str] = set()
+    terminal_refs: set[str] = set()
+    unresolved_refs: set[str] = set()
+    timed_out_refs: set[str] = set()
+    loss_pattern = False
+    for command, stage, code, known, timestamp, job_ref, artifact in ordered:
+        if command == "start" and stage == "completed" and job_ref:
+            started_refs.add(job_ref)
+        elif command == "result" and stage == "completed" and (
+            job_ref in started_refs and artifact
+        ):
+            terminal_refs.add(job_ref)
+            timed_out_refs.discard(job_ref)
+        elif command == "status" and job_ref in started_refs:
+            if stage in {"outcome_unknown", "failed_known"}:
+                unresolved_refs.add(job_ref)
+            if timestamp != "unknown" and job_ref not in terminal_refs:
+                if stage == "outcome_unknown" and code == "Timeout" and known is False:
+                    timed_out_refs.add(job_ref)
+                elif (stage == "failed_known" and code == "Unavailable"
+                      and known is True and job_ref in timed_out_refs):
+                    loss_pattern = True
+
     result_confirmed = bool(started_refs) and started_refs.issubset(terminal_refs)
     unknown = bool(started_refs & (unresolved_refs - terminal_refs))
-    # An inactive provider *after* a timeout is diagnostically different
-    # from an unrelated earlier Unavailable or a confirmed terminal result.
-    loss_pattern = any(
-        earlier[2] == "Timeout" and later[2] == "Unavailable"
-        for index, earlier in enumerate(statuses)
-        for later in statuses[index + 1:]
-    )
+    starts = sum(1 for command, stage, *_ in ordered
+                 if command == "start" and stage == "dispatching")
+    # Redacted status events contain no job_ref, source location, request ID,
+    # command-line, stderr, native payload or owner path.
+    status_events = [
+        {
+            "command": command, "stage": stage, "error_code": code,
+            "read_outcome_known": known, "time_utc": timestamp,
+        }
+        for command, stage, code, known, timestamp, *_ in ordered
+        if command == "status"
+    ]
     return {
         "schema": "motionwright-ci-render-status-reconciliation/1",
         "read_only": True,
-        "render_start_dispatch_count": len(starts),
+        "render_start_dispatch_count": starts,
         "restart_identity_verified": False,
         "result_observed_completed": result_confirmed,
         "render_outcome": (
@@ -242,9 +275,9 @@ def summarize_render_receipts(receipts: object) -> dict[str, Any]:
             "confirmed_result_receipt" if result_confirmed else "not_proven"
         ),
         "timeout_then_provider_unavailable_observed": loss_pattern,
-        "status_events": [row for row in events if row["command"] == "status"],
+        "same_acknowledged_job_status_chain_verified": loss_pattern,
+        "status_events": status_events,
     }
-
 
 class ProviderLifecycleSampler:
     """Low-frequency passive sample of CI daemon descendants and memory use."""
