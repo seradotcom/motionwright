@@ -78,7 +78,10 @@ aesthetic review, or unrestricted creative capability.
    fix provider lifecycle, verify native media or authorize a release.
    The [sanitized native AV CI failure receipt](reliability/v01-native-av-failure-redaction.md)
    also preserves Timeout-to-inactive-generation evidence without publishing
-   owner paths or opaque job IDs, but does not remediate the provider.
+   owner paths or opaque job IDs, but does not remediate the provider. The
+   [passive process correlation](reliability/v01-provider-loss-correlation.md)
+   records daemon/sandbox count changes without identifying an individual
+   provider exit, repairing the generation, or verifying the original job.
 5. Resolve the transitive glib unsoundness and macro-stack maintenance
    warnings that remain open in
    docs/security/known-rustsec-advisories.json. An unchanged advisory set

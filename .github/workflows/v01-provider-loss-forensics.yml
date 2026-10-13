@@ -1,0 +1,60 @@
+name: v0.1 Native Provider Loss Correlation
+
+on:
+  pull_request:
+    paths:
+      - 'tooling/native_provider_loss_correlation.py'
+      - 'tooling/tests/test_native_provider_loss_correlation.py'
+      - 'tooling/native_av_master_e2e.py'
+      - '.github/workflows/v01-provider-loss-forensics.yml'
+  push:
+    branches: ['main', 'feat/v01-provider-loss-forensics-*']
+    paths:
+      - 'tooling/native_provider_loss_correlation.py'
+      - 'tooling/tests/test_native_provider_loss_correlation.py'
+      - '.github/workflows/v01-provider-loss-forensics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-lifecycle-correlation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Assert source boundary and redacted provider lifecycle contracts
+        run: |
+          set -euo pipefail
+          python3 tooling/source_policy.py
+          python3 -m py_compile tooling/native_provider_loss_correlation.py tooling/native_av_master_e2e.py
+          python3 -m unittest discover -s tooling/tests -p 'test_native_provider_loss_correlation.py' -v
+      - name: Abstain from driver root-cause and user acceptance claims
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"tooling")
+          from native_provider_loss_correlation import inspect_provider_lifetime
+          health={
+            "schema":"motionwright-ci-provider-lifecycle/1",
+            "authority":"passive-ci-process-status-not-driver-evidence",
+            "sample_count":1,
+            "samples":[{"elapsed_ms":0,"root_observed":True,
+                        "truncated":False,"processes":[{"role":"semwrightd"}]}],
+            "daemon_exit_before_owner_cleanup":None,
+            "cgroup_oom_kills_delta":None
+          }
+          result=inspect_provider_lifetime(health,None)
+          assert result["provider_generation_exit_cause_established"] is False
+          assert result["native_job_terminal_result_verified_by_this_report"] is False
+          assert result["v01_release_ready"] is False
+          assert result["installed_owner_acceptance"]=="NOT_RUN"
+          print("native-provider-correlation=PASS technical_read_only=YES")
+          PY

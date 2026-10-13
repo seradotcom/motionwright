@@ -21,6 +21,7 @@ from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
+from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
 from native_av_failure_guard import (
     NativeCommandFailure, classify_native_command_failure,
 )
@@ -689,11 +690,13 @@ def main() -> None:
             # A malformed optional diagnostic must never mask the original
             # native failure or prevent cleanup of the pinned Driver Host.
             try:
+                reconciliation = None
                 diagnostic = EVIDENCE / "motionwright-render-diagnostic.json"
                 if diagnostic.is_file() and 0 < diagnostic.stat().st_size <= 2 * 1024 * 1024:
                     try:
                         incident = json.loads(diagnostic.read_text(encoding="utf-8"))
                         report = summarize_render_receipts(incident.get("receipts"))
+                        reconciliation = report
                         write_private_json(EVIDENCE / "provider-status-reconciliation.json", report)
                     except (OSError, ValueError, TypeError, UnicodeError) as error:
                         write_private_json(EVIDENCE / "provider-status-reconciliation.json", {
@@ -703,7 +706,16 @@ def main() -> None:
                         })
                 # Finish *before* intentional owner shutdown so teardown is
                 # not confused with an unexpected process failure.
-                lifecycle.stop()
+                completed_lifecycle = lifecycle.stop()
+                try:
+                    correlation = inspect_provider_lifetime(completed_lifecycle, reconciliation)
+                    correlation["motionwright_source_sha"] = GITHUB_SHA
+                    correlation["semwright_source_pin"] = PIN
+                    write_private_json(EVIDENCE / "native-provider-loss-correlation.json", correlation)
+                except (CorrelationEvidenceError, OSError, TypeError, ValueError):
+                    # Optional forensic accounting must not hide the actual
+                    # native error or claim that a provider recovered.
+                    pass
             finally:
                 try:
                     if daemon.poll() is None:
