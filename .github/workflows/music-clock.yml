@@ -8,9 +8,12 @@ on:
       - "crates/service/**"
       - "crates/native/**"
       - "apps/studio/src/MusicClockWorkbench.tsx"
+      - "apps/studio/src/MusicConformWorkbench.tsx"
       - "apps/studio/src/musicClock*"
+      - "apps/studio/src/musicConform*"
       - "apps/studio/src/ProductionDesignWorkspace.tsx"
       - "apps/studio/tests/music-clock.spec.ts"
+      - "apps/studio/tests/music-conform.spec.ts"
       - "docs/creative-production/**"
       - ".github/workflows/music-clock.yml"
   push:
@@ -21,6 +24,8 @@ on:
       - "crates/native/**"
       - "apps/studio/src/musicClock*"
       - "apps/studio/src/MusicClockWorkbench.tsx"
+      - "apps/studio/src/MusicConformWorkbench.tsx"
+      - "apps/studio/src/musicConform*"
       - "apps/studio/src/ProductionDesignWorkspace.tsx"
       - ".github/workflows/music-clock.yml"
 
@@ -52,7 +57,9 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
       - run: cargo test -p motionwright-domain --test music_clock -- --nocapture
+      - run: cargo test -p motionwright-domain --test music_conform -- --nocapture
       - run: cargo test -p motionwright-service --test music_cut_persistence -- --nocapture
+      - run: cargo test -p motionwright-service --test music_conform_persistence -- --nocapture
       - run: cargo test -p motionwright-native --lib music_clock_contract_tests -- --nocapture
       - run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
@@ -70,7 +77,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - run: npx vitest run src/musicClock.test.ts
+      - run: npx vitest run src/musicClock.test.ts src/musicConform.test.ts
       - run: npm run build
 
   browser-acceptance:
@@ -88,7 +95,7 @@ jobs:
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
-      - run: npx playwright test tests/music-clock.spec.ts
+      - run: npx playwright test tests/music-clock.spec.ts tests/music-conform.spec.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
