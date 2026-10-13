@@ -94,10 +94,21 @@ pub(crate) fn derive_mlt_cleanup_inventory(
     {
         return None;
     }
-    // One logical request can have dispatching + completed receipts; only its
-    // latest stage counts. UUIDv7 is the durable append-only receipt ordering.
+    // UUIDv7 is the durable append-only receipt ordering, but a later
+    // dispatching/unknown receipt cannot undo an earlier completed and
+    // provenance-admitted native create. Keep every distinct confirmed
+    // native project identity from the source receipts, deduped per request.
+    let mut confirmed_creations: BTreeMap<&str, BTreeSet<_>> = BTreeMap::new();
     let mut latest: BTreeMap<&str, &ProductionReceipt> = BTreeMap::new();
     for receipt in receipts {
+        if receipt.command == "driver.mlt-video.project.create"
+            && let Some(identity) = confirmed_identity(receipt)
+        {
+            confirmed_creations
+                .entry(receipt.request_id.as_str())
+                .or_default()
+                .insert(identity);
+        }
         if !matches!(
             receipt.command.as_str(),
             "driver.mlt-video.project.create" | "driver.mlt-video.project.close"
@@ -117,8 +128,11 @@ pub(crate) fn derive_mlt_cleanup_inventory(
     for receipt in latest.into_values() {
         match receipt.command.as_str() {
             "driver.mlt-video.project.create" => {
-                if let Some(key) = confirmed_identity(receipt) {
-                    created.insert(key);
+                if let Some(identities) = confirmed_creations.get(receipt.request_id.as_str()) {
+                    // Another stage may be UNKNOWN or failed, but it cannot
+                    // erase an already proven creation. Distinct completed
+                    // references reflect distinct possible native resources.
+                    created.extend(identities.iter().cloned());
                 } else {
                     ambiguous += 1;
                 }
@@ -332,6 +346,43 @@ mod tests {
         receipts.last_mut().unwrap().project_id = project.id;
         receipts.last_mut().unwrap().revision = project.revision + 1;
         assert!(derive(&project, &receipts).is_none());
+    }
+
+    #[test]
+    fn confirmed_create_remains_visible_after_later_unknown_stage() {
+        let (project, mut receipts) = project_and_receipts();
+        receipts.push(receipt(
+            &project,
+            "owner-create",
+            "driver.mlt-video.project.create",
+            "outcome_unknown",
+            json!({"error":{"code":"Timeout","outcome_known":false}}),
+        ));
+        let inventory = derive(&project, &receipts).unwrap();
+        assert_eq!(inventory.confirmed_native_creations_current_revision, 1);
+        assert_eq!(inventory.unconfirmed_or_invalid_creation_requests, 0);
+        assert!(!inventory.verified_native_project_cleanup);
+        assert!(!inventory.automatic_destructive_cleanup_allowed);
+    }
+
+    #[test]
+    fn repeated_completed_create_with_different_native_refs_preserves_both() {
+        let (project, mut receipts) = project_and_receipts();
+        receipts.push(start(&project, "owner-create", "second-opaque-project"));
+        let inventory = derive(&project, &receipts).unwrap();
+        assert_eq!(inventory.confirmed_native_creations_current_revision, 2);
+        assert_eq!(inventory.unconfirmed_or_invalid_creation_requests, 0);
+        assert!(!inventory.automatic_destructive_cleanup_allowed);
+
+        // Duplicate successful receipt for the exact same native ref is not
+        // another distinct resource, regardless of how many times observed.
+        receipts.push(start(&project, "owner-create", "second-opaque-project"));
+        assert_eq!(
+            derive(&project, &receipts)
+                .unwrap()
+                .confirmed_native_creations_current_revision,
+            2
+        );
     }
 
     #[test]
