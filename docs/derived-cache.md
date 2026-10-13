@@ -12,7 +12,7 @@ Cached payloads use the existing content-addressed blob store. The manifest reco
 
 Admission ingests the source through the verified blob store before publishing a cache manifest. If the same scope, kind and fingerprint already resolve to valid bytes, a later write must resolve to the same blob. Different bytes for the same exact fingerprint are rejected as nondeterministic output rather than silently replacing the prior result.
 
-Lookup validates scope, kind and fingerprint syntax; derives the manifest path without user-controlled path components; rejects symlink or special manifests and oversized manifests; requires manifest identity to match the requested key; and verifies the referenced content-addressed blob plus byte length. A missing manifest is a miss. A manifest whose blob is absent is also a miss and can be rebuilt. A digest mismatch, malformed manifest or identity mismatch is an error, not a hit.
+Lookup validates scope, kind and fingerprint syntax; derives the manifest path without user-controlled path components; rejects symlinked cache roots, shards and owner directories, as well as symlink or special manifests and oversized manifests; requires manifest identity to match the requested key; and verifies the referenced content-addressed blob plus byte length. A missing manifest is a miss. A manifest whose blob is absent is also a miss and can be rebuilt. A digest mismatch, malformed manifest or identity mismatch is an error, not a hit.
 
 ## Invalidation
 
@@ -25,6 +25,10 @@ This is intentionally conservative. Finer renderer-specific reuse requires evide
 The Performance Acceptance Evidence workflow runs three unrelated briefs at S/M/L sizes. For every dataset it executes the ten predefined persisted edits, reopens the real SQLite project, derives a preview index from the reopened project and delivery fingerprint, admits that payload to the cache, performs a second exact lookup that re-hashes the blob, records bytes validated plus lookup cost and semantic work units avoided, then changes a delivery render input and asserts that the old cache does not match.
 
 The report counts exact preview-index regeneration units avoided. It does not claim renderer frames, render jobs, GPU time or wall-clock render savings. Those require a renderer-level cold/warm experiment with identical quality and remain a separate product-acceptance concern.
+
+## Revision-bound render-window proxy invalidation
+
+The v0.5 render-window proxy extension has a separate SQLite registration index. New project revisions revoke old cache registrations atomically in the same SQL commit through an append-only source-preserving trigger; a bounded post-commit tombstone drain physically removes derived manifests. If interrupted or blocked by an unsafe symlink, the stale manifest is never addressable as a hit because its registration has been revoked. The cleanup may be retried explicitly; immutable CAS blobs and project source remain untouched. These are application-owned derived proxies, not an admitted native renderer cache or proof of incremental native equivalence.
 
 ## Recovery
 

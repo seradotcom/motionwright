@@ -235,13 +235,23 @@
     {
       "id": "MW05-E03-03",
       "implementation": "partial",
-      "implemented_scope": "Scoped edits report conservative full-scene invalidation",
-      "remaining_scope": "Dependency tails and incremental versus full-render equivalence are not implemented",
+      "implemented_scope": "Exact-rational source-frame dependency windows, Studio preflight and adversarial tests; now also includes bounded SQLite-indexed derived render-window proxy admission, revision-scoped lookup, transactionally triggered revocation on edits, recoverable physical eviction tombstones and physical eviction of affected manifests without deleting source blobs, with conservative montage/revision fallbacks",
+      "remaining_scope": "Native renderer producer/receipt admission and automatic invalidation at the production boundary, full-versus-incremental decoded-frame/audio equivalence, measured tails, output cut mapping and measured renderer wallclock savings remain NOT_COMPLETED. Physical derived proxy cache purging is a bounded partial implementation, not native cache acceleration.",
       "source_paths": [
         "crates/domain/src/production_design.rs",
         "crates/domain/src/creative_revisions.rs",
         "apps/studio/src/CreativePatchWorkbench.tsx",
-        "crates/service/tests/creative_undo.rs"
+        "crates/service/tests/creative_undo.rs",
+        "crates/domain/src/render_tail_impact.rs",
+        "crates/domain/tests/render_tail_impact.rs",
+        "apps/studio/src/renderTailImpact.ts",
+        "apps/studio/src/renderTailImpact.test.ts",
+        "apps/studio/src/RenderTailWorkbench.tsx",
+        "apps/studio/tests/render-impact.spec.ts",
+        "docs/creative-production/RENDER_TAIL_IMPACT.md",
+        "crates/storage/src/render_window_cache.rs",
+        "crates/storage/tests/render_window_cache.rs",
+        "docs/creative-production/V05_RENDER_WINDOW_CACHE_EXECUTION.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
