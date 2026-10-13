@@ -299,7 +299,9 @@ def main() -> None:
                 env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
             )
             try:
-                render.wait_for_socket(daemon, socket, daemon_log)
+                render.wait_for_socket(
+                    daemon, socket, daemon_log, startup_timeout_seconds=90
+                )
                 for provider in ["driver:blender", "driver:motion-canvas"]:
                     discovered = render.run_json([
                         str(BINS / "semwright"), "--socket", str(socket),

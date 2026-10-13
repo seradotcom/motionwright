@@ -1,0 +1,109 @@
+name: Source-bound semantic SFX native PCM
+
+on:
+  pull_request:
+    paths:
+      - "crates/domain/src/semantic_sfx.rs"
+      - "crates/domain/src/lib.rs"
+      - "crates/domain/src/creative.rs"
+      - "crates/domain/tests/semantic_sfx.rs"
+      - "crates/service/src/lib.rs"
+      - "crates/service/tests/semantic_sfx.rs"
+      - "crates/native/src/sfx_mix.rs"
+      - "crates/native/tests/semantic_sfx_mix.rs"
+      - "crates/native/examples/semantic-sfx-e2e.rs"
+      - "tooling/semantic_sfx_evidence.py"
+      - "apps/studio/src/semanticSfx.ts"
+      - "apps/studio/src/semanticSfx.test.ts"
+      - ".github/workflows/semantic-sfx-e2e.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/domain/src/semantic_sfx.rs"
+      - "crates/native/src/sfx_mix.rs"
+      - "tooling/semantic_sfx_evidence.py"
+      - ".github/workflows/semantic-sfx-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semantic-sfx-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  original-sfx-native-pcm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify source identity and pinned native dependency
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          python3 tooling/source_policy.py
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-original-sfx-1.98.1
+          cache-on-failure: true
+
+      - name: Verify exact owner-authored SFX source and CAS contracts
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-domain --test semantic_sfx
+          cargo test --locked -p motionwright-service --test semantic_sfx
+          cargo test --locked -p motionwright-native --test semantic_sfx_mix
+
+      - name: Produce real source-hashed original stereo PCM via native service
+        run: |
+          set -euo pipefail
+          mkdir -p verification/semantic-sfx-e2e
+          cargo run --locked -p motionwright-native --example semantic-sfx-e2e -- \
+            "$GITHUB_WORKSPACE/verification/semantic-sfx-e2e" |
+            tee verification/semantic-sfx-e2e/owner-mix-run.log
+
+      - name: Independently decode and compare actual authored PCM samples
+        run: |
+          set -euo pipefail
+          python3 tooling/semantic_sfx_evidence.py verification/semantic-sfx-e2e "$GITHUB_SHA" |
+            tee verification/semantic-sfx-e2e/independent-review.log
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path("verification/semantic-sfx-e2e")
+          result=json.loads((root/"result.json").read_text())
+          evidence=json.loads((root/"independent-pcm-proof.json").read_text())
+          assert result["schema"]=="motionwright.semantic-sfx-native-technical-evidence/1"
+          assert evidence["technical_pcm"]=="PASS"
+          assert evidence["native_semwright_av_mux"]=="NOT_RUN"
+          assert evidence["legal_rights_certification"]=="NOT_PERFORMED"
+          assert evidence["human_creative_approval"]=="REQUIRED"
+          for f in ("original-focus.wav","original-confirmation.wav","original-sfx-mix.wav"):
+              assert (root/f).is_file() and (root/f).stat().st_size > 44
+          assert evidence["mixed_wav_sha256"]==hashlib.sha256((root/"original-sfx-mix.wav").read_bytes()).hexdigest()
+          print("Original SFX actually mixed: exact source PCM verified; not a completed native MP4")
+          PY
+
+      - name: Upload original PCM and source identity evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semantic-sfx-original-pcm-${{ github.sha }}
+          path: verification/semantic-sfx-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
