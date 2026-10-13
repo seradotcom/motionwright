@@ -1,7 +1,7 @@
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
-import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
+import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
 import { applyProductStageChange, validateProductStages } from "./productStage";
@@ -1951,6 +1951,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   validateSfxProject(next);
   await validateProductStages(next);
   validateCameraReframes(next);
+  await validateCraftDisclosures(next);
   validateCaptureRecords(next);
   validateMeasuredData(next);
   validateMetricSourceNoticesOnEdit(next);

@@ -349,8 +349,8 @@
     {
       "id": "MW05-E05-03",
       "implementation": "partial",
-      "implemented_scope": "Four bounded, editable first-party native Motion Canvas composition families: ProductHeroReveal, SplitExplanation, MetricEvidence and StepSequence. StepSequence adds an author-written procedural-step card with six persistent semantic objects, exact animated/static equivalents, responsive 16:9/9:16/1:1 reflow, explicit NOT AN OBSERVED WORKFLOW disclosure, Rust/Studio property parity and a twelve-variant pinned Semwright native AV master CI suite; no real workflow capture is inferred.",
-      "remaining_scope": "Original library-wide component range, real user-tested creative value, additional families, arbitrary complex reflow, all-renderer fidelity negotiation and independent aesthetic acceptance remain open; each new native output still requires an exact-SHA CI PASS.",
+      "implemented_scope": "Six bounded, editable first-party composition families: ProductHeroReveal, SplitExplanation, MetricEvidence and StepSequence (twelve existing aspect variants with pinned native Semwright evidence), plus ContrastComparison conceptual states and EditorialQuote illustrative text. All share six stable roles and responsive 16:9/9:16/1:1 editorial realization, source notices, Native Film projection, revisioned CAS human-override safeguards and Rust/Studio parity tests. Craft layouts add a separate pinned native evidence workflow; its combined-tree exact-SHA CI is pending. Neither an observed workflow, verified improvement, sourced quotation nor aesthetic approval is inferred.",
+      "remaining_scope": "Full library breadth, source-certified and human-approved creative examples, arbitrary composition reflow, all-renderer fidelity negotiation and independent aesthetic acceptance remain open. Exact-HEAD native tests for two additional craft layouts must pass before they count as technical evidence.",
       "source_paths": [
         "crates/domain/src/hero.rs",
         "crates/domain/tests/step_sequence.rs",
@@ -361,11 +361,24 @@
         "apps/studio/src/creativeProduction.test.ts",
         "apps/studio/src/ProductionDesignWorkspace.tsx",
         "apps/studio/tests/step-sequence.spec.ts",
+        "apps/studio/tests/split-explanation.spec.ts",
+        "apps/studio/tests/metric-evidence.spec.ts",
         "apps/studio/conformance/creativeParity.test.ts",
         "crates/domain/examples/creative_fixtures.rs",
+        "crates/domain/tests/production_design.rs",
+        "crates/domain/tests/craft_components.rs",
+        "crates/native/tests/craft_components.rs",
+        "crates/native/examples/native-render-e2e.rs",
+        "apps/studio/src/craftComponents.test.ts",
+        "apps/studio/tests/craft-components.spec.ts",
         "tooling/native_av_master_e2e.py",
+        "tooling/creative_frame_evidence.py",
+        "tooling/craft_public_artifact.py",
+        "tooling/tests/test_craft_public_artifact.py",
         ".github/workflows/product-hero-e2e.yml",
-        "docs/creative-production/STEP_SEQUENCE_NATIVE.md"
+        ".github/workflows/craft-components-native-e2e.yml",
+        "docs/creative-production/STEP_SEQUENCE_NATIVE.md",
+        "docs/creative-production/CRAFT_COMPARISON_QUOTE.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

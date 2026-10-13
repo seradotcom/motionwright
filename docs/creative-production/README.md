@@ -54,6 +54,18 @@ The original Native SDK, SQLite CAS, technical evidence and rights limitations
 remain authoritative. See [Integrated composition](INTEGRATED_COMPOSITION.md)
 for cross-feature acceptance and remaining v0.5 scope.
 
+## Original editable craft families (MW05-E05-03)
+
+Production Components now includes two more original, responsive semantic
+grammars: **ContrastComparison** (conceptual before/after with no measured
+improvement claim) and **EditorialQuote** (illustrative text, no verified
+endorsement/attribution). Their six stable editable Canvas roles, manual
+overrides, fixed native typography and exact frame keys reuse the existing
+Semwright Native SDK project journal. See
+[Craft components](CRAFT_COMPARISON_QUOTE.md) for source-truth, text budgets,
+pixel evidence limitations, and review requirements. These layouts do not
+constitute a 36-component library or human creative acceptance.
+
 ## Original generic ProductStage (MW05-E07-01)
 
 Production â†’ ProductStage stages an original, author-attested semantic UI
