@@ -12,6 +12,8 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 from hashlib import sha256
 import json
+import os
+import stat
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -194,22 +196,53 @@ def validated_path(root: Path, relative: object) -> Path:
     return resolved
 
 
+def _file_fingerprint_identity(info: object) -> tuple[int, int, int, int, int]:
+    """Private filesystem identity and mutation indicators, never exported.
+
+    These checks are conservative observations, not an atomic filesystem
+    transaction, attestation of installed product use, or proof of review.
+    Filesystems without usable inode and hardlink metadata are refused.
+    """
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink)
+
+
 def fingerprint(root: Path, relative: str) -> dict:
     path = validated_path(root, relative)
-    size = path.stat().st_size
-    if not 0 < size <= MAX_EVIDENCE_BYTES:
-        raise IntakeError("Evidence file is missing, empty or outside the 2 GiB individual budget")
-    digest = sha256()
-    actual = 0
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            actual += len(chunk)
-            if actual > MAX_EVIDENCE_BYTES:
-                raise IntakeError("Evidence size changed beyond the 2 GiB budget during hashing")
-            digest.update(chunk)
-    if actual != size:
-        raise IntakeError("Evidence size changed during hashing")
-    return {"path": relative, "sha256": digest.hexdigest(), "size_bytes": actual}
+    try:
+        before = path.stat()
+        identity = _file_fingerprint_identity(before)
+        if before.st_ino <= 0 or before.st_nlink != 1 or not stat.S_ISREG(before.st_mode):
+            raise IntakeError("Evidence must be a single-linked identifiable regular file")
+        size = before.st_size
+        if not 0 < size <= MAX_EVIDENCE_BYTES:
+            raise IntakeError("Evidence file is missing, empty or outside the 2 GiB individual budget")
+
+        digest = sha256()
+        actual = 0
+        # Path validation occurs before open: check the opened descriptor too
+        # so a swapped hardlink or symlink cannot be accepted based on its name.
+        # O_NONBLOCK prevents a replaced FIFO from indefinitely blocking open.
+        flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if _file_fingerprint_identity(opened) != identity or not stat.S_ISREG(opened.st_mode):
+                raise IntakeError("Evidence identity changed before hashing")
+            while chunk := stream.read(1024 * 1024):
+                actual += len(chunk)
+                if actual > MAX_EVIDENCE_BYTES:
+                    raise IntakeError("Evidence size changed beyond the 2 GiB budget during hashing")
+                digest.update(chunk)
+            after_read = os.fstat(stream.fileno())
+            if _file_fingerprint_identity(after_read) != identity:
+                raise IntakeError("Evidence identity changed while hashing")
+        if _file_fingerprint_identity(path.stat()) != identity:
+            raise IntakeError("Evidence identity changed after hashing")
+        if actual != size:
+            raise IntakeError("Evidence size changed during hashing")
+        return {"path": relative, "sha256": digest.hexdigest(), "size_bytes": actual}
+    except OSError as exc:
+        raise IntakeError("Evidence identity or bytes unavailable") from exc
 
 
 def _require(condition: bool, message: str) -> None:
