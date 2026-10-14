@@ -28,6 +28,10 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## Original synthetic identity and consent boundaries (MW05-E12-04)
+
+**Production → Identity & consent** records versioned, source-hash-bound fictional identity origins or explicitly scoped human likeness declarations with declared modality, purpose and expiry. Revocations are durable, block future preflight and cannot be bypassed by registering the same content under a different ID. These declarations do not authenticate real people, prove provider-side authorization, or grant any generation capability; human likeness always requires independent permission review. See [Identity and Consent](IDENTITY_CONSENT.md). The canonical Semwright Native SDK and project CAS remain authoritative.
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows

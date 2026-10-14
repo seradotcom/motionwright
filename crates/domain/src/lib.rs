@@ -8,6 +8,7 @@ mod delivery;
 mod extensions;
 mod hero;
 mod history;
+mod identity_origin;
 mod integrations;
 mod measured_data;
 mod music_clock;
@@ -27,6 +28,7 @@ pub use delivery::*;
 pub use extensions::*;
 pub use hero::*;
 pub use history::*;
+pub use identity_origin::*;
 pub use integrations::*;
 pub use measured_data::*;
 pub use music_clock::*;
@@ -664,6 +666,7 @@ impl Project {
         self.production_design.validate_capture_sources(self)?;
         self.production_design
             .validate_camera_reframes(&self.scenes)?;
+        self.production_design.validate_identity_origins(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1118,6 +1121,10 @@ impl Project {
                     .push(decision.clone());
             }
             Change::RegisterCaptureSource { record } => self.register_capture_source(record)?,
+            Change::RegisterIdentityOrigin { record } => self.register_identity_origin(record)?,
+            Change::RevokeIdentityOrigin { revocation } => {
+                self.revoke_identity_origin(revocation)?
+            }
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.ensure_unlocked(&format!("scene:{}", capsule.scene_id), &[LockKind::Content])?;
@@ -2008,6 +2015,19 @@ impl Project {
             }
             Change::RemoveAsset { asset_id } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self
+                    .production_design
+                    .identity_origins
+                    .iter()
+                    .any(|record| {
+                        record.provenance_asset_id == *asset_id
+                            || record.consent_asset_id == Some(*asset_id)
+                    })
+                {
+                    return Err(DomainError::Invalid(
+                        "immutable identity consent/provenance assets cannot be removed while referenced".into(),
+                    ));
+                }
                 if self.production_design.captures.iter().any(|record| {
                     record.screenshot_asset_id == *asset_id
                         || record.manifest_asset_id == *asset_id
@@ -2467,6 +2487,12 @@ pub enum Change {
     },
     RegisterCaptureSource {
         record: CaptureSourceRecord,
+    },
+    RegisterIdentityOrigin {
+        record: IdentityOriginRecord,
+    },
+    RevokeIdentityOrigin {
+        revocation: IdentityRevocation,
     },
     UpsertNativeCapsule {
         capsule: NativeCapsule,

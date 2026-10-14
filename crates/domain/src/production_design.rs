@@ -41,6 +41,12 @@ pub struct ProductionDesign {
     /// Original semantic 2D camera pans. No 3D orbit or optical dolly claim.
     #[serde(default)]
     pub camera_reframes: Vec<CameraReframe>,
+    /// Author-declared fictional/human-likeness source origins, not verified identities.
+    #[serde(default)]
+    pub identity_origins: Vec<IdentityOriginRecord>,
+    /// Append-only revocations; a new ID cannot restore revoked consent.
+    #[serde(default)]
+    pub identity_revocations: Vec<IdentityRevocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
