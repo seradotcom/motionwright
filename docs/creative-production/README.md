@@ -32,6 +32,10 @@ In **Native inspection**, select the output profile matching a current native re
 
 **Production → Evaluators** admits owner-authored, versioned, non-executable creative playbooks and records deterministic technical observations against the exact source project and revision. Human artistic questions remain NOT_ASSESSED and cannot become automatic aesthetic PASS, approval or promotion of executable code. See [Creative Evaluators](CREATIVE_EVALUATORS.md). The original Semwright Native SDK and Studio CAS remain the only mutation authority.
 
+## Immutable Launchwright handoff (MW05-E14-04)
+
+The current Project and its original master may be packaged for downstream Launchwright only after an exact source, asset rights, claim and ProductionPlan approval review. The ZIP preserves project and master bytes and carries no publication authority; an independent receiver checks that it has not been changed. CI tests a synthetic first-party example but exposes **only** a bounded public status/digest manifest, never the private ZIP or source project. Real Launchwright import, human review and channel publishing remain NOT_RUN. See [Immutable handoff contract](V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md).
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows

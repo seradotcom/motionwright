@@ -970,12 +970,20 @@
     },
     {
       "id": "MW05-E14-04",
-      "implementation": "inherited_not_reassessed",
-      "implemented_scope": "Existing immutable handoff bindings retained",
-      "remaining_scope": "New claims/rights/creative-approval handoff is not validated end to end",
+      "implementation": "partial",
+      "implemented_scope": "Source-bound Motionwright to Launchwright handoff packaging with exact native Project generation/revision, original master SHA-256, plan approval, owner-declared rights/claims and a deterministic immutable ZIP. Separate local receiver verifies exact archived project/media bytes, rejects unauthorized publish flags, relinking and changed identities. CI creates a synthetic H264 handoff package privately and publishes only a bounded source-hash and PASS/NOT_VERIFIED public manifest; exact-head native source acceptance is pending.",
+      "remaining_scope": "Actual Launchwright Release/Target/Scenario import and its MediaPlan, authenticated source and media rights, independent device quality review, commercial release/publishing and 60 owner human acceptance cases remain NOT_RUN. The artifact binding and synthetic test approval do not grant publication.",
       "source_paths": [
         "crates/domain/src/integrations.rs",
-        "apps/studio/src/IntegrationsWorkspace.tsx"
+        "apps/studio/src/IntegrationsWorkspace.tsx",
+        "tooling/launchwright-handoff/export_handoff.py",
+        "tooling/launchwright-handoff/verify_handoff.py",
+        "tooling/launchwright-handoff/ci_fixture.py",
+        "tooling/launchwright-handoff/public_artifact.py",
+        "tooling/launchwright-handoff/test_handoff.py",
+        "tooling/launchwright-handoff/test_public_artifact.py",
+        ".github/workflows/v05-launchwright-handoff.yml",
+        "docs/creative-production/V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
