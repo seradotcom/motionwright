@@ -5,8 +5,10 @@ import { applyProductionDesignChange, emptyProductionDesign, sameValue, validate
 import { validateBrandGovernance } from "./brandGovernance";
 import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
 import { applyEvaluatorChange, validateEvaluatorState } from "./creativeEvaluator";
+import { applyDistillationChange, validateDistillations } from "./componentDistillation";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
+import { applyStageCaptureChange, validateStageCaptureCards } from "./stageCapture";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry } from "./identityOrigin";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
@@ -974,6 +976,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "detach_camera_reframe":
       applyCameraReframeChange(next,change);
       break;
+    case "bind_stage_capture":
+    case "detach_stage_capture":
+      await applyStageCaptureChange(next,change);
+      break;
     case "upsert_product_stage":
     case "detach_product_stage":
       await applyProductStageChange(next,change);
@@ -1031,6 +1037,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "detach_measured_binding":
       next.production_design ??= emptyProductionDesign();
       detachMeasuredBinding(next,change.binding_id);
+      break;
+    case "propose_component_distillation":
+    case "review_component_distillation":
+      applyDistillationChange(next,change);
       break;
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
@@ -1970,11 +1980,13 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   }
   await validateBrandGovernance(next);
   validateSfxProject(next);
+  validateDistillations(next);
   await validateProductStages(next);
   validateCameraReframes(next);
   await validateCraftDisclosures(next);
   validateCaptureRecords(next);
   validateIdentityRegistry(next);
+  await validateStageCaptureCards(next);
   validateMeasuredData(next);
   validateMetricSourceNoticesOnEdit(next);
   await validateEvaluatorState(next);

@@ -3,8 +3,10 @@ import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 import type { SemanticSfxCue } from "./semanticSfx";
+import type { ComponentDistillationInput, DistillationReview } from "./componentDistillation";
 import type { ProductStageConfig } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
+import type { StageCaptureCard } from "./stageCapture";
 import type { CaptureSourceRecord } from "./captureSource";
 import type { CreativeEvaluatorBundle } from "./creativeEvaluator";
 import type { IdentityOriginRecord, IdentityRevocation } from "./identityOrigin";
@@ -625,10 +627,14 @@ export type Change =
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
+  | { type: "propose_component_distillation"; input: ComponentDistillationInput }
+  | { type: "review_component_distillation"; id: string; review: DistillationReview }
   | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
   | { type: "detach_product_stage"; instance_id: string }
   | { type: "upsert_camera_reframe"; reframe: CameraReframe }
   | { type: "detach_camera_reframe"; id: string }
+  | { type: "bind_stage_capture"; stage_id: string; capture_id: string }
+  | { type: "detach_stage_capture"; stage_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
   | { type: "register_identity_origin"; record: IdentityOriginRecord }
   | { type: "revoke_identity_origin"; revocation: IdentityRevocation }

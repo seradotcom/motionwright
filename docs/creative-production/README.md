@@ -35,6 +35,9 @@ In **Native inspection**, select the output profile matching a current native re
 ## Synthetic identity and consent boundaries (MW05-E12-04)
 
 **Production → Identity & consent** maintains source-hash-bound original fictional identity declarations and separately scoped human likeness consent claims, with purpose, modality, expiry and append-only revocations. A revoked source cannot silently be re-registered under a different record ID. These claims never authenticate a human, establish third-party rights or grant synthesis. See [Identity and consent](IDENTITY_CONSENT.md). Existing project CAS and Semwright Native SDK remain the sole mutation authority.
+## Source-bound OTIO real-media exchange (MW05-E11-03)
+
+The existing Rust `otio_interchange(Project)` remains the editorial source of truth. A bounded, owner-declared H.264 media bridge can produce source-hash-linked `ExternalReference` clips, preserve missing media explicitly, and report twelve property-level fidelity losses; a receiver edit can only become a **read-only** reorder or exact end-trim proposal, never an automatic Studio CAS commit. The synthetic-only CI uses independent OpenTimelineIO/FFprobe evidence. Public artifacts exclude the owner project, rights receipts, unverified clips and private runner evidence. See [OTIO real-media exchange](V05_OTIO_MEDIA_INTERCHANGE.md). Source/rights, external NLE import and human acceptance remain unverified.
 
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
@@ -73,6 +76,16 @@ Semwright Native SDK project journal. See
 [Craft components](CRAFT_COMPARISON_QUOTE.md) for source-truth, text budgets,
 pixel evidence limitations, and review requirements. These layouts do not
 constitute a 36-component library or human creative acceptance.
+## Source-bound first-party screenshot tile (MW05-E07-01/E07-02)
+
+ProductStage can now link an original authored card to a previously
+registered first-party synthetic screenshot receipt through the existing
+Native SDK CAS. Canonical Film emits a real image Subject with a
+content-addressed PNG AssetRef and MediaFit::Contain. The rest of the
+ProductStage remains separate editable Canvas geometry. The Studio preview
+does not invent unavailable image pixels. See
+[First-party capture tile](STAGE_CAPTURE_TILE.md) for authorization and
+remaining real H.264/media-rights acceptance.
 
 ## Original generic ProductStage (MW05-E07-01)
 
@@ -133,6 +146,14 @@ stereo 48 kHz PCM16 and independently checks decoded sample positions.
 This is a **partial sound-production workflow**, not a completed A/V mux,
 measured LUFS master or certified third-party soundtrack. See
 [Semantic SFX](SEMANTIC_SFX.md) for evidence and supported limits.
+## Evidence-backed component distillation (MW05-E05-04)
+
+Production → Distillation stores immutable component proposals backed by
+real positive Canvas variations, verified negative counterexamples,
+source project revision and independent compatibility review.
+This does not install a skill, promote executable code or waive source rights.
+See [Validated Distillation](DISTILLATION.md) for source restrictions,
+adversarial tests and the remaining admission work.
 
 ## Data and migration contracts
 

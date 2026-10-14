@@ -27,10 +27,46 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024 * 1024
 SCHEMA = 1
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 class IntakeError(ValueError):
     pass
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict:
+    """No duplicated authority fields anywhere in a private intake tree."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise IntakeError("Duplicate key in private acceptance manifest")
+        obj[key] = value
+    return obj
+
+
+def outside_public_checkout(path: Path, *, purpose: str) -> Path:
+    """Resolve an evidence location without admitting files inside source."""
+    resolved = path.resolve(strict=True)
+    if resolved.is_relative_to(ROOT.resolve()):
+        raise IntakeError(f"Private acceptance {purpose} must reside outside the public checkout")
+    return resolved
+
+
+def load_private_manifest(path: Path) -> object:
+    """Read a bounded private review file without following final symlinks."""
+    outside_public_checkout(path.parent, purpose="manifest")
+    if path.is_symlink() or not path.is_file():
+        raise IntakeError("Private acceptance manifest must be a regular file")
+    size = path.stat().st_size
+    if not 0 < size <= MAX_MANIFEST_BYTES:
+        raise IntakeError("Private acceptance manifest must be bounded and nonempty")
+    raw = path.read_bytes()
+    if len(raw) != size:
+        raise IntakeError("Private acceptance manifest changed while reading")
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise IntakeError("Private acceptance manifest is not valid UTF-8 JSON") from exc
 
 
 def utc_now() -> str:
@@ -63,14 +99,43 @@ def locked_semwright_revision() -> str:
 
 
 def checked_head() -> str:
-    result = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IntakeError("Exact Motionwright Git checkout could not be verified") from exc
     revision = result.stdout.strip()
     if not SHA_RE.fullmatch(revision):
         raise IntakeError("Current Motionwright HEAD is not a concrete Git revision")
     return revision
+
+
+def assert_clean_source_checkout() -> None:
+    """Prevent a private acceptance source receipt for a dirty tracked tree."""
+    try:
+        check = subprocess.run(
+            ["git", "-C", str(ROOT), "diff", "--quiet", "HEAD", "--"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IntakeError("Tracked Git checkout could not be verified") from exc
+    if check.returncode != 0:
+        raise IntakeError("Cannot initialize intake from a dirty tracked checkout")
+
+
+def checked_intake_source(requested: str | None) -> str:
+    """Source-bound only to a matching, clean local Git checkout.
+
+    This cannot attest a signed installed binary or authenticate the human
+    execution/review identities later recorded in the private session.
+    """
+    actual = checked_head()
+    if requested is not None and requested != actual:
+        raise IntakeError("Acceptance source SHA differs from current Git checkout")
+    assert_clean_source_checkout()
+    return actual
 
 
 def create_session(*, source_sha: str, executed_by: str = "") -> dict:
@@ -109,6 +174,7 @@ def create_session(*, source_sha: str, executed_by: str = "") -> dict:
 
 
 def validated_path(root: Path, relative: object) -> Path:
+    outside_public_checkout(root, purpose="evidence root")
     if not isinstance(relative, str) or not relative or len(relative) > 1024:
         raise IntakeError("Evidence path must be a bounded relative POSIX path")
     normalized = PurePosixPath(relative)
@@ -176,23 +242,30 @@ def validate_session(doc: object, *, evidence_root: Path) -> dict[str, int]:
     cases = doc.get("cases")
     _require(isinstance(cases, list) and len(cases) == 60
              and all(isinstance(case, dict) for case in cases)
-             and [c["id"] for c in cases] == canonical_ids(),
+             and [c.get("id") for c in cases] == canonical_ids(),
              "Session must contain each of the exact 60 canonical acceptance IDs, once and in order")
-    root = evidence_root.resolve(strict=True)
+    root = outside_public_checkout(evidence_root, purpose="evidence root")
     _require(root.is_dir(), "Evidence root must be a real directory")
     counts: Counter[str] = Counter()
+    evidence_paths: set[str] = set()
     for case in cases:
         case_id = case["id"]
         state = case.get("status")
-        _require(state in STATES, f"{case_id}: unknown acceptance status")
+        _require(isinstance(state, str) and state in STATES,
+                 f"{case_id}: unknown acceptance status")
         counts[state] += 1
         items = case.get("evidence")
         _require(isinstance(items, list) and len(items) <= 32,
                  f"{case_id}: evidence must be a list with no more than 32 files")
         _require(isinstance(case.get("notes"), str), f"{case_id}: missing notes text")
         if state == "NOT_RUN":
-            _require(not items and not case.get("independent") and not case.get("reviewed_by"),
-                     f"{case_id}: NOT_RUN must not contain pass/review claims or evidence")
+            _require(
+                not items and not case.get("independent")
+                and not case.get("reviewed_by") and not case.get("executed_by")
+                and case.get("executed_at_utc") is None
+                and case.get("reviewed_at_utc") is None,
+                f"{case_id}: NOT_RUN must not contain execution, review or evidence claims",
+            )
             continue
         executor = case.get("executed_by")
         _require(isinstance(executor, str) and bool(executor.strip()),
@@ -221,6 +294,14 @@ def validate_session(doc: object, *, evidence_root: Path) -> dict[str, int]:
             path = item.get("path")
             digest = item.get("sha256")
             size = item.get("size_bytes")
+            # Each privately reviewed scenario must carry its own evidence
+            # namespace; an unrelated case's screenshot/receipt cannot be
+            # silently counted as evidence for another case's independent PASS.
+            _require(isinstance(path, str) and path.startswith(case_id + "/"),
+                     f"{case_id}: evidence must be stored in its own case directory")
+            _require(path not in evidence_paths,
+                     f"{case_id}: duplicate evidence path in intake session")
+            evidence_paths.add(path)
             _require(isinstance(digest, str) and DIGEST_RE.fullmatch(digest) is not None and
                      isinstance(size, int) and not isinstance(size, bool),
                      f"{case_id}: evidence requires exact digest and integer size")
@@ -228,6 +309,23 @@ def validate_session(doc: object, *, evidence_root: Path) -> dict[str, int]:
             _require(actual["sha256"] == digest and actual["size_bytes"] == size,
                      f"{case_id}: evidence has changed since it was recorded: {path}")
     return {status: counts[status] for status in ("NOT_RUN", "PASS", "FAIL", "BLOCKED")}
+
+
+def verify_private_session(manifest: Path, *, evidence_root: Path) -> dict[str, int]:
+    """Bind the final private review to this checkout before inspecting bytes.
+
+    A different or dirty source tree cannot vouch for the installed build,
+    even if the stored private JSON contains a syntactically valid SHA.
+    This still cannot authenticate the external binary or reviewer identity.
+    """
+    doc = load_private_manifest(manifest)
+    if not isinstance(doc, dict):
+        raise IntakeError("Private acceptance session must be a JSON object")
+    source = doc.get("source")
+    if not isinstance(source, dict) or not isinstance(source.get("motionwright_sha"), str):
+        raise IntakeError("Private acceptance session lacks exact source authority")
+    checked_intake_source(source["motionwright_sha"])
+    return validate_session(doc, evidence_root=evidence_root)
 
 
 def main() -> int:
@@ -254,7 +352,7 @@ def main() -> int:
             if output.is_relative_to(ROOT.resolve()):
                 raise IntakeError("Review intake must be created outside the public source checkout")
             data = create_session(
-                source_sha=args.source_sha or checked_head(),
+                source_sha=checked_intake_source(args.source_sha),
                 executed_by=args.executed_by,
             )
             with output.open("x", encoding="utf-8") as file:
@@ -262,8 +360,9 @@ def main() -> int:
                 file.write("\n")
             print(f"acceptance-intake=initialized cases=60 not_run=60 file={output}")
         elif args.action == "verify":
-            doc = json.loads(args.manifest.read_text(encoding="utf-8"))
-            totals = validate_session(doc, evidence_root=args.evidence_root)
+            totals = verify_private_session(
+                args.manifest, evidence_root=args.evidence_root
+            )
             print("acceptance-intake=verified " + " ".join(
                 f"{key.lower()}={count}" for key, count in totals.items()
             ))

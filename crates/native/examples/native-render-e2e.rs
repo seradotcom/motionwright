@@ -462,7 +462,24 @@ async fn render(
         return Err("owner-provisioned connection is not bound to the seeded project".into());
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
-    let options = fixture_film_options(scene.id, expected_frames)?;
+    let options = if expected_frames == 540 {
+        FilmBuildOptions {
+            frame_rate: Rate::new(30, 1)?,
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::ObjectSpotlight,
+                })
+                .collect(),
+        }
+    } else {
+        fixture_film_options(scene.id, expected_frames)?
+    };
     let result = match coordinator
         .render_motion_canvas_segments(
             project.id,
@@ -711,6 +728,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "seed-composition" => {
+            let database = path_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_composition(&database, &project_json)
+        }
         "seed-procedural" => {
             let database = path_arg(&mut args);
             let mode = text_arg(&mut args);
@@ -1519,6 +1544,275 @@ fn seed_measured(database: &Path, project_json: &Path) -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// End-to-end source-owned 18-second Film with three real editable scenes:
+/// generic ProductStage, procedural original shapes, and measured source
+/// graphics. Never assert that synthetic UI/data are real customer evidence.
+fn seed_composition(
+    database: &Path,
+    project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use motionwright_domain::{
+        MEASURED_DATA_SCHEMA, MeasuredDatum, MeasuredTable, MeasuredUnit, MeasuredView,
+        ProceduralConfig, ProductStageConfig,
+    };
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("composition native fixture requires an empty owner-local database".into());
+    }
+    let mut project =
+        service.create_project("SYNTHETIC original composition / NOT CUSTOMER EVIDENCE")?;
+    for (index, name) in [
+        "Original generic UI",
+        "Deterministic native geometry",
+        "Exact measured source",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("compose-original-scene-{index}"),
+                &Change::AddScene {
+                    name: name.into(),
+                    objective: format!(
+                        "Render bounded original content from {name}, never customer screenshots"
+                    ),
+                    duration_seconds: 6,
+                },
+            )?
+            .project;
+    }
+    let scene_ids: Vec<Uuid> = project.scenes.iter().map(|scene| scene.id).collect();
+    let stage_id = Uuid::parse_str("00000000-0000-4000-8000-000000000005")?;
+    project=service.apply(
+        project.id,&project.stamp(),"compose-original-stage",
+        &Change::UpsertProductStage {
+            instance_id:stage_id,scene_id:scene_ids[0],
+            config:ProductStageConfig {
+                author_attestation:"I made this original unbranded generic UI solely for a first-party technical composition test".into(),
+                animate_focus:true,
+                ..Default::default()
+            }
+        },
+    )?.project;
+    let field_id = Uuid::parse_str("00000000-0000-4000-8000-000000000095")?;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "compose-original-procedural",
+            &Change::UpsertProceduralField {
+                instance_id: field_id,
+                scene_id: scene_ids[1],
+                config: ProceduralConfig {
+                    count: 8,
+                    reveal_step_frames: 3,
+                    reveal_duration_frames: 12,
+                    ..Default::default()
+                },
+            },
+        )?
+        .project;
+    let datum = MeasuredDatum {
+        key: "rate".into(),
+        label: "Synthetic rate".into(),
+        milli: 37500,
+        unit: MeasuredUnit::Percent,
+    };
+    let source_file = project_json.with_file_name("composition-synthetic-source.json");
+    fs::write(&source_file, serde_json::to_vec(&vec![datum.clone()])?)?;
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "compose-real-asset-import",
+            &source_file,
+            "Synthetic first-party exact measured source".into(),
+            "application/json".into(),
+        )?
+        .project;
+    let source_asset = project
+        .assets
+        .last()
+        .ok_or("missing sourced measured data")?
+        .clone();
+    let table_id = Uuid::parse_str("00000000-0000-4000-8000-000000000406")?;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "compose-measured-data",
+            &Change::UpsertMeasuredTable {
+                table: MeasuredTable {
+                    schema: MEASURED_DATA_SCHEMA.into(),
+                    id: table_id,
+                    label: "Declared synthetic value".into(),
+                    version: 1,
+                    source_asset_id: source_asset.id,
+                    source_sha256: source_asset
+                        .content_sha256
+                        .clone()
+                        .ok_or("missing source hash")?,
+                    rows: vec![datum],
+                },
+            },
+        )?
+        .project;
+    let metric_id = Uuid::parse_str("00000000-0000-4000-8000-000000000407")?;
+    let bar_id = Uuid::parse_str("00000000-0000-4000-8000-000000000408")?;
+    let metric = CanvasNode {
+        id: metric_id,
+        name: "Authored synthetic fixed-point metric".into(),
+        kind: "text".into(),
+        parent_id: None,
+        x: 330.0,
+        y: 220.0,
+        width: 1240.0,
+        height: 140.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: Some("Original source placeholder".into()),
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 0,
+        style: NodeStyle {
+            fill: Some("#F2F4F3".into()),
+            font_family: Some("Instrument Sans Variable".into()),
+            font_size: Some(56.0),
+            font_weight: Some(600),
+            line_height: Some(1.1),
+            ..Default::default()
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    let bar = CanvasNode {
+        id: bar_id,
+        name: "Original explicit-axis synthetic metric bar".into(),
+        kind: "rectangle".into(),
+        parent_id: None,
+        x: 340.0,
+        y: 470.0,
+        width: 800.0,
+        height: 72.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        text: None,
+        coordinate_space: CoordinateSpace::ProjectPixels,
+        z_index: 0,
+        style: NodeStyle {
+            fill: Some("#A5C8DF".into()),
+            ..Default::default()
+        },
+        relations: vec![],
+        property_locks: BTreeSet::new(),
+        keyframes: vec![],
+    };
+    for (index, node) in [metric, bar].into_iter().enumerate() {
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("compose-measured-object-{index}"),
+                &Change::AddCanvasNode {
+                    scene_id: scene_ids[2],
+                    node,
+                },
+            )?
+            .project;
+    }
+    for (index, (node_id, view)) in [
+        (metric_id, MeasuredView::Label { decimals: 1 }),
+        (
+            bar_id,
+            MeasuredView::Bar {
+                axis_min_milli: 0,
+                axis_max_milli: 100000,
+                max_width_px: 800,
+            },
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("compose-measure-binding-{index}"),
+                &Change::UpsertMeasuredBinding {
+                    binding_id: Uuid::now_v7(),
+                    scene_id: scene_ids[2],
+                    node_id,
+                    table_id,
+                    datum_key: "rate".into(),
+                    view,
+                },
+            )?
+            .project;
+    }
+    if project.scenes.len() != 3
+        || project.scenes[0].nodes.len() != motionwright_domain::STAGE_ROLES.len()
+        || project.scenes[1].nodes.len() != 8
+        || project.scenes[2].nodes.len() != 2
+        || project.scenes[2]
+            .nodes
+            .iter()
+            .find(|node| node.id == bar_id)
+            .is_none_or(|node| node.width != 300.0)
+        || project.scenes[2]
+            .nodes
+            .iter()
+            .find(|node| node.id == metric_id)
+            .is_none_or(|node| node.text.as_deref() != Some("Synthetic rate · 37.5%"))
+    {
+        return Err("multi-scene composition lost source-bound editable objects".into());
+    }
+    project.validate()?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_json)?;
+    file.write_all(&serde_json::to_vec_pretty(&project)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    let bundle = project_json.with_file_name("composition.motionwright");
+    service.export_project_bundle(project.id, &bundle)?;
+    let temporary = tempfile::tempdir()?;
+    let imported_service = StudioService::open(temporary.path().join("import.sqlite3"))?;
+    let imported = imported_service.import_project_bundle(&bundle)?;
+    if imported.id != project.id
+        || imported.generation == project.generation
+        || imported.revision != project.revision
+        || imported.scenes != project.scenes
+        || imported.production_design != project.production_design
+    {
+        return Err(
+            "native composition portable bundle lost authored sources or CAS authority".into(),
+        );
+    }
+    let profile = &project.deliverables[0];
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "fixture":"composition-stack/1","project_id":project.id,
+            "resource":project.resource_key(),"generation":project.generation,
+            "revision":project.revision,"scene_ids":scene_ids,
+            "deliverable_id":profile.id,"width":profile.width,"height":profile.height,
+            "frame_count":540,"stage_id":stage_id,"procedural_id":field_id,
+            "source_sha256":source_asset.content_sha256,"measured_table_id":table_id,
+            "metric_node_id":metric_id,"bar_node_id":bar_id,
+            "portable_bundle":"composition.motionwright",
+            "original_ui_not_real_capture":true,
+            "data_truth":"synthetic_fixture_not_real_world_metric",
+            "creative_approval":"required"
+        }))?
+    );
+    Ok(())
+}
+
 /// CI-only design evidence: author a real, portable project and render it using
 /// the unchanged owner-owned Semwright Driver Host and Motionwright coordinator.
 fn seed_procedural(
@@ -1643,6 +1937,32 @@ fn seed_procedural(
 fn expected_fixture_frames(
     project: &motionwright_domain::Project,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    if project.scenes.len() == 3
+        && project.production_design.stages.len() == 1
+        && project.production_design.procedural_fields.len() == 1
+        && project.production_design.measured_tables.len() == 1
+    {
+        if project
+            .scenes
+            .iter()
+            .any(|scene| scene.duration != RationalTime::new(6, 1).expect("fixed source duration"))
+            || project.scenes[0].nodes.len() != motionwright_domain::STAGE_ROLES.len()
+            || project.scenes[1].nodes.len() != 8
+            || project.scenes[2].nodes.len() != 2
+            || project.production_design.measured_bindings.len() != 2
+            || project.production_design.measured_tables[0].version != 1
+            || (
+                project.deliverables[0].width,
+                project.deliverables[0].height,
+            ) != (1920, 1080)
+        {
+            return Err(
+                "native integrated composition differs from the three original bounded scenes"
+                    .into(),
+            );
+        }
+        return Ok(540);
+    }
     if let [field] = project.production_design.procedural_fields.as_slice() {
         if project.scenes.len() != 1
             || project.scenes[0].duration != RationalTime::new(6, 1)?
@@ -1730,4 +2050,39 @@ fn expected_fixture_frames(
         );
     }
     Ok(180)
+}
+
+#[cfg(test)]
+mod composition_seed_contract_tests {
+    use super::*;
+
+    /// Catch source-authoring fixture drift before provisioning a Broker or
+    /// issuing any native render mutation. This does not prove native pixels.
+    #[test]
+    fn three_scene_seed_is_source_bound_and_portable_before_native_execution() {
+        let dir = tempfile::tempdir().expect("isolated source-only fixture directory");
+        let database = dir.path().join("studio.sqlite3");
+        let source = dir.path().join("editable-project.json");
+
+        seed_composition(&database, &source)
+            .expect("original joint composition must seed through StudioService CAS");
+        let project: motionwright_domain::Project =
+            serde_json::from_slice(&std::fs::read(&source).unwrap())
+                .expect("exact original editable project JSON");
+        project.validate().expect("seeded source domain validation");
+        assert_eq!(project.scenes.len(), 3);
+        assert_eq!(project.production_design.stages.len(), 1);
+        assert_eq!(project.production_design.procedural_fields.len(), 1);
+        assert_eq!(project.production_design.measured_tables.len(), 1);
+        assert_eq!(project.production_design.measured_bindings.len(), 2);
+        assert_eq!(project.scenes[2].nodes.len(), 2);
+
+        let label = project.scenes[2]
+            .nodes
+            .iter()
+            .find(|node| node.kind == "text")
+            .and_then(|node| node.text.as_deref());
+        assert_eq!(label, Some("Synthetic rate · 37.5%"));
+        assert!(source.with_file_name("composition.motionwright").exists());
+    }
 }

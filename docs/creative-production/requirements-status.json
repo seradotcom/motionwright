@@ -385,8 +385,8 @@
     {
       "id": "MW05-E05-04",
       "implementation": "partial",
-      "implemented_scope": "Real read-only comparison of two preserved creative branch states in Review: source scene/object differences, timing, keyframes, visuals and narrative intent, stable IDs with revision provenance, plus explicit editor-authored positive/negative studies committed as anchored creative reviews through existing project CAS. No fabricated renderer evidence or automatic branch merge.",
-      "remaining_scope": "Independent owner/editor acceptance, positive/negative evaluation corpus across original media, reusable component extraction, component lineage, cross-renderer conformance and automated distillation admission remain unimplemented.",
+      "implemented_scope": "Real read-only comparison of two preserved creative branch states in Review: source scene/object differences, timing, keyframes, visuals and narrative intent, stable IDs with revision provenance, plus explicit editor-authored positive/negative studies committed as anchored creative reviews through existing project CAS. No fabricated renderer evidence or automatic branch merge. Added strictly bounded, source-revision-bound, non-executable component distillation proposals from at least two varied positive original Canvas scenes and reviewed negative counterexamples; proposals stay project-local and require independent human compatibility review, with no code or registry admission.",
+      "remaining_scope": "Independent owner/editor acceptance, original-media evaluation corpus, versioned library admission, exact visual regression, cross-renderer conformance and automated distillation admission remain unimplemented; proposals are not executable library artifacts.",
       "source_paths": [
         "apps/studio/src/creativeAlternativeEvidence.ts",
         "apps/studio/src/creativeAlternativeEvidence.test.ts",
@@ -394,7 +394,15 @@
         "apps/studio/src/HistoryWorkspaces.tsx",
         "apps/studio/tests/creative-alternatives.spec.ts",
         "docs/creative-production/CREATIVE_ALTERNATIVE_EVIDENCE.md",
-        ".github/workflows/creative-alternatives.yml"
+        ".github/workflows/creative-alternatives.yml",
+        "crates/domain/src/component_distillation.rs",
+        "crates/domain/tests/component_distillation.rs",
+        "crates/service/tests/component_distillation.rs",
+        "apps/studio/src/componentDistillation.ts",
+        "apps/studio/src/ComponentDistillationWorkbench.tsx",
+        "apps/studio/src/componentDistillation.test.ts",
+        "apps/studio/tests/component-distillation.spec.ts",
+        "docs/creative-production/DISTILLATION.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
@@ -435,7 +443,7 @@
     {
       "id": "MW05-E06-03",
       "implementation": "partial",
-      "implemented_scope": "Versioned source-bound numeric JSON-array or exact four-column CSV table snapshots admitted only after SQLite CAS reads and hashes the actual imported bytes and compares every typed row; fixed-point units and precision, editable Canvas counter/label/explicit-axis-bar bindings, human-edit protection, targeted scene/profile dependency notices, Studio exact-file SHA256 source selector and Native SDK operations; dedicated source-pinned Semwright real MP4 acceptance workflow for synthetic imported JSON revisions, original PNG and independently decoded H.264 pixel gates (pending exact-HEAD CI); native Film measured text fixed-container pixel-fidelity correction and semantic-only label/unit changes mark only bound scenes/profiles for review without modifying their Canvas pixels; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI)",
+      "implemented_scope": "Versioned source-bound numeric JSON-array or exact four-column CSV table snapshots admitted only after SQLite CAS reads and hashes the actual imported bytes and compares every typed row; fixed-point units and precision, editable Canvas counter/label/explicit-axis-bar bindings, human-edit protection, targeted scene/profile dependency notices, Studio exact-file SHA256 source selector and Native SDK operations; dedicated source-pinned Semwright real MP4 acceptance workflow for synthetic imported JSON revisions, original PNG and independently decoded H.264 pixel gates (pending exact-HEAD CI); native Film measured text fixed-container pixel-fidelity correction and semantic-only label/unit changes mark only bound scenes/profiles for review without modifying their Canvas pixels; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI); joint 540-frame source-pinned original composition native/decoded H264 technical acceptance experiment (CI pending)",
       "remaining_scope": "The previous source-pinned native measured master is technically verified (run 38111676631), but every new commit needs its own exact-HEAD CI; broad CSV/ETL, scientific truth/rights attestation, temporal graphs, physical derived-cache purging and human creative approval remain open",
       "source_paths": [
         "crates/domain/src/measured_data.rs",
@@ -457,14 +465,18 @@
         "crates/domain/tests/composition_stack.rs",
         "apps/studio/src/compositionStack.test.ts",
         "docs/creative-production/INTEGRATED_COMPOSITION.md",
-        "crates/native/tests/composition_stack.rs"
+        "crates/native/tests/composition_stack.rs",
+        "tooling/composition_native_evidence.py",
+        "tooling/native_tests/test_composition_native_evidence.py",
+        ".github/workflows/composition-native-e2e.yml",
+        "docs/creative-production/JOINT_NATIVE_MASTER.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E06-04",
       "implementation": "partial",
-      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E; honors BrandProfile palettes and per-scene exceptions; deterministic integer radial/spiral distributions and Circle primitive with legacy migration, 56-configuration bounds tests, third native 180-frame orbital-circle proof; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI)",
+      "implemented_scope": "Seeded bounded 2D grid/stagger/scatter fields and editable synchronized 30fps Y/opacity OutCubic entrances as real Canvas rectangles, stable UUID and baseline, field-level Studio controls, atomic count/layout update, human override conflict and shrink preflight, Rust/TypeScript fixtures and browser E2E; honors BrandProfile palettes and per-scene exceptions; deterministic integer radial/spiral distributions and Circle primitive with legacy migration, 56-configuration bounds tests, third native 180-frame orbital-circle proof; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI); joint 540-frame source-pinned original composition native/decoded H264 technical acceptance experiment (CI pending)",
       "remaining_scope": "Native orbit master requires exact-HEAD CI pass and human creative review; advanced temporal fields, custom masks/forces, 3D instancing and independent performance benchmarks remain open",
       "source_paths": [
         "crates/domain/src/procedural.rs",
@@ -482,15 +494,19 @@
         "crates/domain/tests/composition_stack.rs",
         "apps/studio/src/compositionStack.test.ts",
         "docs/creative-production/INTEGRATED_COMPOSITION.md",
-        "crates/native/tests/composition_stack.rs"
+        "crates/native/tests/composition_stack.rs",
+        "tooling/composition_native_evidence.py",
+        "tooling/native_tests/test_composition_native_evidence.py",
+        ".github/workflows/composition-native-e2e.yml",
+        "docs/creative-production/JOINT_NATIVE_MASTER.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E07-01",
       "implementation": "partial",
-      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations; separate exact-SHA owner-local Semwright H264/AAC original browser and anonymous handset fixtures, genuine semantic glyph/focus pixel inspector plus eight synthetic negative oracle tests (pending exact-head native CI); project BrandProfile constraints also validate generated and human-edited ProductStage accents and visible text, with exact-policy scene-scoped exceptions and wordmark fail-closed policy; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI)",
-      "remaining_scope": "Original semantic native browser/handset MP4 still needs exact-HEAD GH Actions and human aesthetic acceptance; reproducible real UI capture and authorized asset replacement, 3D cameras, commercial hardware rights verification remain open",
+      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations; separate exact-SHA owner-local Semwright H264/AAC original browser and anonymous handset fixtures, genuine semantic glyph/focus pixel inspector plus eight synthetic negative oracle tests (pending exact-head native CI); project BrandProfile constraints also validate generated and human-edited ProductStage accents and visible text, with exact-policy scene-scoped exceptions and wordmark fail-closed policy; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI); bounded first-party registered-capture attachment to original ProductStage card via two Native SDK CAS operations, separate actual Film image Subject with source-digest AssetRef and original editable stage nodes (pending integrated CI); separate 540-frame source-pinned three-scene native/decoded H264 technical proof with exact-HEAD CI still pending",
+      "remaining_scope": "Bounded first-party image Subject and project CAS need exact-HEAD CI and independently decoded H.264 pixel acceptance; real external app rights/privacy, full-screen/multi-frame capture editing, 3D rigs and human creative approval are unimplemented; independent 540-frame multi-scene native/decoded film acceptance remains pending",
       "source_paths": [
         "crates/domain/src/product_stage.rs",
         "crates/domain/src/lib.rs",
@@ -514,15 +530,26 @@
         "crates/domain/tests/composition_stack.rs",
         "apps/studio/src/compositionStack.test.ts",
         "docs/creative-production/INTEGRATED_COMPOSITION.md",
-        "crates/native/tests/composition_stack.rs"
+        "crates/native/tests/composition_stack.rs",
+        "crates/domain/src/stage_capture.rs",
+        "crates/domain/tests/stage_capture.rs",
+        "crates/native/tests/stage_capture.rs",
+        "apps/studio/src/stageCapture.ts",
+        "apps/studio/src/stageCapture.test.ts",
+        "apps/studio/tests/stage-capture.spec.ts",
+        "docs/creative-production/STAGE_CAPTURE_TILE.md",
+        "tooling/composition_native_evidence.py",
+        "tooling/native_tests/test_composition_native_evidence.py",
+        ".github/workflows/composition-native-e2e.yml",
+        "docs/creative-production/JOINT_NATIVE_MASTER.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E07-02",
       "implementation": "partial",
-      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA; typed append-only Project CaptureSourceRecord referencing imported immutable PNG/JSON asset IDs/hashes, synthetic fixture-data hash, source project generation/revision and existing linked brief claim, with Native SDK CAS operation and Rust/Studio/SQLite negative tests; Production Capture sources panel for explicit project-source claim, existing immutable PNG/JSON selection and typed metadata registration with revision/staleness and rights safeguards; first-party evidence claim creation is exposed in Studio and Native SDK through the preexisting versioned Claim model; SQLite admission re-reads immutable source blobs after CAS authorization, strictly compares imported JSON receipt app/claim/scenario/mask/repeated digest with recorded provenance, checks bounded PNG SHA/IHDR dimensions and rejects forged source bytes; triple immutable PNG/manifest/original fixture-state JSON binding, with independent actual byte verification and project generation/revision/claim text parity at SQLite admission; portable project-bundle roundtrip acceptance preserves immutable triple-blob source references and original historical generation (pending exact-HEAD CI); integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI)",
-      "remaining_scope": "New source triple-binding needs exact-HEAD CI verification; no verified third-party app/window capture, rights/privacy clearance, arbitrarily scripted scenarios, timeline media playback or human creative approval",
+      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA; typed append-only Project CaptureSourceRecord referencing imported immutable PNG/JSON asset IDs/hashes, synthetic fixture-data hash, source project generation/revision and existing linked brief claim, with Native SDK CAS operation and Rust/Studio/SQLite negative tests; Production Capture sources panel for explicit project-source claim, existing immutable PNG/JSON selection and typed metadata registration with revision/staleness and rights safeguards; first-party evidence claim creation is exposed in Studio and Native SDK through the preexisting versioned Claim model; SQLite admission re-reads immutable source blobs after CAS authorization, strictly compares imported JSON receipt app/claim/scenario/mask/repeated digest with recorded provenance, checks bounded PNG SHA/IHDR dimensions and rejects forged source bytes; triple immutable PNG/manifest/original fixture-state JSON binding, with independent actual byte verification and project generation/revision/claim text parity at SQLite admission; portable project-bundle roundtrip acceptance preserves immutable triple-blob source references and original historical generation (pending exact-HEAD CI); integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); bounded first-party registered-capture attachment to original ProductStage card via two Native SDK CAS operations, separate actual Film image Subject with source-digest AssetRef and original editable stage nodes (pending integrated CI)",
+      "remaining_scope": "Bounded first-party image Subject and project CAS need exact-HEAD CI and independently decoded H.264 pixel acceptance; real external app rights/privacy, full-screen/multi-frame capture editing, 3D rigs and human creative approval are unimplemented",
       "source_paths": [
         "apps/studio/tests/reproducible-capture.spec.ts",
         "tooling/capture_evidence.py",
@@ -543,7 +570,15 @@
         "tooling/testdata/synthetic-first-party-viewport.png",
         "crates/domain/tests/composition_stack.rs",
         "apps/studio/src/compositionStack.test.ts",
-        "docs/creative-production/INTEGRATED_COMPOSITION.md"
+        "docs/creative-production/INTEGRATED_COMPOSITION.md",
+        "crates/domain/src/stage_capture.rs",
+        "crates/domain/tests/stage_capture.rs",
+        "crates/native/src/film.rs",
+        "crates/native/tests/stage_capture.rs",
+        "apps/studio/src/stageCapture.ts",
+        "apps/studio/src/stageCapture.test.ts",
+        "apps/studio/tests/stage-capture.spec.ts",
+        "docs/creative-production/STAGE_CAPTURE_TILE.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
@@ -786,10 +821,20 @@
     },
     {
       "id": "MW05-E11-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new real-media OTIO import or NLE relink path",
-      "remaining_scope": "Bounded cut import and per-property losses remain open",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Original first-party H264 synthetic OTIO bridge bound to existing Rust project exporter, source SHA/revision and media asset digests, independently measured constant frame rate and a 12-property loss report. Bounded read-only imported reorder/end-trim proposals map only to existing native changes. Curated CI-public output permits only synthetic H264+OTIO, with actual OpenTimelineIO reader acceptance pending this exact integrated source SHA.",
+      "remaining_scope": "Human receiver acceptance in Kdenlive/Shotcut/Resolve, real third-party rights authentication, property-fidelity reconciliation of audio/effects/transcripts/locks, owner-approved StudioService import commit, full external relinking, and full creative acceptance remain open. Unknown/failed source execution remains NOT_VERIFIED.",
+      "source_paths": [
+        "crates/domain/src/delivery.rs",
+        "crates/domain/examples/otio_real_media_fixture.rs",
+        "tooling/otio-media/bridge.py",
+        "tooling/otio-media/native_e2e.py",
+        "tooling/otio-media/public_artifact.py",
+        "tooling/otio-media/test_bridge.py",
+        "tooling/otio-media/test_public_artifact.py",
+        ".github/workflows/v05-otio-real-media.yml",
+        "docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
@@ -944,7 +989,7 @@
     {
       "id": "MW05-E14-03",
       "implementation": "partial",
-      "implemented_scope": "Three exact native H264/AAC test masters verified, plus source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts",
+      "implemented_scope": "Three exact native H264/AAC test masters verified, source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI",
       "remaining_scope": "Broader profile and audible sync/quality acceptance, actual native caption rendering, multilingual reading calibration, glyph legibility, real viewer comprehension and physical-device human review remain open",
       "source_paths": [
         ".github/workflows/creative-conformance.yml",
@@ -955,7 +1000,17 @@
         "apps/studio/src/CaptionReadabilityReview.tsx",
         "apps/studio/src/captionReadability.test.ts",
         "apps/studio/tests/caption-readability.spec.ts",
-        "docs/creative-production/CAPTION_READING_REVIEW.md"
+        "docs/creative-production/CAPTION_READING_REVIEW.md",
+        "crates/native/examples/native-render-e2e.rs",
+        "tooling/native_av_master_e2e.py",
+        "tooling/native_av_media_probe.py",
+        "tooling/tests/test_native_av_media_probe.py",
+        "tooling/composition_native_evidence.py",
+        "tooling/native_tests/test_composition_native_evidence.py",
+        "tooling/composition_native_public_artifact.py",
+        "tooling/tests/test_composition_native_public_artifact.py",
+        ".github/workflows/composition-native-e2e.yml",
+        "docs/creative-production/JOINT_NATIVE_MASTER.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

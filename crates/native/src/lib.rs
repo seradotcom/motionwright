@@ -727,8 +727,12 @@ enum OperationKind {
     DetachProductStage,
     UpsertCameraReframe,
     DetachCameraReframe,
+    BindStageCapture,
+    DetachStageCapture,
     UpsertProceduralField,
     DetachProceduralField,
+    ProposeComponentDistillation,
+    ReviewComponentDistillation,
     SetProductionPlan,
     UpsertMeasuredTable,
     UpsertMeasuredBinding,
@@ -937,6 +941,13 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         OperationKind::DetachCameraReframe => Ok(Change::DetachCameraReframe {
             id: uuid(args, "id")?,
         }),
+        OperationKind::BindStageCapture => Ok(Change::BindStageCapture {
+            stage_id: uuid(args, "stage_id")?,
+            capture_id: uuid(args, "capture_id")?,
+        }),
+        OperationKind::DetachStageCapture => Ok(Change::DetachStageCapture {
+            stage_id: uuid(args, "stage_id")?,
+        }),
         OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
             instance_id: uuid(args, "instance_id")?,
             scene_id: uuid(args, "scene_id")?,
@@ -949,6 +960,23 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         }),
         OperationKind::DetachProceduralField => Ok(Change::DetachProceduralField {
             instance_id: uuid(args, "instance_id")?,
+        }),
+        OperationKind::ProposeComponentDistillation => {
+            Ok(Change::ProposeComponentDistillation {
+                input: serde_json::from_value(args.get("input").cloned().ok_or_else(|| {
+                    Error::invalid("source-bound distillation input is required")
+                })?)
+                .map_err(|_| Error::invalid("invalid bounded distillation proposal"))?,
+            })
+        }
+        OperationKind::ReviewComponentDistillation => Ok(Change::ReviewComponentDistillation {
+            id: uuid(args, "id")?,
+            review: serde_json::from_value(
+                args.get("review")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("distillation review is required"))?,
+            )
+            .map_err(|_| Error::invalid("invalid source-bound component review"))?,
         }),
         OperationKind::SetProductionPlan => Ok(Change::SetProductionPlan {
             plan: serde_json::from_value(
@@ -2618,6 +2646,21 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::BindStageCapture,
+            descriptor(
+                "product-stage.capture.bind",
+                "Bind one content-addressed, registered first-party synthetic screenshot as a contained editable-stage source tile",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "stage_id":{"type":"string","format":"uuid","maxLength":64},
+                        "capture_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "stage_id", "capture_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::DetachCameraReframe,
             descriptor(
                 "camera-reframe.detach",
@@ -2626,6 +2669,20 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                     json!({"ref":{"type":"string","maxLength":512},
                         "id":{"type":"string","format":"uuid"}}),
                     &["ref", "id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachStageCapture,
+            descriptor(
+                "product-stage.capture.detach",
+                "Remove the source image tile while retaining original editable ProductStage nodes and immutable capture provenance",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "stage_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "stage_id"],
                 ),
             ),
         ),
@@ -2677,6 +2734,72 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "instance_id":{"type":"string","format":"uuid","maxLength":64}
                     }),
                     &["ref", "instance_id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ProposeComponentDistillation,
+            descriptor(
+                "component-distillation.propose",
+                "Freeze original Canvas variants and verified counterexamples as an uninstalled component proposal",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "input":{"type":"object","properties":{
+                            "id":{"type":"string","format":"uuid"},
+                            "label":{"type":"string","minLength":1,"maxLength":120},
+                            "author":{"type":"string","minLength":1,"maxLength":120},
+                            "original_rights_attestation":{"type":"string","minLength":1,"maxLength":480},
+                            "source_project_id":{"type":"string","format":"uuid"},
+                            "source_generation":{"type":"string","format":"uuid"},
+                            "source_revision":{"type":"integer","minimum":0},
+                            "roles":{"type":"array","minItems":2,"maxItems":12,"items":{
+                                "type":"object","properties":{
+                                    "key":{"type":"string","pattern":"^[a-z][a-z0-9_]{1,31}$"},
+                                    "kind":{"type":"string","enum":["text","rectangle","circle"]}
+                                },"required":["key","kind"],"additionalProperties":false
+                            }},
+                            "positives":{"type":"array","minItems":2,"maxItems":4,"items":{
+                                "type":"object","properties":{
+                                    "scene_id":{"type":"string","format":"uuid"},
+                                    "node_ids":{"type":"array","minItems":2,"maxItems":12,"items":{"type":"string","format":"uuid"}}
+                                },"required":["scene_id","node_ids"],"additionalProperties":false
+                            }},
+                            "negatives":{"type":"array","minItems":1,"maxItems":4,"items":{
+                                "type":"object","properties":{
+                                    "scene_id":{"type":"string","format":"uuid"},
+                                    "node_id":{"anyOf":[{"type":"null"},{"type":"string","format":"uuid"}]},
+                                    "rejection":{"type":"string","enum":["non_motion_canvas","locked_object","unsupported_kind"]}
+                                },"required":["scene_id","node_id","rejection"],"additionalProperties":false
+                            }},
+                            "requirements":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"string","maxLength":240}}
+                        },"required":["id","label","author","original_rights_attestation",
+                            "source_project_id","source_generation","source_revision",
+                            "roles","positives","negatives","requirements"],"additionalProperties":false}
+                    }),
+                    &["ref", "input"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ReviewComponentDistillation,
+            descriptor(
+                "component-distillation.review",
+                "Record independent source-bound compatibility review; never install or execute candidate code",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "id":{"type":"string","format":"uuid"},
+                        "review":{"type":"object","properties":{
+                            "reviewer":{"type":"string","minLength":1,"maxLength":120},
+                            "rationale":{"type":"string","minLength":1,"maxLength":1600},
+                            "verdict":{"type":"string","enum":["compatible_proposal","rejected"]},
+                            "source_revision":{"type":"integer","minimum":0},
+                            "compatibility":{"type":"string","const":"motion_canvas_original_nodes_v1"}
+                        },"required":["reviewer","rationale","verdict","source_revision","compatibility"],
+                        "additionalProperties":false}
+                    }),
+                    &["ref", "id", "review"],
                 ),
             ),
         ),
@@ -3283,7 +3406,13 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.creative-evaluator.evaluate"));
         assert!(names.contains(&"driver.motionwright.identity-origin.register"));
         assert!(names.contains(&"driver.motionwright.identity-origin.revoke"));
-        assert_eq!(capabilities.len(), 72);
+
+        assert!(names.contains(&"driver.motionwright.component-distillation.propose"));
+        assert!(names.contains(&"driver.motionwright.component-distillation.review"));
+        assert!(names.contains(&"driver.motionwright.product-stage.capture.bind"));
+        assert!(names.contains(&"driver.motionwright.product-stage.capture.detach"));
+        // Preserve both native SDK operation families admitted independently.
+        assert_eq!(capabilities.len(), 76);
     }
 
     #[test]
