@@ -809,10 +809,20 @@
     },
     {
       "id": "MW05-E11-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new real-media OTIO import or NLE relink path",
-      "remaining_scope": "Bounded cut import and per-property losses remain open",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Original first-party H264 synthetic OTIO bridge bound to existing Rust project exporter, source SHA/revision and media asset digests, independently measured constant frame rate and a 12-property loss report. Bounded read-only imported reorder/end-trim proposals map only to existing native changes. Curated CI-public output permits only synthetic H264+OTIO, with actual OpenTimelineIO reader acceptance pending this exact integrated source SHA.",
+      "remaining_scope": "Human receiver acceptance in Kdenlive/Shotcut/Resolve, real third-party rights authentication, property-fidelity reconciliation of audio/effects/transcripts/locks, owner-approved StudioService import commit, full external relinking, and full creative acceptance remain open. Unknown/failed source execution remains NOT_VERIFIED.",
+      "source_paths": [
+        "crates/domain/src/delivery.rs",
+        "crates/domain/examples/otio_real_media_fixture.rs",
+        "tooling/otio-media/bridge.py",
+        "tooling/otio-media/native_e2e.py",
+        "tooling/otio-media/public_artifact.py",
+        "tooling/otio-media/test_bridge.py",
+        "tooling/otio-media/test_public_artifact.py",
+        ".github/workflows/v05-otio-real-media.yml",
+        "docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
