@@ -32,6 +32,10 @@ In **Native inspection**, select the output profile matching a current native re
 
 **Production → Evaluators** admits owner-authored, versioned, non-executable creative playbooks and records deterministic technical observations against the exact source project and revision. Human artistic questions remain NOT_ASSESSED and cannot become automatic aesthetic PASS, approval or promotion of executable code. See [Creative Evaluators](CREATIVE_EVALUATORS.md). The original Semwright Native SDK and Studio CAS remain the only mutation authority.
 
+## Source-bound OTIO real-media exchange (MW05-E11-03)
+
+The existing Rust `otio_interchange(Project)` remains the editorial source of truth. A bounded, owner-declared H.264 media bridge can produce source-hash-linked `ExternalReference` clips, preserve missing media explicitly, and report twelve property-level fidelity losses; a receiver edit can only become a **read-only** reorder or exact end-trim proposal, never an automatic Studio CAS commit. The synthetic-only CI uses independent OpenTimelineIO/FFprobe evidence. Public artifacts exclude the owner project, rights receipts, unverified clips and private runner evidence. See [OTIO real-media exchange](V05_OTIO_MEDIA_INTERCHANGE.md). Source/rights, external NLE import and human acceptance remain unverified.
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows
