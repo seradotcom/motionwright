@@ -63,6 +63,16 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
             ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429"],
         )
         self.assertIn("remain open", evidence["statement"])
+        chain = evidence["glib_owner_chain"]
+        self.assertEqual(chain["schema"], "motionwright.v01-glib-owner-chain/1")
+        self.assertEqual(chain["advisory_status"], "OPEN_UPSTREAM_BLOCKED")
+        self.assertEqual(len(chain["reviewed_direct_owners"]), 12)
+        self.assertEqual(len(chain["reviewed_transitive_owners"]), 22)
+        self.assertEqual(chain["observed_first_party_owners"], ["motionwright-desktop"])
+        self.assertFalse(chain["glib_vulnerability_fixed"])
+        self.assertFalse(chain["linux_target_reachability_proven"])
+        self.assertFalse(chain["affected_iterator_api_unreachable_proven"])
+        self.assertFalse(chain["release_authorized"])
 
     def test_changed_warning_class_requires_new_review(self):
         process, evidence = self.run_policy(audit_payload(changed_class=True))
