@@ -5,6 +5,7 @@ import { applyProductionDesignChange, emptyProductionDesign, sameValue, validate
 import { validateBrandGovernance } from "./brandGovernance";
 import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
 import { applyEvaluatorChange, validateEvaluatorState } from "./creativeEvaluator";
+import { applyDistillationChange, validateDistillations } from "./componentDistillation";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
@@ -1021,6 +1022,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design ??= emptyProductionDesign();
       detachMeasuredBinding(next,change.binding_id);
       break;
+    case "propose_component_distillation":
+    case "review_component_distillation":
+      applyDistillationChange(next,change);
+      break;
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();
@@ -1955,6 +1960,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   }
   await validateBrandGovernance(next);
   validateSfxProject(next);
+  validateDistillations(next);
   await validateProductStages(next);
   validateCameraReframes(next);
   await validateCraftDisclosures(next);

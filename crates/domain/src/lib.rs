@@ -2,6 +2,7 @@ mod brand_governance;
 mod camera_reframe;
 mod canvas;
 mod capture_source;
+mod component_distillation;
 mod creative;
 mod creative_evaluator;
 mod creative_revisions;
@@ -22,6 +23,7 @@ pub use brand_governance::*;
 pub use camera_reframe::*;
 pub use canvas::*;
 pub use capture_source::*;
+pub use component_distillation::*;
 pub use creative::*;
 pub use creative_evaluator::*;
 pub use creative_revisions::*;
@@ -668,6 +670,7 @@ impl Project {
             .validate_camera_reframes(&self.scenes)?;
         self.production_design
             .validate_creative_evaluators(self.revision)?;
+        self.production_design.validate_distillations(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1063,6 +1066,12 @@ impl Project {
             }
             Change::UpsertCameraReframe { reframe } => self.upsert_camera_reframe(reframe)?,
             Change::DetachCameraReframe { id } => self.detach_camera_reframe(*id)?,
+            Change::ProposeComponentDistillation { input } => {
+                self.propose_component_distillation(input)?;
+            }
+            Change::ReviewComponentDistillation { id, review } => {
+                self.review_component_distillation(*id, review)?;
+            }
             Change::SetProductionPlan { plan } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if let Some(plan) = plan {
@@ -2485,6 +2494,13 @@ pub enum Change {
     },
     DetachCameraReframe {
         id: Uuid,
+    },
+    ProposeComponentDistillation {
+        input: ComponentDistillationInput,
+    },
+    ReviewComponentDistillation {
+        id: Uuid,
+        review: DistillationReview,
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
