@@ -91,6 +91,10 @@ The Project rail's `add_scene` form formerly awaited the nonthrowing `App.commit
 
 Source inspection also identified other components that await the nonthrowing generic `commit` and then adjust local selection, dirty state or revision bases. These include other `CanvasWorkspace` gesture/edit flows, `HistoryWorkspaces`, `IntegrationsWorkspace` and multiple creative workbenches such as `CreativeEvaluatorWorkbench` and `MeasuredDataWorkbench`. They are **unverified risk candidates**, not individually reproduced bugs: some rely on revision refresh or independent backend guards and must be inspected on their actual call paths before a broad contract change. Do not simply make every generic `commit` reject, because numerous existing `void commit(...)` event handlers would then risk unhandled promise rejections. Expand strict committing only behind components that provide scoped error boundaries and regression tests.
 
+### MWAUD-010: Playwright assertions were broader than the actual authored UI
+
+The completed CI run for audit head `3e1eebe9d4e5ad06480b338de9ced98b8406fe6b` ([browser-acceptance](https://github.com/seradotcom/motionwright/actions/runs/38518956665/job/115710591456)) reported four failures in our new synthetic CAS UI tests. Downloaded Playwright traces and error-context files attribute both Delivery failures to mixing `innerText` with a `toContainText` normalization over multiline profile rows; the scene test matched both a project-rail button and its timeline clip; the Canvas test selected both global revision and local `v1` revision badges. These are **test-selector/representation errors**, not proved native import or editing regressions. Assertions now use the exact `.command-bar .revision-chip`, scope the scene to `.tree-list .tree-row`, compare selected-row `textContent` exactly before/after a rejected CAS and assert it changes after a successful CAS. No product guard was removed and all negative/positive scenarios remain. Re-run the full browser suite on the new exact SHA; do not transfer unrelated prior green job conclusions.
+
 ## Remaining work by impact and boundary
 
 | Priority | Work that remains open | Boundary |

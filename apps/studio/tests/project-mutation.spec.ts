@@ -38,7 +38,7 @@ for (const kind of ["asset", "voice"] as const) {
     await page.goto("/");
     await expect(page.locator(".sdk-chip")).toContainText("desktop mode");
     await expect(page.locator(".sdk-chip")).not.toContainText("connected");
-    await expect(page.locator(".revision-chip")).toHaveText("r12");
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r12");
     if (kind === "asset") {
       await page.getByRole("button", { name: "Import local asset", exact: true }).click();
       await page.getByLabel("Local asset path").fill("/synthetic-fixture/asset.png");
@@ -62,12 +62,12 @@ for (const kind of ["asset", "voice"] as const) {
     await page.evaluate(() => (window as unknown as {
       __MUTATION_FIXTURE__: { complete: () => void };
     }).__MUTATION_FIXTURE__.complete());
-    await expect(page.locator(".revision-chip")).toHaveText("r13");
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
     await expect(page.locator(".brand-copy")).toContainText("Synthetic import completed");
     await expect(page.locator(".saving-state")).toHaveCount(0);
     await page.getByLabel("Project title").fill("Edit after import");
     await page.getByRole("button", { name: "Save title", exact: true }).click();
-    await expect(page.locator(".revision-chip")).toHaveText("r14");
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r14");
     expect(await page.evaluate(() => (window as unknown as {
       __MUTATION_FIXTURE__: { revisions: number[] };
     }).__MUTATION_FIXTURE__.revisions)).toEqual([13]);
@@ -137,12 +137,12 @@ test("a pending portable restore cannot race source edits or publish into anothe
   await page.evaluate(() => (window as unknown as {
     __RESTORE_FIXTURE__: {complete:()=>void};
   }).__RESTORE_FIXTURE__.complete());
-  await expect(page.locator(".revision-chip")).toHaveText("r0");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r0");
   await expect(page.locator(".brand-copy")).toContainText("Portable restored project");
   await expect(page.locator(".saving-state")).toHaveCount(0);
   await page.getByLabel("Project title").fill("Edit restored project");
   await page.getByRole("button", { name: "Save title", exact: true }).click();
-  await expect(page.locator(".revision-chip")).toHaveText("r1");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r1");
   expect(await page.evaluate(() => (window as unknown as {
     __RESTORE_FIXTURE__: {revisions:number[]};
   }).__RESTORE_FIXTURE__.revisions)).toEqual([0]);
@@ -189,27 +189,28 @@ for (const action of ["New profile", "Derive selected"] as const) {
     await page.getByRole("button", { name: "Deliver", exact: true }).click();
     const profiles = page.locator(".delivery-profile-row");
     const initialCount = await profiles.count();
-    const initialSelected = await page.locator(".delivery-profile-row.selected").innerText();
-    const revision = await page.locator(".revision-chip").innerText();
+    const selectedProfile = page.locator(".delivery-profile-row.selected");
+    const initialSelected = await selectedProfile.textContent();
+    const revision = await page.locator(".command-bar .revision-chip").innerText();
     await page.getByRole("button", { name: action, exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("Synthetic CAS conflict - no commit");
     await expect(profiles).toHaveCount(initialCount);
-    await expect(page.locator(".revision-chip")).toHaveText(revision);
-    await expect(page.locator(".delivery-profile-row.selected")).toContainText(initialSelected);
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText(revision);
+    expect(await selectedProfile.textContent()).toBe(initialSelected);
     expect(await page.evaluate(() => (window as unknown as {
       __PROFILE_CAS_FIXTURE__: { attempts: number; successfulIds: string[] };
     }).__PROFILE_CAS_FIXTURE__)).toMatchObject({ attempts: 1, successfulIds: [] });
 
     await page.getByRole("button", { name: action, exact: true }).click();
     await expect(profiles).toHaveCount(initialCount + 1);
-    await expect(page.locator(".revision-chip")).toHaveText("r13");
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
     const ids = await page.evaluate(() => (window as unknown as {
       __PROFILE_CAS_FIXTURE__: { revisions: number[]; successfulIds: string[] };
     }).__PROFILE_CAS_FIXTURE__);
     expect(ids.revisions).toEqual([12, 12]);
     expect(ids.successfulIds).toHaveLength(1);
-    await expect(page.locator(".delivery-profile-row.selected")).toHaveCount(1);
-    await expect(page.locator(".delivery-profile-row.selected")).toHaveAttribute("class", /selected/);
+    await expect(selectedProfile).toHaveCount(1);
+    await expect.poll(() => selectedProfile.textContent()).not.toBe(initialSelected);
   });
 }
 
@@ -257,13 +258,13 @@ test("rejected scene creation keeps the editor's draft open until a confirmed CA
   await expect(page.locator(".add-scene-form")).toBeVisible();
   await expect(page.getByLabel("New scene name")).toHaveValue("Original source-approved scene");
   await expect(page.locator(".tree-row")).toHaveCount(before);
-  await expect(page.locator(".revision-chip")).toHaveText("r12");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r12");
 
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.locator(".tree-row")).toHaveCount(before + 1);
-  await expect(page.getByRole("button", { name: /Original source-approved scene/ })).toBeVisible();
+  await expect(page.locator(".tree-list .tree-row").filter({ hasText: "Original source-approved scene" })).toHaveCount(1);
   await expect(page.locator(".add-scene-form")).toHaveCount(0);
-  await expect(page.locator(".revision-chip")).toHaveText("r13");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
   expect(await page.evaluate(() => (window as unknown as {
     __SCENE_CAS_FIXTURE__: { requests: number; revisions: number[] };
   }).__SCENE_CAS_FIXTURE__)).toEqual({ requests: 2, revisions: [12, 12] });
@@ -311,7 +312,7 @@ test("rejected Canvas node creation never selects an object that was not committ
   await createShape.click();
   await expect(page.getByRole("alert")).toContainText("Synthetic Canvas CAS conflict");
   await expect(objects).toHaveCount(initialCount);
-  await expect(page.locator(".revision-chip")).toHaveText("r12");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r12");
   await expect(page.locator(".canvas-tree-row.selected")).toContainText(initialSelected ?? "");
   expect(await page.evaluate(() => (window as unknown as {
     __CANVAS_CAS_FIXTURE__: { requests: number; revisions: number[] };
@@ -319,7 +320,7 @@ test("rejected Canvas node creation never selects an object that was not committ
 
   await createShape.click();
   await expect(objects).toHaveCount(initialCount + 1);
-  await expect(page.locator(".revision-chip")).toHaveText("r13");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
   await expect(page.locator(".canvas-tree-row.selected")).toContainText("Shape");
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as {
