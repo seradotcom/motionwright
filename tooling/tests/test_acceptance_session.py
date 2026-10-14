@@ -272,6 +272,43 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(module.IntakeError, "Duplicate"):
             module.load_private_manifest(private)
 
+    def test_verify_rejects_forged_source_sha_after_valid_initialization(self):
+        import json
+        file = self.root / "private-review.json"
+        file.write_text(json.dumps(self.manifest), encoding="utf-8")
+        with patch.object(module, "checked_head", return_value="b" * 40), patch.object(
+            module, "assert_clean_source_checkout", return_value=None
+        ):
+            with self.assertRaisesRegex(module.IntakeError, "current Git checkout"):
+                module.verify_private_session(file, evidence_root=self.root)
+
+    def test_verify_requires_clean_checkout_even_for_matching_source(self):
+        import json
+        file = self.root / "private-review.json"
+        file.write_text(json.dumps(self.manifest), encoding="utf-8")
+        with patch.object(module, "checked_head", return_value=SOURCE_SHA), patch.object(
+            module, "assert_clean_source_checkout",
+            side_effect=module.IntakeError("Cannot initialize intake from a dirty tracked checkout")
+        ):
+            with self.assertRaisesRegex(module.IntakeError, "dirty tracked checkout"):
+                module.verify_private_session(file, evidence_root=self.root)
+
+    def test_verify_matching_clean_source_keeps_every_case_not_run(self):
+        import json
+        file = self.root / "private-review.json"
+        file.write_text(json.dumps(self.manifest), encoding="utf-8")
+        with patch.object(module, "checked_head", return_value=SOURCE_SHA), patch.object(
+            module, "assert_clean_source_checkout", return_value=None
+        ):
+            status = module.verify_private_session(file, evidence_root=self.root)
+        self.assertEqual(status["PASS"], 0)
+        self.assertEqual(status["NOT_RUN"], 60)
+
+    def test_malformed_status_collection_is_rejected_as_intake_error(self):
+        self.manifest["cases"][0]["status"] = ["PASS"]
+        with self.assertRaisesRegex(module.IntakeError, "unknown acceptance status"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+
     def test_source_lock_requires_full_commit(self):
         with self.assertRaisesRegex(module.IntakeError, "source_sha"):
             module.create_session(source_sha="main")

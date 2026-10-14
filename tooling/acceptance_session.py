@@ -301,6 +301,23 @@ def validate_session(doc: object, *, evidence_root: Path) -> dict[str, int]:
     return {status: counts[status] for status in ("NOT_RUN", "PASS", "FAIL", "BLOCKED")}
 
 
+def verify_private_session(manifest: Path, *, evidence_root: Path) -> dict[str, int]:
+    """Bind the final private review to this checkout before inspecting bytes.
+
+    A different or dirty source tree cannot vouch for the installed build,
+    even if the stored private JSON contains a syntactically valid SHA.
+    This still cannot authenticate the external binary or reviewer identity.
+    """
+    doc = load_private_manifest(manifest)
+    if not isinstance(doc, dict):
+        raise IntakeError("Private acceptance session must be a JSON object")
+    source = doc.get("source")
+    if not isinstance(source, dict) or not isinstance(source.get("motionwright_sha"), str):
+        raise IntakeError("Private acceptance session lacks exact source authority")
+    checked_intake_source(source["motionwright_sha"])
+    return validate_session(doc, evidence_root=evidence_root)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest="action", required=True)
@@ -333,8 +350,9 @@ def main() -> int:
                 file.write("\n")
             print(f"acceptance-intake=initialized cases=60 not_run=60 file={output}")
         elif args.action == "verify":
-            doc = load_private_manifest(args.manifest)
-            totals = validate_session(doc, evidence_root=args.evidence_root)
+            totals = verify_private_session(
+                args.manifest, evidence_root=args.evidence_root
+            )
             print("acceptance-intake=verified " + " ".join(
                 f"{key.lower()}={count}" for key, count in totals.items()
             ))
