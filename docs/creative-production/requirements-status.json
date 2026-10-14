@@ -299,10 +299,17 @@
     },
     {
       "id": "MW05-E04-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No fframes experiment or support claim",
-      "remaining_scope": "Cold/warm compile, preview, audio and render evaluation required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "A disposable source-pinned MIT fframes upstream Rust/SVG/FFmpeg hello-world benchmarking protocol checks cold and warm release build, CLI startup, two headless PNG previews with independent image decode, and a bounded one-second H264 MP4 with FFprobe. The original old-SHA CI passed, but this combined-tree SHA must pass independently. Public CI emits only bounded source-hash/timing facts; no renderer registration, Semwright SDK execution, or backend admission.",
+      "remaining_scope": "Representative same-brief comparison against Motionwright/Motion Canvas/HyperFrames on identical assets and output formats; independent cold and warm renders (not merely compile), real audio mixing and loudness, interactive GPU preview, color/fidelity/reproducibility tests, owner creative acceptance and performance release gates remain NOT_RUN. A fast upstream example does not prove Motionwright speedup.",
+      "source_paths": [
+        "tooling/fframes-experiment/measure.py",
+        "tooling/fframes-experiment/test_measure.py",
+        "tooling/fframes-experiment/public_artifact.py",
+        "tooling/fframes-experiment/test_public_artifact.py",
+        ".github/workflows/v05-fframes-experimental.yml",
+        "docs/creative-production/V05_FFRAMES_EXPERIMENT.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
