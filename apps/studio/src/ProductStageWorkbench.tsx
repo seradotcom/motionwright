@@ -21,6 +21,12 @@ type Props={
 };
 export default function ProductStageWorkbench({project,scene,commit,busy,playhead,onSeek,onOpenCanvas}:Props){
   const stored=project.production_design?.stages?.find(stage=>stage.scene_id===scene?.id);
+  const linked=project.production_design?.stage_capture_cards?.find(card=>card.stage_id===stored?.id);
+  const sources=(project.production_design?.captures??[])
+    .filter(c=>c.source_project_id===project.id && c.declared_scope==="first-party-synthetic-fixture-only" &&
+      project.assets.some(a=>a.id===c.screenshot_asset_id &&
+        a.media_type==="image/png" && a.content_sha256===c.screenshot_sha256));
+  const [selectedCapture,setSelectedCapture]=useState(linked?.capture_id??"");
   const [draft,setDraft]=useState<ProductStageConfig>(()=>
     structuredClone(stored?.config??defaultProductStageConfig())
   );
@@ -60,10 +66,12 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
     valid && !brandConflict && !!preview.length && !previewError && !loading && !changed && !locked && !busy;
   function reload(){
     setDraft(structuredClone(stored?.config??defaultProductStageConfig()));
+    setSelectedCapture(linked?.capture_id??"");
     setBase(project.revision);setCommitError(null);
   }
   useEffect(()=>{
     setDraft(structuredClone(stored?.config??defaultProductStageConfig()));
+    setSelectedCapture(linked?.capture_id??"");
     setBase(project.revision);setCommitError(null);
     // Deliberately not reset on same-scene remote revision: retain human draft.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -97,6 +105,24 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
     setCommitError(null);
     try{
       await commit({type:"detach_product_stage",instance_id:stored.id});
+      setBase(project.revision+1);
+    }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
+  }
+  async function bindSource(){
+    if(!stored || !selectedCapture || busy || changed || locked ||
+      !sources.some(source=>source.id===selectedCapture))return;
+    setCommitError(null);
+    try{
+      await commit({type:"bind_stage_capture",stage_id:stored.id,capture_id:selectedCapture});
+      setBase(project.revision+1);
+    }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
+  }
+  async function detachSource(){
+    if(!stored || !linked || busy || changed || locked)return;
+    setCommitError(null);
+    try{
+      await commit({type:"detach_stage_capture",stage_id:stored.id});
+      setSelectedCapture("");
       setBase(project.revision+1);
     }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
   }
@@ -168,9 +194,46 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       </button>
       {stored && <div className="production-button-row">
         <button className="secondary-button" onClick={onOpenCanvas}><ArrowUpRight size={14}/> Edit stage objects</button>
-        <button className="text-button" disabled={busy||changed||locked} onClick={()=>void detach()}>
+        <button className="text-button" disabled={busy||changed||locked||!!linked} onClick={()=>void detach()}>
           Detach, retain objects</button>
       </div>}
+      <div className="production-section-title"><h3>First-party source tile</h3></div>
+      <p className="production-help">
+        Optionally attach a previously registered, content-addressed first-party
+        Studio capture to the original card panel. Native Film uses the original
+        screenshot PNG as a contained source image, never a fabricated capture,
+        external application or replacement for the other 14 editable nodes.
+      </p>
+      {!stored && <p role="status">Save the original ProductStage before attaching a source.</p>}
+      {stored && <>
+        <label className="production-field"><span>Previously registered synthetic first-party capture</span>
+          <select aria-label="ProductStage first-party capture" value={selectedCapture}
+            disabled={busy||changed||locked} onChange={e=>setSelectedCapture(e.target.value)}>
+            <option value="">Choose an immutable capture-source receipt</option>
+            {sources.map(c=><option key={c.id} value={c.id}>
+              Studio v{c.app_version} ? {c.screenshot_sha256.slice(0,12)}? ? source revision {c.source_revision}
+            </option>)}
+          </select>
+        </label>
+        {!sources.length && <p role="status">No registered first-party source capture is available. Use Production ? Capture sources.</p>}
+        <div className="production-button-row">
+          <button className="secondary-button" onClick={()=>void bindSource()}
+            disabled={busy||changed||locked||!selectedCapture||linked?.capture_id===selectedCapture}>
+            Bind source tile
+          </button>
+          <button className="text-button" onClick={()=>void detachSource()}
+            disabled={busy||changed||locked||!linked}>
+            Detach source tile
+          </button>
+        </div>
+        {linked && <div className="production-evidence-note" role="status">
+          <strong>First-party source attached ? technical fixture, not customer evidence</strong>
+          <p>PNG sha256: {sources.find(c=>c.id===linked.capture_id)?.screenshot_sha256??"missing"}
+            . The editorial vector preview does not display this binary.
+            Verify the actual Semwright native image renderer and source registry before publishing.
+            Detach this tile before detaching ProductStage itself.</p>
+        </div>}
+      </>}
     </section>
     <section className="production-viewer" aria-label="ProductStage editable study viewer">
       <div className="production-viewer-toolbar">
