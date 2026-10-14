@@ -48,7 +48,8 @@ based on this observation.
 - A bounded local private native-provider-broker-events.json is written
   **before deliberate daemon teardown** in the disposable CI runner.
   It is not included in the allowlisted public AV artifact. GitHub CI
-  text logs only a fixed observation category and count.
+  text logs only the fixed observation category and per-allowlisted-kind
+  counts, never provider generations, payloads or native job selectors.
 - This also removes the original AV owner-socket startup assertion path
   that embedded raw semwrightd.log output in GitHub exception text.
   Unexpected startup still fails closed without pasting private logs.

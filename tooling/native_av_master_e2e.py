@@ -738,13 +738,26 @@ def main() -> None:
                         write_private_json(
                             EVIDENCE / "native-provider-broker-events.json", broker_events
                         )
-                        # Only a fixed classification and bounded count reach
-                        # CI text, never original event payloads or job refs.
+                        # CI text can identify *which allowlisted lifecycle
+                        # transition* occurred without logging any event
+                        # payload, generation, owner path or native job ref.
+                        kinds = [
+                            "provider.connected", "provider.disconnected",
+                            "provider.capabilities.changed",
+                            "provider.generation.invalidated", "provider.removed",
+                        ]
+                        safe_counts = {
+                            kind: sum(
+                                item["kind"] == kind
+                                for item in broker_events["events"]
+                            )
+                            for kind in kinds
+                        }
                         print(
                             "v01-provider-broker-events="
                             + broker_events["observation"]
-                            + " count="
-                            + str(broker_events["trusted_lifecycle_event_count"])
+                            + " counts="
+                            + json.dumps(safe_counts, sort_keys=True)
                         )
                     except (OSError, ValueError, TypeError, KeyError):
                         print("v01-provider-broker-events=UNVERIFIED_OPTIONAL_OBSERVATION")
