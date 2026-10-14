@@ -20,6 +20,9 @@ on:
       - 'apps/desktop/src-tauri/**'
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
+      - 'tooling/native_render_public_artifact.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/tests/test_native_render_public_artifact.py'
       - 'tooling/native_av_failure_guard.py'
       - 'tooling/tests/test_native_cli_failure_redaction.py'
       - 'tooling/native_provider_repeat.py'
@@ -81,6 +84,9 @@ jobs:
 
       - name: Verify v0.1 native CLI failures never expose private job receipts
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
+
+      - name: Reject raw Broker session or forged native parity in public evidence
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_render_public_artifact.py' -v
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
@@ -273,10 +279,22 @@ jobs:
           assert report["motionwright_v01_release_ready"] is False
           PY
 
+      - name: Stage only verified v0.1 native PNG review, not original Broker receipts
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/native_render_public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root "verification/native-render-e2e/$GITHUB_SHA" \
+            --output-root "verification/native-render-public" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: motionwright-native-render-${{ github.sha }}
-          path: verification/native-render-e2e
+          path: verification/native-render-public
           if-no-files-found: error
           retention-days: 14
