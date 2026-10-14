@@ -221,6 +221,8 @@ export async function applyProductStageChange(project:Project,change:StageChange
   }else{
     const stage=stages.find(stage=>stage.id===change.instance_id);
     if(!stage)throw new Error("ProductStage instance not found.");
+    if(design.stage_capture_cards?.some(card=>card.stage_id===stage.id))
+      throw new Error("Detach first-party source tile before releasing original ProductStage.");
     unlocked(project,stage.scene_id,["content"]);
     design.stages=stages.filter(stage=>stage.id!==change.instance_id);
   }

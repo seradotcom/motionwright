@@ -727,6 +727,8 @@ enum OperationKind {
     DetachProductStage,
     UpsertCameraReframe,
     DetachCameraReframe,
+    BindStageCapture,
+    DetachStageCapture,
     UpsertProceduralField,
     DetachProceduralField,
     ProposeComponentDistillation,
@@ -936,6 +938,13 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         }),
         OperationKind::DetachCameraReframe => Ok(Change::DetachCameraReframe {
             id: uuid(args, "id")?,
+        }),
+        OperationKind::BindStageCapture => Ok(Change::BindStageCapture {
+            stage_id: uuid(args, "stage_id")?,
+            capture_id: uuid(args, "capture_id")?,
+        }),
+        OperationKind::DetachStageCapture => Ok(Change::DetachStageCapture {
+            stage_id: uuid(args, "stage_id")?,
         }),
         OperationKind::UpsertProceduralField => Ok(Change::UpsertProceduralField {
             instance_id: uuid(args, "instance_id")?,
@@ -2619,6 +2628,21 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::BindStageCapture,
+            descriptor(
+                "product-stage.capture.bind",
+                "Bind one content-addressed, registered first-party synthetic screenshot as a contained editable-stage source tile",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "stage_id":{"type":"string","format":"uuid","maxLength":64},
+                        "capture_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "stage_id", "capture_id"],
+                ),
+            ),
+        ),
+        (
             OperationKind::DetachCameraReframe,
             descriptor(
                 "camera-reframe.detach",
@@ -2627,6 +2651,20 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                     json!({"ref":{"type":"string","maxLength":512},
                         "id":{"type":"string","format":"uuid"}}),
                     &["ref", "id"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::DetachStageCapture,
+            descriptor(
+                "product-stage.capture.detach",
+                "Remove the source image tile while retaining original editable ProductStage nodes and immutable capture provenance",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "stage_id":{"type":"string","format":"uuid","maxLength":64}
+                    }),
+                    &["ref", "stage_id"],
                 ),
             ),
         ),
@@ -3278,7 +3316,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.creative-evaluator.evaluate"));
         assert!(names.contains(&"driver.motionwright.component-distillation.propose"));
         assert!(names.contains(&"driver.motionwright.component-distillation.review"));
-        assert_eq!(capabilities.len(), 72);
+        assert!(names.contains(&"driver.motionwright.product-stage.capture.bind"));
+        assert!(names.contains(&"driver.motionwright.product-stage.capture.detach"));
+        // Preserve both native SDK operation families admitted independently.
+        assert_eq!(capabilities.len(), 74);
     }
 
     #[test]

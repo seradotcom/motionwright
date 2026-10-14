@@ -69,6 +69,16 @@ Semwright Native SDK project journal. See
 [Craft components](CRAFT_COMPARISON_QUOTE.md) for source-truth, text budgets,
 pixel evidence limitations, and review requirements. These layouts do not
 constitute a 36-component library or human creative acceptance.
+## Source-bound first-party screenshot tile (MW05-E07-01/E07-02)
+
+ProductStage can now link an original authored card to a previously
+registered first-party synthetic screenshot receipt through the existing
+Native SDK CAS. Canonical Film emits a real image Subject with a
+content-addressed PNG AssetRef and MediaFit::Contain. The rest of the
+ProductStage remains separate editable Canvas geometry. The Studio preview
+does not invent unavailable image pixels. See
+[First-party capture tile](STAGE_CAPTURE_TILE.md) for authorization and
+remaining real H.264/media-rights acceptance.
 
 ## Original generic ProductStage (MW05-E07-01)
 
