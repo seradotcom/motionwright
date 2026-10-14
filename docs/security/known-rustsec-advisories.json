@@ -22,7 +22,8 @@
         "glib": "0.18.5"
       },
       "forbidden_first_party_tokens": [
-        "VariantStrIter"
+        "VariantStrIter",
+        "array_iter_str"
       ],
       "reviewed_direct_owners": [
         "atk@0.18.2",

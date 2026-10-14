@@ -14,7 +14,10 @@ cannot independently force a semver-incompatible glib 0.20 upgrade.
 
 The original security_advisory_policy.py already rejects unrecognized
 RustSec warning IDs/classes, vulnerabilities, changed locked versions
-and first-party use of the affected API name. However, two changes could
+and direct first-party use of the affected iterator type. The reviewed
+first-party token checks also now forbid the actual array_iter_str method
+entry point; this is a source string check, not a whole-program call graph.
+However, two changes could
 go unnoticed without modifying glib's version:
 
 - A different crate could directly import glib 0.18.5 while leaving

@@ -41,6 +41,9 @@ class GlibOwnerChainTests(unittest.TestCase):
         self.assertEqual(result["terminal_source_owner"], "motionwright-desktop@0.1.0")
         self.assertFalse(result["glib_vulnerability_fixed"])
         self.assertFalse(result["release_authorized"])
+        forbidden = self.policy["forbidden_first_party_tokens"]
+        self.assertIn("VariantStrIter", forbidden)
+        self.assertIn("array_iter_str", forbidden)
         self.assertFalse(result["linux_target_reachability_proven"])
         self.assertFalse(result["affected_iterator_api_unreachable_proven"])
 
