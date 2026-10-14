@@ -188,6 +188,30 @@ class SignedVerifierTests(unittest.TestCase):
   with self.assertRaisesRegex(AdmissionRejected,"Duplicate JSON key"):
    self.check()
 
+ def test_nested_owner_public_key_under_untrusted_bundle_refused(self):
+  directory=self.root/"untrusted-subfolder";directory.mkdir()
+  nested=directory/"trusted-owner.pub"
+  nested.write_bytes(self.keyfile.read_bytes())
+  self.keyfile=nested
+  with self.assertRaisesRegex(AdmissionRejected,"Trusted owner public key"):
+   self.check()
+
+ def test_nested_policy_head_under_untrusted_bundle_refused(self):
+  directory=self.root/"producer-controlled-policy";directory.mkdir()
+  nested=directory/"trusted-policy-head.json"
+  nested.write_bytes(self.policy_head_file.read_bytes())
+  self.policy_head_file=nested
+  with self.assertRaisesRegex(AdmissionRejected,"Trusted current policy head"):
+   self.check()
+
+ def test_nested_verifier_source_under_untrusted_bundle_refused(self):
+  directory=self.root/"producer-controlled-source";directory.mkdir()
+  nested=directory/"reviewed-verifier.py"
+  nested.write_bytes(self.source.read_bytes())
+  self.source=nested
+  with self.assertRaisesRegex(AdmissionRejected,"Verifier code bytes"):
+   self.check()
+
  def test_unrecognized_admission_or_evidence_fields_do_not_grant_new_powers(self):
   self.admission["install_renderer"]=True
   self.write_all()

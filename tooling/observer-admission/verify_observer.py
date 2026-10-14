@@ -136,6 +136,17 @@ def file_under(root:Path,relative:object,label:str)->Path:
         require(not cursor.is_symlink(),f"{label} path cannot contain symlinks")
     return cursor
 
+def outside_untrusted_evidence(path: Path, root: Path) -> bool:
+    """Trusted source paths cannot be the evidence root or ANY descendant."""
+    try:
+        lexical = path.absolute()
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False
+    return (lexical != root and root not in lexical.parents
+            and resolved != root and root not in resolved.parents)
+
+
 def inspect(
     evidence_root:Path,
     owner_public_key_file:Path,
@@ -148,7 +159,7 @@ def inspect(
     root=evidence_root.resolve(strict=True)
     require(owner_public_key_file.is_file() and
             not owner_public_key_file.is_symlink() and
-            owner_public_key_file.resolve(strict=True).parent!=root,
+            outside_untrusted_evidence(owner_public_key_file,root),
             "Trusted owner public key must be separately provisioned outside untrusted evidence root")
     require(owner_public_key_file.stat().st_size==32,
             "Trusted owner Ed25519 raw public key has invalid bytes")
@@ -156,7 +167,7 @@ def inspect(
     require(len(owner_pub)==32,"Trusted owner Ed25519 raw public key is malformed")
     require(trusted_policy_head_file.is_file() and
             not trusted_policy_head_file.is_symlink() and
-            trusted_policy_head_file.parent.resolve(strict=True)!=root and
+            outside_untrusted_evidence(trusted_policy_head_file,root) and
             0<trusted_policy_head_file.stat().st_size<=1024,
             "Trusted current policy head must be provisioned outside the untrusted evidence bundle")
     trusted=exact(strict_json(trusted_policy_head_file.read_bytes(), "Trusted policy head"),
@@ -211,7 +222,7 @@ def inspect(
     require(isinstance(admission["verifier_source_sha256"],str)
             and SHA.fullmatch(admission["verifier_source_sha256"]),
             "Verifier code was not pinned by SHA")
-    require(verifier_source_file.parent!=root and
+    require(outside_untrusted_evidence(verifier_source_file,root) and
             verifier_source_file.suffix==".py" and
             fingerprint(verifier_source_file,2*1024*1024,"Owner-admitted verifier source")
                ==admission["verifier_source_sha256"],

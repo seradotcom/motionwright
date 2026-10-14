@@ -142,3 +142,15 @@ renderer quality, provenance rights, a future editable project, or approval
 by the Motionwright/Launchwright product runtime. It performs no native
 mutation, no provider job replay, and no executable source admission.
 Production trusted key persistence and owner signoff remain out of scope.
+
+### Trusted-path containment (independent of signed payload)
+
+An independently trusted owner public key, the current trusted policy head and
+the reviewed verifier-source file must be **outside the untrusted evidence
+directory and every descendant directory**. The gate compares both the
+lexical absolute path and the resolved file identity against the evidence
+root; simply placing an owner key in a producer-controlled nested folder
+cannot create a trusted owner. Three independent adversarial tests reject
+nested owner-key, policy-head and verifier-source paths. A trusted owner path
+is a separate administrative configuration, never a value supplied solely
+by the renderer or the observer's signed report.
