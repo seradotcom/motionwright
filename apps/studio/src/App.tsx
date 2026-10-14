@@ -1950,14 +1950,21 @@ export default function App() {
     );
   }, [boot]);
 
+  // Deliver has its own error boundary and must observe a rejected CAS before
+  // selecting newly authored profiles. Other editor controls retain their
+  // globally reported, nonthrowing commit contract.
+  const commitRequired = useCallback(async (change: Change): Promise<void> => {
+    await transactProject(source => applyChange(source, change));
+  }, [transactProject]);
+
   const commit = useCallback(async (change: Change) => {
     setError(null);
     try {
-      await transactProject(source => applyChange(source, change));
+      await commitRequired(change);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [transactProject]);
+  }, [commitRequired]);
 
   const ingestAsset = useCallback(async (path: string) => {
     await transactProject(source => importAssetFile(source, path));
@@ -2082,7 +2089,7 @@ export default function App() {
         return (
           <DeliverView
             project={project}
-            commit={commit}
+            commit={commitRequired}
             onOpenAudio={() => setWorkspace("Audio")}
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}

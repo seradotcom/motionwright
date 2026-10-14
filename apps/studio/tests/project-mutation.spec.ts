@@ -147,3 +147,68 @@ test("a pending portable restore cannot race source edits or publish into anothe
     __RESTORE_FIXTURE__: {revisions:number[]};
   }).__RESTORE_FIXTURE__.revisions)).toEqual([0]);
 });
+
+for (const action of ["New profile", "Derive selected"] as const) {
+  test(`${action}: failed native CAS does not select an unsaved delivery profile`, async ({ page }) => {
+    const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+    await page.addInitScript(boot => {
+      let project = structuredClone(boot.project);
+      const host = window as unknown as {
+        __PROFILE_CAS_FIXTURE__: { attempts: number; revisions: number[]; successfulIds: string[] };
+        __TAURI_INTERNALS__: {
+          invoke: (name: string, args?: { request?: {
+            revision?: number;
+            change?: { type: string; profile?: typeof project.deliverables[number] };
+          } }) => Promise<unknown>;
+        };
+      };
+      const state = { attempts: 0, revisions: [] as number[], successfulIds: [] as string[] };
+      host.__PROFILE_CAS_FIXTURE__ = state;
+      host.__TAURI_INTERNALS__ = { invoke: async (name, args) => {
+        if (name === "bootstrap") return structuredClone(boot);
+        if (name === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
+        if (name === "production_runtime_status") throw new Error("Synthetic runtime not configured");
+        if (name === "apply_change") {
+          state.attempts += 1;
+          state.revisions.push(args?.request?.revision ?? -1);
+          if (state.attempts === 1) throw new Error("Synthetic CAS conflict - no commit");
+          const change = args?.request?.change;
+          if (change?.type !== "upsert_deliverable" || !change.profile) {
+            throw new Error("Unsupported synthetic delivery change");
+          }
+          state.successfulIds.push(change.profile.id);
+          project = { ...project, revision: project.revision + 1,
+            deliverables: [...project.deliverables, structuredClone(change.profile)] };
+          return structuredClone(project);
+        }
+        throw new Error("Unsupported synthetic IPC command: " + name);
+      } };
+    }, initial);
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Deliver", exact: true }).click();
+    const profiles = page.locator(".delivery-profile-row");
+    const initialCount = await profiles.count();
+    const initialSelected = await page.locator(".delivery-profile-row.selected").innerText();
+    const revision = await page.locator(".revision-chip").innerText();
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Synthetic CAS conflict - no commit");
+    await expect(profiles).toHaveCount(initialCount);
+    await expect(page.locator(".revision-chip")).toHaveText(revision);
+    await expect(page.locator(".delivery-profile-row.selected")).toContainText(initialSelected);
+    expect(await page.evaluate(() => (window as unknown as {
+      __PROFILE_CAS_FIXTURE__: { attempts: number; successfulIds: string[] };
+    }).__PROFILE_CAS_FIXTURE__)).toMatchObject({ attempts: 1, successfulIds: [] });
+
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await expect(profiles).toHaveCount(initialCount + 1);
+    await expect(page.locator(".revision-chip")).toHaveText("r13");
+    const ids = await page.evaluate(() => (window as unknown as {
+      __PROFILE_CAS_FIXTURE__: { revisions: number[]; successfulIds: string[] };
+    }).__PROFILE_CAS_FIXTURE__);
+    expect(ids.revisions).toEqual([12, 12]);
+    expect(ids.successfulIds).toHaveLength(1);
+    await expect(page.locator(".delivery-profile-row.selected")).toHaveCount(1);
+    await expect(page.locator(".delivery-profile-row.selected")).toHaveAttribute("class", /selected/);
+  });
+}
