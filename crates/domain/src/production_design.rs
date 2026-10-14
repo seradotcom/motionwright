@@ -41,6 +41,12 @@ pub struct ProductionDesign {
     /// Original semantic 2D camera pans. No 3D orbit or optical dolly claim.
     #[serde(default)]
     pub camera_reframes: Vec<CameraReframe>,
+    /// Original data-only creative playbooks, never executable skills.
+    #[serde(default)]
+    pub evaluator_bundles: Vec<CreativeEvaluatorBundle>,
+    /// Source-revision-bound technical observations; human taste abstains.
+    #[serde(default)]
+    pub evaluation_reports: Vec<CreativeEvaluationReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

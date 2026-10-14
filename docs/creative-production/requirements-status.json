@@ -825,12 +825,22 @@
     },
     {
       "id": "MW05-E13-01",
-      "implementation": "inherited_not_reassessed",
-      "implemented_scope": "Existing skill material is not execution authority",
-      "remaining_scope": "Versioned creative skill/evaluator bundles are not added here",
+      "implementation": "partial",
+      "implemented_scope": "Versioned append-only data-only creative playbooks and deterministic Scene evaluator; canonical SHA-256 source versions, bounded minimum nodes/text/safe-area criteria, mandatory human-question abstention, source-revision technical reports, Studio and Semwright Native SDK CAS operations",
+      "remaining_scope": "Signed third-party evaluator package distribution, independent benchmarked human aesthetic reviewers, advanced temporal/audio/full-master evaluation and actual human creative approval remain open. No executable code promotion permitted.",
       "source_paths": [
-        "apps/desktop/src-tauri/src/effect_grants.rs",
-        "crates/domain/src/extensions.rs"
+        "crates/domain/src/creative_evaluator.rs",
+        "crates/domain/tests/creative_evaluator.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/src/production_design.rs",
+        "crates/service/tests/creative_evaluator.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/creativeEvaluator.ts",
+        "apps/studio/src/creativeEvaluator.test.ts",
+        "apps/studio/src/CreativeEvaluatorWorkbench.tsx",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/creative-evaluator.spec.ts",
+        "docs/creative-production/CREATIVE_EVALUATORS.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

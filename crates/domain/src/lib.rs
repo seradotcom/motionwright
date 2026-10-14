@@ -3,6 +3,7 @@ mod camera_reframe;
 mod canvas;
 mod capture_source;
 mod creative;
+mod creative_evaluator;
 mod creative_revisions;
 mod delivery;
 mod extensions;
@@ -22,6 +23,7 @@ pub use camera_reframe::*;
 pub use canvas::*;
 pub use capture_source::*;
 pub use creative::*;
+pub use creative_evaluator::*;
 pub use creative_revisions::*;
 pub use delivery::*;
 pub use extensions::*;
@@ -664,6 +666,8 @@ impl Project {
         self.production_design.validate_capture_sources(self)?;
         self.production_design
             .validate_camera_reframes(&self.scenes)?;
+        self.production_design
+            .validate_creative_evaluators(self.revision)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1118,6 +1122,14 @@ impl Project {
                     .push(decision.clone());
             }
             Change::RegisterCaptureSource { record } => self.register_capture_source(record)?,
+            Change::RegisterCreativeEvaluator { bundle } => {
+                self.register_creative_evaluator(bundle)?
+            }
+            Change::EvaluateCreativeScene {
+                evaluator_id,
+                evaluator_version,
+                scene_id,
+            } => self.evaluate_creative_scene(*evaluator_id, *evaluator_version, *scene_id)?,
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.ensure_unlocked(&format!("scene:{}", capsule.scene_id), &[LockKind::Content])?;
@@ -2464,6 +2476,14 @@ pub enum Change {
     },
     RecordCreativeDecision {
         decision: CreativeDecision,
+    },
+    RegisterCreativeEvaluator {
+        bundle: CreativeEvaluatorBundle,
+    },
+    EvaluateCreativeScene {
+        evaluator_id: Uuid,
+        evaluator_version: u32,
+        scene_id: Uuid,
     },
     RegisterCaptureSource {
         record: CaptureSourceRecord,

@@ -4,6 +4,7 @@ import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusi
 import { applyProductionDesignChange, emptyProductionDesign, sameValue } from "./creativeProduction";
 import { validateBrandGovernance } from "./brandGovernance";
 import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
+import { applyEvaluatorChange, validateEvaluatorState } from "./creativeEvaluator";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
@@ -1037,6 +1038,11 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design.taste_profile=structuredClone(change.profile);
       break;
     }
+    case "register_creative_evaluator":
+    case "evaluate_creative_scene": {
+      await applyEvaluatorChange(next,change);
+      break;
+    }
     case "record_creative_decision": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();
@@ -1953,6 +1959,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   validateCameraReframes(next);
   validateCaptureRecords(next);
   validateMeasuredData(next);
+  await validateEvaluatorState(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");
