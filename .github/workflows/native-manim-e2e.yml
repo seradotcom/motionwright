@@ -14,6 +14,9 @@ on:
       - 'crates/manim-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_scene_public_artifact.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/tests/test_native_scene_public_artifact.py'
       - '.github/workflows/native-manim-e2e.yml'
 
 permissions:
@@ -157,6 +160,9 @@ jobs:
           python3 tooling/native_manim_e2e.py \
             | tee verification/native-manim-e2e/run.log
 
+      - name: Reject unsafe public Blender and Manim scene media
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
+
       - name: Verify Manim review evidence
         run: |
           test -s "verification/native-manim-e2e/${GITHUB_SHA}/result.json"
@@ -178,10 +184,23 @@ jobs:
           assert len(result["mp4"]["sha256"]) == 64
           PY
 
+      - name: Stage only verified Manim MP4, not original Broker receipts
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/native_scene_public_artifact.py \
+            --scene manim \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root "verification/native-manim-e2e/$GITHUB_SHA" \
+            --output-root "verification/native-manim-public" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-manim-public/public-evidence.json >/dev/null
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: motionwright-native-manim-${{ github.sha }}
-          path: verification/native-manim-e2e
+          path: verification/native-manim-public
           if-no-files-found: error
           retention-days: 14

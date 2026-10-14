@@ -12,6 +12,9 @@ on:
       - 'crates/storage/**'
       - 'crates/native/**'
       - 'tooling/native_blender_e2e.py'
+      - 'tooling/native_scene_public_artifact.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/tests/test_native_scene_public_artifact.py'
       - '.github/workflows/native-blender-e2e.yml'
 
 permissions:
@@ -112,6 +115,9 @@ jobs:
           python3 tooling/native_blender_e2e.py \
             | tee verification/native-blender-e2e/run.log
 
+      - name: Reject unsafe public Blender and Manim scene media
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
+
       - name: Verify Blender review evidence
         run: |
           test -s "verification/native-blender-e2e/${GITHUB_SHA}/result.json"
@@ -132,10 +138,23 @@ jobs:
           assert magic == b"glTF" and version == 2 and length == len(data)
           PY
 
+      - name: Stage only verified Blender GLB, not original Broker receipts
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/native_scene_public_artifact.py \
+            --scene blender \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root "verification/native-blender-e2e/$GITHUB_SHA" \
+            --output-root "verification/native-blender-public" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-blender-public/public-evidence.json >/dev/null
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: motionwright-native-blender-${{ github.sha }}
-          path: verification/native-blender-e2e
+          path: verification/native-blender-public
           if-no-files-found: error
           retention-days: 14
