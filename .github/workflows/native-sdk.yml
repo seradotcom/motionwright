@@ -9,6 +9,9 @@ on:
       - "crates/native/**"
       - "apps/desktop/src-tauri/**"
       - "tooling/native_host_shared_state.py"
+      - "tooling/native_shared_state_public_artifact.py"
+      - "tooling/tests/test_native_shared_state_public_artifact.py"
+      - "tooling/cross_app_public_artifact.py"
       - "tooling/native_av_failure_guard.py"
       - "tooling/tests/test_native_cli_failure_redaction.py"
       - "docs/native-sdk.md"
@@ -22,6 +25,9 @@ on:
       - "crates/native/**"
       - "apps/desktop/src-tauri/**"
       - "tooling/native_host_shared_state.py"
+      - "tooling/native_shared_state_public_artifact.py"
+      - "tooling/tests/test_native_shared_state_public_artifact.py"
+      - "tooling/cross_app_public_artifact.py"
       - "tooling/native_av_failure_guard.py"
       - "tooling/tests/test_native_cli_failure_redaction.py"
       - "docs/native-sdk.md"
@@ -72,6 +78,8 @@ jobs:
           cache-on-failure: true
       - name: Verify source-bound JSON command failure redaction
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
+      - name: Refuse private shared-state receipts in public artifact
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_shared_state_public_artifact.py' -v
       - name: Upstream public Native SDK contract tests
         working-directory: _semwright
         run: cargo test --locked -p semwright-native-sdk --features driver --test cooperation
@@ -205,10 +213,21 @@ jobs:
             --example shared-state-actor
       - name: Real UI-service to Native Host shared-state acceptance
         run: python3 tooling/native_host_shared_state.py
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - name: Stage verified public shared-state checks, never owner calls or daemon logs
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/native_shared_state_public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root "verification/native-sdk/github-actions/shared-state/$GITHUB_SHA" \
+            --output-root "verification/native-sdk/public-shared-state" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-sdk/public-shared-state/public-evidence.json >/dev/null
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
         if: always()
         with:
           name: motionwright-native-shared-state-${{ github.sha }}
-          path: verification/native-sdk/github-actions/shared-state
+          path: verification/native-sdk/public-shared-state
           if-no-files-found: error
           retention-days: 14
