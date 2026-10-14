@@ -418,6 +418,42 @@ impl ProductionDesign {
         let mut hero_scenes = BTreeSet::new();
         for hero in &self.heroes {
             hero.validate()?;
+            // Conceptual comparisons and illustrative quotations may not
+            // silently lose their safety disclosure while still attached.
+            if matches!(
+                hero.config.layout,
+                HeroLayout::ContrastComparison | HeroLayout::EditorialQuote
+            ) {
+                let source = hero
+                    .baseline
+                    .iter()
+                    .find(|node| node.id == hero_node_id(hero.id, "disclosure"))
+                    .ok_or_else(|| {
+                        DomainError::Invalid("craft disclosure baseline missing".into())
+                    })?;
+                let scene = scenes
+                    .iter()
+                    .find(|scene| scene.id == hero.scene_id)
+                    .ok_or_else(|| DomainError::Invalid("craft source scene missing".into()))?;
+                let actual = scene
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == source.id)
+                    .ok_or_else(|| {
+                        DomainError::Invalid("bound craft safety disclosure was removed".into())
+                    })?;
+                // Visibility, positioning, paint, z-order and animation are
+                // part of the disclaimer. A text-only comparison permits
+                // opacity=0 and other silent removal of its meaning.
+                // Property locks are editing permissions, not visible output.
+                let mut visible = actual.clone();
+                visible.property_locks = source.property_locks.clone();
+                if source.kind != "text" || visible != *source {
+                    return Err(DomainError::Invalid(
+                        "bound craft safety disclosure was changed, hidden or falsely certified; detach first".into()
+                    ));
+                }
+            }
             if !ids.insert(hero.id)
                 || !hero_scenes.insert(hero.scene_id)
                 || !scenes.iter().any(|scene| scene.id == hero.scene_id)

@@ -802,10 +802,14 @@ fn seed_hero(
     let split = aspect.starts_with("split-");
     let metric = aspect.starts_with("metric-");
     let step = aspect.starts_with("step-");
+    let contrast = aspect.starts_with("contrast-");
+    let quote = aspect.starts_with("quote-");
     let shape = aspect
         .strip_prefix("split-")
         .or_else(|| aspect.strip_prefix("metric-"))
         .or_else(|| aspect.strip_prefix("step-"))
+        .or_else(|| aspect.strip_prefix("contrast-"))
+        .or_else(|| aspect.strip_prefix("quote-"))
         .unwrap_or(aspect);
     let (width, height) = match shape {
         "landscape" => (1920, 1080),
@@ -823,6 +827,10 @@ fn seed_hero(
         "MetricEvidence"
     } else if step {
         "StepSequence"
+    } else if contrast {
+        "ContrastComparison"
+    } else if quote {
+        "EditorialQuote"
     } else {
         "ProductHeroReveal"
     };
@@ -848,7 +856,27 @@ fn seed_hero(
             &Change::UpsertProductHero {
                 instance_id: Uuid::parse_str("00000000-0000-4000-8000-000000000005")?,
                 scene_id,
-                config: if metric {
+                config: if contrast {
+                    motionwright_domain::HeroConfig {
+                        layout: motionwright_domain::HeroLayout::ContrastComparison,
+                        eyebrow: "ORIGINAL CREATIVE / CONCEPT STUDY".into(),
+                        headline: "A manual first step".into(),
+                        body: "A second authored direction with a clear visual purpose".into(),
+                        wordmark: "STUDY".into(),
+                        accent: "#86C8D1".into(),
+                        ..motionwright_domain::HeroConfig::default()
+                    }
+                } else if quote {
+                    motionwright_domain::HeroConfig {
+                        layout: motionwright_domain::HeroLayout::EditorialQuote,
+                        eyebrow: "ILLUSTRATIVE EDITORIAL / NO ENDORSEMENT".into(),
+                        headline: "An idea can change the story".into(),
+                        body: "Original editorial context with no fabricated attribution".into(),
+                        wordmark: "QUOTE".into(),
+                        accent: "#86C8D1".into(),
+                        ..motionwright_domain::HeroConfig::default()
+                    }
+                } else if metric {
                     motionwright_domain::HeroConfig {
                         layout: motionwright_domain::HeroLayout::MetricEvidence,
                         eyebrow: "AUTHOR SUPPLIED / VALIDATION REQUIRED".into(),
@@ -966,7 +994,12 @@ fn seed_hero(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "fixture": if split { "split-explanation/1" } else if metric { "metric-evidence/1" } else if step { "step-sequence/1" } else { "product-hero-reveal/1" }, "project_id": project.id, "resource": project.resource_key(),
+            "fixture": if split { "split-explanation/1" }
+                else if metric { "metric-evidence/1" }
+                else if step { "step-sequence/1" }
+                else if contrast { "contrast-comparison/1" }
+                else if quote { "editorial-quote/1" }
+                else { "product-hero-reveal/1" }, "project_id": project.id, "resource": project.resource_key(),
             "generation": project.generation, "revision": project.revision, "scene_id": scene_id,
             "deliverable_id": deliverable.id, "width": width, "height": height, "frame_count": 180,
             "creative_approval": "required"
