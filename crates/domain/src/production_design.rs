@@ -47,6 +47,12 @@ pub struct ProductionDesign {
     /// Source-revision-bound technical observations; human taste abstains.
     #[serde(default)]
     pub evaluation_reports: Vec<CreativeEvaluationReport>,
+    /// Versioned author-declared identities, not authenticated likeness rights.
+    #[serde(default)]
+    pub identity_origins: Vec<IdentityOriginRecord>,
+    /// Immutable revocations; cannot re-register a source to bypass refusal.
+    #[serde(default)]
+    pub identity_revocations: Vec<IdentityRevocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

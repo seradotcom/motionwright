@@ -32,6 +32,10 @@ In **Native inspection**, select the output profile matching a current native re
 
 **Production → Evaluators** admits owner-authored, versioned, non-executable creative playbooks and records deterministic technical observations against the exact source project and revision. Human artistic questions remain NOT_ASSESSED and cannot become automatic aesthetic PASS, approval or promotion of executable code. See [Creative Evaluators](CREATIVE_EVALUATORS.md). The original Semwright Native SDK and Studio CAS remain the only mutation authority.
 
+## Synthetic identity and consent boundaries (MW05-E12-04)
+
+**Production → Identity & consent** maintains source-hash-bound original fictional identity declarations and separately scoped human likeness consent claims, with purpose, modality, expiry and append-only revocations. A revoked source cannot silently be re-registered under a different record ID. These claims never authenticate a human, establish third-party rights or grant synthesis. See [Identity and consent](IDENTITY_CONSENT.md). Existing project CAS and Semwright Native SDK remain the sole mutation authority.
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows
