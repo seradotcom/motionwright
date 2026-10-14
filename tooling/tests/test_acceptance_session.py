@@ -304,6 +304,36 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(status["PASS"], 0)
         self.assertEqual(status["NOT_RUN"], 60)
 
+    def test_verify_refuses_checkout_changed_during_evidence_hashing(self):
+        import json
+        self.approve()
+        manifest = self.root / "private-review.json"
+        manifest.write_text(json.dumps(self.manifest), encoding="utf-8")
+        # First source check succeeds. After the real PASS evidence is read,
+        # HEAD has changed and the original receipt must not be reported.
+        real_fingerprint = module.fingerprint
+        with patch.object(module, "checked_head",
+                          side_effect=[SOURCE_SHA, "b" * 40]) as head, \
+             patch.object(module, "assert_clean_source_checkout",
+                          return_value=None), \
+             patch.object(module, "fingerprint",
+                          wraps=real_fingerprint) as evidence:
+            with self.assertRaisesRegex(module.IntakeError, "current Git checkout"):
+                module.verify_private_session(manifest, evidence_root=self.root)
+        self.assertEqual(head.call_count, 2)
+        self.assertEqual(evidence.call_count, 1)
+
+    def test_verify_refuses_checkout_dirtied_during_evidence_verification(self):
+        import json
+        manifest = self.root / "private-review.json"
+        manifest.write_text(json.dumps(self.manifest), encoding="utf-8")
+        with patch.object(module, "checked_head", return_value=SOURCE_SHA), \
+             patch.object(module, "assert_clean_source_checkout",
+                          side_effect=[None, module.IntakeError("checkout changed during verification")]) as clean:
+            with self.assertRaisesRegex(module.IntakeError, "checkout changed"):
+                module.verify_private_session(manifest, evidence_root=self.root)
+        self.assertEqual(clean.call_count, 2)
+
     def test_malformed_status_collection_is_rejected_as_intake_error(self):
         self.manifest["cases"][0]["status"] = ["PASS"]
         with self.assertRaisesRegex(module.IntakeError, "unknown acceptance status"):
