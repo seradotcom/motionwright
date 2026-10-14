@@ -31,6 +31,8 @@ use uuid::Uuid;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
+#[cfg(test)]
+mod path_boundary_tests;
 mod recovery;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
@@ -167,22 +169,99 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// A Windows junction/reparse directory can redirect an absolute path
+/// without being represented as a Rust symlink. Both are forbidden.
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// macOS exposes trusted legacy /tmp, /var and /etc aliases to root-managed
+/// /private locations. Refusing those fixed OS aliases would break otherwise
+/// genuine owner temporary files; it must NOT allow user-created links.
+#[cfg(target_os = "macos")]
+fn trusted_macos_system_alias(path: &Path) -> Option<PathBuf> {
+    let expected = match path.to_str()? {
+        "/tmp" => Path::new("/private/tmp"),
+        "/var" => Path::new("/private/var"),
+        "/etc" => Path::new("/private/etc"),
+        _ => return None,
+    };
+    let private_root = fs::symlink_metadata("/private").ok()?;
+    if !private_root.is_dir() || is_link_or_reparse(&private_root) {
+        return None;
+    }
+    let canonical = fs::canonicalize(path).ok()?;
+    (canonical.as_path() == expected).then_some(canonical)
+}
+
+/// Validate every component, not only the leaf: a non-linked executable under
+/// a linked parent is otherwise indistinguishable to the final-file check.
+/// Keep Unix permission enforcement on the requested leaf as before; system
+/// ancestors such as /tmp may legitimately have a sticky writable directory.
 fn safe_metadata(path: &Path) -> NativeResult<fs::Metadata> {
     if !path.is_absolute() {
         return Err(invalid("Production connection paths must be absolute"));
     }
-    let metadata = fs::symlink_metadata(path).map_err(|_| {
-        Error::new(
-            ErrorCode::Unavailable,
-            "Production connection path is unavailable",
-        )
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(Error::new(
-            ErrorCode::PermissionDenied,
-            "Production connection paths cannot be symlinks",
-        ));
+    let mut current = PathBuf::new();
+    let mut components = path.components().peekable();
+    let mut leaf = None;
+    while let Some(component) = components.next() {
+        match component {
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+                continue;
+            }
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::Normal(name) => current.push(name),
+            Component::CurDir | Component::ParentDir => {
+                return Err(invalid("Production connection paths must be normalized"));
+            }
+        }
+        let metadata = fs::symlink_metadata(&current).map_err(|_| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "Production connection path is unavailable",
+            )
+        })?;
+        #[cfg(target_os = "macos")]
+        let metadata = if metadata.file_type().is_symlink() {
+            if let Some(canonical) = trusted_macos_system_alias(&current) {
+                current = canonical;
+                fs::symlink_metadata(&current).map_err(|_| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "Production system path alias is unavailable",
+                    )
+                })?
+            } else {
+                metadata
+            }
+        } else {
+            metadata
+        };
+        if is_link_or_reparse(&metadata) {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Production connection paths cannot traverse symlinks or reparse points",
+            ));
+        }
+        if components.peek().is_some() && !metadata.is_dir() {
+            return Err(invalid("Production connection parent must be a directory"));
+        }
+        leaf = Some(metadata);
     }
+    let metadata = leaf.ok_or_else(|| invalid("Production connection path is invalid"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -231,6 +310,11 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
             "Production artifact path must be a normalized relative path",
         ));
     }
+    // The output root may have been replaced since the owner connection was
+    // loaded. Reject substituted ancestors before canonicalizing them.
+    if !safe_metadata(root)?.is_dir() {
+        return Err(invalid("Production output root must be a plain directory"));
+    }
     let root = fs::canonicalize(root).map_err(|_| {
         Error::new(
             ErrorCode::Unavailable,
@@ -238,7 +322,8 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
         )
     })?;
     let mut lexical = root.clone();
-    for component in relative_path.components() {
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
         let Component::Normal(component) = component else {
             return Err(invalid(
                 "Production artifact path must contain only normal components",
@@ -248,10 +333,15 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
         let metadata = fs::symlink_metadata(&lexical).map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Production artifact is unavailable")
         })?;
-        if metadata.file_type().is_symlink() {
+        if is_link_or_reparse(&metadata) {
             return Err(Error::new(
                 ErrorCode::PermissionDenied,
-                "Production artifact paths cannot traverse symlinks",
+                "Production artifact paths cannot traverse symlinks or reparse points",
+            ));
+        }
+        if components.peek().is_some() && !metadata.is_dir() {
+            return Err(invalid(
+                "Production artifact path parent must be a directory",
             ));
         }
     }

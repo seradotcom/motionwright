@@ -643,6 +643,17 @@ impl Project {
             .find(|stage| stage.id == id)
             .ok_or_else(|| DomainError::NotFound(format!("ProductStage:{id}")))?;
         self.ensure_unlocked(&format!("scene:{}", stage.scene_id), &[LockKind::Content])?;
+        if self
+            .production_design
+            .stage_capture_cards
+            .iter()
+            .any(|card| card.stage_id == id)
+        {
+            return Err(DomainError::Invalid(
+                "Detach the first-party source card before releasing its original ProductStage"
+                    .into(),
+            ));
+        }
         self.production_design.stages.retain(|stage| stage.id != id);
         Ok(()) // stage Canvas nodes and their human edits remain intact
     }

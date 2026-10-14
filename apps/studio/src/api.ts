@@ -8,6 +8,7 @@ import { applyEvaluatorChange, validateEvaluatorState } from "./creativeEvaluato
 import { applyDistillationChange, validateDistillations } from "./componentDistillation";
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
+import { applyStageCaptureChange, validateStageCaptureCards } from "./stageCapture";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
@@ -973,6 +974,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_camera_reframe":
     case "detach_camera_reframe":
       applyCameraReframeChange(next,change);
+      break;
+    case "bind_stage_capture":
+    case "detach_stage_capture":
+      await applyStageCaptureChange(next,change);
       break;
     case "upsert_product_stage":
     case "detach_product_stage":
@@ -1965,6 +1970,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   validateCameraReframes(next);
   await validateCraftDisclosures(next);
   validateCaptureRecords(next);
+  await validateStageCaptureCards(next);
   validateMeasuredData(next);
   validateMetricSourceNoticesOnEdit(next);
   await validateEvaluatorState(next);

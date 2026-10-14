@@ -40,6 +40,31 @@ def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 20) -> dict
     return run_sanitized_json(argv, env=env, timeout=timeout)
 
 
+def checked_private_cli_payload(
+    stdout: bytes, stderr: bytes, exit_code: int, expected_ok: bool | None,
+) -> dict:
+    """Validate native CLI outcomes without printing private streams or args.
+
+    The shared-host test intentionally observes both successful and failed
+    typed commands (including CAS losers). An expected native rejection is
+    not a Python command failure. All errors here are fixed, bounded strings.
+    """
+    if len(stdout) > 256_000 or len(stderr) > 256_000:
+        raise AssertionError("Native shared-host CLI output exceeded bounded receipt limits")
+    try:
+        payload = json.loads(stdout.decode("utf-8"))
+    except (ValueError, UnicodeError):
+        raise AssertionError("Native shared-host CLI returned malformed JSON; streams suppressed") from None
+    if not isinstance(payload, dict) or type(payload.get("ok")) is not bool:
+        raise AssertionError("Native shared-host CLI returned an invalid typed envelope")
+    actual_ok = payload["ok"]
+    if type(exit_code) is not int or (exit_code == 0) is not actual_ok:
+        raise AssertionError("Native shared-host CLI envelope disagrees with command exit status")
+    if expected_ok is not None and actual_ok is not expected_ok:
+        raise AssertionError("Native shared-host CLI did not produce the expected typed outcome")
+    return payload
+
+
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     path.chmod(0o600)
@@ -58,7 +83,7 @@ def require_exact_inputs() -> None:
         ["git", "-C", str(SEMWRIGHT), "rev-parse", "HEAD"], text=True
     ).strip()
     if observed != PIN:
-        raise SystemExit(f"Semwright checkout mismatch: expected {PIN}, got {observed}")
+        raise SystemExit("Pinned Semwright source checkout did not match the source lock")
     for path in [
         SW_BINS / "semwright",
         SW_BINS / "semwrightd",
@@ -67,7 +92,7 @@ def require_exact_inputs() -> None:
         ACTOR,
     ]:
         if not path.is_file() or not os.access(path, os.X_OK):
-            raise SystemExit(f"missing exact acceptance executable: {path}")
+            raise SystemExit("Pinned native shared-host acceptance executable is unavailable")
 
 
 def main() -> None:
@@ -105,7 +130,7 @@ def main() -> None:
         project_id = seeded["id"]
         resource = seeded["resource"]
         if seeded["revision"] != "0":
-            raise AssertionError(f"new project did not start at revision zero: {seeded}")
+            raise AssertionError("New shared-state project was not at revision zero")
 
         version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))[
             "workspace"
@@ -198,32 +223,33 @@ def main() -> None:
             session_path: Path | None = None,
         ) -> dict:
             selected_session = session_path or session
-            result = subprocess.run(
-                [
-                    str(SW_BINS / "semwright"),
-                    "--socket",
-                    str(socket),
-                    "--session-file",
-                    str(selected_session),
-                    "--json",
-                    "execute",
-                    command,
-                    "--args-json",
-                    json.dumps(args, separators=(",", ":")),
-                ],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=20,
-                check=False,
-            )
             try:
-                value = json.loads(result.stdout)
-            except json.JSONDecodeError as error:
+                result = subprocess.run(
+                    [
+                        str(SW_BINS / "semwright"),
+                        "--socket",
+                        str(socket),
+                        "--session-file",
+                        str(selected_session),
+                        "--json",
+                        "execute",
+                        command,
+                        "--args-json",
+                        json.dumps(args, separators=(",", ":")),
+                    ],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=20,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
                 raise AssertionError(
-                    f"Semwright CLI returned non-JSON for {command}: "
-                    f"{result.stdout[:4096]!r} {result.stderr[:4096]!r}"
-                ) from error
+                    "Native shared-host CLI invocation unavailable or timed out; private arguments suppressed"
+                ) from None
+            value = checked_private_cli_payload(
+                result.stdout, result.stderr, result.returncode, ok
+            )
             calls.append(
                 {
                     "command": command,
@@ -233,16 +259,19 @@ def main() -> None:
                     "envelope": value,
                 }
             )
-            if ok is not None and (
-                value.get("ok") is not ok or ((result.returncode == 0) is not ok)
-            ):
-                raise AssertionError(json.dumps(value, indent=2))
-            if value.get("ok") and command.startswith("driver.motionwright."):
-                provenance = value["execution"]["provenance"]
-                if provenance["provider"] != "driver:motionwright":
-                    raise AssertionError(f"unexpected provider provenance: {provenance}")
-                if provenance["source"] != "driver" or not provenance["descriptor_sha256"]:
-                    raise AssertionError(f"incomplete provider provenance: {provenance}")
+            if value["ok"] and command.startswith("driver.motionwright."):
+                provenance = value.get("execution")
+                if not isinstance(provenance, dict):
+                    raise AssertionError("Native shared-host CLI omitted provider execution provenance")
+                provenance = provenance.get("provenance")
+                if not isinstance(provenance, dict):
+                    raise AssertionError("Native shared-host CLI omitted typed provider provenance")
+                if provenance.get("provider") != "driver:motionwright":
+                    raise AssertionError("Native shared-host CLI reported unexpected provider identity")
+                if (provenance.get("source") != "driver"
+                        or not isinstance(provenance.get("descriptor_sha256"), str)
+                        or not provenance["descriptor_sha256"]):
+                    raise AssertionError("Native shared-host CLI reported incomplete provider provenance")
             return value
 
         try:
@@ -250,7 +279,9 @@ def main() -> None:
             while time.monotonic() < deadline:
                 if daemon.poll() is not None:
                     log_stream.flush()
-                    raise AssertionError(daemon_log.read_text(encoding="utf-8"))
+                    raise AssertionError(
+                        "Native shared-host Broker exited before owner socket startup; raw daemon log suppressed"
+                    )
                 if socket.is_socket():
                     break
                 time.sleep(0.02)
@@ -296,7 +327,7 @@ def main() -> None:
                 ok=False,
             )
             if stale.get("error", {}).get("code") != "StaleReference":
-                raise AssertionError(f"stale Native SDK reference was not rejected: {stale}")
+                raise AssertionError("Stale Native SDK reference was not rejected")
             unchanged = actor(env, database, "show", project_id)
             if unchanged["title"] != "UI renamed after SDK":
                 raise AssertionError("stale SDK mutation altered app-owned state")
@@ -321,7 +352,7 @@ def main() -> None:
             )
             if forged_actor.get("error", {}).get("code") != "InvalidArgument":
                 raise AssertionError(
-                    f"caller-supplied actor field was not rejected by the typed contract: {forged_actor}"
+                    "Caller-supplied actor field was not rejected by the typed contract"
                 )
             if actor(env, database, "show", project_id)["title"] != "UI renamed after SDK":
                 raise AssertionError("forged actor payload altered application state")
@@ -339,7 +370,7 @@ def main() -> None:
             )
             if cross_project.get("error", {}).get("code") != "StaleReference":
                 raise AssertionError(
-                    f"project-one ref was accepted for project two: {cross_project}"
+                    "Cross-project native reference was incorrectly accepted"
                 )
             if actor(env, database, "show", other["id"])["title"] != "Independent project":
                 raise AssertionError("cross-project reference changed the independent project")
@@ -382,11 +413,11 @@ def main() -> None:
             losers = [value for value in contenders if value.get("ok") is False]
             if len(winners) != 1 or len(losers) != 1:
                 raise AssertionError(
-                    f"concurrent CAS expected exactly one winner and one loser: {contenders}"
+                    "Concurrent native CAS did not return exactly one winner and one loser"
                 )
             if losers[0].get("error", {}).get("code") != "StaleReference":
                 raise AssertionError(
-                    f"concurrent loser was not rejected as stale: {losers[0]}"
+                    "Concurrent losing native CAS was not rejected as stale"
                 )
             after_race = actor(env, database, "show", project_id)
             winner_title = winners[0]["data"]["project"]["title"]
