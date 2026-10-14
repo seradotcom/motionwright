@@ -2161,8 +2161,8 @@ export default function App() {
               <WifiOff size={13} aria-hidden="true" /> OFFLINE · LOCAL
             </span>
           )}
-          <span className="sdk-chip" title={boot.native_sdk.pinned_revision}>
-            Native SDK · {boot.native_sdk.mode === "tauri" ? "connected" : "browser demo"}
+          <span className="sdk-chip" title={"Pinned Semwright Native SDK: " + boot.native_sdk.pinned_revision + ". Desktop hosting does not verify Broker or renderer readiness; check Integrations."}>
+            Native SDK · {boot.native_sdk.mode === "tauri" ? "desktop mode" : "browser demo"}
           </span>
           <button type="button" className="quick-command-trigger" aria-label="Open command palette"
             title="Search workspaces and editor actions" onClick={() => setPaletteOpen(true)}>

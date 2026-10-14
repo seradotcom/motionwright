@@ -59,6 +59,10 @@ The separate release-readiness reporter already remained BLOCKED on the baseline
 
 The expansion checker previously required only a nonempty original `requirements`/`cases` field and followed caller-provided ledger locations. It now requires the exact canonical original paths and validates all original 208/60 identities and evidence invariants using the shared checker. Expansion rows also reject malformed collections and linked evidence outside source. All 64 delta identities remain unchanged.
 
+### MWAUD-004: native host presence was mislabeled as a runtime connection
+
+Studio previously described any Tauri host as Native SDK connected. This does not establish that a Semwright Broker, provider or native renderer is healthy or authorized. The header now reports desktop mode, with a pin/status disclaimer. The Integrations inspector remains authoritative for native runtime compatibility. Browser and synthetic desktop tests validate the label, not an actual provider connection.
+
 ## Remaining work by impact and boundary
 
 | Priority | Work that remains open | Boundary |

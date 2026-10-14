@@ -36,6 +36,8 @@ for (const kind of ["asset", "voice"] as const) {
       } };
     }, initial);
     await page.goto("/");
+    await expect(page.locator(".sdk-chip")).toContainText("desktop mode");
+    await expect(page.locator(".sdk-chip")).not.toContainText("connected");
     await expect(page.locator(".revision-chip")).toHaveText("r12");
     if (kind === "asset") {
       await page.getByRole("button", { name: "Import local asset", exact: true }).click();
