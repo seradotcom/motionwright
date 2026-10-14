@@ -324,8 +324,15 @@ def verify_private_session(manifest: Path, *, evidence_root: Path) -> dict[str, 
     source = doc.get("source")
     if not isinstance(source, dict) or not isinstance(source.get("motionwright_sha"), str):
         raise IntakeError("Private acceptance session lacks exact source authority")
-    checked_intake_source(source["motionwright_sha"])
-    return validate_session(doc, evidence_root=evidence_root)
+    source_sha = source["motionwright_sha"]
+    checked_intake_source(source_sha)
+    totals = validate_session(doc, evidence_root=evidence_root)
+    # Evidence verification may hash many large private files. A checkout can
+    # change during that time even if it was clean when verification began.
+    # Do not emit a source-bound success until the SAME HEAD and tracked
+    # inputs have been checked again after all evidence bytes were read.
+    checked_intake_source(source_sha)
+    return totals
 
 
 def main() -> int:
