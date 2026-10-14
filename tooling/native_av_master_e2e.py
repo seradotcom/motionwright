@@ -23,7 +23,7 @@ from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
 from native_provider_broker_events import read_owner_broker_event_history
-from native_provider_live_watch import PassiveLiveBrokerWatch
+from native_provider_live_watch import PassiveLiveBrokerWatch, public_lifecycle_kind_counts
 from native_av_failure_guard import (
     NativeCommandFailure, run_sanitized_json,
 )
@@ -749,11 +749,15 @@ def main() -> None:
                             EVIDENCE / "native-provider-live-broker-events.json",
                             live_events,
                         )
+                        # Durable public CI logs retain only closed-enum
+                        # transition COUNTS; the event generations, owner
+                        # identity and original raw watch output stay private.
+                        safe_counts = public_lifecycle_kind_counts(live_events)
                         print(
                             "v01-provider-live-broker-events="
                             + live_events["observation"]
-                            + " trusted_count="
-                            + str(live_events["trusted_lifecycle_event_count"])
+                            + " counts="
+                            + json.dumps(safe_counts, sort_keys=True)
                             + " early_exit="
                             + str(live_events["subscriber_exited_before_finalize"])
                         )

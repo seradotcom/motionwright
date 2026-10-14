@@ -30,7 +30,10 @@ Only allowlisted Semwright-core Motion Canvas event
 `native-provider-live-broker-events.json`. No raw CLI output, original
 job/session IDs, owner paths, tokens, environment, stdout/stderr from the
 provider, or daemon logs are copied to the public artifact. CI prints
-only observation category, trusted-event count and early subscriber exit.
+only the observation category, counts for the five closed-enum provider
+transition kinds, and whether the subscriber exited prematurely. Those
+safe counts survive a failed/removed Broker runner without exposing raw
+session event history or pretending to prove root cause.
 The original replay file remains separate and unmodified.
 
 The live report always marks `history_exhaustive=false`,

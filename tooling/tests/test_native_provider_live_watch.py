@@ -198,12 +198,31 @@ class BoundedLiveProviderTests(unittest.TestCase):
         self.assertEqual(result["trusted_lifecycle_event_count"], 0)
         self.assertFalse(result["history_exhaustive"])
 
+    def test_public_log_aggregates_are_closed_enum_and_redacted(self):
+        private = live.summarize_broker_watch_bytes(
+            typed_event(1) + typed_event(2, kind="provider.generation.invalidated")
+        )
+        counts = live.public_lifecycle_kind_counts(private)
+        self.assertEqual(set(counts), set(live.ALLOWED_EVENTS))
+        self.assertEqual(counts["provider.connected"], 1)
+        self.assertEqual(counts["provider.generation.invalidated"], 1)
+        self.assertEqual(sum(counts.values()), 2)
+        self.assertNotIn(SECRET, str(counts))
+        private["events"][0]["kind"] = SECRET
+        with self.assertRaises(ValueError):
+            live.public_lifecycle_kind_counts(private)
+        private["events"][0]["kind"] = "provider.connected"
+        private["trusted_lifecycle_event_count"] = 200
+        with self.assertRaises(ValueError):
+            live.public_lifecycle_kind_counts(private)
+
     def test_ci_wiring_is_baseline_only_no_native_retry(self):
         root = Path(__file__).resolve().parents[2]
         runner = (root / "tooling/native_av_master_e2e.py").read_text()
         workflow = (root / ".github/workflows/native-av-master-e2e.yml").read_text()
         self.assertIn('if FIXTURE == "baseline"', runner)
         self.assertIn("PassiveLiveBrokerWatch", runner)
+        self.assertIn("public_lifecycle_kind_counts(live_events)", runner)
         self.assertIn('live_broker_watch.start()', runner)
         self.assertIn("native-provider-live-broker-events.json", runner)
         self.assertIn("test_native_provider_live_watch.py", workflow)

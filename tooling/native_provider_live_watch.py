@@ -16,8 +16,30 @@ import threading
 from typing import Any
 
 from native_provider_broker_events import (
-    MAX_CAPTURE_BYTES, _report, summarize_broker_watch_bytes,
+    ALLOWED_EVENTS, MAX_CAPTURE_BYTES, _report, summarize_broker_watch_bytes,
 )
+
+
+def public_lifecycle_kind_counts(report: dict[str, Any]) -> dict[str, int]:
+    """Closed-enum aggregate for durable public CI text, never owner events.
+
+    Refuse malformed private reports instead of interpolating arbitrary
+    provider names, event objects, paths or attacker-controlled messages.
+    This does not imply provider health or verified job completion.
+    """
+    events = report.get("events")
+    count = report.get("trusted_lifecycle_event_count")
+    if not isinstance(events, list) or type(count) is not int or count != len(events):
+        raise ValueError("Invalid private provider event report")
+    kinds = {kind: 0 for kind in sorted(ALLOWED_EVENTS)}
+    for item in events:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid private provider event row")
+        kind = item.get("kind")
+        if not isinstance(kind, str) or kind not in kinds:
+            raise ValueError("Unexpected lifecycle event kind")
+        kinds[kind] += 1
+    return kinds
 
 
 class PassiveLiveBrokerWatch:
