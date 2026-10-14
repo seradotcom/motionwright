@@ -36,6 +36,10 @@ In **Native inspection**, select the output profile matching a current native re
 
 The existing Rust `otio_interchange(Project)` remains the editorial source of truth. A bounded, owner-declared H.264 media bridge can produce source-hash-linked `ExternalReference` clips, preserve missing media explicitly, and report twelve property-level fidelity losses; a receiver edit can only become a **read-only** reorder or exact end-trim proposal, never an automatic Studio CAS commit. The synthetic-only CI uses independent OpenTimelineIO/FFprobe evidence. Public artifacts exclude the owner project, rights receipts, unverified clips and private runner evidence. See [OTIO real-media exchange](V05_OTIO_MEDIA_INTERCHANGE.md). Source/rights, external NLE import and human acceptance remain unverified.
 
+## Pinned external fframes benchmark (MW05-E04-03)
+
+A disposable CI-only experiment evaluates a fixed public MIT fframes Rust/SVG/FFmpeg hello-world example: cold/warm release compile, headless PNG source preview, independent FFprobe decode and one-second synthetic MP4 timing. It does not register fframes as a Motionwright/Semwright renderer, execute owner content, claim competitive superiority, or substitute for a same-brief real-audio and creative-fidelity comparison. Its public artifact contains only exact-SHA timing/digest facts, never binaries, raw stderr or owner assets. See [fframes experiment](V05_FFRAMES_EXPERIMENT.md). This remains partial and unadmitted.
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows
