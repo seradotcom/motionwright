@@ -1766,7 +1766,7 @@ fn seed_composition(
             .nodes
             .iter()
             .find(|node| node.id == metric_id)
-            .is_none_or(|node| node.text.as_deref() != Some("Synthetic rate ? 37.5%"))
+            .is_none_or(|node| node.text.as_deref() != Some("Synthetic rate · 37.5%"))
     {
         return Err("multi-scene composition lost source-bound editable objects".into());
     }
@@ -2050,4 +2050,39 @@ fn expected_fixture_frames(
         );
     }
     Ok(180)
+}
+
+#[cfg(test)]
+mod composition_seed_contract_tests {
+    use super::*;
+
+    /// Catch source-authoring fixture drift before provisioning a Broker or
+    /// issuing any native render mutation. This does not prove native pixels.
+    #[test]
+    fn three_scene_seed_is_source_bound_and_portable_before_native_execution() {
+        let dir = tempfile::tempdir().expect("isolated source-only fixture directory");
+        let database = dir.path().join("studio.sqlite3");
+        let source = dir.path().join("editable-project.json");
+
+        seed_composition(&database, &source)
+            .expect("original joint composition must seed through StudioService CAS");
+        let project: motionwright_domain::Project =
+            serde_json::from_slice(&std::fs::read(&source).unwrap())
+                .expect("exact original editable project JSON");
+        project.validate().expect("seeded source domain validation");
+        assert_eq!(project.scenes.len(), 3);
+        assert_eq!(project.production_design.stages.len(), 1);
+        assert_eq!(project.production_design.procedural_fields.len(), 1);
+        assert_eq!(project.production_design.measured_tables.len(), 1);
+        assert_eq!(project.production_design.measured_bindings.len(), 2);
+        assert_eq!(project.scenes[2].nodes.len(), 2);
+
+        let label = project.scenes[2]
+            .nodes
+            .iter()
+            .find(|node| node.kind == "text")
+            .and_then(|node| node.text.as_deref());
+        assert_eq!(label, Some("Synthetic rate · 37.5%"));
+        assert!(source.with_file_name("composition.motionwright").exists());
+    }
 }

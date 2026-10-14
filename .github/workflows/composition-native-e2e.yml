@@ -151,6 +151,9 @@ jobs:
           cargo test --locked -p motionwright-native --test composition_stack -- --nocapture
           cargo test --locked -p motionwright-domain --test composition_stack -- --nocapture
 
+      - name: Check the exact three-scene source seed before any native render mutation
+        run: cargo test --locked -p motionwright-native --example native-render-e2e composition_seed_contract_tests
+
       - name: Reject fake synthetic source and blank three-scene media
         run: python3 -m unittest discover -s tooling/native_tests -p 'test_composition_native_evidence.py' -v
 
