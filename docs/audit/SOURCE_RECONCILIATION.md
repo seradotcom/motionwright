@@ -63,6 +63,14 @@ The expansion checker previously required only a nonempty original `requirements
 
 Studio previously described any Tauri host as Native SDK connected. This does not establish that a Semwright Broker, provider or native renderer is healthy or authorized. The header now reports desktop mode, with a pin/status disclaimer. The Integrations inspector remains authoritative for native runtime compatibility. Browser and synthetic desktop tests validate the label, not an actual provider connection.
 
+### MWAUD-005: portable bundle restore bypassed the shared editing latch
+
+A verified portable project import previously called `importProjectBundle` independently and published the returned project through `onImported` without synchronizing with ordinary edits, asset imports or voice imports. This could replace the visible project while a previous source edit was still pending, even though the native storage/CAS operations remained separate. Portable import now acquires the **same synchronous view latch before the effect grant and IPC**. The response must contain a distinct nonempty project ID and a rotated nonempty generation with a nonnegative revision, and the previous project snapshot must still be current before publication. Existing renderer receipts and editorial selection are reset only for an admitted replacement. Errors do not retry the import or claim backend rollback; owner reconciliation remains necessary after an unknown remote outcome. Unit tests and delayed synthetic-IPC browser tests cover concurrent edits, malformed responses, source switching, and follow-up editing. These tests are not native installed-device acceptance.
+
+### Updated immutable-source reconciliation (after the baseline)
+
+The automated inventory was also rerun **without changing the original baseline JSON** against `origin/main` `7a0000f9a133a40db127c753cd0339293e2cba08`. The 208 v0.1 entries remain 107 `EVIDENCE_PRESENT`, 93 `PARTIAL_OR_GAP`, 8 `OPTIONAL_UNCLAIMED`; all 60 independent acceptance cases remain `NOT_RUN`. The v0.5 source ledger now records **43 partial, 4 bounded, 7 inherited without reevaluation and 10 not implemented**: `MW05-E11-03` (bounded OTIO/source-media interchange) advanced from `not_implemented` to `partial`, with human receiver, third-party rights, full property fidelity and actual StudioService import still open. These are reported ledger labels, **not** an independent criterion-level audit or proof of product completion. The owner-private catalog bytes remain unavailable through this audit's connector.
+
 ## Remaining work by impact and boundary
 
 | Priority | Work that remains open | Boundary |

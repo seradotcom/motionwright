@@ -604,7 +604,7 @@ function DeliverView({
   project,
   commit,
   desktopMode,
-  onImported,
+  onImportBundle,
   onOpenAudio,
   renderEvidence,
   onRenderEvidence,
@@ -616,7 +616,7 @@ function DeliverView({
   project: Project;
   commit: (change: Change) => Promise<void>;
   desktopMode: boolean;
-  onImported: (project: Project) => void;
+  onImportBundle: (path: string) => Promise<Project>;
   onOpenAudio: () => void;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
@@ -672,8 +672,7 @@ function DeliverView({
     setPortableStatus(null);
     setPortableError(null);
     try {
-      const imported = await importProjectBundle(importPath.trim());
-      onImported(imported);
+      const imported = await onImportBundle(importPath.trim());
       setPortableStatus(
         "Imported " + imported.title + " at revision " + imported.revision +
         " with a fresh execution generation.",
@@ -1968,6 +1967,33 @@ export default function App() {
     await transactProject(source => importVoiceFile(source, path, label));
   }, [transactProject]);
 
+  const importPortableBundle = useCallback(async (path: string): Promise<Project> => {
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    return mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      () => importProjectBundle(path),
+      imported => {
+        const current = bootRef.current;
+        if (!current) throw new Error("The current project is unavailable. Reopen to reconcile the import.");
+        const updated = { ...current, project: imported };
+        bootRef.current = updated;
+        setBoot(updated);
+        setNativeRenderReceipt(null);
+        setNativeAvReceipt(null);
+        setNativeExportReceipt(null);
+        setSelectedSceneId(imported.scenes[0]?.id ?? null);
+        setPlayhead(0);
+        setPlaying(false);
+        setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
+        setTimecodeMode("ndf");
+      },
+      setBusy,
+      "replace",
+    );
+  }, [boot]);
+
   if (!project || !boot) {
     return (
       <main className="boot-screen" aria-busy={!bootError}>
@@ -2065,19 +2091,7 @@ export default function App() {
             onAvEvidence={(result) => setNativeAvReceipt(result)}
             exportEvidence={nativeExportReceipt}
             onExportEvidence={(result) => setNativeExportReceipt(result)}
-            onImported={(imported) => {
-              setNativeRenderReceipt(null);
-              setNativeAvReceipt(null);
-              setNativeExportReceipt(null);
-              const updated = { ...(bootRef.current ?? boot), project: imported };
-              bootRef.current = updated;
-              setBoot(updated);
-              setSelectedSceneId(imported.scenes[0]?.id ?? null);
-              setPlayhead(0);
-              setPlaying(false);
-              setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
-              setTimecodeMode("ndf");
-            }}
+            onImportBundle={importPortableBundle}
           />
         );
     }

@@ -12,9 +12,10 @@ export function sameProjectRevision(a: ProjectRevision | null, b: ProjectRevisio
 }
 
 /** Acquire synchronously, before React can batch another event. All ordinary
- * edits, asset imports and measured voice imports share this one view latch.
- * A switched project or a newer visible revision must never be overwritten by
- * the response to a former request, even if that request committed server-side.
+ * edits, asset/voice imports and portable project replacements share this latch.
+ * A switched project or newer visible revision must never be overwritten by a
+ * late response, even if the backend operation already committed. This protects
+ * only the current view, not persistent backend rollback or Broker authority.
  */
 export class ProjectMutationGate {
   private active = false;
@@ -25,6 +26,7 @@ export class ProjectMutationGate {
     operation: (source: P) => Promise<P>,
     publish: (next: P) => void,
     pending: (value: boolean) => void = () => {},
+    mode: "update" | "replace" = "update",
   ): Promise<P> {
     if (this.active) {
       throw new Error("Finish the current project change or import before starting another.");
@@ -38,9 +40,14 @@ export class ProjectMutationGate {
     try {
       pending(true);
       const next = await operation(source);
-      if (next.id !== base.id || next.generation !== base.generation
-          || !Number.isSafeInteger(next.revision) || next.revision < base.revision) {
-        throw new Error("The response does not match the original project revision. No automatic retry was made.");
+      const updateMatches = next.id === base.id && next.generation === base.generation
+        && Number.isSafeInteger(next.revision) && next.revision >= base.revision;
+      const replacementMatches = typeof next.id === "string" && next.id.length > 0
+        && next.id !== base.id && typeof next.generation === "string"
+        && next.generation.length > 0 && next.generation !== base.generation
+        && Number.isSafeInteger(next.revision) && next.revision >= 0;
+      if (mode === "update" ? !updateMatches : !replacementMatches) {
+        throw new Error("The response does not match the expected project identity or revision. No automatic retry was made.");
       }
       if (!sameProjectRevision(current(), base)) {
         throw new Error("The active project changed while the request was pending. Its view was preserved; reopen the original project to reconcile the result. No automatic retry was made.");

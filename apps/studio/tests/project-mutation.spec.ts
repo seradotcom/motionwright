@@ -73,3 +73,77 @@ for (const kind of ["asset", "voice"] as const) {
     }).__MUTATION_FIXTURE__.revisions)).toEqual([13]);
   });
 }
+
+test("a pending portable restore cannot race source edits or publish into another revision", async ({ page }) => {
+  const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await page.addInitScript(boot => {
+    let current = structuredClone(boot.project);
+    let resolveRestore: ((project: typeof current) => void) | null = null;
+    const state = {
+      calls: [] as string[], revisions: [] as number[],
+      complete: () => {
+        current = { ...current, id: "01900000-0000-7000-8000-000000000021",
+          generation: "01900000-0000-7000-8000-000000000022", revision: 0,
+          title: "Portable restored project" };
+        resolveRestore?.(structuredClone(current));
+      },
+    };
+    const host = window as unknown as {
+      __RESTORE_FIXTURE__: typeof state;
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: {request?: {revision?: number}}) => Promise<unknown> };
+    };
+    host.__RESTORE_FIXTURE__ = state;
+    host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+      state.calls.push(command);
+      if (command === "bootstrap") return structuredClone(boot);
+      if (command === "inspect_project_bundle") return {
+        project_id: "01900000-0000-7000-8000-000000000021",
+        title: "Portable restored project", source_generation: "old-import-generation",
+        revision: "9", event_count: 9, blob_count: 1,
+        total_blob_bytes: "1024", rotates_generation: true,
+      };
+      if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
+      if (command === "import_project_bundle") {
+        return new Promise(resolve => { resolveRestore = resolve; });
+      }
+      if (command === "apply_change") {
+        state.revisions.push(args?.request?.revision ?? -1);
+        current = { ...current, revision: current.revision + 1, title: "After portable import" };
+        return structuredClone(current);
+      }
+      throw new Error("Unsupported synthetic command: " + command);
+    } };
+  }, initial);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await page.getByLabel("Portable import path").fill("/synthetic-fixture/portable.motionwright");
+  await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
+  await expect(page.getByLabel("Portable bundle preflight")).toContainText("Portable restored project");
+  await page.getByRole("button", { name: "Import verified bundle", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as {
+    __RESTORE_FIXTURE__: {calls:string[]};
+  }).__RESTORE_FIXTURE__.calls.includes("import_project_bundle"))).toBe(true);
+  await expect(page.locator(".saving-state")).toContainText("Committing");
+
+  await page.getByRole("button", { name: "Brief", exact: true }).click();
+  await page.getByLabel("Project title").fill("Do not race portable restore");
+  await page.getByRole("button", { name: "Save title", exact: true }).click();
+  await expect(page.locator(".error-banner")).toContainText("Finish the current project change or import");
+  expect(await page.evaluate(() => (window as unknown as {
+    __RESTORE_FIXTURE__: {calls:string[]};
+  }).__RESTORE_FIXTURE__.calls.filter(s => s === "apply_change").length)).toBe(0);
+
+  await page.evaluate(() => (window as unknown as {
+    __RESTORE_FIXTURE__: {complete:()=>void};
+  }).__RESTORE_FIXTURE__.complete());
+  await expect(page.locator(".revision-chip")).toHaveText("r0");
+  await expect(page.locator(".brand-copy")).toContainText("Portable restored project");
+  await expect(page.locator(".saving-state")).toHaveCount(0);
+  await page.getByLabel("Project title").fill("Edit restored project");
+  await page.getByRole("button", { name: "Save title", exact: true }).click();
+  await expect(page.locator(".revision-chip")).toHaveText("r1");
+  expect(await page.evaluate(() => (window as unknown as {
+    __RESTORE_FIXTURE__: {revisions:number[]};
+  }).__RESTORE_FIXTURE__.revisions)).toEqual([0]);
+});
