@@ -53,20 +53,22 @@ PROCEDURAL_MODES = {"procedural-static", "procedural-motion", "procedural-orbit"
 IS_STAGE = FIXTURE in STAGE_MODES
 IS_CAMERA = FIXTURE == "camera-reframe"
 IS_MEASURED = FIXTURE == "measured-data"
+IS_COMPOSITION = FIXTURE == "composition-stack"
 IS_PROCEDURAL = FIXTURE in PROCEDURAL_MODES
 IS_HERO = FIXTURE in HERO_ASPECTS
-if FIXTURE not in {"baseline", "measured-data", "camera-reframe", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
+if FIXTURE not in {"baseline", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
     raise SystemExit("unknown bounded E2E fixture")
-EXPECTED_FRAMES = 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else 60
+EXPECTED_FRAMES = 540 if IS_COMPOSITION else 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else 60
 EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
 EVIDENCE = ROOT / "verification" / (
+    "composition-native-e2e" if IS_COMPOSITION else
     "camera-reframe-e2e" if IS_CAMERA else
     "product-stage-e2e" if IS_STAGE else
     "measured-data-native-e2e" if IS_MEASURED else
     "procedural-field-e2e" if IS_PROCEDURAL else
     "product-hero-e2e" if IS_HERO else "native-av-master-e2e"
 ) / GITHUB_SHA
-if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA:
+if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or IS_COMPOSITION:
     EVIDENCE = EVIDENCE / FIXTURE
 
 
@@ -178,6 +180,8 @@ def main() -> None:
         elif IS_PROCEDURAL:
             mode = FIXTURE.removeprefix("procedural-")
             seed_command = [str(MW_BIN), "seed-procedural", str(database), mode, str(EVIDENCE / "editable-project.json")]
+        elif IS_COMPOSITION:
+            seed_command = [str(MW_BIN), "seed-composition", str(database), str(EVIDENCE / "editable-project.json")]
         seeded = run_json(seed_command, env=env)
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
@@ -201,6 +205,11 @@ def main() -> None:
             raise AssertionError("Native measured fixture did not bind a versioned source table")
         if IS_PROCEDURAL and seeded.get("fixture") != f"procedural-field-{mode}/1":
             raise AssertionError("Native procedural fixture does not match the requested authored field")
+        if IS_COMPOSITION and (seeded.get("fixture") != "composition-stack/1"
+                               or seeded.get("original_ui_not_real_capture") is not True
+                               or seeded.get("data_truth") != "synthetic_fixture_not_real_world_metric"
+                               or len(seeded.get("scene_ids", [])) != 3):
+            raise AssertionError("Native composition fixture is not an original source-bound three-scene project")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -499,7 +508,7 @@ def main() -> None:
                         str(EVIDENCE / "motionwright-render-evidence.json"),
                     ],
                     env=env,
-                    timeout=420,
+                    timeout=1500 if IS_COMPOSITION else 420,
                 )
             except Exception as error:
                 if isinstance(error, NativeCommandFailure):
@@ -569,12 +578,15 @@ def main() -> None:
             if IS_PROCEDURAL:
                 from procedural_native_evidence import inspect_procedural_frames
                 inspect_procedural_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
+            if IS_COMPOSITION:
+                from composition_native_evidence import inspect_composition_frames
+                inspect_composition_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
 
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
             # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
-            # design. Use exact 2s baseline or 6s hero duration; the full
-            # native AV decode must check actual samples for both.
+            # design. Use exact 2s baseline, 6s scene or 18s three-scene duration;
+            # independently decode and check actual samples for each closed profile.
             write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
@@ -591,7 +603,7 @@ def main() -> None:
                     str(EVIDENCE / "motionwright-av-master-evidence.json"),
                 ],
                 env=env,
-                timeout=420,
+                timeout=1500 if IS_COMPOSITION else 420,
             )
             if master_result.get("native_av_master_e2e") != "PASS":
                 raise AssertionError(f"Motionwright AV master did not pass: {master_result}")
@@ -608,8 +620,8 @@ def main() -> None:
             shutil.copyfile(master_path, EVIDENCE / "motionwright-master.mp4")
 
             # Canonical receipts prove bytes; independent ffmpeg/ffprobe
-            # decodes the exact 60-frame baseline or 180-frame hero profile.
-            # Both require measured non-silent, distinct stereo channel tones
+            # decodes the exact 60-, 180- or 540-frame bounded profiles.
+            # All require measured non-silent, distinct stereo channel tones
             # and native pixel movement. No decoder runs in the shipped app.
             decoded = probe_native_mp4(
                 master_path, audio_path, ffmpeg, ffprobe,
@@ -633,6 +645,9 @@ def main() -> None:
             if IS_PROCEDURAL:
                 from procedural_native_evidence import inspect_procedural_mp4
                 inspect_procedural_mp4(master_path, EVIDENCE, seeded, ffmpeg)
+            if IS_COMPOSITION:
+                from composition_native_evidence import inspect_composition_mp4
+                inspect_composition_mp4(master_path, EVIDENCE, seeded, ffmpeg)
 
             write_private_json(
                 EVIDENCE / "result.json",
@@ -653,7 +668,7 @@ def main() -> None:
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
                     "fixture": FIXTURE,
-                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else "not_assessed",
+                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or IS_COMPOSITION else "not_assessed",
                     "camera_native_pixel_evidence_sha256": (
                         digest(EVIDENCE / "camera-native-inspection.json") if IS_CAMERA else None
                     ),
@@ -666,6 +681,9 @@ def main() -> None:
                     "procedural_native_pixel_evidence": (
                         digest(EVIDENCE / "procedural-native-inspection.json")
                         if IS_PROCEDURAL else None
+                    ),
+                    "joint_native_pixel_evidence_sha256": (
+                        digest(EVIDENCE / "composition-native-inspection.json") if IS_COMPOSITION else None
                     ),
                     "audio_kind": "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design",
                     "audio_sha256": audio_sha256,
