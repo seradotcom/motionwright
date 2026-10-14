@@ -6,6 +6,7 @@ import type { SemanticSfxCue } from "./semanticSfx";
 import type { ProductStageConfig } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
 import type { CaptureSourceRecord } from "./captureSource";
+import type { CreativeEvaluatorBundle } from "./creativeEvaluator";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
 export type RendererKind =
@@ -637,6 +638,8 @@ export type Change =
   | { type: "set_brand_governance"; profile: BrandProfile | null; exceptions: BrandException[] }
   | { type: "set_taste_profile"; profile: TasteProfile | null }
   | { type: "record_creative_decision"; decision: CreativeDecision }
+  | { type: "register_creative_evaluator"; bundle: CreativeEvaluatorBundle }
+  | { type: "evaluate_creative_scene"; evaluator_id: string; evaluator_version: number; scene_id: string }
   | { type: "upsert_native_capsule"; capsule: NativeCapsule }
   | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }
