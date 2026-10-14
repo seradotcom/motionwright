@@ -185,6 +185,13 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
         self.assertNotIn("path: verification/native-sdk/github-actions/shared-state\n", yml)
         self.assertIn("native_shared_state_public_artifact.py", yml)
         self.assertIn("test_native_shared_state_public_artifact.py", yml)
+        # GitHub refuses action refs that abbreviate immutable commit SHAs.
+        # This has previously prevented real-host startup before any code ran.
+        import re
+        pins = re.findall(r"uses:\s*[^\s@]+@([0-9a-f]+)", yml)
+        self.assertGreaterEqual(len(pins), 5)
+        self.assertTrue(all(len(pin) == 40 for pin in pins),
+                        "Every SHA-pinned GitHub Action must use the full 40 characters")
 
 
 class PrivateCliErrorRedactionTests(unittest.TestCase):

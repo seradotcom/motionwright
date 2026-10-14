@@ -224,7 +224,7 @@ jobs:
             --output-root "verification/native-sdk/public-shared-state" \
             --job-status "$NATIVE_CI_JOB_STATUS"
           python3 -m json.tool verification/native-sdk/public-shared-state/public-evidence.json >/dev/null
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: motionwright-native-shared-state-${{ github.sha }}
