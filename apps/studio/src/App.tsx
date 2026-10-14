@@ -858,6 +858,7 @@ function ProjectRail({
   const [addingScene, setAddingScene] = useState(false);
   const [newName, setNewName] = useState("New scene");
   const [sceneBusy, setSceneBusy] = useState(false);
+  const sceneSubmitting = useRef(false);
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [addingAsset, setAddingAsset] = useState(false);
   const [assetPath, setAssetPath] = useState("");
@@ -902,7 +903,8 @@ function ProjectRail({
             className="add-scene-form"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (!newName.trim() || sceneBusy) return;
+              if (!newName.trim() || sceneSubmitting.current) return;
+              sceneSubmitting.current = true;
               setSceneBusy(true);
               setSceneError(null);
               try {
@@ -912,6 +914,7 @@ function ProjectRail({
               } catch (reason) {
                 setSceneError(reason instanceof Error ? reason.message : String(reason));
               } finally {
+                sceneSubmitting.current = false;
                 setSceneBusy(false);
               }
             }}
@@ -2066,7 +2069,7 @@ export default function App() {
         return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
+          commitRequired={commitRequired} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([
