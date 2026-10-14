@@ -46,7 +46,9 @@ identifier, session bytes, stdout diagnostics or provider grants.
 - Exact motionwright-semwright-connection/1 schema, unique JSON keys,
   canonical project/generation UUIDs, and exact project:<UUID> resource.
 - Optional app-owned reference schema, matching project and generation,
-  absolute connection path, no symlinks in file/ancestor components.
+  absolute connection path, no symlinks or NTFS reparse points (including
+  Windows junctions) in file/ancestor components. Python 3.11 Windows
+  `st_file_attributes` is checked even without `Path.is_junction`.
 - Bounded configuration and private session file, existing output directory
   and socket path, non-writable-by-others Unix filesystem modes.
 - Streamed executable SHA-256, stable length/mtime during reading, and
