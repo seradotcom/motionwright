@@ -84,18 +84,19 @@ describe("one source-bound Studio mutation path", () => {
     const gate = new ProjectMutationGate();
     let visible = base();
     const receipt = deferred<ProjectRevision>();
-    const edit = vi.fn(async () => ({ ...visible, revision: 13 }));
+    const edit = vi.fn(async () => ({ ...visible, revision: visible.revision + 1 }));
     const pending = vi.fn();
     const importPromise = gate.run(visible, () => visible, () => receipt.promise,
       next => { visible = next; }, pending, "replace");
     await expect(gate.run(visible, () => visible, edit, vi.fn())).rejects.toThrow("Finish the current");
     expect(edit).not.toHaveBeenCalled();
-    receipt.resolve({ id: "imported-project", generation: "fresh-generation", revision: 0 });
-    await expect(importPromise).resolves.toEqual(visible);
-    expect(visible.id).toBe("imported-project");
+    const imported = { id: "imported-project", generation: "fresh-generation", revision: 0 };
+    receipt.resolve(imported);
+    await expect(importPromise).resolves.toEqual(imported);
+    expect(visible).toEqual(imported);
     expect(pending.mock.calls).toEqual([[true], [false]]);
     await gate.run(visible, () => visible, edit, next => { visible = next; });
-    expect(visible.revision).toBe(13);
+    expect(visible.revision).toBe(1);
   });
 
   it.each([
