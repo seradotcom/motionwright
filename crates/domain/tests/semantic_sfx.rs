@@ -165,7 +165,7 @@ fn invalid_source_rights_gain_release_position_and_unknown_keys_are_denied() {
     external["unlicensed_audio_url"] = serde_json::json!("https://audio.invalid/file.wav");
     assert!(serde_json::from_value::<SemanticSfxCue>(external).is_err());
     let mut bad_anchor = serde_json::to_value(&base).unwrap();
-    bad_anchor["anchor"]["callback"] = "unsafe";
+    bad_anchor["anchor"]["callback"] = serde_json::json!("unsafe");
     assert!(serde_json::from_value::<SemanticSfxCue>(bad_anchor).is_err());
 }
 #[test]
@@ -202,4 +202,49 @@ fn legacy_project_deserializes_without_sfx_sources_or_manufactured_mix() {
     let read: Project = serde_json::from_value(legacy).unwrap();
     assert!(read.audio.sfx_cues.is_empty());
     assert!(read.validated_sfx_schedule().unwrap().is_empty());
+}
+
+#[test]
+fn sfx_anchor_wire_accepts_only_exact_variant_fields() {
+    let beat_id = Uuid::new_v4();
+    let canonical = [
+        (
+            SfxAnchor::SceneStart,
+            serde_json::json!({"kind":"scene_start"}),
+        ),
+        (
+            SfxAnchor::BeatStart { beat_id },
+            serde_json::json!({"kind":"beat_start","beat_id":beat_id}),
+        ),
+    ];
+    for (anchor, expected) in canonical {
+        assert_eq!(serde_json::to_value(&anchor).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<SfxAnchor>(expected).unwrap(),
+            anchor
+        );
+    }
+
+    for invalid in [
+        serde_json::json!({"kind":"scene_start","callback":"unsafe"}),
+        serde_json::json!({"kind":"scene_start","beat_id":beat_id}),
+        serde_json::json!({"kind":"beat_start"}),
+        serde_json::json!({"kind":"beat_start","beat_id":beat_id,"callback":"unsafe"}),
+        serde_json::json!({"kind":"beat_start","beat_id":null}),
+        serde_json::json!({"kind":"untrusted"}),
+        serde_json::json!({"beat_id":beat_id}),
+    ] {
+        assert!(
+            serde_json::from_value::<SfxAnchor>(invalid.clone()).is_err(),
+            "accepted invalid anchor: {invalid}"
+        );
+    }
+
+    assert!(
+        serde_json::from_str::<SfxAnchor>(r#"{"kind":"scene_start","kind":"scene_start"}"#)
+            .is_err()
+    );
+    let duplicate_beat =
+        format!(r#"{{"kind":"beat_start","beat_id":"{beat_id}","beat_id":"{beat_id}"}}"#);
+    assert!(serde_json::from_str::<SfxAnchor>(&duplicate_beat).is_err());
 }
