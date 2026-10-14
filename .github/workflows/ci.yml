@@ -30,7 +30,9 @@ jobs:
           python3 tooling/creative_status_policy.py
           python3 -m unittest discover -s tooling/tests -p 'test_creative_status_policy.py' -v
       - name: Exercise independent acceptance evidence intake guardrails
-        run: python3 -m unittest discover -s tooling/tests -p 'test_acceptance_session.py' -v
+        run: |
+          python3 -m unittest discover -s tooling/tests -p 'test_acceptance_session.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_acceptance_evidence_identity.py' -v
       - name: Reject silent, swapped or static decoded native AV fixtures
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_media_probe.py' -v
       - name: Verify portable MP4 integrity checker trust boundaries
