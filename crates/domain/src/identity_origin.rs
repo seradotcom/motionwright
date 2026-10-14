@@ -179,6 +179,7 @@ impl IdentityOriginRecord {
                     ));
                 };
                 if self.provenance_asset_id == consent_id
+                    || self.provenance_sha256.as_str() == consent_digest.as_str()
                     || !is_digest(consent_digest)
                     || !self
                         .consent_subject_declaration
@@ -211,6 +212,7 @@ impl Project {
             || self.production_design.identity_origins.iter().any(|item| {
                 item.id == record.id
                     || item.provenance_asset_id == record.provenance_asset_id
+                    || item.provenance_sha256 == record.provenance_sha256
                     || (item.consent_sha256.is_some()
                         && item.consent_sha256 == record.consent_sha256)
             })
@@ -321,10 +323,12 @@ impl ProductionDesign {
         }
         let mut identities = BTreeSet::new();
         let mut manifests = BTreeSet::new();
+        let mut manifest_digests = BTreeSet::new();
         let mut consent_digests = BTreeSet::new();
         for origin in &self.identity_origins {
             if !identities.insert(origin.id)
                 || !manifests.insert(origin.provenance_asset_id)
+                || !manifest_digests.insert(origin.provenance_sha256.clone())
                 || origin
                     .consent_sha256
                     .as_ref()

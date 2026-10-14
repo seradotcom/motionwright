@@ -289,3 +289,85 @@ fn old_format_two_projects_without_new_identity_keys_remain_readable() {
     imported.validate().unwrap();
     assert!(imported.production_design.identity_origins.is_empty());
 }
+
+#[test]
+fn revoked_source_digest_cannot_be_re_registered_with_a_fresh_asset_and_identity_id() {
+    let (mut project, source) = fixture();
+    project
+        .apply_change(&Change::RegisterIdentityOrigin {
+            record: source.clone(),
+        })
+        .unwrap();
+    project
+        .apply_change(&Change::RevokeIdentityOrigin {
+            revocation: IdentityRevocation {
+                id: Uuid::new_v4(),
+                identity_id: source.id,
+                revoked_at_utc: "2026-10-19T00:00:00Z".into(),
+                reason: "Original owner revoked this provenance".into(),
+            },
+        })
+        .unwrap();
+
+    // Asset IDs are not content identities: AddAsset permits independent
+    // references to the *same* bytes, so the digest must remain revoked.
+    let alias_id = attach(&mut project, SOURCE_SHA);
+    let attempted_reissue = IdentityOriginRecord {
+        id: Uuid::new_v4(),
+        provenance_asset_id: alias_id,
+        ..source.clone()
+    };
+    let before = project.clone();
+    let refusal = project
+        .apply_change(&Change::RegisterIdentityOrigin {
+            record: attempted_reissue.clone(),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("duplicate immutable"), "{refusal}");
+    assert_eq!(project, before, "failed registration must be atomic");
+
+    // A forged imported project cannot bypass the same invariant by
+    // editing production_design in JSON without executing Change.
+    let mut forged = before;
+    forged
+        .production_design
+        .identity_origins
+        .push(attempted_reissue);
+    assert!(forged.validate().is_err());
+    assert_eq!(
+        project
+            .review_identity_use(
+                source.id,
+                "2026-10-20T00:00:00Z",
+                IdentityModality::Voice,
+                IdentityPurpose::Education,
+            )
+            .unwrap(),
+        IdentityReviewOutcome::Revoked
+    );
+}
+
+#[test]
+fn separate_consent_asset_id_cannot_reuse_exact_provenance_bytes() {
+    let (mut project, source) = fixture();
+    let alias_id = attach(&mut project, SOURCE_SHA);
+    let human = IdentityOriginRecord {
+        origin: IdentityOrigin::HumanLikeness,
+        consent_asset_id: Some(alias_id),
+        consent_sha256: Some(SOURCE_SHA.into()),
+        consent_subject_declaration: Some("Named depicted subject".into()),
+        consent_scope_declaration: Some("One source-reviewed educational prototype".into()),
+        allowed_modalities: vec![IdentityModality::Presenter],
+        allowed_purposes: vec![IdentityPurpose::Education],
+        synthetic_disclosure: IDENTITY_DISCLOSURE_HUMAN.into(),
+        ..source
+    };
+    let unchanged = project.clone();
+    let refusal = project
+        .apply_change(&Change::RegisterIdentityOrigin { record: human })
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("distinct consent bytes"), "{refusal}");
+    assert_eq!(project, unchanged);
+}

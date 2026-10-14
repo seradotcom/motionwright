@@ -94,6 +94,7 @@ export function validateIdentityOrigin(project:Project, record:IdentityOriginRec
     if(!record.consent_asset_id || !uuid.test(record.consent_asset_id) ||
       record.consent_asset_id===record.provenance_asset_id ||
       !record.consent_sha256 || !hex64.test(record.consent_sha256) ||
+      record.consent_sha256===record.provenance_sha256 ||
       !bounded(record.consent_subject_declaration,160) ||
       !bounded(record.consent_scope_declaration,300) ||
       record.synthetic_disclosure!==DISCLOSURE_HUMAN ||
@@ -108,12 +109,14 @@ export function validateIdentityRegistry(project:Project):void {
   const revoked=project.production_design?.identity_revocations??[];
   if(registry.length>32 || revoked.length>32)
     invalid("Identity source collection exceeds 32 entries.");
-  const ids=new Set<string>(),manifests=new Set<string>(),consentDigests=new Set<string>();
+  const ids=new Set<string>(),manifests=new Set<string>(),manifestDigests=new Set<string>(),consentDigests=new Set<string>();
   for(const source of registry){
     if(ids.has(source.id)||manifests.has(source.provenance_asset_id) ||
+      manifestDigests.has(source.provenance_sha256) ||
       (!!source.consent_sha256&&consentDigests.has(source.consent_sha256)))
       invalid("Duplicate identity source or reused consent evidence.");
     ids.add(source.id);manifests.add(source.provenance_asset_id);
+    manifestDigests.add(source.provenance_sha256);
     if(source.consent_sha256)consentDigests.add(source.consent_sha256);
     validateIdentityOrigin(project,source);
   }
@@ -135,6 +138,7 @@ export function registerIdentityOrigin(project:Project, record:IdentityOriginRec
   const registry=project.production_design.identity_origins??[];
   if(registry.length>=32 || registry.some(item=>item.id===record.id ||
       item.provenance_asset_id===record.provenance_asset_id ||
+      item.provenance_sha256===record.provenance_sha256 ||
       (!!record.consent_sha256 && record.consent_sha256===item.consent_sha256)))
     invalid("Identity registration duplicate or immutable source reuse is prohibited.");
   validateIdentityOrigin(project,record);

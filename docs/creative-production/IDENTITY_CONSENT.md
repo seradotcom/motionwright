@@ -66,7 +66,11 @@ provider grant. No executor or rendering route has been added.
 The project's versioned ProductionDesign holds up to 32 original identity
 declarations and 32 append-only revocation events. A registration cannot
 replace an existing identity or reuse its original JSON source or consent
-digest under a different ID. Revocation is a new CAS-protected event with
+digest under a different ID. Source uniqueness is enforced by exact SHA-256,
+not merely by Asset ID: importing the same bytes under another asset reference
+cannot bypass a prior revocation. A human consent asset must also contain bytes
+distinct from the provenance asset, not just a different ID.
+Revocation is a new CAS-protected event with
 a canonical UTC timestamp and nonempty reason. It immediately prevents any
 subsequent positive usage review, but preserves the source assets and
 historical project record. Removing a referenced origin/consent asset fails.

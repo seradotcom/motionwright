@@ -126,3 +126,56 @@ describe("identity permission and revocation receipts",()=>{
     }})).rejects.toThrow(/current project generation/);
   });
 });
+
+describe("immutable identity content digests",()=>{
+  it("blocks revocation bypass through a second asset ID for identical source bytes",async()=>{
+    const {project,record}=fixture();
+    const registered=await applyChange(project,{type:"register_identity_origin",record});
+    const revoked=await applyChange(registered,{
+      type:"revoke_identity_origin",
+      revocation:{
+        id:crypto.randomUUID(),identity_id:record.id,
+        revoked_at_utc:"2026-10-19T00:00:00Z",
+        reason:"Owner revoked this immutable source",
+      },
+    });
+    const alias=crypto.randomUUID();
+    const reimported=await applyChange(revoked,{
+      type:"add_asset",asset:{...project.assets[0],id:alias},
+    });
+    const duplicate:IdentityOriginRecord={
+      ...record,id:crypto.randomUUID(),provenance_asset_id:alias,
+    };
+    const before=structuredClone(reimported);
+    await expect(applyChange(reimported,{
+      type:"register_identity_origin",record:duplicate,
+    })).rejects.toThrow(/duplicate|reuse/i);
+    expect(reimported).toEqual(before);
+    const forged=structuredClone(reimported);
+    forged.production_design!.identity_origins!.push(duplicate);
+    expect(()=>validateIdentityRegistry(forged)).toThrow(/Duplicate/);
+    expect(identityUseReview(reimported,record.id,"2026-10-20T00:00:00Z",
+      "voice","education")).toBe("revoked");
+  });
+
+  it("rejects human consent evidence that hashes to the provenance source",async()=>{
+    const {project,record}=fixture();
+    const alias=crypto.randomUUID();
+    const reimported=await applyChange(project,{
+      type:"add_asset",asset:{...project.assets[0],id:alias},
+    });
+    const reused:IdentityOriginRecord={
+      ...record,
+      origin:"human_likeness",
+      consent_asset_id:alias,consent_sha256:SHA,
+      consent_subject_declaration:"Named owner subject",
+      consent_scope_declaration:"Only one educational presenter prototype",
+      allowed_modalities:["presenter"],allowed_purposes:["education"],
+      synthetic_disclosure:DISCLOSURE_HUMAN,
+    };
+    await expect(applyChange(reimported,{
+      type:"register_identity_origin",record:reused,
+    })).rejects.toThrow(/separate|consent/i);
+    expect(reimported.production_design?.identity_origins).toHaveLength(0);
+  });
+});
