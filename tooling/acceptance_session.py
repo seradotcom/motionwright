@@ -44,8 +44,17 @@ def _strict_json_object(pairs: list[tuple[str, object]]) -> dict:
     return obj
 
 
+def outside_public_checkout(path: Path, *, purpose: str) -> Path:
+    """Resolve an evidence location without admitting files inside source."""
+    resolved = path.resolve(strict=True)
+    if resolved.is_relative_to(ROOT.resolve()):
+        raise IntakeError(f"Private acceptance {purpose} must reside outside the public checkout")
+    return resolved
+
+
 def load_private_manifest(path: Path) -> object:
     """Read a bounded private review file without following final symlinks."""
+    outside_public_checkout(path.parent, purpose="manifest")
     if path.is_symlink() or not path.is_file():
         raise IntakeError("Private acceptance manifest must be a regular file")
     size = path.stat().st_size
@@ -165,6 +174,7 @@ def create_session(*, source_sha: str, executed_by: str = "") -> dict:
 
 
 def validated_path(root: Path, relative: object) -> Path:
+    outside_public_checkout(root, purpose="evidence root")
     if not isinstance(relative, str) or not relative or len(relative) > 1024:
         raise IntakeError("Evidence path must be a bounded relative POSIX path")
     normalized = PurePosixPath(relative)
@@ -234,7 +244,7 @@ def validate_session(doc: object, *, evidence_root: Path) -> dict[str, int]:
              and all(isinstance(case, dict) for case in cases)
              and [c.get("id") for c in cases] == canonical_ids(),
              "Session must contain each of the exact 60 canonical acceptance IDs, once and in order")
-    root = evidence_root.resolve(strict=True)
+    root = outside_public_checkout(evidence_root, purpose="evidence root")
     _require(root.is_dir(), "Evidence root must be a real directory")
     counts: Counter[str] = Counter()
     evidence_paths: set[str] = set()

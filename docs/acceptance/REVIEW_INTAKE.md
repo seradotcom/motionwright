@@ -6,7 +6,7 @@ The canonical private product specification is **not published in this repositor
 
 ## Prepare a private session
 
-From the exact Motionwright source checkout that produced the installed test build, create an evidence directory **outside this public repo**. Do not run expensive native render tests on a space-constrained developer workstation; use authorized installed-device test environments and CI runners as appropriate.
+From the exact Motionwright source checkout that produced the installed test build, create the private session manifest and evidence directory **outside this public repo**. The `init`, `verify` and `fingerprint` tools now enforce this boundary, including canonicalized paths; they refuse to open private review files within the checkout even if the directory is untracked. This protects against accidentally committing original owner screenshots/receipts to the public repository. Do not run expensive native render tests on a space-constrained developer workstation; use authorized installed-device test environments and CI runners as appropriate.
 
 ```bash
 mkdir -p "$HOME/Downloads/motionwright-acceptance-private/evidence"

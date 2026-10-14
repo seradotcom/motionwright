@@ -309,6 +309,25 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(module.IntakeError, "unknown acceptance status"):
             module.validate_session(self.manifest, evidence_root=self.root)
 
+    def test_manifest_inside_public_checkout_refused_before_parsing(self):
+        import json
+        file = self.root / "session.json"
+        file.write_text(json.dumps(self.manifest), encoding="utf-8")
+        with patch.object(module, "ROOT", self.root):
+            with self.assertRaisesRegex(module.IntakeError, "outside the public checkout"):
+                module.load_private_manifest(file)
+
+    def test_evidence_root_inside_public_checkout_refused_even_if_not_run(self):
+        with patch.object(module, "ROOT", self.root):
+            with self.assertRaisesRegex(module.IntakeError, "outside the public checkout"):
+                module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_fingerprint_cannot_read_private_evidence_from_public_checkout(self):
+        self.write_evidence()
+        with patch.object(module, "ROOT", self.root):
+            with self.assertRaisesRegex(module.IntakeError, "outside the public checkout"):
+                module.fingerprint(self.root, "ACC-001/screenshot.png")
+
     def test_source_lock_requires_full_commit(self):
         with self.assertRaisesRegex(module.IntakeError, "source_sha"):
             module.create_session(source_sha="main")
