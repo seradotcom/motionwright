@@ -41,7 +41,8 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProjectMutationGate } from "./projectMutation";
 import {
   applyChange,
   bootstrap,
@@ -1783,11 +1784,15 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const bootRef = useRef<Bootstrap | null>(boot);
+  bootRef.current = boot;
+  const mutationGate = useRef(new ProjectMutationGate());
 
   const loadProject = useCallback(async () => {
     setBootError(null);
     try {
       const value = await bootstrap();
+      bootRef.current = value;
       setBoot(value);
       setSelectedSceneId(value.project.scenes[0]?.id ?? null);
       setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
@@ -1926,36 +1931,42 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [stepFrame, paletteOpen]);
 
+  const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
+    const source = bootRef.current?.project;
+    if (!source) throw new Error("Project is not ready.");
+    return mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      operation,
+      next => {
+        const current = bootRef.current;
+        if (!current) return;
+        const updated = { ...current, project: next };
+        bootRef.current = updated;
+        setBoot(updated);
+        setSelectedSceneId(selected => selected && next.scenes.some(scene => scene.id === selected)
+          ? selected : next.scenes[0]?.id ?? null);
+      },
+      setBusy,
+    );
+  }, []);
+
   const commit = useCallback(async (change: Change) => {
-    if (!boot || busy) return;
-    setBusy(true);
     setError(null);
     try {
-      const next = await applyChange(boot.project, change);
-      setBoot({ ...boot, project: next });
-      if (!selectedSceneId || !next.scenes.some((scene) => scene.id === selectedSceneId)) {
-        setSelectedSceneId(next.scenes[0]?.id ?? null);
-      }
+      await transactProject(source => applyChange(source, change));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
     }
-  }, [boot, busy, selectedSceneId]);
+  }, [transactProject]);
 
   const ingestAsset = useCallback(async (path: string) => {
-    if (!boot) throw new Error("Project is not ready.");
-    if (busy) throw new Error("Finish the current project change before importing an asset.");
-    const next = await importAssetFile(boot.project, path);
-    setBoot({ ...boot, project: next });
-  }, [boot, busy]);
+    await transactProject(source => importAssetFile(source, path));
+  }, [transactProject]);
 
   const ingestVoice = useCallback(async (path: string, label?: string) => {
-    if (!boot) throw new Error("Project is not ready.");
-    if (busy) throw new Error("Finish the current project change before importing a voice take.");
-    const next = await importVoiceFile(boot.project, path, label);
-    setBoot({ ...boot, project: next });
-  }, [boot, busy]);
+    await transactProject(source => importVoiceFile(source, path, label));
+  }, [transactProject]);
 
   if (!project || !boot) {
     return (
@@ -2058,7 +2069,9 @@ export default function App() {
               setNativeRenderReceipt(null);
               setNativeAvReceipt(null);
               setNativeExportReceipt(null);
-              setBoot({ ...boot, project: imported });
+              const updated = { ...(bootRef.current ?? boot), project: imported };
+              bootRef.current = updated;
+              setBoot(updated);
               setSelectedSceneId(imported.scenes[0]?.id ?? null);
               setPlayhead(0);
               setPlaying(false);
@@ -2185,7 +2198,7 @@ export default function App() {
 
       {error && (
         <div className="error-banner" role="alert">
-          <strong>Change not committed.</strong>
+          <strong>Project change needs attention.</strong>
           <span>{error}</span>
           <button type="button" className="plain-icon" aria-label="Dismiss error" onClick={() => setError(null)}><X size={15} /></button>
         </div>

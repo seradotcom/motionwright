@@ -34,4 +34,27 @@ class CreativeStatusPolicyTests(unittest.TestCase):
             changed=copy.deepcopy(self.data);changed["requirements"][0]["source_paths"]=[value]
             with self.assertRaises(ValueError):policy.validate(changed)
 
+    def test_cannot_redirect_original_ledgers_to_arbitrary_nonempty_documents(self):
+        changed = copy.deepcopy(self.data)
+        changed["original_requirements_ledger"] = "README.md"
+        with self.assertRaisesRegex(ValueError, "redirect"):
+            policy.validate(changed)
+
+    def test_original_cardinality_is_checked_not_only_nonempty(self):
+        from unittest.mock import patch
+        req = json.loads((ROOT / "docs/acceptance/requirements-status.json").read_text())
+        acc = json.loads((ROOT / "docs/acceptance/acceptance-status.json").read_text())
+        req["requirements"].pop()
+        with patch.object(policy, "load", side_effect=[req, acc]):
+            with self.assertRaisesRegex(ValueError, "requirements_ids"):
+                policy.validate(self.data)
+
+    def test_malformed_expansion_rows_paths_and_scope_are_policy_errors(self):
+        for key, value in [("source_paths", "README.md"), ("implemented_scope", 1),
+                           ("implementation", ["partial"])]:
+            changed = copy.deepcopy(self.data)
+            changed["requirements"][0][key] = value
+            with self.assertRaises(ValueError):
+                policy.validate(changed)
+
 if __name__=="__main__":unittest.main()
