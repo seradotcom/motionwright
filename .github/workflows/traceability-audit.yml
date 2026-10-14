@@ -1,0 +1,50 @@
+name: Source Requirement Traceability
+
+on:
+  push:
+    branches: ["main", "audit/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-traceability-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  immutable-source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Fetch complete history for reliable ledger drift
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Python for policy and source inventory
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Preserve original and expansion acceptance invariants
+        run: |
+          python3 tooling/acceptance_policy.py
+          python3 tooling/creative_status_policy.py
+      - name: Exercise adversarial source reconciliation
+        run: python3 -m unittest discover -s tooling/tests -p 'test_reconcile_requirements.py' -v
+      - name: Inventory this exact, immutable Git candidate
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          python3 tooling/reconcile_requirements.py \
+            --source-sha "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/motionwright-traceability-$GITHUB_SHA.json"
+      - name: Retain source-linked structural findings without private records
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-traceability-${{ github.sha }}
+          path: ${{ runner.temp }}/motionwright-traceability-${{ github.sha }}.json
+          if-no-files-found: error
+          retention-days: 30

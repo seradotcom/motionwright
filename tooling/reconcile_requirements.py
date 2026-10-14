@@ -36,9 +36,24 @@ def kind(path: str) -> str:
     return "metadata_or_fixture"
 
 
+def strict_json_pairs(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate authority field in immutable ledger")
+        result[key] = value
+    return result
+
+
+def reject_nonfinite_json(_value: str) -> None:
+    raise ValueError("nonfinite value in immutable ledger")
+
+
 def reconcile(source: str) -> dict:
     if not re.fullmatch(r"[0-9a-f]{40}", source):
         raise ValueError("source must be a full immutable Git SHA")
+    if git("rev-parse", "--is-shallow-repository").strip() != "false":
+        raise ValueError("full Git history is mandatory for meaningful ledger/source drift")
     if git("rev-parse", source + "^{commit}").strip() != source:
         raise ValueError("source must identify the exact commit")
     tree = {}
@@ -48,7 +63,10 @@ def reconcile(source: str) -> dict:
         mode, object_type, oid = header.split()
         tree[path] = {"mode": mode, "object_type": object_type, "git_blob": oid,
                       "kind": kind(path)}
-    docs = {name: json.loads(git("show", source + ":" + path)) for name, path in LEDGERS.items()}
+    docs = {name: json.loads(git("show", source + ":" + path),
+                             object_pairs_hook=strict_json_pairs,
+                             parse_constant=reject_nonfinite_json)
+            for name, path in LEDGERS.items()}
     history = {}
     for name, path in LEDGERS.items():
         commit = git("log", "-1", "--format=%H", source, "--", path).strip()
