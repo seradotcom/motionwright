@@ -61,7 +61,7 @@ Variant lineage, localization text, cut selection and delivery profiles travel a
 
 ## Build delivery evidence
 
-CI can generate an exact-source delivery manifest with tooling/release_manifest.py. That manifest binds the tested Motionwright SHA to the Semwright Native SDK pin and hashes the Rust/npm lockfiles, source lock, AGPL license and third-party notices. It is uploaded as evidence by the Security and Delivery workflow; it is not a signing, notarization or publication claim.
+CI can generate an exact-source delivery manifest with tooling/release_manifest.py. Before and after hashing tracked inputs, the tool checks that the supplied Motionwright commit SHA matches the **actual, clean Git HEAD**; it refuses linked/junction or changed input files, duplicate source-lock keys, and untracked manifest inputs. The output is created exclusively and cannot overwrite an existing receipt; a failed final checkout check discards only the newly created, byte-identical unsigned receipt. The manifest binds that local Motionwright checkout to the Semwright Native SDK source pin and hashes the Rust/npm lockfiles, source lock, AGPL license and third-party notices. The Security and Delivery CI job runs adversarial tests against synthetic Git repositories before publishing this metadata. These checks are local source-integrity evidence, **not** installed binary attestation, signing, notarization, independent product acceptance or publication authorization; they are not atomic against an adversarial filesystem race.
 
 The dedicated Candidate Packages workflow builds release-shaped desktop bundles only on disposable GitHub-hosted runners:
 
