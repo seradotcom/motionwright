@@ -43,6 +43,12 @@ actual imported JSON/PNG byte equality and mask-pixel coverage are separately
 proved by canonical SQLite and browser/native CI. The in-memory test is not
 misrepresented as physical screenshot evidence.
 
+A separately pinned joint-master experiment renders the three original
+source families **together** as one 540-frame native Film and independently
+decodes the H264/AAC MP4 at all three scene centers. See
+[Joint native master](JOINT_NATIVE_MASTER.md). The exact-HEAD CI and human
+creative acceptance are distinct.
+
 Independent exact-SHA workflows produce actual native Film H.264/AAC masters
 for the original Stage, procedural generator and measured source, plus actual
 first-party Chromium capture evidence. The rendered PNG and decoded MP4

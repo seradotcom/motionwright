@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent, CI-only decoded-media acceptance for the pinned 2s native AV master.
+"""Independent, CI-only decoded-media acceptance for pinned 2s, 6s and 18s AV masters.
 
 A native receipt and an MP4 SHA-256 are necessary but insufficient: a video can
 contain 60 copies of a blank frame and an AAC stream can be silent or swapped.
@@ -25,7 +25,7 @@ HEIGHT = 1080
 AUDIO_RATE = 48_000
 EXPECTED_SECONDS = 2.0
 MAX_MP4_BYTES = 512 * 1024 * 1024
-MAX_DECODED_PCM_BYTES = 2 * 1024 * 1024  # up to 6s stereo s16le + bounded AAC tail
+MAX_DECODED_PCM_BYTES = 5 * 1024 * 1024  # exact 18s stereo s16le + bounded AAC tail
 FRAME_WIDTH = 160
 FRAME_HEIGHT = 90
 FRAMES_TO_COMPARE = (0, 30)
@@ -33,8 +33,10 @@ LEFT_TONE_HZ = 440
 RIGHT_TONE_HZ = 660
 VIDEO_DIFF_THRESHOLD = 17
 MIN_CHANGED_CHANNEL_BYTES = 85
-# Closed CI fixtures only: baseline 2s or one of the 6s ProductHero profiles.
-ALLOWED_PROFILES = {(60, 1920, 1080), (180, 1920, 1080), (180, 1080, 1920), (180, 1080, 1080)}
+# Closed CI fixtures only: 2s baseline, 6s authored scene, 18s three-scene master.
+ALLOWED_SECONDS = frozenset((2.0, 6.0, 18.0))
+ALLOWED_PROFILES = {(60, 1920, 1080), (180, 1920, 1080), (180, 1080, 1920),
+                    (180, 1080, 1080), (540, 1920, 1080)}
 
 
 class MediaProbeError(ValueError):
@@ -146,7 +148,7 @@ def _harmonic_amplitude(samples: list[int], frequency: int) -> float:
 
 def inspect_decoded_audio(pcm: bytes, *, expected_seconds: float = EXPECTED_SECONDS) -> dict:
     """Prove actual L440Hz/R660Hz content and exact bounded source duration."""
-    _require(expected_seconds in (2.0, 6.0), "Audio probe supports only pinned 2s or 6s fixtures")
+    _require(expected_seconds in ALLOWED_SECONDS, "Audio probe supports only pinned 2s, 6s or 18s fixtures")
     _require(len(pcm) % 4 == 0, "Decoded stereo s16le PCM has a partial sample")
     frames = len(pcm) // 4
     expected_samples = int(expected_seconds * AUDIO_RATE)
@@ -214,8 +216,8 @@ def inspect_decoded_video(pixels: bytes, *, expect_movement: bool = True) -> dic
 
 
 def write_two_channel_tone_wav(destination: Path, *, seconds: float = EXPECTED_SECONDS) -> None:
-    """Create deterministic, distinct-channel 2s/6s stereo fixture (not sound design)."""
-    _require(seconds in (2.0, 6.0), "Only the pinned native AV test durations are supported")
+    """Create deterministic 2s/6s/18s stereo fixture (not sound design)."""
+    _require(seconds in ALLOWED_SECONDS, "Only the pinned native AV test durations are supported")
     import struct
 
     sample_count = int(seconds * AUDIO_RATE)
@@ -244,7 +246,7 @@ def hash_file(path: Path) -> str:
 
 def verify_generated_tone_wav(source: Path, *, seconds: float = EXPECTED_SECONDS) -> None:
     """Fail if the authored test WAV is silent, mono, or has a wrong duration."""
-    _require(seconds in (2.0, 6.0), "Unsupported pinned native WAV duration")
+    _require(seconds in ALLOWED_SECONDS, "Unsupported pinned native WAV duration")
     with wave.open(str(source), "rb") as audio:
         _require(audio.getnchannels() == 2 and audio.getsampwidth() == 2
                  and audio.getframerate() == AUDIO_RATE

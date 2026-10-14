@@ -89,6 +89,38 @@ class NativeMediaProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(probe.MediaProbeError, "duration"):
             probe.inspect_decoded_audio(self.pcm, expected_seconds=6.0)
 
+    def test_exact_eighteen_second_joint_master_is_allowed_but_never_arbitrary_duration(self):
+        """One fixed 540-frame three-scene source, not generic audio generation."""
+        path = Path(self.temp.name) / "joint-eighteen-seconds.wav"
+        probe.write_two_channel_tone_wav(path, seconds=18.0)
+        with wave.open(str(path), "rb") as wav:
+            self.assertEqual(
+                (wav.getframerate(), wav.getnchannels(), wav.getsampwidth(), wav.getnframes()),
+                (48_000, 2, 2, 864_000),
+            )
+            result = probe.inspect_decoded_audio(
+                wav.readframes(wav.getnframes()), expected_seconds=18.0,
+            )
+        self.assertEqual(result["stereo_channel_identity"], "confirmed_distinct_source_tones")
+        self.assertEqual(result["decoded_pcm_frames"], 864_000)
+
+        info = real_metadata()
+        info["format"]["duration"] = "18.024"
+        info["streams"][0]["nb_read_frames"] = "540"
+        reviewed = probe.inspect_streams(
+            info, expected_frames=540, expected_size=(1920, 1080),
+        )
+        self.assertEqual(reviewed["video_frames_decoded"], 540)
+        info["streams"][0]["nb_read_frames"] = "539"
+        with self.assertRaisesRegex(probe.MediaProbeError, "exactly 540"):
+            probe.inspect_streams(info, expected_frames=540)
+        with self.assertRaisesRegex(probe.MediaProbeError, "pinned CI fixtures"):
+            probe.inspect_streams(info, expected_frames=541)
+        with self.assertRaisesRegex(probe.MediaProbeError, "Only the pinned"):
+            probe.write_two_channel_tone_wav(path.with_name("not-a-fixture.wav"), seconds=12.0)
+        with self.assertRaisesRegex(probe.MediaProbeError, "duration"):
+            probe.inspect_decoded_audio(self.pcm, expected_seconds=18.0)
+
     def test_swapped_channels_are_rejected(self):
         swapped = b"".join(struct.pack("<hh", r, l)
                            for l, r in struct.iter_unpack("<hh", self.pcm))
