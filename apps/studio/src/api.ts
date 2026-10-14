@@ -10,6 +10,7 @@ import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
 import { applyStageCaptureChange, validateStageCaptureCards } from "./stageCapture";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
+import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry } from "./identityOrigin";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
@@ -1010,6 +1011,16 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       });
       break;
     }
+    case "register_identity_origin": {
+      assertUnlocked(next,projectResource(next),["content"]);
+      registerIdentityOrigin(next,change.record);
+      break;
+    }
+    case "revoke_identity_origin": {
+      assertUnlocked(next,projectResource(next),["content"]);
+      revokeIdentityOrigin(next,change.revocation);
+      break;
+    }
     case "register_capture_source": {
       assertUnlocked(next, projectResource(next), ["content"]);
       registerCaptureRecord(next,change.record);
@@ -1512,6 +1523,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     case "remove_asset": {
       assertUnlocked(next, projectResource(next), ["content"]);
+      if(next.production_design?.identity_origins?.some(record=>
+        record.provenance_asset_id===change.asset_id ||
+        record.consent_asset_id===change.asset_id))
+        throw new Error("Identity consent/provenance assets cannot be removed while referenced.");
       if(next.production_design?.captures?.some(record=>
         record.screenshot_asset_id===change.asset_id ||
         record.manifest_asset_id===change.asset_id ||
@@ -1970,6 +1985,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   validateCameraReframes(next);
   await validateCraftDisclosures(next);
   validateCaptureRecords(next);
+  validateIdentityRegistry(next);
   await validateStageCaptureCards(next);
   validateMeasuredData(next);
   validateMetricSourceNoticesOnEdit(next);
