@@ -16,6 +16,7 @@ on:
       - "docs/security/known-rustsec-advisories.json"
       - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
+      - "tooling/glib_owner_chain.py"
       - "tooling/tests/**"
       - "docs/security/**"
       - "SOURCE_LOCK.json"
@@ -41,6 +42,7 @@ on:
       - "docs/security/known-rustsec-advisories.json"
       - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
+      - "tooling/glib_owner_chain.py"
       - "tooling/tests/**"
       - "docs/security/**"
       - "SOURCE_LOCK.json"
@@ -115,6 +117,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: false
+      - name: Verify reviewed glib 0.18 GTK/Tauri owner graph is unchanged
+        run: |
+          mkdir -p ci-evidence
+          python3 -m unittest discover -s tooling/tests -p 'test_glib_owner_chain.py' -v
+          python3 tooling/security_advisory_policy.py \
+            --output ci-evidence/glib-source-owner-chain.json
       - name: Install pinned cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Enforce exact reviewed advisory set

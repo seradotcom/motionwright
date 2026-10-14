@@ -22,7 +22,46 @@
         "glib": "0.18.5"
       },
       "forbidden_first_party_tokens": [
-        "VariantStrIter"
+        "VariantStrIter",
+        "array_iter_str"
+      ],
+      "reviewed_direct_owners": [
+        "atk@0.18.2",
+        "cairo-rs@0.18.5",
+        "gdk@0.18.2",
+        "gdk-pixbuf@0.18.5",
+        "gdkx11@0.18.2",
+        "gio@0.18.4",
+        "gtk@0.18.2",
+        "javascriptcore-rs@1.1.2",
+        "libappindicator@0.9.0",
+        "pango@0.18.3",
+        "soup3@0.5.0",
+        "webkit2gtk@2.0.2"
+      ],
+      "reviewed_transitive_owners": [
+        "atk@0.18.2",
+        "cairo-rs@0.18.5",
+        "gdk-pixbuf@0.18.5",
+        "gdk@0.18.2",
+        "gdkx11@0.18.2",
+        "gio@0.18.4",
+        "gtk@0.18.2",
+        "javascriptcore-rs@1.1.2",
+        "libappindicator@0.9.0",
+        "motionwright-desktop@0.1.0",
+        "muda@0.20.0",
+        "pango@0.18.3",
+        "soup3@0.5.0",
+        "tao@0.37.1",
+        "tauri-plugin-dialog@2.8.1",
+        "tauri-plugin-fs@2.7.0",
+        "tauri-runtime-wry@2.12.1",
+        "tauri-runtime@2.12.1",
+        "tauri@2.12.1",
+        "tray-icon@0.25.1",
+        "webkit2gtk@2.0.2",
+        "wry@0.57.0"
       ],
       "review_note": "The reviewed stable Linux desktop dependency graph resolves Tauri through GTK 0.18 and glib 0.18.5. Motionwright does not call VariantStrIter directly. This reduces direct exposure but does not resolve the upstream unsoundness.",
       "recheck_when": [

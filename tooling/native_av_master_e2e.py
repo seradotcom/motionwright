@@ -22,6 +22,7 @@ from pathlib import Path
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
+from native_provider_broker_events import read_owner_broker_event_history
 from native_av_failure_guard import (
     NativeCommandFailure, run_sanitized_json,
 )
@@ -122,7 +123,12 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise AssertionError(log.read_text(encoding="utf-8", errors="replace"))
+            # The daemon log may contain connection paths or owner tickets;
+            # never paste its bytes into a public GitHub CI assertion.
+            raise AssertionError(
+                "Pinned owner Broker exited before exposing its socket; "
+                "private daemon log suppressed"
+            )
         if socket.is_socket():
             return
         time.sleep(0.05)
@@ -719,6 +725,60 @@ def main() -> None:
                             "render_outcome": "not_proven",
                             "diagnostic_parse_error_class": type(error).__name__,
                         })
+                # In the exact v0.1 AV CI lane only, read a bounded snapshot of
+                # the pinned Broker's own session-filtered lifecycle events.
+                # Never reissue render.start or any native mutation after
+                # a Timeout/UNKNOWN; the watcher reads historical events only.
+                if (
+                    FIXTURE == "baseline"
+                    and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
+                ):
+                    try:
+                        if daemon.poll() is None and socket.is_socket():
+                            broker_events = read_owner_broker_event_history(
+                                SW_BINS / "semwright", socket, session, env=env
+                            )
+                        else:
+                            broker_events = {
+                                "schema": "motionwright-ci-native-provider-broker-events/1",
+                                "observation": "BROKER_UNAVAILABLE_BEFORE_READ_ONLY_REPLAY",
+                                "trusted_lifecycle_event_count": 0,
+                                "events": [],
+                                "provider_generation_root_cause": "NOT_PROVEN",
+                                "original_render_retry_permitted": False,
+                                "terminal_native_result_verified": False,
+                                "read_only_broker_replay": False,
+                                "installed_owner_recovery": "NOT_RUN",
+                                "public_owner_payloads_copied": False,
+                            }
+                        broker_events["motionwright_source_sha"] = GITHUB_SHA
+                        broker_events["semwright_source_pin"] = PIN
+                        write_private_json(
+                            EVIDENCE / "native-provider-broker-events.json", broker_events
+                        )
+                        # CI text can identify *which allowlisted lifecycle
+                        # transition* occurred without logging any event
+                        # payload, generation, owner path or native job ref.
+                        kinds = [
+                            "provider.connected", "provider.disconnected",
+                            "provider.capabilities.changed",
+                            "provider.generation.invalidated", "provider.removed",
+                        ]
+                        safe_counts = {
+                            kind: sum(
+                                item["kind"] == kind
+                                for item in broker_events["events"]
+                            )
+                            for kind in kinds
+                        }
+                        print(
+                            "v01-provider-broker-events="
+                            + broker_events["observation"]
+                            + " counts="
+                            + json.dumps(safe_counts, sort_keys=True)
+                        )
+                    except (OSError, ValueError, TypeError, KeyError):
+                        print("v01-provider-broker-events=UNVERIFIED_OPTIONAL_OBSERVATION")
                 # Finish *before* intentional owner shutdown so teardown is
                 # not confused with an unexpected process failure.
                 completed_lifecycle = lifecycle.stop()
