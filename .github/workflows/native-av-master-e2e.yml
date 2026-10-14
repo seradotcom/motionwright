@@ -21,6 +21,8 @@ on:
       - 'tooling/tests/test_native_cli_failure_redaction.py'
       - 'tooling/native_av_media_probe.py'
       - 'tooling/native_provider_lifecycle.py'
+      - 'tooling/native_provider_broker_events.py'
+      - 'tooling/tests/test_native_provider_broker_events.py'
       - 'tooling/native_provider_loss_correlation.py'
       - 'tooling/tests/test_native_provider_loss_correlation.py'
       - 'tooling/tests/test_native_av_media_probe.py'
@@ -194,7 +196,12 @@ jobs:
       - name: Validate passive provider-generation correlation is not root-cause proof
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_loss_correlation.py' -v
 
+      - name: Reject untrusted or forged Broker lifecycle replay diagnostics
+        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_broker_events.py' -v
+
       - name: Produce a real application-owned AV master through Broker and Driver Host
+        env:
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'
         run: |
           set -euo pipefail
           python3 tooling/native_av_master_e2e.py \
@@ -215,6 +222,7 @@ jobs:
           test -s "$root/decoded-media-proof.json"
           test -s "$root/native-provider-lifecycle.json"
           test -s "$root/native-provider-loss-correlation.json"
+          test -s "$root/native-provider-broker-events.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -233,6 +241,19 @@ jobs:
           assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
           assert health["sample_count"] >= 1
           assert health["daemon_exit_before_owner_cleanup"] is None
+          watcher = json.loads((root / "native-provider-broker-events.json").read_text())
+          assert watcher["schema"] == "motionwright-ci-native-provider-broker-events/1"
+          assert watcher["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
+          assert watcher["semwright_source_pin"] == json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"]
+          assert watcher["provider_generation_root_cause"] == "NOT_PROVEN"
+          assert watcher["original_render_retry_permitted"] is False
+          assert watcher["terminal_native_result_verified"] is False
+          assert type(watcher["trusted_lifecycle_event_count"]) is int
+          assert watcher["trusted_lifecycle_event_count"] == len(watcher["events"])
+          assert watcher["public_owner_payloads_copied"] is False
+          assert watcher["installed_owner_recovery"] == "NOT_RUN"
+          for event in watcher["events"]:
+            assert set(event) == {"kind", "generation", "revision"}
           correlation = json.loads((root / "native-provider-loss-correlation.json").read_text())
           assert correlation["schema"] == "motionwright.v01-provider-loss-correlation/1"
           assert correlation["authority"] == "passive-ci-process-correlation-not-driver-host-causation"

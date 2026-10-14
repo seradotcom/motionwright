@@ -14,6 +14,7 @@ import pathlib
 import sys
 import tomllib
 from typing import Any
+from glib_owner_chain import OwnerChainError, verify_glib_owner_chain
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "docs/security/known-rustsec-advisories.json"
@@ -171,6 +172,14 @@ def main() -> None:
                     + ", ".join(offenders)
                 )
 
+    glib = expected.get("RUSTSEC-2024-0429")
+    if not isinstance(glib, dict):
+        fail("reviewed glib advisory policy is missing")
+    try:
+        glib_owner_chain = verify_glib_owner_chain(lock, glib)
+    except OwnerChainError as error:
+        fail("RUSTSEC-2024-0429 owner chain requires independent review: " + str(error))
+
     actual_warnings: dict[str, str] | None = None
     if args.audit_json is not None:
         audit = json.loads(args.audit_json.read_text())
@@ -199,6 +208,7 @@ def main() -> None:
         "policy": POLICY_PATH.relative_to(ROOT).as_posix(),
         "audit_checked": actual_warnings is not None,
         "vulnerabilities_allowed": 0,
+        "glib_owner_chain": glib_owner_chain,
         "known_warnings": [
             {
                 "id": advisory_id,
