@@ -46,9 +46,9 @@ for (const kind of ["asset", "voice"] as const) {
       await page.getByLabel("Voice file absolute path").fill("/synthetic-fixture/voice.wav");
       await page.getByRole("button", { name: "Import + measure", exact: true }).click();
     }
-    await expect.poll(() => page.evaluate(() => (window as unknown as {
+    await expect.poll(() => page.evaluate((importKind) => (window as unknown as {
       __MUTATION_FIXTURE__: { calls: string[] };
-    }).__MUTATION_FIXTURE__.calls.includes("import_" + kind + "_file"))).toBe(true);
+    }).__MUTATION_FIXTURE__.calls.includes("import_" + importKind + "_file"), kind)).toBe(true);
     await expect(page.locator(".saving-state")).toContainText("Committing");
     await page.getByRole("button", { name: "Brief", exact: true }).click();
     await page.getByLabel("Project title").fill("Do not race an import");
