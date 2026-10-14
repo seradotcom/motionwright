@@ -8,6 +8,7 @@ import copy
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "acceptance_session.py"
 SPEC = importlib.util.spec_from_file_location("acceptance_session", SCRIPT)
@@ -105,9 +106,21 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(module.IntakeError, "relative|parent"):
             module.fingerprint(self.root, "/etc/hosts")
         link = self.root / "sub" / "linked.txt"
-        link.symlink_to(outside)
-        with self.assertRaisesRegex(module.IntakeError, "symlink"):
-            module.fingerprint(self.root, "sub/linked.txt")
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            # Non-admin Windows cannot create symlinks. Test the same
+            # fail-closed path without requesting developer privileges.
+            actual_is_symlink = Path.is_symlink
+            with patch.object(
+                Path, "is_symlink", autospec=True,
+                side_effect=lambda path: path == link or actual_is_symlink(path),
+            ):
+                with self.assertRaisesRegex(module.IntakeError, "symlink"):
+                    module.fingerprint(self.root, "sub/linked.txt")
+        else:
+            with self.assertRaisesRegex(module.IntakeError, "symlink"):
+                module.fingerprint(self.root, "sub/linked.txt")
 
     def test_fail_and_blocked_require_real_evidence_or_notes(self):
         fail_case = self.manifest["cases"][0]
@@ -162,6 +175,102 @@ class IntakeTests(unittest.TestCase):
         case["executed_at_utc"] = "2026-10-08T14:00:00-06:00"
         with self.assertRaisesRegex(module.IntakeError, "execution time"):
             module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_private_case_cannot_reuse_file_from_unrelated_case(self):
+        first = self.approve()
+        second = self.manifest["cases"][1]
+        second.update({
+            "status": "PASS",
+            "executed_by": "Operator A",
+            "executed_at_utc": UTC,
+            "reviewed_by": "Reviewer B",
+            "reviewed_at_utc": UTC,
+            "independent": True,
+            "notes": "Independent review rationale for another private scenario",
+            "evidence": copy.deepcopy(first["evidence"]),
+        })
+        with self.assertRaisesRegex(module.IntakeError, "own case directory"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_same_case_cannot_count_duplicate_file_as_separate_evidence(self):
+        case = self.approve()
+        case["evidence"].append(copy.deepcopy(case["evidence"][0]))
+        with self.assertRaisesRegex(module.IntakeError, "duplicate evidence path"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_fail_cannot_claim_foreign_case_evidence_either(self):
+        case = self.manifest["cases"][1]
+        case.update({
+            "status": "FAIL",
+            "executed_by": "Operator A",
+            "executed_at_utc": UTC,
+            "notes": "Observed failing result",
+            "evidence": [self.write_evidence("ACC-001/screenshot.png")],
+        })
+        with self.assertRaisesRegex(module.IntakeError, "own case directory"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_malformed_case_missing_id_refused_as_intake_error(self):
+        del self.manifest["cases"][0]["id"]
+        with self.assertRaisesRegex(module.IntakeError, "60 canonical"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_duplicate_json_fields_in_private_session_are_rejected(self):
+        private = self.root / "session.json"
+        original = __import__("json").dumps(self.manifest)
+        private.write_text(original.replace(
+            '"schema_version": 1,',
+            '"schema_version": 1, "schema_version": 1,', 1,
+        ), encoding="utf-8")
+        with self.assertRaisesRegex(module.IntakeError, "Duplicate"):
+            module.load_private_manifest(private)
+
+    def test_oversized_private_session_is_refused_before_json_parse(self):
+        private = self.root / "session.json"
+        private.write_bytes(b"x" * (module.MAX_MANIFEST_BYTES + 1))
+        with self.assertRaisesRegex(module.IntakeError, "bounded"):
+            module.load_private_manifest(private)
+
+    def test_synthetic_source_sha_cannot_be_admitted_as_current_checkout(self):
+        from unittest.mock import patch
+        with patch.object(module, "checked_head", return_value="b" * 40), patch.object(
+            module, "assert_clean_source_checkout", return_value=None
+        ):
+            with self.assertRaisesRegex(module.IntakeError, "current Git checkout"):
+                module.checked_intake_source(SOURCE_SHA)
+            self.assertEqual(module.checked_intake_source("b" * 40), "b" * 40)
+            self.assertEqual(module.checked_intake_source(None), "b" * 40)
+
+    def test_dirty_tracked_checkout_cannot_initialize_exact_sha_acceptance(self):
+        from unittest.mock import patch
+        with patch.object(module, "checked_head", return_value=SOURCE_SHA), patch.object(
+            module, "assert_clean_source_checkout",
+            side_effect=module.IntakeError("tracked checkout dirty"),
+        ):
+            with self.assertRaisesRegex(module.IntakeError, "tracked checkout dirty"):
+                module.checked_intake_source(SOURCE_SHA)
+
+    def test_not_run_cannot_claim_execution_identity_or_review_time(self):
+        case = self.manifest["cases"][0]
+        case["executed_by"] = "claimed operator"
+        with self.assertRaisesRegex(module.IntakeError, "NOT_RUN"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+        case["executed_by"] = ""
+        case["executed_at_utc"] = UTC
+        with self.assertRaisesRegex(module.IntakeError, "NOT_RUN"):
+            module.validate_session(self.manifest, evidence_root=self.root)
+
+    def test_json_duplicate_nested_case_status_is_not_silently_accepted(self):
+        private = self.root / "nested.json"
+        import json
+        original = json.dumps(self.manifest)
+        private.write_text(original.replace(
+            '"status": "NOT_RUN",',
+            '"status": "NOT_RUN", "status": "PASS",',
+            1,
+        ), encoding="utf-8")
+        with self.assertRaisesRegex(module.IntakeError, "Duplicate"):
+            module.load_private_manifest(private)
 
     def test_source_lock_requires_full_commit(self):
         with self.assertRaisesRegex(module.IntakeError, "source_sha"):

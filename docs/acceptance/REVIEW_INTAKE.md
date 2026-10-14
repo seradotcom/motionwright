@@ -19,7 +19,7 @@ python3 tooling/acceptance_session.py verify \
   --evidence-root "$HOME/Downloads/motionwright-acceptance-private/evidence"
 ```
 
-The new session contains precisely 60 cases, all `NOT_RUN`, and the exact Motionwright and Semwright Git SHAs; it never creates `PASS` automatically. The session JSON is created with no overwrite, so a prior assessment cannot be silently replaced.
+The new session contains precisely 60 cases, all `NOT_RUN`, and the exact Motionwright and Semwright Git SHAs; it never creates `PASS` automatically. If `--source-sha` is supplied it must match the current local Git `HEAD` of this exact checkout; the intake tool refuses an arbitrary or stale caller-supplied commit **and a dirty tracked checkout** while initializing a new session. Existing untracked review files outside the repository remain permitted. This is a local Git/source identity check, **not** attestation that an installed application binary came from that commit; an independent evaluator must verify the binary's signed provenance separately. The session JSON is created with no overwrite, so a prior assessment cannot be silently replaced.
 
 An authorized evaluator must use the original private acceptance specification to execute each case on the installed product. Reviewers should retain traceable **actual evidence**: unmodified recordings, screenshots, readback files, full native job receipts, hashes, crash logs or CI artifacts as appropriate to the particular private case. For example, after explicitly producing `evidence/ACC-001/screen.png`:
 
@@ -29,7 +29,7 @@ python3 tooling/acceptance_session.py fingerprint \
   --path "ACC-001/screen.png"
 ```
 
-Copy the returned `path`, `sha256` and `size_bytes` descriptor to the matching case in `session.json`, alongside the real execution time, operator, reviewer and observations. Set `PASS` **only** after a distinct independent reviewer has actually checked the primary evidence against the corresponding private scenario.
+Copy the returned `path`, `sha256` and `size_bytes` descriptor to the matching case in `session.json`, alongside the real execution time, operator, reviewer and observations. **Each evidence file must live under the matching case folder** (`ACC-001/...` for `ACC-001`, etc.); a path cannot be repeated in the session or substituted from another case. If a recording is relevant to multiple scenarios, preserve an independently scoped copy in each case folder and record its actual descriptor. This boundary prevents a single unrelated evidence path from silently satisfying different acceptance claims; it does not decide whether the contents prove a scenario. Set `PASS` **only** after a distinct independent reviewer has actually checked the primary evidence against the corresponding private scenario.
 
 A valid manually reviewed `PASS` record has the shape:
 
@@ -61,7 +61,7 @@ python3 tooling/acceptance_session.py verify \
   --evidence-root "$HOME/Downloads/motionwright-acceptance-private/evidence"
 ```
 
-The validator checks exact 60-case cardinality, source SHA formats, pinned Semwright SHA, UTC event order, independent reviewer distinct from executor, PASS rationale, actual evidence file existence/size/SHA-256, no symlink traversal, no path escape and bounded file sizes. Large files are hashed in 1 MiB chunks. Private media is **not** copied to the repository or uploaded by this tool.
+The validator checks exact 60-case cardinality, source SHA formats, pinned Semwright SHA, UTC event order, independent reviewer distinct from executor, PASS rationale, per-case evidence folder and unique evidence path, actual evidence file existence/size/SHA-256, no symlink traversal, no path escape and bounded file sizes. It refuses duplicate JSON keys, malformed UTF-8 and private session manifests above 8 MiB before evaluating any claims. Large evidence files are hashed in 1 MiB chunks. Private media is **not** copied to the repository or uploaded by this tool.
 
 **Important: identity fields are self-attested.** The validator cannot authenticate identities, prove a screenshot depicts the correct app, prove a video was actually reviewed, or tell whether a human truly followed the private scenario. Such judgments remain the independent reviewer's responsibility. A `PASS` in this private session does not automatically promote public `docs/acceptance/acceptance-status.json`; the maintainer must manually review the evidence and privacy/licensing constraints before publishing any safe pointer. The source/Semwright SHAs need to match the exact tested binaries; the tool verifies the lock and formatting but cannot attest binary signing or the provenance of an external installation.
 
