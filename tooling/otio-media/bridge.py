@@ -32,6 +32,22 @@ RATES={24,25,30,60}
 class BridgeRefused(ValueError):pass
 def insist(ok:bool,message:str)->None:
     if not ok:raise BridgeRefused(message)
+def strict_json(blob:bytes|str,label:str)->dict:
+    """Reject ambiguous duplicate source/OTIO fields, including nested objects."""
+    def unique(pairs:list[tuple[str,object]])->dict:
+        result={}
+        for key,value in pairs:
+            insist(key not in result,f"Duplicate JSON key in {label}")
+            result[key]=value
+        return result
+    try:
+        decoded=json.loads(blob,object_pairs_hook=unique)
+    except (ValueError,UnicodeError,TypeError)as error:
+        if isinstance(error,BridgeRefused):raise
+        raise BridgeRefused(f"Invalid canonical JSON for {label}")from error
+    insist(isinstance(decoded,dict),f"{label} must be a JSON object")
+    return decoded
+
 def exact(value:object,fields:set[str],label:str)->dict:
     insist(isinstance(value,dict) and set(value)==fields,
            f"{label} fields are missing or unsupported")
@@ -60,7 +76,7 @@ def owner_file(root:Path,name:str,budget:int,extension:set[str]|None=None)->Path
     return path
 def read_json(root:Path,name:str)->dict:
     data=owner_file(root,name,MAX_JSON).read_bytes()
-    result=json.loads(data)
+    result=strict_json(data,"owner JSON")
     insist(isinstance(result,dict),"Expected a bounded JSON object")
     return result
 def rational(source:object,label:str)->Fraction:
@@ -96,7 +112,7 @@ def file_probe(media:Path)->dict:
         raise BridgeRefused("A bounded ffprobe video readback is unavailable") from error
     insist(run.returncode==0 and len(run.stdout)<MAX_JSON,
            "Media video stream could not be independently probed")
-    observed=json.loads(run.stdout)
+    observed=strict_json(run.stdout,"ffprobe")
     streams=observed.get("streams",[])
     insist(len(streams)==1,"Expected exactly one probed video stream")
     item=streams[0]
@@ -120,7 +136,7 @@ def file_probe(media:Path)->dict:
 def parse_project(root:Path,name:str)->tuple[dict,str]:
     path=owner_file(root,name,MAX_JSON)
     digest,_=fingerprint(path,MAX_JSON)
-    project=json.loads(path.read_text(encoding="utf8"))
+    project=strict_json(path.read_bytes(),"Project")
     insist(isinstance(project,dict) and
            all(isinstance(project.get(key),str) and UUID.fullmatch(project[key].lower())
                for key in ("id","generation")) and
