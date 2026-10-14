@@ -1785,7 +1785,6 @@ export default function App() {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const bootRef = useRef<Bootstrap | null>(boot);
-  bootRef.current = boot;
   const mutationGate = useRef(new ProjectMutationGate());
 
   const loadProject = useCallback(async () => {
@@ -1932,7 +1931,8 @@ export default function App() {
   }, [stepFrame, paletteOpen]);
 
   const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
-    const source = bootRef.current?.project;
+    // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
+    const source = boot?.project;
     if (!source) throw new Error("Project is not ready.");
     return mutationGate.current.run(
       source,
@@ -1949,7 +1949,7 @@ export default function App() {
       },
       setBusy,
     );
-  }, []);
+  }, [boot]);
 
   const commit = useCallback(async (change: Change) => {
     setError(null);
