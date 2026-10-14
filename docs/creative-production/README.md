@@ -36,6 +36,10 @@ In **Native inspection**, select the output profile matching a current native re
 
 The existing Rust `otio_interchange(Project)` remains the editorial source of truth. A bounded, owner-declared H.264 media bridge can produce source-hash-linked `ExternalReference` clips, preserve missing media explicitly, and report twelve property-level fidelity losses; a receiver edit can only become a **read-only** reorder or exact end-trim proposal, never an automatic Studio CAS commit. The synthetic-only CI uses independent OpenTimelineIO/FFprobe evidence. Public artifacts exclude the owner project, rights receipts, unverified clips and private runner evidence. See [OTIO real-media exchange](V05_OTIO_MEDIA_INTERCHANGE.md). Source/rights, external NLE import and human acceptance remain unverified.
 
+## Immutable Launchwright handoff (MW05-E14-04)
+
+The current Project and its original master may be packaged for downstream Launchwright only after an exact source, asset rights, claim and ProductionPlan approval review. The ZIP preserves project and master bytes and carries no publication authority; an independent receiver checks that it has not been changed. CI tests a synthetic first-party example but exposes **only** a bounded public status/digest manifest, never the private ZIP or source project. Real Launchwright import, human review and channel publishing remain NOT_RUN. See [Immutable handoff contract](V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md).
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows
