@@ -1,6 +1,6 @@
 # Automated inspection of unsigned desktop candidate packages
 
-Motionwright's Candidate Packages workflow builds release-shaped packages from one exact Git revision on disposable GitHub-hosted Linux, Windows and macOS runners. The original `package_receipt.py` records the source SHA, pinned Semwright Native SDK revision and SHA-256 of every generated installer.
+Motionwright's Candidate Packages workflow builds release-shaped packages from one exact Git revision on disposable GitHub-hosted Linux, Windows and macOS runners. The `package_receipt.py` now refuses a caller-supplied SHA unless it matches the **exact, clean, tracked Git HEAD** both before and after artifact hashing and receipt creation. It reads the bounded, link-free source lock and workspace metadata, checks every installer path component for symlinks/NTFS junctions, hashes the opened regular-file descriptor with size and identity checks, and writes an exclusive (never overwrite) receipt. It records the actual source SHA, pinned Semwright Native SDK revision and SHA-256 of every generated installer. These are local source-and-byte claims, not signed provenance of an installed binary.
 
 The additional **post-build candidate smoke** tests validate what the installers contain—and whether the Linux AppImage can actually create an X11 application window, persist a new project in SQLite and reopen the same source without silently replacing or editing it—rather than treating successful bundling alone as a working desktop app.
 

@@ -8,7 +8,9 @@ on:
       - "apps/studio/**"
       - "crates/**"
       - "tooling/package_receipt.py"
+      - "tooling/release_manifest.py"
       - "tooling/tests/test_package_receipt.py"
+      - "tooling/tests/test_candidate_receipt_source.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
@@ -28,7 +30,9 @@ on:
       - "apps/studio/**"
       - "crates/**"
       - "tooling/package_receipt.py"
+      - "tooling/release_manifest.py"
       - "tooling/tests/test_package_receipt.py"
+      - "tooling/tests/test_candidate_receipt_source.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
@@ -57,7 +61,9 @@ jobs:
         with:
           python-version: "3.13"
       - name: Candidate receipt and installed-package smoke policy tests
-        run: python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
+        run: |
+          python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py
+          python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
     needs: receipt-policy
