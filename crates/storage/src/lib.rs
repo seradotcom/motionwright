@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 mod capture_evidence;
 mod derived_cache;
+mod identity_evidence;
 mod integrity;
 mod production;
 mod render_window_cache;
@@ -1128,6 +1129,11 @@ impl Store {
             // Never touch a digest until the receipt-replay, generation and
             // canonical revision checks above have confirmed authority.
             capture_evidence::verify_capture_source(&blob_root, &project, record)?;
+        }
+        if let Change::RegisterIdentityOrigin { record } = change {
+            // Consent/document bytes are read only after exact owner CAS and
+            // canonical durable-request replay have already been checked.
+            identity_evidence::verify_identity_source(&blob_root, &project, record)?;
         }
         if let Change::UpsertMeasuredTable { table } = change {
             // These checks run *after* receipt replay and the canonical
