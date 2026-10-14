@@ -57,6 +57,10 @@ fn fixture() -> (Project, Uuid, Uuid, Uuid) {
         })
         .unwrap();
     }
+    // In-memory domain mutations do not advance the external SQLite CAS.
+    // A native film test must explicitly pin a previously observed, positive
+    // synthetic source revision; production validation still rejects zero.
+    p.revision = 7;
     let revision = p.revision;
     p.apply_change(&Change::AddClaim {
         text: "An original first-party Studio screen was shown in a fixture.".into(),
