@@ -78,6 +78,79 @@ jobs:
       - name: Motionwright Native SDK adapter tests
         run: cargo test --locked -p motionwright-native --all-targets
 
+  macos-owner-path-alias:
+    needs: verify-native-sdk
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-v01-macos-owner-path-1.98.1
+          cache-on-failure: false
+      - name: Check trusted macOS system aliases and reject arbitrary parent links
+        run: cargo test --locked -p motionwright-native --lib path_boundary_tests -- --nocapture
+
+  windows-ntfs-owner-path:
+    needs: verify-native-sdk
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-v01-windows-owner-path-1.98.1
+          cache-on-failure: false
+      - name: Refuse NTFS junctions in production connection and media root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git rev-parse HEAD) -ne $env:GITHUB_SHA) {
+            throw 'Windows source identity does not match this GitHub commit'
+          }
+          $fixture = Join-Path $env:RUNNER_TEMP 'motionwright-v01-owner-junction'
+          $original = Join-Path $fixture 'original'
+          $junction = Join-Path $fixture 'junction'
+          if (Test-Path $fixture) { throw 'Junction fixture already exists' }
+          New-Item -ItemType Directory -Path $original | Out-Null
+          try {
+            [IO.File]::WriteAllBytes(
+              (Join-Path $original 'connection.json'),
+              [Text.Encoding]::UTF8.GetBytes('private synthetic connection'))
+            [IO.File]::WriteAllBytes(
+              (Join-Path $original 'frame.png'),
+              [Text.Encoding]::UTF8.GetBytes('native-frame'))
+            $createJunction = 'mklink /J "' + $junction + '" "' + $original + '"'
+            & cmd.exe /d /c $createJunction | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'NTFS junction could not be created' }
+            $attributes = [IO.File]::GetAttributes($junction)
+            if (([int]$attributes -band [int][IO.FileAttributes]::ReparsePoint) -eq 0) {
+              throw 'Fixture does not have the Windows reparse point attribute'
+            }
+            $env:MOTIONWRIGHT_V01_JUNCTION_REAL = $original
+            $env:MOTIONWRIGHT_V01_JUNCTION = $junction
+            $testLines = @(cargo test --locked -p motionwright-native --lib path_boundary_tests::refuses_ntfs_junctions_from_ci_fixture -- --ignored --nocapture 2>&1)
+            $testCode = $LASTEXITCODE
+            $testText = $testLines | Out-String
+            Write-Output $testText
+            if ($testCode -ne 0 -or $testText -notmatch 'running 1 test' -or $testText -notmatch '1 passed; 0 failed') {
+              throw 'Native NTFS path guard did not execute and pass exactly one real junction test'
+            }
+          } finally {
+            if (Test-Path $junction) { [IO.Directory]::Delete($junction) }
+            if (Test-Path $fixture) { Remove-Item $fixture -Recurse -Force }
+          }
+
   real-host-shared-state:
     needs: verify-native-sdk
     runs-on: ubuntu-24.04
