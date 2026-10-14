@@ -1,0 +1,28 @@
+.review-analysis {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid var(--border, #3b444e);
+  border-radius: 8px;
+  min-width: 0;
+}
+.review-analysis h3 { margin: 0 0 8px; font-size: 15px; }
+.review-analysis h4 { margin: 0 0 8px; font-size: 14px; }
+.review-analysis p { overflow-wrap: anywhere; }
+.review-analysis__expectation { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0; line-height: 1.5; }
+.review-analysis__expectation input { margin-top: 4px; flex: 0 0 auto; }
+.review-analysis__scope { padding: 10px 12px; border-left: 2px solid #bf9355; line-height: 1.5; }
+.review-analysis__comparisons { display: grid; gap: 5px; margin: 12px 0; }
+.review-analysis__comparisons > div { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 7px 0; border-bottom: 1px solid var(--border, #3b444e); font-size: 12px; }
+.review-analysis__comparisons strong { min-width: 95px; }
+.review-analysis__comparisons small { width: 100%; }
+.review-analysis__candidates { display: grid; gap: 12px; margin: 12px 0; }
+.review-analysis__candidates article { padding: 14px; border: 1px solid var(--border, #3b444e); border-radius: 6px; min-width: 0; }
+.review-analysis button:focus-visible, .review-analysis input:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.native-inspection-window-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.native-inspection-window-controls .production-field { min-width: 200px; max-width: 360px; }
+@media (max-width: 650px) {
+  .review-analysis { padding: 12px; }
+  .review-analysis__comparisons > div { display: grid; }
+  .review-analysis__candidates article { padding: 10px; }
+  .native-inspection-window-controls .production-field { min-width: 0; width: 100%; }
+}

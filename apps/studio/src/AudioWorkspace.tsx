@@ -10,8 +10,10 @@ import {
   Save,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import SemanticSfxWorkbench from "./SemanticSfxWorkbench";
+import WaveformReviewPanel from "./WaveformReviewPanel";
+import { validateWaveformReviewPage, waveformReviewKey } from "./waveformReview";
 import type {
   AudioCue,
   Change,
@@ -201,43 +203,47 @@ export default function AudioWorkspace({
   const [musicGain, setMusicGain] = useState(String(project.audio.mix.music_gain_db));
   const [targetLufs, setTargetLufs] = useState(project.audio.mix.target_lufs == null ? "" : String(project.audio.mix.target_lufs));
   const [targetPeak, setTargetPeak] = useState(project.audio.mix.target_true_peak_dbfs == null ? "" : String(project.audio.mix.target_true_peak_dbfs));
-  const [waveform, setWaveform] = useState<WaveformPage | null>(null);
+  const [waveformSnapshot, setWaveformSnapshot] = useState<{key:string;page:WaveformPage} | null>(null);
   const [waveformPageIndex, setWaveformPageIndex] = useState(0);
   const [waveformBusy, setWaveformBusy] = useState(false);
   const [waveformError, setWaveformError] = useState<string | null>(null);
+  const waveformKey = waveformReviewKey(project, active, waveformPageIndex, WAVEFORM_PAGE_SIZE);
+  const currentWaveformKey = useRef(waveformKey);currentWaveformKey.current = waveformKey;
+  const waveform = waveformSnapshot?.key === waveformKey ? waveformSnapshot.page : null;
 
   useEffect(() => {
     setWaveformPageIndex(0);
-    setWaveform(null);
+    setWaveformSnapshot(null);
     setWaveformError(null);
-  }, [active?.id]);
+  }, [project.id, project.generation, active?.id, active?.source_sha256,
+    active?.sample_rate_hz, active?.channels, active?.measured_duration.num, active?.measured_duration.den]);
 
   useEffect(() => {
     if (!desktopMode || !active) {
-      setWaveform(null);
+      setWaveformSnapshot(null);
       setWaveformBusy(false);
       return;
     }
     let cancelled = false;
+    const requestedKey = waveformKey;
     setWaveformBusy(true);
     setWaveformError(null);
     void loadWaveformPage(project, active.id, waveformPageIndex, WAVEFORM_PAGE_SIZE)
       .then((page) => {
-        if (cancelled) return;
-        setWaveform(page);
+        if (cancelled || currentWaveformKey.current !== requestedKey) return;
+        if (page !== null) validateWaveformReviewPage(project, active, page, waveformPageIndex, WAVEFORM_PAGE_SIZE);
+        setWaveformSnapshot(page === null ? null : {key:requestedKey,page});
       })
       .catch((reason) => {
-        if (cancelled) return;
-        setWaveform(null);
-        setWaveformError(reason instanceof Error ? reason.message : String(reason));
+        if (cancelled || currentWaveformKey.current !== requestedKey) return;
+        setWaveformSnapshot(null);
+        setWaveformError(reason instanceof Error ? reason.message : "Measured waveform unavailable.");
       })
       .finally(() => {
-        if (!cancelled) setWaveformBusy(false);
+        if (!cancelled && currentWaveformKey.current === requestedKey) setWaveformBusy(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [desktopMode, active?.id, waveformPageIndex, project.id]);
+    return () => { cancelled = true; };
+  }, [desktopMode, waveformKey]);
 
   useEffect(() => {
     setVoiceGain(String(project.audio.mix.voice_gain_db));
@@ -496,6 +502,9 @@ export default function AudioWorkspace({
               </>
             )}
           </section>
+
+          {active && desktopMode && waveform && <WaveformReviewPanel key={waveformKey} project={project} track={active} page={waveform}
+            pageIndex={waveformPageIndex} pageSize={WAVEFORM_PAGE_SIZE} requestKey={waveformKey} commit={commit} busy={waveformBusy}/>}
 
           <section className="audio-editor-section">
             <header>

@@ -698,19 +698,27 @@
     {
       "id": "MW05-E09-01",
       "implementation": "partial",
-      "implemented_scope": "Native contact sheets, samples, onions and differences with source identity",
+      "implemented_scope": "Native contact sheets and consecutive-window thumbnail analysis, plus source-bound measured waveform-page candidates in the existing Studio",
       "remaining_scope": "Full multimodal aggregation and all providers remain open",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
         "apps/studio/src/NativeInspectionWorkbench.tsx",
-        "tooling/creative_frame_evidence.py"
+        "tooling/creative_frame_evidence.py",
+        "apps/studio/src/nativeInspectionAnalysis.ts",
+        "apps/studio/src/NativeInspectionAnalysisPanel.tsx",
+        "apps/studio/src/waveformReview.ts",
+        "apps/studio/src/WaveformReviewPanel.tsx",
+        "apps/studio/src/nativeInspectionAnalysis.test.ts",
+        "apps/studio/src/waveformReview.test.ts",
+        "apps/studio/tests/multimodal-review.spec.ts",
+        "docs/creative-production/MULTIMODAL_REVIEW.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E09-02",
       "implementation": "partial",
-      "implemented_scope": "Manual source-linked findings and scoped repair review",
+      "implemented_scope": "Manual scoped repair review and explicitly recorded automated thumbnail/proxy candidates, without automatic scene or mix edits",
       "remaining_scope": "Automated perceptual critics and complete A/B workflows remain open",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
@@ -719,21 +727,37 @@
         "crates/domain/src/production_design.rs",
         "crates/domain/src/creative_revisions.rs",
         "apps/studio/src/CreativePatchWorkbench.tsx",
-        "crates/service/tests/creative_undo.rs"
+        "crates/service/tests/creative_undo.rs",
+        "apps/studio/src/nativeInspectionAnalysis.ts",
+        "apps/studio/src/NativeInspectionAnalysisPanel.tsx",
+        "apps/studio/src/waveformReview.ts",
+        "apps/studio/src/WaveformReviewPanel.tsx",
+        "apps/studio/src/nativeInspectionAnalysis.test.ts",
+        "apps/studio/src/waveformReview.test.ts",
+        "apps/studio/tests/multimodal-review.spec.ts",
+        "docs/creative-production/MULTIMODAL_REVIEW.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E09-03",
       "implementation": "bounded_implementation",
-      "implemented_scope": "Technical evidence, canonical effects and creative approval stay separate",
+      "implemented_scope": "Technical observations, existing review transactions, canonical effects, observer admission and creative approval remain separate",
       "remaining_scope": "Human creative acceptance is not inferred by tests",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
         "apps/studio/src/NativeInspectionWorkbench.tsx",
         "tooling/creative_frame_evidence.py",
         ".github/workflows/creative-conformance.yml",
-        ".github/workflows/product-hero-e2e.yml"
+        ".github/workflows/product-hero-e2e.yml",
+        "apps/studio/src/nativeInspectionAnalysis.ts",
+        "apps/studio/src/NativeInspectionAnalysisPanel.tsx",
+        "apps/studio/src/waveformReview.ts",
+        "apps/studio/src/WaveformReviewPanel.tsx",
+        "apps/studio/src/nativeInspectionAnalysis.test.ts",
+        "apps/studio/src/waveformReview.test.ts",
+        "apps/studio/tests/multimodal-review.spec.ts",
+        "docs/creative-production/MULTIMODAL_REVIEW.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
