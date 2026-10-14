@@ -15,6 +15,7 @@ import shutil
 import sys
 import zipfile
 from verify_handoff import verify_zip, HandoffVerificationError
+from strict_json import AmbiguousJSON, parse_strict_json
 
 SCHEMA="motionwright.launchwright-handoff-request/1"
 OUT_SCHEMA="motionwright.launchwright-immutable-artifact/1"
@@ -29,6 +30,13 @@ class Refused(ValueError):
 
 def require(condition:bool,message:str)->None:
     if not condition:raise Refused(message)
+
+def load_owner_json(data:bytes,label:str)->object:
+    try:
+        return parse_strict_json(data)
+    except AmbiguousJSON as error:
+        raise Refused(f"{label}: {error}") from error
+
 
 def exact_fields(value:object,fields:set[str],name:str)->dict:
     require(isinstance(value,dict) and set(value)==fields,
@@ -79,7 +87,7 @@ def validate(request:dict,root:Path)->tuple[dict,Path,Path]:
             or (vfile.suffix.lower()==".mkv" and header[:4]==b"\x1aE\xdf\xa3"),
             "Master lacks a bounded MOV/MP4/Matroska container signature")
     require(pfile.suffix.lower()==".json","Project snapshot must be the original exported native JSON")
-    project=json.loads(pfile.read_text(encoding="utf8"))
+    project=load_owner_json(pfile.read_bytes(),"Project snapshot")
     require(isinstance(project,dict),"Project snapshot is not a native project object")
     identity_project=exact_fields(r["expected_project"],{"id","generation","revision"},"Project revision")
     for name in ("id","generation"):
@@ -237,7 +245,7 @@ def main()->None:
     try:
         require(args.request.is_file() and not args.request.is_symlink()
                 and args.request.stat().st_size<=MAX_REQUEST,"Handoff request missing or oversized")
-        request=json.loads(args.request.read_text(encoding="utf8"))
+        request=load_owner_json(args.request.read_bytes(),"Handoff request")
         print(json.dumps(package(request,args.root,args.output),sort_keys=True))
     except (OSError,Refused,json.JSONDecodeError)as error:
         print(f"handoff-refused: {error}",file=sys.stderr)

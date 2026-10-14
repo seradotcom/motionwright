@@ -13,6 +13,8 @@ import stat
 import sys
 import zipfile
 
+from strict_json import AmbiguousJSON, parse_strict_json
+
 SCHEMA="motionwright.launchwright-immutable-artifact/1"
 
 class HandoffVerificationError(ValueError):
@@ -20,6 +22,13 @@ class HandoffVerificationError(ValueError):
 
 def check(condition:bool,why:str)->None:
     if not condition:raise HandoffVerificationError(why)
+
+def decode_handoff_json(data: bytes) -> object:
+    try:
+        return parse_strict_json(data)
+    except AmbiguousJSON as error:
+        raise HandoffVerificationError(str(error)) from error
+
 
 def item_hash(archive:zipfile.ZipFile,name:str,bound:int)->str:
     descriptor=archive.getinfo(name)
@@ -51,7 +60,7 @@ def verify_zip(path:Path)->dict:
         check(all(not name.startswith("/") and ".." not in Path(name).parts
                   for name in all_names),"ZIP member path traversal")
         check(archive.getinfo("handoff.json").file_size<=128*1024,"Handoff manifest too large")
-        manifest=json.loads(archive.read("handoff.json"))
+        manifest=decode_handoff_json(archive.read("handoff.json"))
         check(isinstance(manifest,dict) and manifest.get("schema")==SCHEMA,
               "Unknown immutable handoff manifest")
         check(manifest.get("publication_approved") is False and
@@ -67,7 +76,8 @@ def verify_zip(path:Path)->dict:
               "Original Project bytes differ from source receipt")
         check(item_hash(archive,media,512*1024*1024)==master.get("sha256"),
               "Media master bytes differ from original receipt")
-        original=json.loads(archive.read("source/motionwright-project.json"))
+        original=decode_handoff_json(archive.read("source/motionwright-project.json"))
+        check(isinstance(original,dict),"Source Project must be a JSON object")
         check(original.get("id")==project.get("id") and
               original.get("generation")==project.get("generation") and
               original.get("revision")==project.get("revision"),

@@ -189,4 +189,47 @@ class HandoffContractTests(unittest.TestCase):
         with self.assertRaisesRegex(HandoffVerificationError,"never claim"):
             verify_zip(altered)
 
+    def test_owner_project_and_request_reject_duplicate_or_nonfinite_json(self)->None:
+        from export_handoff import load_owner_json
+        valid=self.project.read_bytes()
+        duplicate=b'{"revision":0,'+valid[1:]
+        nonfinite=b'{"revision":NaN,'+valid[1:]
+        for payload, message in ((duplicate,"duplicate JSON object key"),
+                                 (nonfinite,"non-finite JSON")):
+            with self.subTest(message=message):
+                self.project.write_bytes(payload)
+                self.request["project_snapshot"]=self.ref(self.project)
+                with self.assertRaisesRegex(Refused,message):
+                    package(self.request,self.root,self.root/"ambiguous.zip")
+                with self.assertRaisesRegex(Refused,message):
+                    load_owner_json(payload,"Project")
+        request=json.dumps(self.request,separators=(",",":")).encode()
+        with self.assertRaisesRegex(Refused,"duplicate JSON object key"):
+            load_owner_json(b'{"mode":"real_work",'+request[1:],"Request")
+
+    def test_receiver_rejects_duplicate_manifest_and_rehashed_project(self)->None:
+        source=self.root/"original.zip"
+        package(self.request,self.root,source)
+        with zipfile.ZipFile(source)as archive:
+            contents={name:archive.read(name) for name in archive.namelist()}
+        manifest_copy=b'{"publication_approved":true,'+contents["handoff.json"][1:]
+        project_copy=b'{"revision":999,'+contents["source/motionwright-project.json"][1:]
+        manifest=json.loads(contents["handoff.json"])
+        manifest["native_project"]["file"]["sha256"]=hashlib.sha256(project_copy).hexdigest()
+        for label,updates in (
+            ("duplicate-manifest",{"handoff.json":manifest_copy}),
+            ("duplicate-project",{
+                "handoff.json":json.dumps(manifest,sort_keys=True).encode(),
+                "source/motionwright-project.json":project_copy,
+            }),
+        ):
+            with self.subTest(label=label):
+                dest=self.root/(label+".zip")
+                with zipfile.ZipFile(dest,"w")as archive:
+                    for name,body in contents.items():
+                        archive.writestr(name,updates.get(name,body))
+                with self.assertRaisesRegex(HandoffVerificationError,"duplicate JSON object key"):
+                    verify_zip(dest)
+
+
 if __name__=="__main__":unittest.main()

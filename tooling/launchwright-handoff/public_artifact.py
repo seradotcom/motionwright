@@ -36,8 +36,14 @@ def strict_json(path: Path, max_bytes: int) -> dict:
             require(k not in result, "ambiguous_status_keys")
             result[k] = v
         return result
+    def reject_nonfinite(_constant):
+        raise PublicRefused("non_finite_status")
     try:
-        result = json.loads(path.read_bytes(), object_pairs_hook=no_duplicates)
+        result = json.loads(
+            path.read_bytes(),
+            object_pairs_hook=no_duplicates,
+            parse_constant=reject_nonfinite,
+        )
     except (ValueError, UnicodeError, TypeError) as error:
         if isinstance(error, PublicRefused):
             raise

@@ -97,6 +97,10 @@ The script refuses stale project generations/revisions, missing real
 ProductionPlan approval, a binding targeting another product, media hash
 mismatch, unapproved claims/rights, unknown fields, malformed file formats,
 symlinks, traversal and any request that asks to publish automatically.
+The request, source Project, receiver manifest and embedded Project JSON are
+parsed strictly: duplicate keys at any depth and non-finite numeric constants
+are rejected even when byte hashes match; ambiguous receipts cannot create
+publication authority. This is JSON semantic integrity, not rights verification.
 It never executes project scripts and has **no network or Launchwright
 credentials**. Zip timestamps/order are fixed for reproducibility.
 

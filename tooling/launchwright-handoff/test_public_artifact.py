@@ -82,6 +82,12 @@ class HandoffPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(PublicRefused, "existing_output"):
             publish(self.private, self.public, SHA, "success")
 
+    def test_nonfinite_status_json_is_rejected(self):
+        (self.private / "status.json").write_text('{"status":"synthetic","extra":NaN}')
+        with self.assertRaisesRegex(PublicRefused, "non_finite_status"):
+            publish(self.private, self.public, SHA, "success")
+        self.assertFalse(self.public.exists())
+
     def test_private_root_overlap_is_never_published(self):
         with self.assertRaisesRegex(PublicRefused, "overlapping_source_and_public"):
             publish(self.private, self.private / "untrusted", SHA, "failure")
