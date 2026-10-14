@@ -489,8 +489,8 @@
     {
       "id": "MW05-E07-01",
       "implementation": "partial",
-      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations; separate exact-SHA owner-local Semwright H264/AAC original browser and anonymous handset fixtures, genuine semantic glyph/focus pixel inspector plus eight synthetic negative oracle tests (pending exact-head native CI); project BrandProfile constraints also validate generated and human-edited ProductStage accents and visible text, with exact-policy scene-scoped exceptions and wordmark fail-closed policy; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI)",
-      "remaining_scope": "Original semantic native browser/handset MP4 still needs exact-HEAD GH Actions and human aesthetic acceptance; reproducible real UI capture and authorized asset replacement, 3D cameras, commercial hardware rights verification remain open",
+      "implemented_scope": "Original rights-declared editable semantic ProductStage with 14 stable native Canvas nodes, generic browser/flat-panel/handset shapes, screen-relative focus anchors, three-aspect reflow, CAS source updates preserving camera and compatible human overrides, mandatory synthetic-only disclosure, optional native Film entrance and strict Native SDK operations; separate exact-SHA owner-local Semwright H264/AAC original browser and anonymous handset fixtures, genuine semantic glyph/focus pixel inspector plus eight synthetic negative oracle tests (pending exact-head native CI); project BrandProfile constraints also validate generated and human-edited ProductStage accents and visible text, with exact-policy scene-scoped exceptions and wordmark fail-closed policy; integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); one-segment multi-scene native Film projection regression at 30 fps (pending exact-head CI); bounded first-party registered-capture attachment to original ProductStage card via two Native SDK CAS operations, separate actual Film image Subject with source-digest AssetRef and original editable stage nodes (pending integrated CI)",
+      "remaining_scope": "Bounded first-party image Subject and project CAS need exact-HEAD CI and independently decoded H.264 pixel acceptance; real external app rights/privacy, full-screen/multi-frame capture editing, 3D rigs and human creative approval are unimplemented",
       "source_paths": [
         "crates/domain/src/product_stage.rs",
         "crates/domain/src/lib.rs",
@@ -514,15 +514,22 @@
         "crates/domain/tests/composition_stack.rs",
         "apps/studio/src/compositionStack.test.ts",
         "docs/creative-production/INTEGRATED_COMPOSITION.md",
-        "crates/native/tests/composition_stack.rs"
+        "crates/native/tests/composition_stack.rs",
+        "crates/domain/src/stage_capture.rs",
+        "crates/domain/tests/stage_capture.rs",
+        "crates/native/tests/stage_capture.rs",
+        "apps/studio/src/stageCapture.ts",
+        "apps/studio/src/stageCapture.test.ts",
+        "apps/studio/tests/stage-capture.spec.ts",
+        "docs/creative-production/STAGE_CAPTURE_TILE.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E07-02",
       "implementation": "partial",
-      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA; typed append-only Project CaptureSourceRecord referencing imported immutable PNG/JSON asset IDs/hashes, synthetic fixture-data hash, source project generation/revision and existing linked brief claim, with Native SDK CAS operation and Rust/Studio/SQLite negative tests; Production Capture sources panel for explicit project-source claim, existing immutable PNG/JSON selection and typed metadata registration with revision/staleness and rights safeguards; first-party evidence claim creation is exposed in Studio and Native SDK through the preexisting versioned Claim model; SQLite admission re-reads immutable source blobs after CAS authorization, strictly compares imported JSON receipt app/claim/scenario/mask/repeated digest with recorded provenance, checks bounded PNG SHA/IHDR dimensions and rejects forged source bytes; triple immutable PNG/manifest/original fixture-state JSON binding, with independent actual byte verification and project generation/revision/claim text parity at SQLite admission; portable project-bundle roundtrip acceptance preserves immutable triple-blob source references and original historical generation (pending exact-HEAD CI); integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI)",
-      "remaining_scope": "New source triple-binding needs exact-HEAD CI verification; no verified third-party app/window capture, rights/privacy clearance, arbitrarily scripted scenarios, timeline media playback or human creative approval",
+      "implemented_scope": "Versioned first-party Chromium Studio capture scenario on restricted loopback using synthetic app state and authored project-revision claim, explicit viewport, redacted DOM region, SHA-256 of source fixture and repeated PNG; independent RGB(A) PNG CRC/filter/pixel redaction verifier and adversarial tests on exact CI SHA; typed append-only Project CaptureSourceRecord referencing imported immutable PNG/JSON asset IDs/hashes, synthetic fixture-data hash, source project generation/revision and existing linked brief claim, with Native SDK CAS operation and Rust/Studio/SQLite negative tests; Production Capture sources panel for explicit project-source claim, existing immutable PNG/JSON selection and typed metadata registration with revision/staleness and rights safeguards; first-party evidence claim creation is exposed in Studio and Native SDK through the preexisting versioned Claim model; SQLite admission re-reads immutable source blobs after CAS authorization, strictly compares imported JSON receipt app/claim/scenario/mask/repeated digest with recorded provenance, checks bounded PNG SHA/IHDR dimensions and rejects forged source bytes; triple immutable PNG/manifest/original fixture-state JSON binding, with independent actual byte verification and project generation/revision/claim text parity at SQLite admission; portable project-bundle roundtrip acceptance preserves immutable triple-blob source references and original historical generation (pending exact-HEAD CI); integrated domain and Studio cross-feature regression included in unified source model (pending exact integrated-head CI); bounded first-party registered-capture attachment to original ProductStage card via two Native SDK CAS operations, separate actual Film image Subject with source-digest AssetRef and original editable stage nodes (pending integrated CI)",
+      "remaining_scope": "Bounded first-party image Subject and project CAS need exact-HEAD CI and independently decoded H.264 pixel acceptance; real external app rights/privacy, full-screen/multi-frame capture editing, 3D rigs and human creative approval are unimplemented",
       "source_paths": [
         "apps/studio/tests/reproducible-capture.spec.ts",
         "tooling/capture_evidence.py",
@@ -543,7 +550,15 @@
         "tooling/testdata/synthetic-first-party-viewport.png",
         "crates/domain/tests/composition_stack.rs",
         "apps/studio/src/compositionStack.test.ts",
-        "docs/creative-production/INTEGRATED_COMPOSITION.md"
+        "docs/creative-production/INTEGRATED_COMPOSITION.md",
+        "crates/domain/src/stage_capture.rs",
+        "crates/domain/tests/stage_capture.rs",
+        "crates/native/src/film.rs",
+        "crates/native/tests/stage_capture.rs",
+        "apps/studio/src/stageCapture.ts",
+        "apps/studio/src/stageCapture.test.ts",
+        "apps/studio/tests/stage-capture.spec.ts",
+        "docs/creative-production/STAGE_CAPTURE_TILE.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

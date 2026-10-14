@@ -18,6 +18,7 @@ mod product_stage;
 mod production_design;
 mod render_tail_impact;
 mod semantic_sfx;
+mod stage_capture;
 pub use brand_governance::*;
 pub use camera_reframe::*;
 pub use canvas::*;
@@ -38,6 +39,7 @@ pub use product_stage::*;
 pub use production_design::*;
 pub use render_tail_impact::*;
 pub use semantic_sfx::*;
+pub use stage_capture::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -668,6 +670,7 @@ impl Project {
             .validate_camera_reframes(&self.scenes)?;
         self.production_design
             .validate_creative_evaluators(self.revision)?;
+        self.validate_stage_capture_cards()?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1051,6 +1054,11 @@ impl Project {
             Change::DetachProductStage { instance_id } => {
                 self.detach_product_stage(*instance_id)?
             }
+            Change::BindStageCapture {
+                stage_id,
+                capture_id,
+            } => self.bind_stage_capture(*stage_id, *capture_id)?,
+            Change::DetachStageCapture { stage_id } => self.detach_stage_capture(*stage_id)?,
             Change::UpsertProceduralField {
                 instance_id,
                 scene_id,
@@ -2485,6 +2493,13 @@ pub enum Change {
     },
     DetachCameraReframe {
         id: Uuid,
+    },
+    BindStageCapture {
+        stage_id: Uuid,
+        capture_id: Uuid,
+    },
+    DetachStageCapture {
+        stage_id: Uuid,
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,

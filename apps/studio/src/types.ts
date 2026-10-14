@@ -5,6 +5,7 @@ import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } fro
 import type { SemanticSfxCue } from "./semanticSfx";
 import type { ProductStageConfig } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
+import type { StageCaptureCard } from "./stageCapture";
 import type { CaptureSourceRecord } from "./captureSource";
 import type { CreativeEvaluatorBundle } from "./creativeEvaluator";
 export type ProjectState = "current" | "stale" | "unknown";
@@ -628,6 +629,8 @@ export type Change =
   | { type: "detach_product_stage"; instance_id: string }
   | { type: "upsert_camera_reframe"; reframe: CameraReframe }
   | { type: "detach_camera_reframe"; id: string }
+  | { type: "bind_stage_capture"; stage_id: string; capture_id: string }
+  | { type: "detach_stage_capture"; stage_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
   | { type: "upsert_measured_table"; table: MeasuredTable }
