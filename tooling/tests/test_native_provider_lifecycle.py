@@ -203,6 +203,85 @@ class ProviderDiagnosticTests(unittest.TestCase):
             self.assertNotIn("private/token", str(observed))
             self.assertFalse(mod.tree_snapshot(9000, proc)["root_observed"])
 
+    def test_child_pid_reuse_cannot_be_admitted_or_traversed(self):
+        # /task/<tid>/children was read while PID 120 was a real child,
+        # but /proc/120/status now belongs to a different process.
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid, name, parent, children in (
+                (100, "semwrightd", 1, "120"),
+                (120, "unrelated-private-process", 900, "135"),
+                (135, "node", 120, ""),
+            ):
+                folder = proc / str(pid)
+                folder.mkdir()
+                (folder / "status").write_text(status(name, parent), encoding="ascii")
+                leader = folder / "task" / str(pid)
+                leader.mkdir(parents=True)
+                (leader / "children").write_text(children, encoding="ascii")
+            observed = mod.tree_snapshot(100, proc)
+            self.assertTrue(observed["root_observed"])
+            self.assertTrue(observed["truncated"])
+            self.assertEqual([row["pid"] for row in observed["processes"]], [100])
+            self.assertNotIn("unrelated-private-process", str(observed))
+            self.assertNotIn("135", str(observed))
+
+    def test_missing_listed_child_never_looks_like_complete_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            root = proc / "100"
+            root.mkdir()
+            (root / "status").write_text(status("semwrightd", 1), encoding="ascii")
+            task = root / "task" / "100"
+            task.mkdir(parents=True)
+            (task / "children").write_text("120", encoding="ascii")
+            observed = mod.tree_snapshot(100, proc)
+            self.assertTrue(observed["root_observed"])
+            self.assertTrue(observed["truncated"])
+            self.assertEqual(len(observed["processes"]), 1)
+
+            # A vanished worker thread's children file must also abstain.
+            (task / "children").unlink()
+            observed = mod.tree_snapshot(100, proc)
+            self.assertTrue(observed["truncated"])
+
+    def test_conflicting_parent_reports_cannot_yield_complete_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid, parent, children in (
+                (100, 1, "120 130"),
+                (120, 100, "130"),
+                (130, 120, ""),
+            ):
+                folder = proc / str(pid)
+                folder.mkdir()
+                name = "semwrightd" if pid == 100 else "node"
+                (folder / "status").write_text(status(name, parent), encoding="ascii")
+                task = folder / "task" / str(pid)
+                task.mkdir(parents=True)
+                (task / "children").write_text(children, encoding="ascii")
+            observed = mod.tree_snapshot(100, proc)
+            self.assertTrue(observed["truncated"])
+            self.assertTrue(observed["root_observed"])
+
+    def test_malformed_kernel_child_list_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            root = proc / "100"
+            root.mkdir()
+            (root / "status").write_text(status("semwrightd", 1), encoding="ascii")
+            task = root / "task" / "100"
+            task.mkdir(parents=True)
+            (task / "children").write_text("untrusted-value", encoding="ascii")
+            observed = mod.tree_snapshot(100, proc)
+            self.assertTrue(observed["root_observed"])
+            self.assertTrue(observed["truncated"])
+            self.assertEqual(len(observed["processes"]), 1)
+
+    def test_missing_state_is_not_a_valid_linux_process_state(self):
+        parsed = mod.parse_status("Name:\tnode\nPPid:\t100\n")
+        self.assertEqual(parsed["state"], "?")
+
     def test_cgroup_oom_counter_is_numeric_and_no_path_escape(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

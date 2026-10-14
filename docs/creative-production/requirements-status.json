@@ -299,10 +299,17 @@
     },
     {
       "id": "MW05-E04-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No fframes experiment or support claim",
-      "remaining_scope": "Cold/warm compile, preview, audio and render evaluation required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "A disposable source-pinned MIT fframes upstream Rust/SVG/FFmpeg hello-world benchmarking protocol checks cold and warm release build, CLI startup, two headless PNG previews with independent image decode, and a bounded one-second H264 MP4 with FFprobe. The original old-SHA CI passed, but this combined-tree SHA must pass independently. Public CI emits only bounded source-hash/timing facts; no renderer registration, Semwright SDK execution, or backend admission.",
+      "remaining_scope": "Representative same-brief comparison against Motionwright/Motion Canvas/HyperFrames on identical assets and output formats; independent cold and warm renders (not merely compile), real audio mixing and loudness, interactive GPU preview, color/fidelity/reproducibility tests, owner creative acceptance and performance release gates remain NOT_RUN. A fast upstream example does not prove Motionwright speedup.",
+      "source_paths": [
+        "tooling/fframes-experiment/measure.py",
+        "tooling/fframes-experiment/test_measure.py",
+        "tooling/fframes-experiment/public_artifact.py",
+        "tooling/fframes-experiment/test_public_artifact.py",
+        ".github/workflows/v05-fframes-experimental.yml",
+        "docs/creative-production/V05_FFRAMES_EXPERIMENT.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
@@ -875,10 +882,24 @@
     },
     {
       "id": "MW05-E12-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No synthetic identity pipeline added",
-      "remaining_scope": "Origin, purpose and consent receipts remain required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Project-versioned source and consent declarations distinguish entirely fictional originals from real human likenesses, require distinct imported JSON source/consent assets where applicable, pin modality, purpose, author declaration, UTC expiry and mandatory synthetic disclosure, and support immutable revocation through existing CAS, Native SDK and Studio; SQLite verifies bounded original JSON origin/consent bytes against every declared identity, purpose and expiry; no generator permission is issued",
+      "remaining_scope": "Independent verification of actual human identity and consent signatures, source-document semantic audit, authenticated owner approval, provider-side access revocation, actual presenter/voice/face generation and on-output disclosure acceptance remain open",
+      "source_paths": [
+        "crates/domain/src/identity_origin.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/src/production_design.rs",
+        "crates/domain/tests/identity_origin.rs",
+        "crates/service/tests/identity_origin.rs",
+        "crates/storage/src/identity_evidence.rs",
+        "crates/storage/src/lib.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/identityOrigin.ts",
+        "apps/studio/src/identityOrigin.test.ts",
+        "apps/studio/src/IdentityOriginWorkbench.tsx",
+        "apps/studio/tests/identity-consent.spec.ts",
+        "docs/creative-production/IDENTITY_CONSENT.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {

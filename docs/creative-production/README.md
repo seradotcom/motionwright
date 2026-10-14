@@ -32,12 +32,19 @@ In **Native inspection**, select the output profile matching a current native re
 
 **Production → Evaluators** admits owner-authored, versioned, non-executable creative playbooks and records deterministic technical observations against the exact source project and revision. Human artistic questions remain NOT_ASSESSED and cannot become automatic aesthetic PASS, approval or promotion of executable code. See [Creative Evaluators](CREATIVE_EVALUATORS.md). The original Semwright Native SDK and Studio CAS remain the only mutation authority.
 
+## Synthetic identity and consent boundaries (MW05-E12-04)
+
+**Production → Identity & consent** maintains source-hash-bound original fictional identity declarations and separately scoped human likeness consent claims, with purpose, modality, expiry and append-only revocations. A revoked source cannot silently be re-registered under a different record ID. These claims never authenticate a human, establish third-party rights or grant synthesis. See [Identity and consent](IDENTITY_CONSENT.md). Existing project CAS and Semwright Native SDK remain the sole mutation authority.
 ## Immutable Launchwright handoff (MW05-E14-04)
 
 The current Project and its original master may be packaged for downstream Launchwright only after an exact source, asset rights, claim and ProductionPlan approval review. The ZIP preserves project and master bytes and carries no publication authority; an independent receiver checks that it has not been changed. CI tests a synthetic first-party example but exposes **only** a bounded public status/digest manifest, never the private ZIP or source project. Real Launchwright import, human review and channel publishing remain NOT_RUN. See [Immutable handoff contract](V05_LAUNCHWRIGHT_IMMUTABLE_HANDOFF.md).
 ## Source-bound OTIO real-media exchange (MW05-E11-03)
 
 The existing Rust `otio_interchange(Project)` remains the editorial source of truth. A bounded, owner-declared H.264 media bridge can produce source-hash-linked `ExternalReference` clips, preserve missing media explicitly, and report twelve property-level fidelity losses; a receiver edit can only become a **read-only** reorder or exact end-trim proposal, never an automatic Studio CAS commit. The synthetic-only CI uses independent OpenTimelineIO/FFprobe evidence. Public artifacts exclude the owner project, rights receipts, unverified clips and private runner evidence. See [OTIO real-media exchange](V05_OTIO_MEDIA_INTERCHANGE.md). Source/rights, external NLE import and human acceptance remain unverified.
+
+## Pinned external fframes benchmark (MW05-E04-03)
+
+A disposable CI-only experiment evaluates a fixed public MIT fframes Rust/SVG/FFmpeg hello-world example: cold/warm release compile, headless PNG source preview, independent FFprobe decode and one-second synthetic MP4 timing. It does not register fframes as a Motionwright/Semwright renderer, execute owner content, claim competitive superiority, or substitute for a same-brief real-audio and creative-fidelity comparison. Its public artifact contains only exact-SHA timing/digest facts, never binaries, raw stderr or owner assets. See [fframes experiment](V05_FFRAMES_EXPERIMENT.md). This remains partial and unadmitted.
 
 ## Source-timeline render dependency preflight (MW05-E03-03)
 

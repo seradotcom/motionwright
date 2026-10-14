@@ -44,7 +44,7 @@ def parse_status(content: str) -> dict[str, Any]:
     return {
         "role": role,
         "ppid": int(ppid) if ppid.isdigit() else -1,
-        "state": state[:1] if state[:1] in "RSDTZIX" else "?",
+        "state": state[0] if state and state[0] in "RSDTZIX" else "?",
         "rss_kib": kib("VmRSS"),
         "peak_rss_kib": kib("VmHWM"),
     }
@@ -54,19 +54,23 @@ def tree_snapshot(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, A
     """Inspect only the Broker daemon and its descendants, not all user PIDs.
 
     Linux exposes direct children under each selected process's /task/<tid>/
-    children file. Following the bounded tree avoids reading unrelated users'
-    /proc/<pid>/status at all. Task enumeration includes multi-threaded native
-    providers which may have spawned children from non-leader threads.
+    children file. This narrows what we inspect, but PIDs can disappear or be
+    recycled before their status is read. Verify each child's PPid against
+    the parent that listed it; on disagreement, mark the sample incomplete
+    rather than attributing an unrelated process to the Driver Host.
+    Task enumeration includes children spawned by non-leader threads.
     """
     if root_pid <= 0:
         return {"root_observed": False, "truncated": False, "processes": []}
 
     seen: dict[int, dict[str, Any]] = {}
-    pending: set[int] = {root_pid}
+    # Remember the parent that reported each PID. A set discards ancestry,
+    # allowing a recycled PID from another process to appear as our child.
+    pending: dict[int, int | None] = {root_pid: None}
     truncated = False
 
     while pending and len(seen) < MAX_PROCS:
-        pid = pending.pop()
+        pid, expected_parent = pending.popitem()
         if pid in seen:
             continue
         process = proc_root / str(pid)
@@ -78,6 +82,13 @@ def tree_snapshot(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, A
                 continue
             state = parse_status(data.decode("ascii", "replace"))
         except (OSError, ValueError):
+            if expected_parent is not None:
+                truncated = True
+            continue
+        if expected_parent is not None and state["ppid"] != expected_parent:
+            # PID vanished/reused or /proc changed during enumeration.
+            # Do not traverse its descendants or claim a complete sample.
+            truncated = True
             continue
         seen[pid] = state
 
@@ -100,13 +111,25 @@ def tree_snapshot(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, A
                     truncated = True
                     continue
                 for item in contents.decode("ascii", "replace").split():
-                    if item.isdecimal():
-                        child_pid = int(item)
-                        if child_pid > 0 and child_pid != pid and child_pid not in seen:
-                            pending.add(child_pid)
+                    if not item.isdecimal():
+                        truncated = True
+                        continue
+                    child_pid = int(item)
+                    if child_pid <= 0 or child_pid == pid:
+                        truncated = True
+                        continue
+                    if child_pid in seen:
+                        if seen[child_pid]["ppid"] != pid:
+                            truncated = True
+                    elif child_pid in pending:
+                        if pending[child_pid] != pid:
+                            truncated = True
+                    else:
+                        pending[child_pid] = pid
             except (OSError, ValueError):
-                # A child may exit concurrently with this read. The sampler
-                # is a passive observation, not execution lifecycle authority.
+                # An exited thread may leave a partial tree. A missing
+                # children file cannot prove there were no descendants.
+                truncated = True
                 continue
     return {
         "root_observed": root_pid in seen,
