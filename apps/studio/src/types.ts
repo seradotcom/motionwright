@@ -9,6 +9,7 @@ import type { CameraReframe } from "./cameraReframe";
 import type { StageCaptureCard } from "./stageCapture";
 import type { CaptureSourceRecord } from "./captureSource";
 import type { CreativeEvaluatorBundle } from "./creativeEvaluator";
+import type { IdentityOriginRecord, IdentityRevocation } from "./identityOrigin";
 export type ProjectState = "current" | "stale" | "unknown";
 export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
 export type RendererKind =
@@ -635,6 +636,8 @@ export type Change =
   | { type: "bind_stage_capture"; stage_id: string; capture_id: string }
   | { type: "detach_stage_capture"; stage_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
+  | { type: "register_identity_origin"; record: IdentityOriginRecord }
+  | { type: "revoke_identity_origin"; revocation: IdentityRevocation }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
   | { type: "upsert_measured_table"; table: MeasuredTable }
   | { type: "upsert_measured_binding"; binding_id: string; scene_id: string; node_id: string; table_id: string; datum_key: string; view: MeasuredView }
