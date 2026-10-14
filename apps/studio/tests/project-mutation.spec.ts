@@ -212,3 +212,59 @@ for (const action of ["New profile", "Derive selected"] as const) {
     await expect(page.locator(".delivery-profile-row.selected")).toHaveAttribute("class", /selected/);
   });
 }
+
+test("rejected scene creation keeps the editor's draft open until a confirmed CAS", async ({ page }) => {
+  const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await page.addInitScript(boot => {
+    let project = structuredClone(boot.project);
+    const state = { requests: 0, revisions: [] as number[] };
+    const host = window as unknown as {
+      __SCENE_CAS_FIXTURE__: typeof state;
+      __TAURI_INTERNALS__: {
+        invoke: (command: string, args?: { request?: {
+          revision?: number;
+          change?: { type: string; name?: string };
+        } }) => Promise<unknown>;
+      };
+    };
+    host.__SCENE_CAS_FIXTURE__ = state;
+    host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+      if (command === "bootstrap") return structuredClone(boot);
+      if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
+      if (command === "apply_change") {
+        state.requests += 1;
+        state.revisions.push(args?.request?.revision ?? -1);
+        if (state.requests === 1) throw new Error("Synthetic scene CAS conflict");
+        const change = args?.request?.change;
+        if (change?.type !== "add_scene" || !change.name) throw new Error("Wrong synthetic scene operation");
+        const original = project.scenes[0];
+        project = { ...project, revision: project.revision + 1, scenes: [...project.scenes, {
+          ...original, id: "01900000-0000-7000-8000-0000000000ce", name: change.name,
+          beats: [], nodes: [], start: { num: "31", den: "1" }, duration: { num: "6", den: "1" },
+        }] };
+        return structuredClone(project);
+      }
+      throw new Error("Unsupported synthetic scene command: " + command);
+    } };
+  }, initial);
+
+  await page.goto("/");
+  const before = await page.locator(".tree-row").count();
+  await page.getByRole("button", { name: "Add scene", exact: true }).click();
+  await page.getByLabel("New scene name").fill("Original source-approved scene");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Synthetic scene CAS conflict");
+  await expect(page.locator(".add-scene-form")).toBeVisible();
+  await expect(page.getByLabel("New scene name")).toHaveValue("Original source-approved scene");
+  await expect(page.locator(".tree-row")).toHaveCount(before);
+  await expect(page.locator(".revision-chip")).toHaveText("r12");
+
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.locator(".tree-row")).toHaveCount(before + 1);
+  await expect(page.getByRole("button", { name: /Original source-approved scene/ })).toBeVisible();
+  await expect(page.locator(".add-scene-form")).toHaveCount(0);
+  await expect(page.locator(".revision-chip")).toHaveText("r13");
+  expect(await page.evaluate(() => (window as unknown as {
+    __SCENE_CAS_FIXTURE__: { requests: number; revisions: number[] };
+  }).__SCENE_CAS_FIXTURE__)).toEqual({ requests: 2, revisions: [12, 12] });
+});

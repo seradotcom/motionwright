@@ -839,6 +839,7 @@ function ProjectRail({
   selectedSceneId,
   selectScene,
   commit,
+  commitRequired,
   ingestAsset,
   desktopMode,
   collapsed,
@@ -848,6 +849,7 @@ function ProjectRail({
   selectedSceneId: string | null;
   selectScene: (id: string) => void;
   commit: (change: Change) => Promise<void>;
+  commitRequired: (change: Change) => Promise<void>;
   ingestAsset: (path: string) => Promise<void>;
   desktopMode: boolean;
   collapsed: boolean;
@@ -855,6 +857,8 @@ function ProjectRail({
 }) {
   const [addingScene, setAddingScene] = useState(false);
   const [newName, setNewName] = useState("New scene");
+  const [sceneBusy, setSceneBusy] = useState(false);
+  const [sceneError, setSceneError] = useState<string | null>(null);
   const [addingAsset, setAddingAsset] = useState(false);
   const [assetPath, setAssetPath] = useState("");
   const [assetBusy, setAssetBusy] = useState(false);
@@ -889,7 +893,7 @@ function ProjectRail({
       <div className="rail-section">
         <div className="rail-section-title">
           <span>Scenes</span>
-          <button type="button" className="plain-icon" aria-label="Add scene" onClick={() => setAddingScene((value) => !value)}>
+          <button type="button" className="plain-icon" aria-label="Add scene" disabled={sceneBusy} onClick={() => { setAddingScene((value) => !value); setSceneError(null); }}>
             {addingScene ? <X size={14} /> : <Plus size={14} />}
           </button>
         </div>
@@ -898,14 +902,25 @@ function ProjectRail({
             className="add-scene-form"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (!newName.trim()) return;
-              await commit({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
-              setAddingScene(false);
-              setNewName("New scene");
+              if (!newName.trim() || sceneBusy) return;
+              setSceneBusy(true);
+              setSceneError(null);
+              try {
+                await commitRequired({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
+                setAddingScene(false);
+                setNewName("New scene");
+              } catch (reason) {
+                setSceneError(reason instanceof Error ? reason.message : String(reason));
+              } finally {
+                setSceneBusy(false);
+              }
             }}
           >
-            <input value={newName} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
-            <button className="button button-primary compact" type="submit">Add</button>
+            <input value={newName} disabled={sceneBusy} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
+            <button className="button button-primary compact" type="submit" disabled={sceneBusy || !newName.trim()}>
+              {sceneBusy ? "Adding?" : "Add"}
+            </button>
+            {sceneError && <span className="asset-import-error" role="alert">{sceneError}</span>}
           </form>
         )}
         <div className="tree-list">
@@ -2232,6 +2247,7 @@ export default function App() {
           selectedSceneId={selectedSceneId}
           selectScene={selectScene}
           commit={commit}
+          commitRequired={commitRequired}
           ingestAsset={ingestAsset}
           desktopMode={boot.native_sdk.mode === "tauri"}
           collapsed={railCollapsed}
