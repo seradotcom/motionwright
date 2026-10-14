@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import zipfile
@@ -14,7 +15,9 @@ def main()->None:
     parser=argparse.ArgumentParser()
     parser.add_argument('--mp4',type=Path,required=True)
     parser.add_argument('--output-dir',type=Path,required=True)
+    parser.add_argument('--source-sha',required=True)
     args=parser.parse_args()
+    assert re.fullmatch(r'[0-9a-f]{40}',args.source_sha), 'Exactly pinned Motionwright SHA required'
     assert args.mp4.is_file() and 1000<args.mp4.stat().st_size<10*1024*1024
     assert not args.output_dir.exists()
     args.output_dir.mkdir(parents=True)
@@ -28,6 +31,7 @@ def main()->None:
         archive=args.output_dir/'motionwright-to-launchwright-SYNTHETIC-NOT_PUBLISHED.zip'
         status=package(synthetic.request,synthetic.root,archive)
         assert status['status']=='SYNTHETIC_HANDOFF_PROTOCOL_ONLY'
+        status['motionwright_source_sha']=args.source_sha
         with zipfile.ZipFile(archive)as zipped:
             assert zipped.testzip() is None
             manifest=json.loads(zipped.read('handoff.json'))

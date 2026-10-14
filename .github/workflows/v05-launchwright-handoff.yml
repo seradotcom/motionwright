@@ -59,7 +59,8 @@ jobs:
             -of csv=p=0 verification/fixture-source/original-test.mp4 | grep '^320,180,30/1$'
           python3 tooling/launchwright-handoff/ci_fixture.py \
             --mp4 verification/fixture-source/original-test.mp4 \
-            --output-dir verification/launchwright-handoff-SYNTHETIC
+            --output-dir verification/launchwright-handoff-SYNTHETIC \
+            --source-sha "$GITHUB_SHA"
           python3 tooling/launchwright-handoff/verify_handoff.py \
             verification/launchwright-handoff-SYNTHETIC/motionwright-to-launchwright-SYNTHETIC-NOT_PUBLISHED.zip
       - name: Curate immutable handoff facts, never source project/master/ZIP

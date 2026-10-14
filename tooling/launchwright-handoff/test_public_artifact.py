@@ -25,6 +25,7 @@ class HandoffPublicationTests(unittest.TestCase):
         self.addCleanup(self.owner.doCleanups)
         self.status = package(self.owner.request, self.owner.root,
                               self.private / ZIP_NAME)
+        self.status['motionwright_source_sha'] = SHA
         (self.private / "status.json").write_text(json.dumps(self.status))
         (self.private / "private-owner-tickets.json").write_text(
             '{"session_ticket":"SECRET-NOT-PUBLISHED"}')
@@ -56,6 +57,13 @@ class HandoffPublicationTests(unittest.TestCase):
     def test_tampered_archive_cannot_be_certified(self):
         with (self.private / ZIP_NAME).open("ab") as f:
             f.write(b"changed")
+        with self.assertRaisesRegex(PublicRefused, "unverified_synthetic_handoff"):
+            publish(self.private, self.public, SHA, "success")
+        self.assertFalse(self.public.exists())
+
+    def test_foreign_commit_cannot_reuse_verified_synthetic_handoff(self):
+        self.status["motionwright_source_sha"] = "b" * 40
+        (self.private / "status.json").write_text(json.dumps(self.status))
         with self.assertRaisesRegex(PublicRefused, "unverified_synthetic_handoff"):
             publish(self.private, self.public, SHA, "success")
         self.assertFalse(self.public.exists())

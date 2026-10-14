@@ -83,7 +83,8 @@ def publish(private: Path, public: Path, sha: str, status: str) -> dict:
         size = archive.stat().st_size
         require(0 < size <= MAX_ZIP, "archive_exceeds_synthetic_budget")
         expected = trace.get("archive_sha256")
-        require(trace.get("status") == "SYNTHETIC_HANDOFF_PROTOCOL_ONLY"
+        require(trace.get("motionwright_source_sha") == sha
+                and trace.get("status") == "SYNTHETIC_HANDOFF_PROTOCOL_ONLY"
                 and trace.get("publication_approved") is False
                 and trace.get("creative_approval") == "OWNER_RECORDED_NOT_AUTHENTICATED"
                 and type(trace.get("archive_bytes")) is int
