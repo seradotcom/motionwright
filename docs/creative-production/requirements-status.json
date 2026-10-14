@@ -385,8 +385,8 @@
     {
       "id": "MW05-E05-04",
       "implementation": "partial",
-      "implemented_scope": "Real read-only comparison of two preserved creative branch states in Review: source scene/object differences, timing, keyframes, visuals and narrative intent, stable IDs with revision provenance, plus explicit editor-authored positive/negative studies committed as anchored creative reviews through existing project CAS. No fabricated renderer evidence or automatic branch merge.",
-      "remaining_scope": "Independent owner/editor acceptance, positive/negative evaluation corpus across original media, reusable component extraction, component lineage, cross-renderer conformance and automated distillation admission remain unimplemented.",
+      "implemented_scope": "Real read-only comparison of two preserved creative branch states in Review: source scene/object differences, timing, keyframes, visuals and narrative intent, stable IDs with revision provenance, plus explicit editor-authored positive/negative studies committed as anchored creative reviews through existing project CAS. No fabricated renderer evidence or automatic branch merge. Added strictly bounded, source-revision-bound, non-executable component distillation proposals from at least two varied positive original Canvas scenes and reviewed negative counterexamples; proposals stay project-local and require independent human compatibility review, with no code or registry admission.",
+      "remaining_scope": "Independent owner/editor acceptance, original-media evaluation corpus, versioned library admission, exact visual regression, cross-renderer conformance and automated distillation admission remain unimplemented; proposals are not executable library artifacts.",
       "source_paths": [
         "apps/studio/src/creativeAlternativeEvidence.ts",
         "apps/studio/src/creativeAlternativeEvidence.test.ts",
@@ -394,7 +394,15 @@
         "apps/studio/src/HistoryWorkspaces.tsx",
         "apps/studio/tests/creative-alternatives.spec.ts",
         "docs/creative-production/CREATIVE_ALTERNATIVE_EVIDENCE.md",
-        ".github/workflows/creative-alternatives.yml"
+        ".github/workflows/creative-alternatives.yml",
+        "crates/domain/src/component_distillation.rs",
+        "crates/domain/tests/component_distillation.rs",
+        "crates/service/tests/component_distillation.rs",
+        "apps/studio/src/componentDistillation.ts",
+        "apps/studio/src/ComponentDistillationWorkbench.tsx",
+        "apps/studio/src/componentDistillation.test.ts",
+        "apps/studio/tests/component-distillation.spec.ts",
+        "docs/creative-production/DISTILLATION.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

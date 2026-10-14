@@ -1,4 +1,5 @@
 import type { CreativePatchRecord } from "./creativeUndo";
+import type { ComponentDistillationProposal } from "./componentDistillation";
 import type { ProductStageInstance } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
 import type { CaptureSourceRecord } from "./captureSource";
@@ -46,7 +47,7 @@ export interface NativeCapsule {
   /** Absent on older capsules; empty reports serialize without changing source. */
   property_fidelity?: NativePropertyFidelity[];
 }
-export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; }
+export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; distillations?: ComponentDistillationProposal[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
@@ -78,7 +79,7 @@ export function validateNativePropertyFidelity(properties: NativePropertyFidelit
   }
 }
 
-export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [], brand_profile: null, taste_profile: null, brand_exceptions: [], project_decisions: [], stages: [], captures: [], procedural_fields: [], measured_tables: [], measured_bindings: [], last_measured_impact: null, camera_reframes: [], evaluator_bundles: [], evaluation_reports: [] });
+export const emptyProductionDesign = (): ProductionDesign => ({ plan: null, heroes: [], capsules: [], patches: [], brand_profile: null, taste_profile: null, brand_exceptions: [], project_decisions: [], stages: [], captures: [], procedural_fields: [], measured_tables: [], measured_bindings: [], last_measured_impact: null, camera_reframes: [], evaluator_bundles: [], evaluation_reports: [], distillations: [] });
 export const defaultHeroConfig = (): HeroConfig => ({
   layout: "product_hero_reveal",
   eyebrow: "MOTIONWRIGHT / CREATIVE PRODUCTION", headline: "Make the work.\nKeep the craft.",

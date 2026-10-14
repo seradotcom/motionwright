@@ -47,6 +47,9 @@ pub struct ProductionDesign {
     /// Source-revision-bound technical observations; human taste abstains.
     #[serde(default)]
     pub evaluation_reports: Vec<CreativeEvaluationReport>,
+    /// Source-bound, non-executable semantic component candidates.
+    #[serde(default)]
+    pub distillations: Vec<ComponentDistillationProposal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

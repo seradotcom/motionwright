@@ -129,6 +129,14 @@ stereo 48 kHz PCM16 and independently checks decoded sample positions.
 This is a **partial sound-production workflow**, not a completed A/V mux,
 measured LUFS master or certified third-party soundtrack. See
 [Semantic SFX](SEMANTIC_SFX.md) for evidence and supported limits.
+## Evidence-backed component distillation (MW05-E05-04)
+
+Production → Distillation stores immutable component proposals backed by
+real positive Canvas variations, verified negative counterexamples,
+source project revision and independent compatibility review.
+This does not install a skill, promote executable code or waive source rights.
+See [Validated Distillation](DISTILLATION.md) for source restrictions,
+adversarial tests and the remaining admission work.
 
 ## Data and migration contracts
 
