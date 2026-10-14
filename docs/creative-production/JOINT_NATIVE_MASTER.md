@@ -31,7 +31,11 @@ metadata. All effects remain bound to the original project's native SDK CAS.
 The workflow verifies the exact source Git SHA and exact pinned Semwright
 revision, boots a disposable sandboxed Broker and original native providers,
 renders 540 source PNG frames, writes a separate distinguishable synthetic
-stereo transport WAV and produces an actual H264/AAC MP4.
+stereo transport WAV and produces an actual H264/AAC MP4. The decoded-media
+contract explicitly allows only fixed 2s, 6s and 18s technical fixtures.
+The 18s case must contain exactly 864,000 stereo PCM frames at 48 kHz and
+540 video frames at 30fps; arbitrary durations are refused. A source-only
+seed test and 18s decoded-audio regression run before any native mutation.
 
 Independent pixel review examines frames 140, 270 and 480, confirming a
 visible original Stage with disclosure and authored text, seven or more

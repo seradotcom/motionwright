@@ -585,8 +585,8 @@ def main() -> None:
             audio_relative = "acceptance-audio.wav"
             audio_path = paths["output"] / audio_relative
             # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
-            # design. Use exact 2s baseline or 6s hero duration; the full
-            # native AV decode must check actual samples for both.
+            # design. Use exact 2s baseline, 6s scene or 18s three-scene duration;
+            # independently decode and check actual samples for each closed profile.
             write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
@@ -620,8 +620,8 @@ def main() -> None:
             shutil.copyfile(master_path, EVIDENCE / "motionwright-master.mp4")
 
             # Canonical receipts prove bytes; independent ffmpeg/ffprobe
-            # decodes the exact 60-frame baseline or 180-frame hero profile.
-            # Both require measured non-silent, distinct stereo channel tones
+            # decodes the exact 60-, 180- or 540-frame bounded profiles.
+            # All require measured non-silent, distinct stereo channel tones
             # and native pixel movement. No decoder runs in the shipped app.
             decoded = probe_native_mp4(
                 master_path, audio_path, ffmpeg, ffprobe,

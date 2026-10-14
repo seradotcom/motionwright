@@ -964,6 +964,8 @@
         "docs/creative-production/CAPTION_READING_REVIEW.md",
         "crates/native/examples/native-render-e2e.rs",
         "tooling/native_av_master_e2e.py",
+        "tooling/native_av_media_probe.py",
+        "tooling/tests/test_native_av_media_probe.py",
         "tooling/composition_native_evidence.py",
         "tooling/native_tests/test_composition_native_evidence.py",
         "tooling/composition_native_public_artifact.py",

@@ -14,6 +14,8 @@ on:
       - 'crates/native/examples/native-render-e2e.rs'
       - 'crates/storage/src/lib.rs'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
+      - 'tooling/tests/test_native_av_media_probe.py'
       - 'tooling/composition_native_evidence.py'
       - 'tooling/native_tests/test_composition_native_evidence.py'
       - 'tooling/composition_native_public_artifact.py'
@@ -159,6 +161,9 @@ jobs:
 
       - name: Refuse private source leaks or unverifiable joint-master publication
         run: python3 -m unittest tooling.tests.test_composition_native_public_artifact -v
+
+      - name: Validate exact 18-second stereo source and decoded media profiles before native execution
+        run: python3 -m unittest tooling.tests.test_native_av_media_probe -v
 
       - name: Render three authored native scenes through pinned Semwright
         run: |
