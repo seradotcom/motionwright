@@ -20,6 +20,29 @@ CODES = frozenset((
 ))
 
 
+def _safe_cli_termination(
+    exit_code: int | None, deadline_exceeded: bool,
+) -> tuple[str, str]:
+    """Classify *this CLI process*, never the Broker or native provider.
+
+    Only closed enums may be exported; on POSIX a negative return code
+    denotes a signal, but even SIGKILL is not evidence of an OOM kill.
+    """
+    if deadline_exceeded:
+        return "deadline", "NONE"
+    if type(exit_code) is not int:
+        return "not_observed", "NONE"
+    if exit_code < 0:
+        category = {
+            6: "SIGABRT", 7: "SIGBUS", 9: "SIGKILL",
+            11: "SIGSEGV", 15: "SIGTERM",
+        }.get(-exit_code, "OTHER_SIGNAL")
+        return "signal", category
+    if exit_code == 0:
+        return "zero_exit_invalid_protocol", "NONE"
+    return "nonzero_exit", "NONE"
+
+
 class NativeCommandFailure(AssertionError):
     """Error with a closed, source-safe technical receipt, never raw output."""
 
@@ -88,11 +111,19 @@ def classify_native_command_failure(
     *, stdout: bytes, stderr: bytes, exit_code: int | None,
     deadline_exceeded: bool = False,
 ) -> dict[str, Any]:
+    cli_exit_category, cli_signal = _safe_cli_termination(
+        exit_code, deadline_exceeded,
+    )
     report: dict[str, Any] = {
         "schema": SCHEMA,
         "result": "FAIL",
         "reason": "command_deadline" if deadline_exceeded else "native_command_failed",
-        "source_outcome": "UNKNOWN" if deadline_exceeded else "NOT_VERIFIED",
+        "source_outcome": "UNKNOWN" if cli_exit_category in (
+            "deadline", "signal", "not_observed"
+        ) else "NOT_VERIFIED",
+        "cli_exit_category": cli_exit_category,
+        "cli_signal_observed": cli_signal,
+        "cli_signal_proves_oom_or_provider_loss": False,
         "reported_error_code": "OtherOrMissing",
         "provider_generation_inactive_observed": False,
         "read_only_status_timeout_observed": False,
@@ -247,5 +278,13 @@ def classify_native_command_failure(
         # remains UNKNOWN, regardless of a typed outcome_known=True.
         if report["source_outcome"] != "UNKNOWN":
             report["reason"] = "acknowledged_render_terminal_unverified"
+            report["source_outcome"] = "UNKNOWN"
+
+    if cli_exit_category in ("signal", "not_observed"):
+        # A signal/absent exit status says nothing about whether an already
+        # dispatched mutating command completed. A typed CLI failure may
+        # otherwise accidentally strengthen this uncertainty to "known".
+        if report["source_outcome"] != "UNKNOWN":
+            report["reason"] = "cli_exit_without_original_terminal"
             report["source_outcome"] = "UNKNOWN"
     return report

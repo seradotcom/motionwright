@@ -166,5 +166,60 @@ class AcknowledgedNativeOutcomeTests(unittest.TestCase):
         self.assertFalse(report["original_render_start_identity_ambiguous"])
 
 
+    def test_cli_sigkill_is_a_safe_category_not_oom_proof(self):
+        report = classified(
+            stdout=b"truncated CLI failure text " + PRIVATE.encode(),
+            exit_code=-9,
+        )
+        self.check_closed(report)
+        self.assertEqual(report["cli_exit_category"], "signal")
+        self.assertEqual(report["cli_signal_observed"], "SIGKILL")
+        self.assertFalse(report["cli_signal_proves_oom_or_provider_loss"])
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+        self.assertEqual(report["reason"], "malformed_native_failure_response")
+
+    def test_cli_sigsegv_cannot_upgrade_typed_wrapper_known_to_render_known(self):
+        report = classified(
+            stderr=envelope(), exit_code=-11,
+        )
+        self.check_closed(report)
+        self.assertEqual(report["cli_exit_category"], "signal")
+        self.assertEqual(report["cli_signal_observed"], "SIGSEGV")
+        self.assertFalse(report["cli_signal_proves_oom_or_provider_loss"])
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+        self.assertEqual(report["reason"], "cli_exit_without_original_terminal")
+
+    def test_spawn_without_exit_status_is_unobserved_and_unknown(self):
+        report = classified(exit_code=None)
+        self.check_closed(report)
+        self.assertEqual(report["cli_exit_category"], "not_observed")
+        self.assertEqual(report["cli_signal_observed"], "NONE")
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+
+    def test_plain_nonzero_exit_does_not_imply_a_provider_signal(self):
+        report = classified(stderr=envelope(), exit_code=1)
+        self.check_closed(report)
+        self.assertEqual(report["cli_exit_category"], "nonzero_exit")
+        self.assertEqual(report["cli_signal_observed"], "NONE")
+        self.assertEqual(report["source_outcome"], "FAILED_NOT_MEDIA_VERIFIED")
+
+    def test_zero_exit_with_malformed_success_is_not_signal_or_success(self):
+        report = classified(stdout=b"private invalid CLI output " + PRIVATE.encode(),
+                            exit_code=0)
+        self.check_closed(report)
+        self.assertEqual(report["cli_exit_category"], "zero_exit_invalid_protocol")
+        self.assertEqual(report["source_outcome"], "NOT_VERIFIED")
+        self.assertEqual(report["cli_signal_observed"], "NONE")
+
+    def test_deadline_without_observed_exit_is_distinct_from_signal(self):
+        report = classify_native_command_failure(
+            stdout=b"", stderr=b"", exit_code=None, deadline_exceeded=True,
+        )
+        self.check_closed(report)
+        self.assertEqual(report["cli_exit_category"], "deadline")
+        self.assertEqual(report["cli_signal_observed"], "NONE")
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+
+
 if __name__ == "__main__":
     unittest.main()
