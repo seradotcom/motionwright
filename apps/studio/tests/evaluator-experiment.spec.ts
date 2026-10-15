@@ -56,6 +56,7 @@ test("an approved owner registration sends one scoped canonical evaluator change
     const runtime=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(command:string,args?:Record<string,unknown>)=>Promise<unknown>};
       __EXPERIMENT_TEST_CALLS__:Array<{command:string;kind?:string}>;
+      __EXPERIMENT_REJECT_NEXT__?:boolean;
     };
     let project=structuredClone(initial.project);
     const calls:Array<{command:string;kind?:string}>=[];
@@ -78,7 +79,12 @@ test("an approved owner registration sends one scoped canonical evaluator change
         if(scope.project_id!==project.id || scope.generation!==project.generation ||
             scope.revision!==project.revision)throw new Error("Synthetic CAS refused stale evaluator");
         if(scope.change.type!=="register_creative_evaluator")throw new Error("Unexpected mutation");
-        if(!project.production_design)throw new Error("Synthetic fixture lacks creative state");
+        if(scope.change.bundle.version===2 && runtime.__EXPERIMENT_REJECT_NEXT__){
+          runtime.__EXPERIMENT_REJECT_NEXT__=false;
+          throw new Error("Synthetic StudioService CAS rejected the candidate");
+        }
+        // The pre-v0.5 fixture has no production_design; the real service creates it on first successful write.
+        project.production_design ??= {plan:null,heroes:[],capsules:[],evaluator_bundles:[],evaluation_reports:[]};
         (project.production_design.evaluator_bundles ??= []).push(structuredClone(scope.change.bundle));
         project.revision++;
         return structuredClone(project);
@@ -97,12 +103,22 @@ test("an approved owner registration sends one scoped canonical evaluator change
   await page.getByLabel(/I reviewed the per-scene technical changes/).check();
   await expect(admit).toBeEnabled();
   await expect(page.locator(".revision-chip")).toHaveText(rev);
+  // The outer App.commit resolves void even when its service call is refused.
+  // Reject the first attempted candidate and require the canonical version list
+  // to remain unchanged; a resolved promise must never be labelled committed.
+  await page.evaluate(()=>(window as unknown as {
+    __EXPERIMENT_REJECT_NEXT__:boolean
+  }).__EXPERIMENT_REJECT_NEXT__=true);
+  await admit.click();
+  await expect(page.getByLabel("Evaluator source version").locator("option")).toHaveCount(2);
+  await expect(page.getByText(/Registration requested. Confirm the candidate/)).toBeVisible();
+  await expect(admit).toBeEnabled();
   await admit.click();
   await expect(page.getByLabel("Evaluator source version").locator("option")).toHaveCount(3);
   const calls=await page.evaluate(()=>(window as unknown as {
     __EXPERIMENT_TEST_CALLS__:Array<{command:string;kind?:string}>
   }).__EXPERIMENT_TEST_CALLS__);
-  expect(calls.filter(call=>call.command==="apply_change")).toHaveLength(2);
-  expect(calls.filter(call=>call.kind==="register_creative_evaluator")).toHaveLength(2);
+  expect(calls.filter(call=>call.command==="apply_change")).toHaveLength(3);
+  expect(calls.filter(call=>call.kind==="register_creative_evaluator")).toHaveLength(3);
   expect(calls.some(call=>/provider|render|skill\.execute|code/.test(call.command))).toBe(false);
 });

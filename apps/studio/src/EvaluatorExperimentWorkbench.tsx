@@ -83,9 +83,10 @@ export default function EvaluatorExperimentWorkbench({
       if(token!==generation.current||current.current!==key)
         throw new Error("Source changed during owner admission. Re-run the experiment.");
       await commit({type:"register_creative_evaluator",bundle});
+      // App.commit catches service errors and returns void. Never treat a
+      // resolved callback as proof of a committed CAS revision.
       if(token===generation.current&&current.current===key){
-        setPending(null);
-        setNotice("Candidate registered through canonical project CAS. Artistic quality and identity were not authenticated.");
+        setNotice("Registration requested. Confirm the candidate appears in the canonical evaluator version list; an accepted request is not a creative-quality approval.");
       }
     }catch(cause){
       if(token===generation.current&&current.current===key)setError(errorText(cause));

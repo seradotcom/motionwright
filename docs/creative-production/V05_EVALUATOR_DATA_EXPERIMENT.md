@@ -39,7 +39,11 @@ the canonical Studio/Tauri/`StudioService` optimistic CAS path. Before
 that call, the experiment is re-run and its baseline/candidate digests,
 observations and source revision are checked for a match; stale project
 changes fail closed. The browser demo can inspect data but cannot claim
-canonical desktop admission.
+canonical desktop admission. The application-level commit callback can
+return normally after internally handling a service error; this desk
+therefore reports only that registration was **requested** and requires
+observing the newly persisted version before claiming that the SQLite
+CAS was committed.
 
 ## Security, permanence and evidence
 
