@@ -947,12 +947,19 @@
     {
       "id": "MW05-E13-04",
       "implementation": "partial",
-      "implemented_scope": "First-party inspection methods declare version, units and limitations",
-      "remaining_scope": "Dynamic verifier admission is not implemented",
+      "implemented_scope": "Existing first-party inspection methods declare version, units and limitations. A bounded offline Ed25519 prototype additionally requires separately signed owner admission, generation-anchored owner policy and revocation, distinct independent observer signature, exact reviewer source SHA and producer identity, and independently decoded RGB(A) PNG bytes/dimensions. The immutable source observer is never executed. A synthetic ephemeral-key CI verifies admission/revocation with current Motionwright source SHA, publishing only manifest-only technical evidence, not owner keys, signatures, or image pixels.",
+      "remaining_scope": "Actual owner-authenticated trusted policy persistence and multi-device revocation in canonical StudioService/Native SDK, production trusted public keys, general methods beyond PNG dimensions, renderer-host observer conformance, cross-renderer evidence, source rights authentication, artistic review and 60 independent acceptance scenarios remain NOT_COMPLETED. Synthetic Ed25519 proofs cannot admit real production providers.",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
         "apps/studio/src/NativeInspectionWorkbench.tsx",
-        "tooling/creative_frame_evidence.py"
+        "tooling/creative_frame_evidence.py",
+        "tooling/observer-admission/verify_observer.py",
+        "tooling/observer-admission/generate_ci_fixture.py",
+        "tooling/observer-admission/test_observer.py",
+        "tooling/observer-admission/public_artifact.py",
+        "tooling/observer-admission/test_public_artifact.py",
+        ".github/workflows/v05-verified-observer.yml",
+        "docs/creative-production/V05_OBSERVER_ADMISSION.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

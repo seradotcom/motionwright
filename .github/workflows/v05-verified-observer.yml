@@ -1,0 +1,101 @@
+name: V05 separately owner-signed observer admission
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tooling/observer-admission/**'
+      - 'docs/creative-production/V05_OBSERVER_ADMISSION.md'
+      - 'docs/creative-production/requirements-status.json'
+      - 'docs/creative-production/README.md'
+      - '.github/workflows/v05-verified-observer.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'tooling/observer-admission/**'
+      - 'docs/creative-production/V05_OBSERVER_ADMISSION.md'
+      - 'docs/creative-production/requirements-status.json'
+      - '.github/workflows/v05-verified-observer.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-owner-verified-observer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  independent-observation-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install pinned signing and actual-image validation libraries
+        run: |
+          set -euo pipefail
+          python3 -m pip install --only-binary=:all: 'cryptography==44.0.2' 'pillow==11.3.0'
+          python3 - <<'PY'
+          import cryptography
+          import PIL
+          assert cryptography.__version__=='44.0.2'
+          assert PIL.__version__=='11.3.0'
+          print('explicit-independent-verifier-dependencies=PINNED')
+          PY
+      - name: Verify independent owner admission, signatures, revocation and actual pixels
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tooling/observer-admission -p 'test_*.py' -v
+          python3 -m py_compile tooling/observer-admission/*.py
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+      - name: Produce explicitly synthetic real PNG / separate verifier proof
+        run: |
+          set -euo pipefail
+          python3 tooling/observer-admission/generate_ci_fixture.py \
+            verification/owner-independent-observer-SYNTHETIC
+          python3 - <<'PY'
+          import json,hashlib,os
+          from pathlib import Path
+          base=Path('verification/owner-independent-observer-SYNTHETIC')
+          observed=json.loads((base/'source-observation.json').read_text())
+          revoked=json.loads((base/'owner-revocation-experiment.json').read_text())
+          image=base/'native-source-frame-000030.png'
+          assert observed['motionwright_source_sha']==os.environ['GITHUB_SHA']
+          assert revoked['motionwright_source_sha']==os.environ['GITHUB_SHA']
+          assert observed['status']=='CI_TEST_ONLY_NOT_AN_OWNER_PRODUCTION_ADMISSION'
+          assert observed['gate_eligible']is False
+          assert observed['verifier_source_code_executed']is False
+          assert observed['creative_quality_approved']is False
+          assert revoked['current_gate_eligible']is False
+          assert revoked['artifact_contains_private_keys']is False
+          assert hashlib.sha256(image.read_bytes()).hexdigest()==revoked['original_png_sha256']
+          print('source-bounded-technical-owner-admission=CI_TEST_PASS_NOT_PRODUCT_APPROVAL')
+          PY
+      - name: Stage source-bound public verifier facts only
+        if: always()
+        env:
+          OBSERVER_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python3 tooling/observer-admission/public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root verification/owner-independent-observer-SYNTHETIC \
+            --public-root verification/owner-independent-observer-public \
+            --job-status "$OBSERVER_CI_JOB_STATUS"
+          python3 -m json.tool verification/owner-independent-observer-public/public-evidence.json >/dev/null
+      - name: Upload public status without signer keys or original frames
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v05-independent-observer-public-${{ github.sha }}
+          path: verification/owner-independent-observer-public/
+          if-no-files-found: error
+          retention-days: 7
