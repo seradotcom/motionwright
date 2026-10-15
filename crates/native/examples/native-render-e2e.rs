@@ -13,6 +13,7 @@ use motionwright_service::StudioService;
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
@@ -335,6 +336,72 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             "deliverable_id": deliverable.id,
             "width": deliverable.width,
             "height": deliverable.height
+        }))?
+    );
+    Ok(())
+}
+
+/// CI-only source parity: original semantic SFX must not contaminate
+/// visual Film assets or change a single authored shot/timing node.
+fn preflight_original_sfx_visual_film(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+    {
+        return Err("SFX visual parity is allowed only on the disposable CI fixture".into());
+    }
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("SFX visual parity requires exactly one existing owner project".into());
+    }
+    let project = &projects[0];
+    project.validate()?;
+    if project.scenes.len() != 1
+        || project.audio.sfx_cues.len() != 2
+        || project.assets.len() != 2
+        || project
+            .assets
+            .iter()
+            .any(|asset| asset.media_type != "audio/wav")
+        || project.scenes[0].duration != RationalTime::new(2, 1)?
+    {
+        return Err("SFX visual parity needs exactly the original 60-frame source".into());
+    }
+    let deliverable_id = project
+        .deliverables
+        .first()
+        .ok_or("SFX visual parity master deliverable missing")?
+        .id;
+    let options = fixture_film_options(project.scenes[0].id, 60)?;
+    let original = build_motion_canvas_segments(project, deliverable_id, &options)?;
+    let mut visual_only = project.clone();
+    visual_only.audio.sfx_cues.clear();
+    visual_only.assets.clear();
+    let pristine = build_motion_canvas_segments(&visual_only, deliverable_id, &options)?;
+    if original.len() != 1
+        || pristine.len() != 1
+        || original[0].frame_count != 60
+        || !original[0].film.assets.is_empty()
+    {
+        return Err("SFX fixture has an unexpected Motion Canvas Film shape".into());
+    }
+    let actual = serde_json::to_vec(&original[0].film)?;
+    let control = serde_json::to_vec(&pristine[0].film)?;
+    if actual != control {
+        return Err("A scene-bound SFX changed original visual Film bytes".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "schema": "motionwright.sfx-visual-film-parity/1",
+            "visual_film_unchanged": true,
+            "frame_count": 60,
+            "film_sha256": hex::encode(Sha256::digest(&actual)),
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "sfx_cue_count": 2,
+            "native_render_dispatched": false
         }))?
     );
     Ok(())
@@ -835,6 +902,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             export_direct_parity_film(&database, &evidence)
+        }
+        "sfx-visual-preflight" => {
+            let database = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            preflight_original_sfx_visual_film(&database)
         }
         "render" => {
             let database = path_arg(&mut args);

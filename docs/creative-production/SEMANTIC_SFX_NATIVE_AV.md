@@ -91,3 +91,15 @@ The stage validator rejects unknown, duplicate, oversized and non-authoritative
 success-marked input. It is diagnostic visibility, not creative acceptance or
 native evidence. The AV master is still approved technically only after
 the actual source-bound WAV, pinned broker MLT mux and decoded AAC checks pass.
+
+
+## Visual Film parity before native dispatch
+
+A read-only, GitHub-CI-only original-source preflight loads the same owner
+SQLite revision after the two imported SFX assets and cues are committed.
+It builds one real 60-frame Motion Canvas Film and compares its serialized
+visual bytes against an otherwise identical visual-only clone, with no
+native provider running or mutating. Audio assets must remain outside
+the visual Film asset registry; every authored shot, temporal constraint and
+object identifier must be identical. The preflight has a scoped SHA-256
+record and is not a native render success or finished audiovisual evidence.

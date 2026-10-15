@@ -243,6 +243,31 @@ def main() -> None:
             seeded["revision"] = sfx_prepared["revision"]
             write_private_json(EVIDENCE / "sfx-prepared.json", sfx_prepared)
 
+            # No provider has been started. Establish whether original SFX
+            # authoring alters the canonical visual Film before native dispatch.
+            try:
+                visual = run_json(
+                    [str(MW_BIN), "sfx-visual-preflight", str(database)],
+                    env=env, timeout=30,
+                )
+            except NativeCommandFailure:
+                raise AssertionError(
+                    "Original SFX changed or invalidated visual Film before native render; "
+                    "no native render started"
+                ) from None
+            if (visual.get("schema") != "motionwright.sfx-visual-film-parity/1"
+                or visual.get("visual_film_unchanged") is not True
+                or visual.get("native_render_dispatched") is not False
+                or visual.get("project_id") != seeded["project_id"]
+                or visual.get("generation") != seeded["generation"]
+                or visual.get("revision") != seeded["revision"]
+                or visual.get("frame_count") != EXPECTED_FRAMES
+                or visual.get("sfx_cue_count") != 2
+                or not isinstance(visual.get("film_sha256"), str)
+                or len(visual["film_sha256"]) != 64):
+                raise AssertionError("Owner SFX visual source parity was not verified")
+            write_private_json(EVIDENCE / "sfx-visual-preflight.json", visual)
+
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
         mlt_driver = paths["bin"] / "semwright-mlt-video-driver"
