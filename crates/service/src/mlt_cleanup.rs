@@ -97,15 +97,26 @@ pub(crate) fn derive_mlt_cleanup_inventory(
     // UUIDv7 is the durable append-only receipt ordering, but a later
     // dispatching/unknown receipt cannot undo an earlier completed and
     // provenance-admitted native create. Keep every distinct confirmed
-    // native project identity from the source receipts, deduped per request.
-    let mut confirmed_creations: BTreeMap<&str, BTreeSet<_>> = BTreeMap::new();
-    let mut latest: BTreeMap<&str, &ProductionReceipt> = BTreeMap::new();
+    // native project identity, per request AND creative source scope.
+    //
+    // Production storage intentionally allows an identical request ID/digest
+    // and command to be observed in a later project revision. Neither a later
+    // completed create nor a later UNKNOWN can erase the earlier revision's
+    // independent evidence or uncertain allocation. The command dimension
+    // additionally prevents malformed cross-command collisions in this
+    // read-only projection, without treating a close as approved cleanup.
+    let mut confirmed_creations: BTreeMap<(&str, Uuid, u64), BTreeSet<_>> = BTreeMap::new();
+    let mut latest: BTreeMap<(&str, &str, Uuid, u64), &ProductionReceipt> = BTreeMap::new();
     for receipt in receipts {
         if receipt.command == "driver.mlt-video.project.create"
             && let Some(identity) = confirmed_identity(receipt)
         {
             confirmed_creations
-                .entry(receipt.request_id.as_str())
+                .entry((
+                    receipt.request_id.as_str(),
+                    receipt.generation,
+                    receipt.revision,
+                ))
                 .or_default()
                 .insert(identity);
         }
@@ -115,11 +126,14 @@ pub(crate) fn derive_mlt_cleanup_inventory(
         ) {
             continue;
         }
-        if latest
-            .get(receipt.request_id.as_str())
-            .is_none_or(|old| old.id < receipt.id)
-        {
-            latest.insert(receipt.request_id.as_str(), receipt);
+        let key = (
+            receipt.command.as_str(),
+            receipt.request_id.as_str(),
+            receipt.generation,
+            receipt.revision,
+        );
+        if latest.get(&key).is_none_or(|old| old.id < receipt.id) {
+            latest.insert(key, receipt);
         }
     }
     let mut created = BTreeSet::new();
@@ -128,7 +142,11 @@ pub(crate) fn derive_mlt_cleanup_inventory(
     for receipt in latest.into_values() {
         match receipt.command.as_str() {
             "driver.mlt-video.project.create" => {
-                if let Some(identities) = confirmed_creations.get(receipt.request_id.as_str()) {
+                if let Some(identities) = confirmed_creations.get(&(
+                    receipt.request_id.as_str(),
+                    receipt.generation,
+                    receipt.revision,
+                )) {
                     // Another stage may be UNKNOWN or failed, but it cannot
                     // erase an already proven creation. Distinct completed
                     // references reflect distinct possible native resources.
@@ -324,6 +342,106 @@ mod tests {
             inventory.disposition,
             "close_observed_without_foreground_consent_proof"
         );
+        assert!(!inventory.verified_native_project_cleanup);
+        assert!(!inventory.foreground_cleanup_consent_obtained);
+    }
+
+    #[test]
+    fn same_create_request_id_across_revisions_retains_new_uncertain_allocation() {
+        let (mut project, mut receipts) = project_and_receipts();
+        // The database allows the same command, request ID and digest in a
+        // later creative revision. A later UNKNOWN must not erase the
+        // earlier completed native creation or its own uncertain attempt.
+        project.revision += 1;
+        receipts.push(receipt(
+            &project,
+            "owner-create",
+            "driver.mlt-video.project.create",
+            "outcome_unknown",
+            json!({"error":{"code":"Timeout","outcome_known":false}}),
+        ));
+        let inventory = derive(&project, &receipts).unwrap();
+        assert_eq!(inventory.source_receipts_scanned, 3);
+        assert_eq!(inventory.confirmed_native_creations_current_revision, 0);
+        assert_eq!(inventory.confirmed_native_creations_historical, 1);
+        assert_eq!(inventory.unconfirmed_or_invalid_creation_requests, 1);
+        assert_eq!(inventory.disposition, "creation_outcome_not_fully_proven");
+        assert!(!inventory.verified_native_project_cleanup);
+        assert!(!inventory.automatic_destructive_cleanup_allowed);
+    }
+
+    #[test]
+    fn same_create_request_id_across_revisions_retains_older_unknown_attempt() {
+        let (mut project, mut receipts) = project_and_receipts();
+        // The older dispatching attempt may have allocated a different
+        // native project despite its absent terminal response. It must
+        // remain UNKNOWN when a new revision completes using the same ID.
+        receipts.retain(|receipt| receipt.stage != "completed");
+        project.revision += 1;
+        receipts.push(start(&project, "owner-create", "new-revision-project"));
+        let inventory = derive(&project, &receipts).unwrap();
+        assert_eq!(inventory.source_receipts_scanned, 2);
+        assert_eq!(inventory.confirmed_native_creations_current_revision, 1);
+        assert_eq!(inventory.confirmed_native_creations_historical, 0);
+        assert_eq!(inventory.unconfirmed_or_invalid_creation_requests, 1);
+        assert_eq!(inventory.disposition, "creation_outcome_not_fully_proven");
+        assert!(!inventory.native_provider_liveness_verified);
+        assert!(!inventory.foreground_cleanup_consent_obtained);
+        assert!(!inventory.automatic_destructive_cleanup_allowed);
+    }
+
+    #[test]
+    fn close_reusing_create_request_id_cannot_erase_proven_native_creation() {
+        let (project, mut receipts) = project_and_receipts();
+        // A malformed or collided close request ID must remain a distinct
+        // observed operation, not replace confirmed project.create evidence.
+        receipts.push(receipt(
+            &project,
+            "owner-create",
+            "driver.mlt-video.project.close",
+            "completed",
+            json!({"result":{"data":{"closed":true},
+                "execution":{"provenance":{"provider":"driver:mlt-video"}}}}),
+        ));
+        let inventory = derive(&project, &receipts).unwrap();
+        assert_eq!(inventory.confirmed_native_creations_current_revision, 1);
+        assert_eq!(inventory.unconfirmed_or_invalid_creation_requests, 0);
+        assert_eq!(inventory.observed_close_request_identities, 1);
+        assert_eq!(
+            inventory.disposition,
+            "close_observed_without_foreground_consent_proof"
+        );
+        assert!(!inventory.verified_native_project_cleanup);
+        assert!(!inventory.foreground_cleanup_consent_obtained);
+        assert!(!inventory.automatic_destructive_cleanup_allowed);
+        let output = serde_json::to_string(&inventory).unwrap();
+        assert!(!output.contains("mlt-project-opaque"));
+        assert!(!output.contains("owner-create"));
+    }
+
+    #[test]
+    fn collided_close_cannot_erase_unknown_creation_or_promote_success() {
+        let (project, mut receipts) = project_and_receipts();
+        // A create with unknown outcome could still exist in the provider.
+        // Later close/failed responses sharing the same request token must
+        // not convert the state to no project ever created.
+        receipts.retain(|r| r.stage != "completed");
+        receipts.push(receipt(
+            &project,
+            "owner-create",
+            "driver.mlt-video.project.close",
+            "outcome_unknown",
+            json!({"error":{"code":"Timeout","outcome_known":false}}),
+        ));
+        let inventory = derive(&project, &receipts).unwrap();
+        assert_eq!(inventory.confirmed_native_creations_current_revision, 0);
+        assert_eq!(inventory.unconfirmed_or_invalid_creation_requests, 1);
+        assert_eq!(inventory.observed_close_request_identities, 1);
+        assert_eq!(
+            inventory.disposition,
+            "close_observed_without_foreground_consent_proof"
+        );
+        assert!(!inventory.native_provider_liveness_verified);
         assert!(!inventory.verified_native_project_cleanup);
         assert!(!inventory.foreground_cleanup_consent_obtained);
     }
