@@ -139,7 +139,9 @@ export default function NativeContrastWorkbench({
       const sha=await sourcePngSha256(source);
       if(sha!==bytes.current.sha||sha!==original.pngSha256)
         throw new Error("Native source changed after the preview was observed.");
-      bitmap=await createImageBitmap(new Blob([source.buffer],{type:"image/png"}));
+      // A fresh sized copy owns an ArrayBuffer, never a SharedArrayBufferLike.
+      const decodeBytes=new Uint8Array(source.length);decodeBytes.set(source);
+      bitmap=await createImageBitmap(new Blob([decodeBytes.buffer],{type:"image/png"}));
       if(bitmap.width!==plan.width||bitmap.height!==plan.height)
         throw new Error("Decoded frame dimensions differ from the verified native output profile.");
       const canvas=document.createElement("canvas");
