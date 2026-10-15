@@ -16,7 +16,7 @@ test("browser demo cannot admit a forged cut or mutate the active project",async
   const source=page.getByLabel("OTIO imported cut preview JSON");
   await source.fill(JSON.stringify(proposal));
   await page.getByRole("button",{name:"Review bounded changes"}).click();
-  await expect(page.locator(".otio-cut-review [role=alert]")).toContainText("stale, foreign");
+  await expect(page.locator(".otio-cut-review [role=alert]")).toContainText("Resolve existing creative review");
   await expect(page.getByRole("button",{name:/Commit reviewed OTIO cut/})).toHaveCount(0);
   await expect(page.getByText(/Browser demo: proposals can be inspected, never committed/)).toBeVisible();
 });

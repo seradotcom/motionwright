@@ -5,7 +5,6 @@ use motionwright_domain::{
     OtioPropertyFidelity, Project, RationalTime,
 };
 use motionwright_service::StudioService;
-use uuid::Uuid;
 
 fn source(service: &StudioService) -> Project {
     let mut project = service
