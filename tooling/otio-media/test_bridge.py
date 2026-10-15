@@ -141,6 +141,17 @@ class PortableOtioTests(unittest.TestCase):
             {"type":"set_scene_duration","scene_id":ID(10),"duration":{"num":"1","den":"2"}}
         ])
 
+    def test_extended_scene_duration_is_never_a_native_end_trim(self):
+        self.export()
+        edited=self.read()
+        clip=edited["tracks"]["children"][0]["children"][0]
+        # Underlying media has 90 frames, but the owner authored 30 frames.
+        # A 31-frame edit extends the scene; it cannot be called an end trim.
+        clip["source_range"]["duration"]=rtc(31,30)
+        (self.out/"extended.otio").write_text(json.dumps(edited))
+        with self.assertRaisesRegex(BridgeRefused,"cannot extend native scene"):
+            self.preview("extended.otio")
+
     def test_missing_binding_remains_missing_not_a_fabricated_clip(self):
         self.request["bindings"]=[]
         self.export()

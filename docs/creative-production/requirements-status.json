@@ -829,8 +829,8 @@
     {
       "id": "MW05-E11-03",
       "implementation": "partial",
-      "implemented_scope": "Original first-party H264 synthetic OTIO bridge bound to existing Rust project exporter, source SHA/revision and media asset digests, independently measured constant frame rate and a 12-property loss report. Bounded read-only imported reorder/end-trim proposals map only to existing native changes. Curated CI-public output permits only synthetic H264+OTIO, with actual OpenTimelineIO reader acceptance pending this exact integrated source SHA.",
-      "remaining_scope": "Human receiver acceptance in Kdenlive/Shotcut/Resolve, real third-party rights authentication, property-fidelity reconciliation of audio/effects/transcripts/locks, owner-approved StudioService import commit, full external relinking, and full creative acceptance remain open. Unknown/failed source execution remains NOT_VERIFIED.",
+      "implemented_scope": "Original first-party H264 synthetic OTIO bridge bound to existing Rust project exporter, source SHA/revision and media asset digests, independently measured constant frame rate and a 12-property loss report. Bounded read-only imported reorder/end-trim proposals map only to existing native changes. Curated CI-public output permits only synthetic H264+OTIO, with actual OpenTimelineIO reader acceptance pending this exact integrated source SHA. A new owner-confirmed, revision-scoped, loss-acknowledging bounded OTIO cut acceptance now applies only canonical scene reordering and strict end trims as a single StudioService SQLite CAS revision through Semwright Native SDK, using a candidate copy with atomic rollback on late failure. The bridge rejects scene extensions; it does not authenticate an external NLE execution.",
+      "remaining_scope": "Human receiver acceptance in Kdenlive/Shotcut/Resolve; real third-party rights authentication; independent proof that an external NLE truly produced the pasted preview; property-fidelity reconciliation of audio/effects/transcripts/locks; complete external-native round-trip, media relink, publication and independent creative approval remain NOT_RUN. This cut-only commit does not import effects, audio, media or source in-points.",
       "source_paths": [
         "crates/domain/src/delivery.rs",
         "crates/domain/examples/otio_real_media_fixture.rs",
@@ -840,7 +840,18 @@
         "tooling/otio-media/test_bridge.py",
         "tooling/otio-media/test_public_artifact.py",
         ".github/workflows/v05-otio-real-media.yml",
-        "docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md"
+        "docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md",
+        "crates/domain/src/otio_cut_review.rs",
+        "crates/domain/tests/otio_cut_owner_review.rs",
+        "crates/service/tests/otio_cut_commit_persistence.rs",
+        "crates/native/src/otio_cut_tests.rs",
+        "apps/studio/src/otioCutReview.ts",
+        "apps/studio/src/otioCutReview.test.ts",
+        "apps/studio/src/otioCutReviewTestFixtures.ts",
+        "apps/studio/src/OtioCutReviewWorkbench.tsx",
+        "apps/studio/tests/otio-owner-cut.spec.ts",
+        "docs/creative-production/V05_OTIO_OWNER_CUT_COMMIT.md",
+        ".github/workflows/v05-otio-owner-cut.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

@@ -1,0 +1,77 @@
+name: V05 OTIO owner-reviewed cut CAS
+
+on:
+  pull_request:
+    paths:
+      - 'tooling/otio-media/**'
+      - 'crates/domain/src/otio_cut_review.rs'
+      - 'crates/domain/src/lib.rs'
+      - 'crates/domain/tests/otio_cut_owner_review.rs'
+      - 'crates/service/tests/otio_cut_commit_persistence.rs'
+      - 'crates/native/src/otio_cut_tests.rs'
+      - 'crates/native/src/lib.rs'
+      - 'apps/studio/src/otioCutReview*'
+      - 'apps/studio/src/OtioCutReviewWorkbench.tsx'
+      - 'apps/studio/tests/otio-owner-cut.spec.ts'
+      - 'apps/studio/src/styles.css'
+      - 'apps/studio/src/App.tsx'
+      - 'apps/studio/src/api.ts'
+      - 'apps/studio/src/types.ts'
+      - 'docs/creative-production/V05_OTIO_OWNER_CUT_COMMIT.md'
+      - 'docs/creative-production/requirements-status.json'
+      - '.github/workflows/v05-otio-owner-cut.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-otio-owner-cut-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-atomic-cas:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - name: Preserve pinned Native SDK and creative traceability
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+          python3 -m unittest discover -s tooling/otio-media -p 'test_bridge.py' -v
+      - run: cargo fmt --all -- --check
+      - name: Exact source-bound transactional OTIO operations and persisted replay
+        run: |
+          cargo test -p motionwright-domain --test otio_cut_owner_review
+          cargo test -p motionwright-service --test otio_cut_commit_persistence
+          cargo test -p motionwright-native --lib otio_cut_tests
+      - name: Strict domain, service and Semwright Native SDK consumer clippy
+        run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+
+  studio-owner-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/otioCutReview.test.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/otio-owner-cut.spec.ts --project=chromium

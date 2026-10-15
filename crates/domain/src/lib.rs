@@ -15,6 +15,7 @@ mod integrations;
 mod measured_data;
 mod music_clock;
 mod music_conform;
+mod otio_cut_review;
 mod paid_generation;
 mod procedural;
 mod product_stage;
@@ -39,6 +40,7 @@ pub use integrations::*;
 pub use measured_data::*;
 pub use music_clock::*;
 pub use music_conform::*;
+pub use otio_cut_review::*;
 pub use paid_generation::*;
 pub use procedural::*;
 pub use product_stage::*;
@@ -1290,6 +1292,9 @@ impl Project {
                     nodes: vec![],
                     camera: CameraState::default(),
                 });
+            }
+            Change::ApplyOtioOwnerCutReview { review } => {
+                self.apply_otio_owner_cut_review(review)?
             }
             Change::MoveScene { scene_id, to_index } => {
                 let resource = format!("scene:{scene_id}");
@@ -2636,6 +2641,9 @@ pub enum Change {
         name: String,
         objective: String,
         duration_seconds: i64,
+    },
+    ApplyOtioOwnerCutReview {
+        review: Box<OtioOwnerCutReview>,
     },
     MoveScene {
         scene_id: Uuid,
