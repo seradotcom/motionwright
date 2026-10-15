@@ -50,6 +50,10 @@ The existing Rust `otio_interchange(Project)` remains the editorial source of tr
 
 A disposable CI-only experiment evaluates a fixed public MIT fframes Rust/SVG/FFmpeg hello-world example: cold/warm release compile, headless PNG source preview, independent FFprobe decode and one-second synthetic MP4 timing. It does not register fframes as a Motionwright/Semwright renderer, execute owner content, claim competitive superiority, or substitute for a same-brief real-audio and creative-fidelity comparison. Its public artifact contains only exact-SHA timing/digest facts, never binaries, raw stderr or owner assets. See [fframes experiment](V05_FFRAMES_EXPERIMENT.md). This remains partial and unadmitted.
 
+## Independently signed observation admission (MW05-E13-04)
+
+A bounded offline verifier prototype admits a separately owner-signed method/source SHA and revocation policy, then demands a different Ed25519 identity to sign the actual observed original PNG dimensions. The trusted owner policy head is outside the untrusted evidence and prevents replay after revocation. The gate reopens the original PNG and never executes the admitted verifier source. This is NOT a production-trusted verifier registry or human creative approval. Its CI demonstrates **ephemeral synthetic signing keys only** and publishes a small source-bound technical manifest without the PNG, signatures, owner policy or private key material. See [Observer admission](V05_OBSERVER_ADMISSION.md).
+
 ## Source-timeline render dependency preflight (MW05-E03-03)
 
 Production ? Render impact computes conservative source-frame dirty windows
