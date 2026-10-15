@@ -1,0 +1,51 @@
+name: V05 evaluator data-only experiment
+
+on:
+  pull_request:
+    paths:
+      - 'apps/studio/src/evaluatorExperiment*'
+      - 'apps/studio/src/EvaluatorExperimentWorkbench.tsx'
+      - 'apps/studio/src/CreativeEvaluatorWorkbench.tsx'
+      - 'apps/studio/src/evaluator-experiment.css'
+      - 'apps/studio/tests/evaluator-experiment.spec.ts'
+      - 'docs/creative-production/V05_EVALUATOR_DATA_EXPERIMENT.md'
+      - 'docs/creative-production/requirements-status.json'
+      - '.github/workflows/v05-evaluator-experiment.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-evaluator-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-data-and-owner-cas:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Preserve pinned Semwright SDK and requirement truth
+        working-directory: .
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Technical comparison refuses stale and executable source
+        run: npx vitest run src/evaluatorExperiment.test.ts src/creativeEvaluator.test.ts
+      - name: Full project typecheck and bundle
+        run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Explicit human/data-only comparison and canonical CAS admission
+        run: npx playwright test tests/evaluator-experiment.spec.ts --project=chromium

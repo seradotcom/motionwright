@@ -721,6 +721,7 @@ struct ApplyHandler {
 #[derive(Clone, Copy)]
 enum OperationKind {
     UndoCreativePatch,
+    ApplyBrandCampaign,
     UpsertProductHero,
     DetachProductHero,
     UpsertProductStage,
@@ -741,6 +742,7 @@ enum OperationKind {
     RegisterCaptureSource,
     RegisterCreativeEvaluator,
     EvaluateCreativeScene,
+    EditPaidGeneration,
     RegisterIdentityOrigin,
     RevokeIdentityOrigin,
     ApplyCreativePatch,
@@ -749,6 +751,7 @@ enum OperationKind {
     AddClaim,
     SetNarrativePremise,
     AddScene,
+    ApplyOtioOwnerCutReview,
     MoveScene,
     UpdateSceneObjective,
     SetSceneRenderer,
@@ -904,6 +907,16 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
             patch_id: uuid(args, "patch_id")?,
         }),
+        OperationKind::ApplyBrandCampaign => {
+            Ok(Change::ApplyBrandCampaign {
+                rollout: Box::new(
+                    serde_json::from_value(args.get("rollout").cloned().ok_or_else(|| {
+                        Error::invalid("brand campaign owner review is required")
+                    })?)
+                    .map_err(|_| Error::invalid("invalid bounded brand campaign rollout"))?,
+                ),
+            })
+        }
         OperationKind::UpsertProductHero => Ok(Change::UpsertProductHero {
             instance_id: uuid(args, "instance_id")?,
             scene_id: uuid(args, "scene_id")?,
@@ -1012,6 +1025,12 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
             )
             .map_err(|_| Error::invalid("invalid bounded first-party capture source record"))?,
         }),
+        OperationKind::EditPaidGeneration => Ok(Change::EditPaidGeneration {
+            edit: serde_json::from_value(args.get("edit").cloned().ok_or_else(|| {
+                Error::invalid("source-bound generation journal edit is required")
+            })?)
+            .map_err(|_| Error::invalid("invalid non-executable generation journal edit"))?,
+        }),
         OperationKind::RegisterIdentityOrigin => Ok(Change::RegisterIdentityOrigin {
             record: serde_json::from_value(
                 args.get("record")
@@ -1106,6 +1125,16 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .take(4000)
                     .collect(),
                 duration_seconds,
+            })
+        }
+        OperationKind::ApplyOtioOwnerCutReview => {
+            Ok(Change::ApplyOtioOwnerCutReview {
+                review: Box::new(
+                    serde_json::from_value(args.get("review").cloned().ok_or_else(|| {
+                        Error::invalid("owner-reviewed OTIO preview is required")
+                    })?)
+                    .map_err(|_| Error::invalid("invalid bounded OTIO cut owner review"))?,
+                ),
             })
         }
         OperationKind::MoveScene => Ok(Change::MoveScene {
@@ -1760,6 +1789,34 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "duration_seconds": {"type":"integer","minimum":1,"maximum":86400}
                     }),
                     &["ref", "name", "duration_seconds"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ApplyOtioOwnerCutReview,
+            descriptor(
+                "otio-cut.owner-commit",
+                "Apply only a reviewed reorder/end trim in one canonical project CAS, never an external NLE effect",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "review":{"type":"object","required":[
+                            "preview","reviewer_declaration","rationale",
+                            "acknowledges_property_losses",
+                            "acknowledges_absolute_audio_marker_positions",
+                            "confirms_single_revision_change"
+                        ],"properties":{
+                            "preview":{"type":"object","required":["schema","project_id","generation",
+                                "expected_project_revision","original_scene_order","proposed_scene_order",
+                                "native_change_proposals"],"additionalProperties":true},
+                            "reviewer_declaration":{"type":"string","minLength":1,"maxLength":160},
+                            "rationale":{"type":"string","minLength":1,"maxLength":1600},
+                            "acknowledges_property_losses":{"type":"boolean","const":true},
+                            "acknowledges_absolute_audio_marker_positions":{"type":"boolean"},
+                            "confirms_single_revision_change":{"type":"boolean","const":true}
+                        },"additionalProperties":false}
+                    }),
+                    &["ref", "review"],
                 ),
             ),
         ),
@@ -2547,6 +2604,37 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::ApplyBrandCampaign,
+            descriptor(
+                "brand-campaign.owner-rollout",
+                "Apply existing brand accent/wordmark to selected attached editable Heroes with one owner-review CAS",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "rollout":{"type":"object","required":[
+                            "schema","project_id","generation","expected_revision","brand_sha256",
+                            "campaign","scene_ids","accent","wordmark","reviewer_declaration",
+                            "rationale","accepts_semantic_component_rebuild"
+                        ],"properties":{
+                            "schema":{"type":"string","const":"motionwright.brand-campaign-rollout/1"},
+                            "project_id":{"type":"string","format":"uuid"},
+                            "generation":{"type":"string","format":"uuid"},
+                            "expected_revision":{"type":"integer","minimum":0},
+                            "brand_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                            "campaign":{"type":"string","minLength":1,"maxLength":160},
+                            "scene_ids":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","format":"uuid"},"uniqueItems":true},
+                            "accent":{"type":["string","null"],"maxLength":7},
+                            "wordmark":{"type":["string","null"],"maxLength":8},
+                            "reviewer_declaration":{"type":"string","minLength":1,"maxLength":160},
+                            "rationale":{"type":"string","minLength":1,"maxLength":1200},
+                            "accepts_semantic_component_rebuild":{"type":"boolean","const":true}
+                        },"additionalProperties":false}
+                    }),
+                    &["ref", "rollout"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertProductHero,
             descriptor(
                 "product-hero.upsert",
@@ -2940,6 +3028,26 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         }
                     }),
                     &["ref", "record"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::EditPaidGeneration,
+            descriptor(
+                "paid-generation.edit",
+                "Append a project accounting declaration; never contact, pay, approve or retry an external provider",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "edit":{"type":"object","required":["kind"],"properties":{
+                            "kind":{"type":"string","enum":["create","append"]},
+                            "spec":{"type":"object"},
+                            "job_id":{"type":"string","format":"uuid"},
+                            "expected_history_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                            "event":{"type":"object"}
+                        },"additionalProperties":false}
+                    }),
+                    &["ref", "edit"],
                 ),
             ),
         ),
@@ -3412,7 +3520,10 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.product-stage.capture.bind"));
         assert!(names.contains(&"driver.motionwright.product-stage.capture.detach"));
         // Preserve both native SDK operation families admitted independently.
-        assert_eq!(capabilities.len(), 76);
+        assert!(names.contains(&"driver.motionwright.paid-generation.edit"));
+        assert!(names.contains(&"driver.motionwright.otio-cut.owner-commit"));
+        assert!(names.contains(&"driver.motionwright.brand-campaign.owner-rollout"));
+        assert_eq!(capabilities.len(), 79);
     }
 
     #[test]
@@ -4571,3 +4682,12 @@ mod music_clock_contract_tests {
         assert!(change_from_args(OperationKind::ConformScenesToMusic, &malformed).is_err());
     }
 }
+
+#[cfg(test)]
+mod generation_journal_tests;
+
+#[cfg(test)]
+mod otio_cut_tests;
+
+#[cfg(test)]
+mod brand_campaign_tests;

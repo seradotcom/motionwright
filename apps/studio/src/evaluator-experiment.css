@@ -1,0 +1,61 @@
+/* Evaluator experiment is a compact revision comparison embedded in the
+   existing Motionwright workstation. No generic dashboard scaffolding. */
+.evaluator-experiment {
+  display:grid;gap:17px;min-width:0;margin-top:26px;padding:23px 0 8px;
+  border-top:1px solid var(--border);
+}
+.evaluator-experiment .production-section-title h3 {
+  margin:0 0 7px;font-size:15px;font-weight:620;letter-spacing:-.015em;
+}
+.evaluator-experiment .production-section-title p {
+  margin:0;font-size:11px;line-height:1.5;color:var(--muted);
+}
+.evaluator-experiment-scope {display:flex;align-items:center;justify-content:space-between;
+  gap:9px 20px;flex-wrap:wrap;border-block:1px solid var(--border-soft);
+  padding:11px 0;font-size:11px;color:var(--muted);}
+.evaluator-experiment-scope span:first-child {color:var(--text);font-weight:600;}
+.evaluator-experiment .production-field textarea {font-family:var(--font-mono);
+  font-size:11px;font-variant-numeric:tabular-nums;}
+.evaluator-experiment-scenes {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:9px 15px;border:0;padding:0;margin:0;}
+.evaluator-experiment-scenes legend {margin-bottom:10px;padding:0;font-size:11px;color:var(--muted);}
+.evaluator-experiment-scenes label {display:flex;align-items:center;gap:9px;
+  min-width:0;font-size:11px;line-height:1.4;color:var(--text);cursor:pointer;}
+.evaluator-experiment-scenes input {flex-shrink:0;accent-color:var(--accent);}
+.evaluator-experiment-scenes span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.evaluator-experiment-results {display:grid;gap:17px;min-width:0;padding:16px 0;
+  border-top:1px solid var(--border);}
+.evaluator-experiment-results header {display:flex;justify-content:space-between;
+  align-items:baseline;gap:10px 20px;flex-wrap:wrap;}
+.evaluator-experiment-results header strong {font-size:12px;font-weight:640;}
+.evaluator-experiment-results header span {font-size:10px;color:var(--muted);
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere;}
+.evaluator-experiment-results table {width:100%;border-collapse:collapse;
+  table-layout:fixed;font-variant-numeric:tabular-nums;font-size:11px;}
+.evaluator-experiment-results th,
+.evaluator-experiment-results td {
+  padding:11px 8px;text-align:left;border-bottom:1px solid var(--border-soft);
+  vertical-align:top;overflow-wrap:anywhere;
+}
+.evaluator-experiment-results th {font-weight:550;color:var(--muted);}
+.evaluator-experiment-results tbody th {color:var(--text);font-weight:600;}
+.evaluator-experiment-results td:last-child {color:var(--accent);}
+.evaluator-experiment-results .production-notice {display:flex;gap:10px;
+  align-items:flex-start;border-top:1px solid var(--border-soft);
+  border-bottom:1px solid var(--border-soft);padding:12px 0;}
+.evaluator-experiment-results .production-notice>svg {flex-shrink:0;margin-top:2px;color:var(--warning);}
+.evaluator-experiment-results .production-notice>div {display:grid;gap:5px;}
+.evaluator-experiment-results .production-notice strong {color:var(--text);font-size:11px;}
+.evaluator-experiment-results .production-notice span {color:var(--muted);
+  font-size:11px;line-height:1.55;}
+.evaluator-experiment-approval {display:grid;gap:13px;padding-block:2px 11px;}
+.evaluator-experiment-approval .production-check {font-size:11px;line-height:1.55;
+  color:var(--text);display:flex;align-items:flex-start;gap:9px;max-width:80ch;}
+.evaluator-experiment-approval .production-check input {margin-top:2px;accent-color:var(--accent);}
+.evaluator-experiment-approval button {justify-self:start;}
+@media(max-width:850px) {
+  .evaluator-experiment-scenes {grid-template-columns:minmax(0,1fr);}
+  .evaluator-experiment-results table {display:block;overflow-x:auto;white-space:normal;}
+  .evaluator-experiment-results table th,
+  .evaluator-experiment-results table td {min-width:115px;}
+}

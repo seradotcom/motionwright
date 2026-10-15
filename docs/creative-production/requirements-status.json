@@ -710,8 +710,8 @@
     {
       "id": "MW05-E09-02",
       "implementation": "partial",
-      "implemented_scope": "Manual source-linked findings and scoped repair review",
-      "remaining_scope": "Automated perceptual critics and complete A/B workflows remain open",
+      "implemented_scope": "Manual source-linked findings and scoped repair review Bounded new Native pixel-contrast desk reads exact pinned-native-granted original PNG frames, verifies signature/dimensions and SHA-256, and compares two manually selected stable opaque 3x3 browser-decoded sRGB patches at original resolution. Shows numeric reference contrast without claiming typography, aesthetics or WCAG compliance; no project mutation.",
+      "remaining_scope": "Authenticated exact per-pixel renderer provenance, calibrated color/ICC and accessibility fidelity, automatic text/background segmentation, multi-frame perceptual and temporal critics, other providers and full-master audio/visual critique, independent human aesthetic approval and actual editable repair usefulness remain NOT_VERIFIED. Manual two-point source contrast is not a creative-quality PASS.",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
         "apps/studio/src/NativeInspectionWorkbench.tsx",
@@ -719,7 +719,15 @@
         "crates/domain/src/production_design.rs",
         "crates/domain/src/creative_revisions.rs",
         "apps/studio/src/CreativePatchWorkbench.tsx",
-        "crates/service/tests/creative_undo.rs"
+        "crates/service/tests/creative_undo.rs",
+        "apps/studio/src/nativePixelContrast.ts",
+        "apps/studio/src/nativePixelContrast.test.ts",
+        "apps/studio/src/NativeContrastWorkbench.tsx",
+        "apps/studio/src/native-contrast.css",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/native-pixel-contrast.spec.ts",
+        "docs/creative-production/NATIVE_PIXEL_CONTRAST.md",
+        ".github/workflows/v05-native-pixel-contrast.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
@@ -829,8 +837,8 @@
     {
       "id": "MW05-E11-03",
       "implementation": "partial",
-      "implemented_scope": "Original first-party H264 synthetic OTIO bridge bound to existing Rust project exporter, source SHA/revision and media asset digests, independently measured constant frame rate and a 12-property loss report. Bounded read-only imported reorder/end-trim proposals map only to existing native changes. Curated CI-public output permits only synthetic H264+OTIO, with actual OpenTimelineIO reader acceptance pending this exact integrated source SHA.",
-      "remaining_scope": "Human receiver acceptance in Kdenlive/Shotcut/Resolve, real third-party rights authentication, property-fidelity reconciliation of audio/effects/transcripts/locks, owner-approved StudioService import commit, full external relinking, and full creative acceptance remain open. Unknown/failed source execution remains NOT_VERIFIED.",
+      "implemented_scope": "Original first-party H264 synthetic OTIO bridge bound to existing Rust project exporter, source SHA/revision and media asset digests, independently measured constant frame rate and a 12-property loss report. Bounded read-only imported reorder/end-trim proposals map only to existing native changes. Curated CI-public output permits only synthetic H264+OTIO, with actual OpenTimelineIO reader acceptance pending this exact integrated source SHA. A new owner-confirmed, revision-scoped, loss-acknowledging bounded OTIO cut acceptance now applies only canonical scene reordering and strict end trims as a single StudioService SQLite CAS revision through Semwright Native SDK, using a candidate copy with atomic rollback on late failure. The bridge rejects scene extensions; it does not authenticate an external NLE execution.",
+      "remaining_scope": "Human receiver acceptance in Kdenlive/Shotcut/Resolve; real third-party rights authentication; independent proof that an external NLE truly produced the pasted preview; property-fidelity reconciliation of audio/effects/transcripts/locks; complete external-native round-trip, media relink, publication and independent creative approval remain NOT_RUN. This cut-only commit does not import effects, audio, media or source in-points.",
       "source_paths": [
         "crates/domain/src/delivery.rs",
         "crates/domain/examples/otio_real_media_fixture.rs",
@@ -840,7 +848,18 @@
         "tooling/otio-media/test_bridge.py",
         "tooling/otio-media/test_public_artifact.py",
         ".github/workflows/v05-otio-real-media.yml",
-        "docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md"
+        "docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md",
+        "crates/domain/src/otio_cut_review.rs",
+        "crates/domain/tests/otio_cut_owner_review.rs",
+        "crates/service/tests/otio_cut_commit_persistence.rs",
+        "crates/native/src/otio_cut_tests.rs",
+        "apps/studio/src/otioCutReview.ts",
+        "apps/studio/src/otioCutReview.test.ts",
+        "apps/studio/src/otioCutReviewTestFixtures.ts",
+        "apps/studio/src/OtioCutReviewWorkbench.tsx",
+        "apps/studio/tests/otio-owner-cut.spec.ts",
+        "docs/creative-production/V05_OTIO_OWNER_CUT_COMMIT.md",
+        ".github/workflows/v05-otio-owner-cut.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
@@ -858,26 +877,71 @@
     },
     {
       "id": "MW05-E12-01",
-      "implementation": "not_implemented",
-      "implemented_scope": "No image/video/TTS/presenter generation provider added",
-      "remaining_scope": "Rights, request provenance and result admission required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Bounded original image/video/TTS/presenter **source intent**, semantic idempotency, declared capability/rights/prompt SHA and a view-only matching preview. All paths retain the canonical Semwright Native SDK and project CAS; human likeness work refuses to install an alternative consent authority; no provider API is installed or called.",
+      "remaining_scope": "Actual source-owner verification, provider capability signatures, authenticated user rights, real generator execution and independently verified provider outputs remain unimplemented.",
+      "source_paths": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/src/generation_journal_tests.rs",
+        "apps/desktop/src-tauri/src/generation_journal.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/generationJournalApi.ts",
+        "apps/studio/src/generationJournalApi.test.ts",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/tests/generation-journal.spec.ts",
+        "docs/creative-production/V05_GENERATION_ACCOUNTING.md",
+        ".github/workflows/v05-generation-budget.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E12-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "No paid pilot or production spending occurred",
-      "remaining_scope": "Budget reservations and exact approval per logical attempt required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Project-global append-only, SQLite/CAS, revision-bound pilot budget journal; exact integer microUSD cap; independent app and SDK operation; separate preflight/confirm steps; read-only declared budget preview; duplicated semantic request IDs and scene/project locks fail closed.",
+      "remaining_scope": "Verified billing, paid account credentials, owner-authenticated pilot review, commercial budget settlement and batch execution remain unimplemented.",
+      "source_paths": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/src/generation_journal_tests.rs",
+        "apps/desktop/src-tauri/src/generation_journal.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/generationJournalApi.ts",
+        "apps/studio/src/generationJournalApi.test.ts",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/tests/generation-journal.spec.ts",
+        "docs/creative-production/V05_GENERATION_ACCOUNTING.md",
+        ".github/workflows/v05-generation-budget.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
       "id": "MW05-E12-03",
-      "implementation": "not_implemented",
-      "implemented_scope": "No paid-provider unknown-outcome reconciliation added",
-      "remaining_scope": "Durable provider task lookup before mutation retry required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "UNKNOWN provider task state, immutable append-only event history, task-id and idempotency pin, query-existing-task-only reconciliation hint, portable reimport and multi-client CAS tests. There is no automatic retry or new paid submission.",
+      "remaining_scope": "Actual authorized provider status lookup, signed task receipt verification, real uncertain-status recovery across external APIs and verified billing remain unimplemented.",
+      "source_paths": [
+        "crates/domain/src/paid_generation.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/tests/paid_generation_ledger.rs",
+        "crates/service/tests/paid_generation_persistence.rs",
+        "crates/native/src/lib.rs",
+        "crates/native/src/generation_journal_tests.rs",
+        "apps/desktop/src-tauri/src/generation_journal.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/generationJournalApi.ts",
+        "apps/studio/src/generationJournalApi.test.ts",
+        "apps/studio/src/PaidGenerationWorkspace.tsx",
+        "apps/studio/tests/generation-journal.spec.ts",
+        "docs/creative-production/V05_GENERATION_ACCOUNTING.md",
+        ".github/workflows/v05-generation-budget.yml"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
@@ -925,10 +989,19 @@
     },
     {
       "id": "MW05-E13-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "No dynamic code promotion or installation system added",
-      "remaining_scope": "Disposable experiment and explicit owner admission required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Bounded disposable, source-revision/scene/evaluator-digest-linked experiment for the existing typed first-party data-only evaluator. Compares the latest original recipe to one next-version candidate across 1?3 authored scenes, with pass/fail/abstain counts, criterion-ID regressions and removals, obligatory human-question abstention, no executable code or arbitrary providers. Owner rights and technical-limits acknowledgements precede an existing canonical register_creative_evaluator StudioService/Native SDK CAS; browser demo cannot claim canonical admission. No arbitrary skill is installed.",
+      "remaining_scope": "Executable dynamic-code sandbox, signed package trust/owner identity and policies, capability permission isolation, runtime/provider execution, audited experiment/provenance persistence and resource limits, independent aesthetic/rights review, true external package verification, cross-app native conformance and the 60 independent acceptance cases remain NOT_IMPLEMENTED/NOT_RUN. Local experiments do not constitute approval.",
+      "source_paths": [
+        "apps/studio/src/evaluatorExperiment.ts",
+        "apps/studio/src/evaluatorExperiment.test.ts",
+        "apps/studio/src/EvaluatorExperimentWorkbench.tsx",
+        "apps/studio/src/evaluator-experiment.css",
+        "apps/studio/src/CreativeEvaluatorWorkbench.tsx",
+        "apps/studio/tests/evaluator-experiment.spec.ts",
+        ".github/workflows/v05-evaluator-experiment.yml",
+        "docs/creative-production/V05_EVALUATOR_DATA_EXPERIMENT.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
@@ -965,12 +1038,23 @@
     },
     {
       "id": "MW05-E14-01",
-      "implementation": "inherited_not_reassessed",
-      "implemented_scope": "Existing linked output profiles and overrides retained",
-      "remaining_scope": "Global campaign/brand propagation not extended here",
+      "implementation": "partial",
+      "implemented_scope": "Original single-project, saved BrandProfile-backed campaign brand rollout for 1?8 pre-attached Hero scenes: source profile SHA-256, exact project/generation/revision, explicit reviewer campaign and bounded palette/required wordmark, read-only row previews, separate owner acknowledgment, one canonical StudioService SQLite CAS revision through Semwright Native SDK, atomic rollback on any late human override/style lock, per-scene original decision records. No arbitrary providers or executable package is admitted.",
+      "remaining_scope": "Organization-wide and cross-project campaign/brand propagation, authenticated owner identity and policy distribution/IAM, arbitrary Stage/procedural/layout family or non-hero target propagation, multi-renderer verified media, language/font accessibility, full human visual review and actual customer adoption remain NOT_IMPLEMENTED/NOT_VERIFIED. One local project CAS does not establish external brand rights or broad campaign consistency.",
       "source_paths": [
-        "crates/domain/src/delivery.rs",
-        "apps/studio/src/DeliveryProfiles.tsx"
+        "crates/domain/src/brand_campaign.rs",
+        "crates/domain/tests/brand_campaign.rs",
+        "crates/service/tests/brand_campaign_persistence.rs",
+        "crates/native/src/brand_campaign_tests.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/brandCampaign.ts",
+        "apps/studio/src/brandCampaign.test.ts",
+        "apps/studio/src/BrandCampaignWorkbench.tsx",
+        "apps/studio/src/BrandTasteWorkbench.tsx",
+        "apps/studio/src/brand-campaign.css",
+        "apps/studio/tests/brand-campaign.spec.ts",
+        ".github/workflows/v05-brand-campaign.yml",
+        "docs/creative-production/V05_BRAND_CAMPAIGN_ROLLOUT.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

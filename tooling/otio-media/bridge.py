@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 SCHEMA="motionwright.otio-portable-media-bridge/1"
@@ -386,7 +387,17 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
         for key in ("timeline.otio","source-project.json","bridge-manifest.json"):
             insist((stage/key).stat().st_size<MAX_JSON,
                    "Portable source metadata exceeded bounded review profile")
-        stage.rename(output)
+        # Windows indexers can transiently lock a freshly closed ZIP.
+        # Retry only the local atomic rename, never media work or external jobs.
+        for attempt in range(8):
+            insist(not output.exists(), "Portable OTIO destination appeared during staging")
+            try:
+                stage.rename(output)
+                break
+            except PermissionError as error:
+                if os.name != "nt" or getattr(error, "winerror", None) != 5 or attempt == 7:
+                    raise
+                time.sleep(0.12)
     return {"status":"OWNER_BOUND_MEDIA_EXPORT_NOT_NLE_VERIFIED",
             "project_sha256":project_sha,"source_scenes":len(clips),
             "verified_media_refs":len(verified),"missing_refs":len(unresolved),
@@ -522,6 +533,8 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
         imported_duration=Fraction(length,rate)
         insist(imported_duration>0 and imported_duration<=Fraction(600),
                "Edited cut duration out of native scene bounds")
+        insist(imported_duration<=original_duration,
+               "Imported OTIO cut cannot extend native scene duration; only exact end trims are supported")
         if imported_duration!=original_duration:
             updates[scene_id]={"num":str(imported_duration.numerator),
                                "den":str(imported_duration.denominator)}

@@ -11,6 +11,10 @@ on:
       - "tooling/release_manifest.py"
       - "tooling/tests/test_package_receipt.py"
       - "tooling/tests/test_candidate_receipt_source.py"
+      - "tooling/candidate_attestation_input.py"
+      - "tooling/tests/test_candidate_attestation_input.py"
+      - "tooling/owner_candidate_provenance.py"
+      - "tooling/tests/test_owner_candidate_provenance.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
@@ -33,6 +37,10 @@ on:
       - "tooling/release_manifest.py"
       - "tooling/tests/test_package_receipt.py"
       - "tooling/tests/test_candidate_receipt_source.py"
+      - "tooling/candidate_attestation_input.py"
+      - "tooling/tests/test_candidate_attestation_input.py"
+      - "tooling/owner_candidate_provenance.py"
+      - "tooling/tests/test_owner_candidate_provenance.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
@@ -62,7 +70,7 @@ jobs:
           python-version: "3.13"
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
-          python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py
+          python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
@@ -401,4 +409,103 @@ jobs:
             target/release/bundle/dmg/*.dmg
             ci-evidence/macos-candidate.json
             ci-evidence/macos-dmg-smoke.json
+          if-no-files-found: error
+
+  # Keep OIDC/Sigstore/attestation write permissions in this dedicated job.
+  # The three package-build jobs continue to have contents:read only.
+  # Ordinary PRs cannot mint trusted candidate provenance: source checks run
+  # on PRs, while this job is NOT_RUN until trusted dispatch or main push.
+  attest-candidates:
+    name: Candidate GH provenance (trusted runs only)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: motionwright-linux-candidate
+          path: candidates/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: motionwright-windows-candidate
+          path: candidates/windows
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: motionwright-macos-candidate
+          path: candidates/macos
+      - name: Verify all four downloaded packages match unsigned source-bound receipts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/motionwright-provenance"
+          python3 -m unittest discover -s tooling/tests -p test_candidate_attestation_input.py -v
+          python3 tooling/candidate_attestation_input.py \
+            --source-sha "$GITHUB_SHA" \
+            --download-root "$GITHUB_WORKSPACE/candidates" \
+            --output-dir "$RUNNER_TEMP/motionwright-provenance"
+          test "$(wc -l < "$RUNNER_TEMP/motionwright-provenance/verified-subject-paths.txt")" -eq 4
+      # A GitHub workflow attestation is NOT an Authenticode signature, Apple
+      # Developer signature/notarization, human approval or a release gate.
+      - name: Attest exact candidate package bytes through GitHub Sigstore
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            candidates/linux/**/*.AppImage
+            candidates/linux/**/*.deb
+            candidates/windows/**/*-setup.exe
+            candidates/macos/**/*.dmg
+      - name: Independently verify each of the four signed candidate digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          count=0
+          while IFS= read -r subject; do
+            test -f "$subject"
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/package-candidate.yml" \
+              --source-digest "$GITHUB_SHA" >/dev/null
+            count=$((count+1))
+          done < "$RUNNER_TEMP/motionwright-provenance/verified-subject-paths.txt"
+          test "$count" -eq 4
+          echo "v01-candidate-gh-attestation=VERIFIED subjects=4 unsigned_installers=YES human_acceptance=NOT_RUN release=BLOCKED"
+      # Exercise the identical read-only pre-install verification contract
+      # an owner can run, on an ACTUAL downloaded NSIS installer + GH signature.
+      # This is CI technical evidence, NOT an owner-installed/human PASS.
+      - name: Verify actual candidate using owner-side provenance CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t installers < <(find candidates/windows -type f -name '*-setup.exe')
+          test "${#installers[@]}" -eq 1
+          test -f "$GITHUB_WORKSPACE/candidates/windows/ci-evidence/windows-candidate.json"
+          python3 tooling/owner_candidate_provenance.py \
+            --source-sha "$GITHUB_SHA" \
+            --bundle-kind nsis \
+            --artifact "$GITHUB_WORKSPACE/${installers[0]}" \
+            --candidate-receipt "$GITHUB_WORKSPACE/candidates/windows/ci-evidence/windows-candidate.json" \
+            --output "$RUNNER_TEMP/motionwright-provenance/ci-preinstall-provenance.json"
+          python3 -m json.tool "$RUNNER_TEMP/motionwright-provenance/ci-preinstall-provenance.json" >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-v01-candidate-provenance-inputs
+          path: |
+            ${{ runner.temp }}/motionwright-provenance/verified-candidate-inputs.json
+            ${{ runner.temp }}/motionwright-provenance/ci-preinstall-provenance.json
           if-no-files-found: error

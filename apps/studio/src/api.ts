@@ -1,3 +1,4 @@
+export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
@@ -1073,6 +1074,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "review_component_distillation":
       applyDistillationChange(next,change);
       break;
+    case "apply_brand_campaign":
+      throw new Error("Brand campaign rollout requires canonical desktop StudioService CAS; browser demos cannot register it.");
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();
@@ -1090,6 +1093,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design.taste_profile=structuredClone(change.profile);
       break;
     }
+    case "apply_otio_owner_cut_review":
+      throw new Error("OTIO owner cut mutation needs canonical desktop CAS; browser demos are read-only.");
+    case "edit_paid_generation":
+      throw new Error("Paid-generation accounting requires canonical desktop CAS; browser demos cannot reserve or charge.");
     case "register_creative_evaluator":
     case "evaluate_creative_scene": {
       await applyEvaluatorChange(next,change);

@@ -46,6 +46,28 @@ successful job, retry the mutation or request new grants. The public receipt
 explicitly records no original-user acceptance, no provider-generation
 reliability repair and no stable release permission.
 
+**Closed failure category, never private failure logs:** when the native CI
+wrapper reports a typed failure, the runner saves its *existing redacted*
+diagnostic privately together with the exact Motionwright source SHA and
+Semwright pin. The public publisher will read **at most 32 KiB** of this
+descriptor (never original stdout/stderr), reject duplicate keys, symlinks,
+missing/foreign authority, fabricated terminal success or claimed mutation
+retry, and emit ONLY fixed enums/booleans in the new additive
+\`ci_failure_observation\` field. It can distinguish a command deadline,
+malformed native response or provider-generation inactive observation while
+always recording \`provider_root_cause_verified=false\`. A completed
+\`render.start\` receipt can never turn an enclosing command's known error
+into a verified *original render* failure: the original job stays
+\`source_outcome=UNKNOWN\`. Missing or malformed diagnostics become
+\`NOT_RECORDED\` or \`UNTRUSTED_PRIVATE_DIAGNOSTIC\`, not silence falsely
+interpreted as provider health. In successful runs the field is null. No
+provider job ID, original request receipt, session file, machine path or
+unbounded text crosses the public CI upload boundary.
+
+This source-bound CI failure category is **an observation, not a fault/root
+cause attribution**, driver restart authority, binary attestation or
+replacement for independently resolved original native job evidence.
+
 ## Verification and limitations
 
 The new Python suite covers source/pin or generation swaps, incomplete

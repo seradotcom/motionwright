@@ -1,0 +1,43 @@
+/* Brand campaign lives inside the existing editorial policy inspector. */
+.brand-campaign {display:grid;gap:17px;margin:24px 0 8px;padding:22px 0;
+  border-top:1px solid var(--border);min-width:0}
+.brand-campaign .production-section-title h3 {font-size:15px;font-weight:620;line-height:1.3;letter-spacing:-.015em;margin:0 0 6px}
+.brand-campaign .production-section-title p {font-size:11px;color:var(--muted);line-height:1.5;margin:0}
+.brand-campaign-source {display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;
+  border-block:1px solid var(--border-soft);padding:10px 0;font-size:11px;color:var(--muted)}
+.brand-campaign-source strong {color:var(--text);font-weight:650}
+.brand-campaign .production-plan-grid {gap:11px}
+.brand-campaign-boolean {display:flex;gap:9px;align-items:flex-start;line-height:1.5;font-size:11px;color:var(--text)}
+.brand-campaign-boolean input {flex-shrink:0;margin-top:2px;accent-color:var(--accent)}
+.brand-campaign-boolean strong {font-weight:650}
+.brand-campaign-scenes {border:0;margin:0;padding:0;display:grid;gap:8px;
+  grid-template-columns:repeat(2,minmax(0,1fr))}
+.brand-campaign-scenes legend {padding:0;margin-bottom:9px;color:var(--muted);font-size:11px}
+.brand-campaign-scenes label {min-width:0;display:flex;align-items:center;gap:8px;
+  border-bottom:1px solid var(--border-soft);padding:8px 0;font-size:11px;color:var(--muted);cursor:pointer}
+.brand-campaign-scenes label input {flex:0 0 auto;accent-color:var(--accent)}
+.brand-campaign-scenes label span {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brand-campaign-scenes label strong {color:var(--text);font-weight:600}
+.brand-campaign >.primary-button {justify-self:start}
+.brand-campaign-review {display:grid;gap:17px;min-width:0;border-top:1px solid var(--border);padding:15px 0}
+.brand-campaign-review header {display:flex;align-items:baseline;justify-content:space-between;
+  gap:10px;flex-wrap:wrap}
+.brand-campaign-review header strong {font-size:12px;font-weight:620}
+.brand-campaign-review header span {font-size:10px;overflow-wrap:anywhere;color:var(--muted)}
+.brand-campaign-review table {table-layout:fixed;border-collapse:collapse;width:100%;
+  font-size:11px;font-variant-numeric:tabular-nums}
+.brand-campaign-review th,.brand-campaign-review td {
+  overflow-wrap:anywhere;text-align:left;padding:10px 7px;border-bottom:1px solid var(--border-soft);
+  vertical-align:top}
+.brand-campaign-review th {font-weight:600;color:var(--muted)}
+.brand-campaign-review tbody th {color:var(--text)}
+.brand-campaign-review .production-notice {display:flex;align-items:start;gap:10px;
+  border-block:1px solid var(--border-soft);padding:12px 0}
+.brand-campaign-review .production-notice svg {flex:0 0 auto;color:var(--warning)}
+.brand-campaign-review .production-notice span {color:var(--muted);font-size:11px;line-height:1.55}
+.brand-campaign-review .production-button-row {flex-wrap:wrap}
+@media(max-width:850px){
+  .brand-campaign-scenes,.brand-campaign .production-plan-grid {grid-template-columns:minmax(0,1fr)}
+  .brand-campaign-review table {display:block;overflow-x:auto}
+  .brand-campaign-review th,.brand-campaign-review td {min-width:110px}
+}

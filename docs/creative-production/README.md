@@ -10,6 +10,26 @@ The current creative baseline includes four bounded first-party composition fami
 
 `requirements-status.json` tracks all 64 expansion IDs without replacing the original 208-requirement ledger. An implemented contract is not an automatically approved design. Code presence, integration tests, native evidence and human acceptance remain different fields.
 
+## Generation intent and accounting (E12; technical partial only)
+
+A bounded generation-intent and budget journal has been adapted from experimental PR #100 into the current SQLite/Native SDK project architecture. It records original synthetic pilot intent, duplicate-safe one-shot reservations, and unknown-task reconciliation without calling a paid provider or granting real-person generation consent. See [Generation accounting](V05_GENERATION_ACCOUNTING.md). Real provider billing, independent consent, outcome verification and human approval are not implemented.
+
+## Source-scoped OTIO cut acceptance (E11-03 partial)
+
+The existing real-media OTIO bridge now rejects scene extensions and feeds an explicitly reviewed, loss-preserving single-revision cut commit for only reorder/end-trim operations. See [Owner OTIO cut review](V05_OTIO_OWNER_CUT_COMMIT.md). The new station is not a media relinker, NLE renderer or independent source/right verification.
+
+## Native source-pixel contrast ? human-scoped measurement (E09-02 partial)
+
+A separate Production ? Pixel contrast review reads original pinned Semwright-granted PNG bytes, samples two human-selected opaque full-resolution pixel neighborhoods and reports a bounded, source-SHA-linked numerical sRGB contrast ratio. It never labels this measurement aesthetic quality, textual accessibility approval or a creative PASS. See [Native pixel contrast](NATIVE_PIXEL_CONTRAST.md).
+
+## Disposable evaluator experiments (E13-02 ? technical partial)
+
+A new data-only experiment compares the latest registered evaluator to an original next-version candidate on up to three current scenes. It reuses first-party typed observations and only permits an explicitly acknowledged registration through the existing canonical CAS, not executable skill promotion. [Evaluator experiment documentation](V05_EVALUATOR_DATA_EXPERIMENT.md).
+
+## Owner-reviewed campaign brand propagation (E14-01 partial)
+
+A source-digest-bound rollout applies a permitted existing palette accent/required wordmark across up to eight *attached* original Hero scenes as one candidate-validated StudioService CAS and Semwright Native SDK transaction. Existing author edits and brand exceptions can block the entire operation; unrelated assets and media are never rebuilt. [Campaign propagation](V05_BRAND_CAMPAIGN_ROLLOUT.md).
+
 ## Start a design session
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.

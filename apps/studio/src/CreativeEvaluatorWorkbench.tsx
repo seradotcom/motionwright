@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileCheck2, RefreshCw, Save } from "lucide-react";
+import EvaluatorExperimentWorkbench from "./EvaluatorExperimentWorkbench";
 import type { Change, Project, Scene } from "./types";
 import { EVALUATOR_SCHEMA, validateEvaluator } from "./creativeEvaluator";
 import type { CreativeCriterion, CreativeEvaluatorBundle } from "./creativeEvaluator";
@@ -213,5 +214,7 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
         {result.outcome==="not_assessed"?"Not assessed":
           result.outcome==="pass"?"Technical pass":"Technical fail"}: {result.explanation}</li>)}</ul>
     </article>):<p className="production-help">No evaluator reports for this scene.</p>}
+    <EvaluatorExperimentWorkbench project={project} scene={scene} selectedEvaluator={latest}
+      busy={busy} commit={commit}/>
   </div>;
 }

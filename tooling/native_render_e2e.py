@@ -17,7 +17,7 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
-from native_av_failure_guard import run_sanitized_json
+from native_av_failure_guard import NativeCommandFailure, run_sanitized_json
 
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_render_stage_cost import assemble_native_stage_report, elapsed_us
@@ -485,7 +485,20 @@ def main() -> None:
                     env=env,
                     timeout=420,
                 )
-            except (AssertionError, subprocess.TimeoutExpired):
+            except (AssertionError, subprocess.TimeoutExpired) as error:
+                if isinstance(error, NativeCommandFailure):
+                    # Preserve only the existing closed, redacted CLI-failure
+                    # receipt privately. The public publisher extracts an
+                    # independently checked, allowlisted subset; never upload
+                    # this original payload, stdout/stderr or provider refs.
+                    write_private_json(
+                        EVIDENCE / "native-render-failure-diagnostic.json",
+                        {
+                            **error.diagnostic,
+                            "motionwright_source_sha": GITHUB_SHA,
+                            "semwright_source_pin": PIN,
+                        },
+                    )
                 preserve_native_failure_evidence(root)
                 raise
             mediated_render_micros = elapsed_us(mediated_started_ns, time.perf_counter_ns())

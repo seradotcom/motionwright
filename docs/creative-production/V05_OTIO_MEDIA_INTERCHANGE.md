@@ -144,3 +144,25 @@ may incur explicit losses, particularly audio/transcript/camera/effects.
 **Acceptance:** E11-03 remains `PARTIAL`, with actual external editor
 import/round-trip, edited clip semantic mapping and human visual review
 still `NOT_RUN` until demonstrated on the same source revision.
+
+## 4. New: explicit owner-reviewed acceptance (separate from bridge inspection)
+
+The `preview-import` command remains read-only and still refuses stale project
+snapshots or changed media bytes. An additional optional, non-executable step
+is available in the desktop application: **Deliver → OTIO cut review**.
+
+Paste the complete `motionwright.otio-edit-preview/1` result there, review
+the proposed original scene order, bounded end trims and twelve preserved
+fidelity/loss classifications, acknowledge any original absolute
+audio/transcript/marker positions, identify the reviewer (declaration only)
+and confirm. Motionwright performs only an atomic `Change::ApplyOtioOwnerCutReview`
+through the existing SQLite CAS and Semwright Native SDK. Any lock, protected
+review, stale generation or late invalid trim leaves the entire project
+unchanged. See [Owner-reviewed OTIO cut commit](V05_OTIO_OWNER_CUT_COMMIT.md).
+
+This **does not** independently authenticate that an NLE produced the pasted
+JSON, import/relink media, prove external editor acceptance, move external
+audio tracks or license the result. A prepared proposal is not a cryptographic
+authority receipt. The Python bridge also now **rejects increasing a native
+scene's original duration**, so the phrase "end trim only" is enforced
+rather than merely documented.
