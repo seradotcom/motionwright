@@ -58,6 +58,7 @@ fn registered_generation_contract_keeps_native_revision_and_retry_authority() {
     let app = build_application(service).unwrap();
     let contract = app
         .contracts()
+        .into_iter()
         .find(|c| c.descriptor.name == "driver.motionwright.paid-generation.edit")
         .unwrap();
     contract.validate(APP_ID).unwrap();
