@@ -162,7 +162,7 @@ export default function BrandCampaignWorkbench({
         onClick={()=>void preview()}>
         {working?"Inspecting source policy…":"Review per-scene brand changes"}
       </button>
-      {current&&<div className="brand-campaign-review" aria-label="Proposed brand campaign changes">
+      {current&&<section className="brand-campaign-review" aria-label="Proposed brand campaign changes">
         <header><strong>{current.preview.changed_count} component(s) would change</strong>
           <span>Source SHA-256 {current.preview.brand_sha256.slice(0,16)}… · r{current.preview.revision}</span></header>
         <table><thead><tr><th>Scene</th><th>Accent</th><th>Wordmark</th><th>Effect</th></tr></thead>
@@ -195,7 +195,7 @@ export default function BrandCampaignWorkbench({
             onClick={discard}>Discard brand proposal</button>
         </div>
         {!desktop()&&<p className="production-help" role="status">Browser demo can inspect policy differences but cannot commit campaign changes.</p>}
-      </div>}
+      </section>}
     </>}
     {notice&&<p role="status" className="production-help">{notice}</p>}
     {error&&<p role="alert" className="production-error">{error}</p>}
