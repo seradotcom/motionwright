@@ -3,6 +3,7 @@ mod av_master;
 mod effect_grants;
 mod media_integrity;
 mod runtime_setup;
+mod sfx_av_master;
 
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
@@ -2472,6 +2473,7 @@ fn main() {
             render_motion_canvas,
             preflight_multi_segment_mlt_readiness,
             assemble_av_master,
+            sfx_av_master::assemble_semantic_sfx_av_master,
             assemble_multisegment_av_master,
             export_native_av_master,
             verify_local_media_integrity,

@@ -10,6 +10,7 @@ import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import {
   assembleNativeAvMaster,
+  assembleNativeSemanticSfxAvMaster,
   assembleNativeMultisegmentAvMaster,
   exportCaptionSidecar,
   exportOtio,
@@ -20,6 +21,7 @@ import {
   renderMotionCanvas,
   productionRuntimeCompatibility,
 } from "./api";
+import { originalSfxAvReadiness } from "./sfxNativeDelivery";
 import type {
   Change,
   DeliverableProfile,
@@ -151,7 +153,7 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "sfx-master" | "export-master" | "verify-media" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -303,6 +305,10 @@ export default function DeliveryProfiles({
     && selected.container === "mp4");
   const masterReady = Boolean(desktopMode && selected && !dirty
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
+  const sfxMaster = originalSfxAvReadiness(
+    project, selected, currentMotion?.segments[0]?.frame_count ?? null,
+    Boolean(masterPreviewToken), desktopMode, dirty,
+  );
   const currentAv = avEvidence?.generation === project.generation
     && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
   const currentMultiMaster = multiMaster?.generation === project.generation
@@ -525,6 +531,20 @@ export default function DeliveryProfiles({
       onAvEvidence(result);
       setMessage("Native H.264/AAC MP4 master recorded for r" + result.revision
         + " with " + result.frame_count + " native frames. Verify output metadata before distribution.");
+    });
+  };
+
+  const assembleSfxMaster = () => {
+    if (!selected || !masterPreviewToken || !sfxMaster.ready) return;
+    void run("sfx-master", async () => {
+      const result = await assembleNativeSemanticSfxAvMaster(
+        project, selected.id, masterPreviewToken,
+      );
+      onAvEvidence(result);
+      setMessage("Native source-bound SFX-only H.264/AAC MP4 recorded for r"
+        + result.revision + " with " + result.frame_count + " frames. "
+        + "Original PCM and native media were verified; narration/music, "
+        + "loudness mastering and human creative approval are NOT included.");
     });
   };
 
@@ -1101,6 +1121,36 @@ export default function DeliveryProfiles({
                   </button>
                 )}
               </div>
+              {(project.audio.sfx_cues?.length ?? 0) > 0 && (
+                <div className="delivery-multi-source" role="region"
+                  aria-label="Original semantic SFX native master">
+                  <div>
+                    <strong>Original semantic SFX-only master</strong>
+                    <span>{sfxMaster.cueCount} scene-linked sound event
+                      {sfxMaster.cueCount === 1 ? "" : "s"}.
+                      Native 48 kHz PCM16 sources are verified from Studio CAS
+                      and mixed with no hidden clipping, voice or music stems.
+                    </span>
+                  </div>
+                  <button className="button button-primary" type="button"
+                    aria-label="Assemble original semantic SFX native MP4"
+                    disabled={!sfxMaster.ready || busy !== null}
+                    onClick={assembleSfxMaster}>
+                    <Play size={14} />
+                    {busy === "sfx-master" ? "Mastering original SFX…" :
+                      "Assemble SFX-only MP4"}
+                  </button>
+                  <div className={"delivery-truth-note" +
+                    (sfxMaster.ready ? "" : " warning")} role="status"
+                    aria-label="Native semantic SFX source readiness">
+                    {sfxMaster.ready
+                      ? "Editorial placement ready for " + sfxMaster.frames
+                        + " native frames. The desktop must reverify every original WAV byte. "
+                        + "Human sound and creative review remain required."
+                      : sfxMaster.reason}
+                  </div>
+                </div>
+              )}
               {!masterPreviewToken && !multiSourceToken && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.

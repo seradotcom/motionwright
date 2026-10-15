@@ -223,3 +223,46 @@ An independent source-only regression test compares both workflow contracts,
 rejects external browser paths and requires a pinned Semwright checkout.
 This is a concrete mismatch with a compatible cause, NOT a retroactive
 claim that the AV master passed; only new exact-SHA CI can verify remediation.
+
+
+## Installed Studio: source-bound SFX-only audiovisual delivery
+
+The installed desktop has a distinct assemble_semantic_sfx_av_master
+command and a Studio Deliver action labeled **Assemble SFX-only MP4**.
+The command accepts ONLY project ID/generation/revision, a saved deliverable,
+the original opaque verified Motion Canvas preview handle and a single-use
+RenderLocal effect grant; unknown properties are denied. No WebView-supplied
+WAV, MP4, directory, digest or native job reference enters IPC.
+
+The native desktop refuses stale creative revisions, preview handles from
+other owner output roots, legacy preview registrations without original Film
+intent, unsupported frame/codec/sample profiles, absent SFX cues and
+deliverables with voice tracks selected. The v0.5 path explicitly exports
+**SFX ONLY**. It must never implicitly skip a selected voice track or claim
+that music, dialogue, LUFS or true peak have been mixed.
+
+After the one-use owner grant, an async-blocking worker prepares an immutable,
+source-CAS SHA-256-bound PCM16 WAV through the native production service.
+The existing ProductionCoordinator then independently verifies that exact
+PCM against the current project before dispatching the existing pinned
+Semwright MLT AV mux. Successful verified output registers the same
+session-only AV delivery token already used for native media review, local
+export and portable integrity receipts. Unknown native outcomes remain
+reconciliation-required and cannot be automatically retried.
+
+Studio's SFX readiness indicator is explicitly only an **editorial**
+contract: it checks native Film preview presence, exact 30-fps contiguous
+source scene clock, all-original source attachment metadata, bounded
+scene-local event scheduling and profile selection. It never claims to
+have opened owner WAV bytes. The desktop-side CAS verification remains
+mandatory before an actual MP4 can be returned.
+
+CI gates include TypeScript source-contract tests, browser synthetic IPC
+tests (confirming no private file/path or voice fields), and Tauri Rust
+tests for original owner-root provenance, required effect grant/preview
+token and strict IPC request schema. These tests supplement, not replace,
+the separately green exact-SHA Linux original-PCM/native H.264/AAC lane.
+
+Real user listening, creative quality, original source rights, combined
+voice+SFX ducking, arbitrary-frame timing and multisegment MLT AV delivery
+remain separate open requirements; they are not asserted by this UI action.
