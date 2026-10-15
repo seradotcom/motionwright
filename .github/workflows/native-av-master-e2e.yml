@@ -22,6 +22,8 @@ on:
       - 'tooling/native_av_media_probe.py'
       - 'tooling/native_provider_lifecycle.py'
       - 'tooling/native_provider_broker_events.py'
+      - 'tooling/native_provider_live_watch.py'
+      - 'tooling/tests/test_native_provider_live_watch.py'
       - 'tooling/tests/test_native_provider_broker_events.py'
       - 'tooling/native_provider_loss_correlation.py'
       - 'tooling/tests/test_native_provider_loss_correlation.py'
@@ -197,7 +199,9 @@ jobs:
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_loss_correlation.py' -v
 
       - name: Reject untrusted or forged Broker lifecycle replay diagnostics
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_broker_events.py' -v
+        run: |
+          python3 -m unittest discover -s tooling/tests -p 'test_native_provider_broker_events.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_native_provider_live_watch.py' -v
 
       - name: Produce a real application-owned AV master through Broker and Driver Host
         env:
@@ -223,6 +227,7 @@ jobs:
           test -s "$root/native-provider-lifecycle.json"
           test -s "$root/native-provider-loss-correlation.json"
           test -s "$root/native-provider-broker-events.json"
+          test -s "$root/native-provider-live-broker-events.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -253,6 +258,23 @@ jobs:
           assert watcher["public_owner_payloads_copied"] is False
           assert watcher["installed_owner_recovery"] == "NOT_RUN"
           for event in watcher["events"]:
+            assert set(event) == {"kind", "generation", "revision"}
+          live = json.loads((root / "native-provider-live-broker-events.json").read_text())
+          assert live["schema"] == "motionwright-ci-native-provider-broker-events/1"
+          assert live["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
+          assert live["semwright_source_pin"] == watcher["semwright_source_pin"]
+          assert live["capture_mode"] == "bounded-read-only-owner-session-live-watch"
+          assert live["started_before_render"] is True
+          assert live["capture_within_byte_limit"] is True
+          assert live["history_exhaustive"] is False
+          assert live["native_provider_causation_proven"] is False
+          assert live["original_render_retry_permitted"] is False
+          assert live["terminal_native_result_verified"] is False
+          assert live["installed_owner_recovery"] == "NOT_RUN"
+          assert live["trusted_lifecycle_event_count"] == len(live["events"])
+          assert live["observation"] == "BROKER_LIFECYCLE_OBSERVED"
+          assert live["trusted_lifecycle_event_count"] >= 1
+          for event in live["events"]:
             assert set(event) == {"kind", "generation", "revision"}
           correlation = json.loads((root / "native-provider-loss-correlation.json").read_text())
           assert correlation["schema"] == "motionwright.v01-provider-loss-correlation/1"

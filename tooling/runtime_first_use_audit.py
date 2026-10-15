@@ -75,9 +75,28 @@ def safe_path(value: str, *, kind: str, code: str) -> Path:
     for part in (path, *path.parents):
         try:
             metadata = part.lstat()
+            # Windows junctions and many NTFS reparse points are NOT ordinary
+            # symbolic links, including under Python 3.11. A saved owner
+            # reference through one could escape the inspected file tree.
+            # The attribute is returned by os.stat_result on Windows; the
+            # fallback bit is the Win32 FILE_ATTRIBUTE_REPARSE_POINT (0x400).
+            reparse = bool(
+                getattr(metadata, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+            # Python 3.12+ provides an explicit junction probe. Keep the
+            # attribute guard for earlier installed Windows Python versions.
+            is_junction = getattr(part, "is_junction", None)
+            junction = bool(is_junction()) if callable(is_junction) else False
         except OSError as exc:
             raise AuditError(code) from exc
-        require(not stat.S_ISLNK(metadata.st_mode) and not part.is_symlink(), code)
+        require(
+            not stat.S_ISLNK(metadata.st_mode)
+            and not part.is_symlink()
+            and not reparse
+            and not junction,
+            code,
+        )
     try:
         info = path.stat()
     except OSError as exc:
