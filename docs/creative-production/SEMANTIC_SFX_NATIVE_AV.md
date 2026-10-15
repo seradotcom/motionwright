@@ -205,3 +205,21 @@ artifact admission check these bytes are identical, and fail closed if the
 preparation flag, revision, source count, digest, filename or PCM differs.
 This is a real native output preparation path, but the target Motion Canvas
 provider still needs separate AV acceptance and creative sign-off.
+
+## Root-cause comparison: Playwright Firefox runtime containment
+
+The previous specialized SFX AV runs failed with RenderFailureClass=font_evidence
+after one acknowledged render.start. Inspection of the EXACT pinned Semwright
+runtime showed that its font_evidence stage verifies the Playwright Firefox
+executable is a contained resource under the authorized Motion Canvas
+runtime root. The certified baseline AV workflow set the environment variable
+PLAYWRIGHT_BROWSERS_PATH=0 for both installation and Driver Host execution,
+which keeps Playwright browsers inside the pinned runtime's node_modules.
+The new SFX specialized workflow omitted this variable, leaving the Firefox
+installation in the GitHub runner's external cache.
+
+The specialized workflow now uses the same pin as the successful baseline.
+An independent source-only regression test compares both workflow contracts,
+rejects external browser paths and requires a pinned Semwright checkout.
+This is a concrete mismatch with a compatible cause, NOT a retroactive
+claim that the AV master passed; only new exact-SHA CI can verify remediation.

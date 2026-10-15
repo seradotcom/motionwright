@@ -15,6 +15,7 @@ on:
       - 'tooling/semantic_sfx_av_evidence.py'
       - 'tooling/semantic_sfx_native_stage.py'
       - 'tooling/tests/test_semantic_sfx_native_stage.py'
+      - 'tooling/tests/test_semantic_sfx_browser_mount.py'
       - 'tooling/semantic_sfx_av_public_artifact.py'
       - 'tooling/tests/test_semantic_sfx_av_evidence.py'
       - '.github/workflows/semantic-sfx-native-av.yml'
@@ -36,6 +37,10 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  # Keep Playwright Firefox inside the exact pinned Motion Canvas runtime.
+  # The driver rejects an executable from the runner's external cache before
+  # project staging, reporting its closed font_evidence failure category.
+  PLAYWRIGHT_BROWSERS_PATH: '0'
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
 
 jobs:
@@ -85,6 +90,7 @@ jobs:
             tooling/semantic_sfx_av_public_artifact.py tooling/semantic_sfx_native_stage.py
           python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_av_*.py' -v
           python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_native_stage.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_browser_mount.py' -v
       - name: Install pinned native media runtime and sandbox
         run: |
           set -euo pipefail
