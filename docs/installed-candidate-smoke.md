@@ -66,4 +66,6 @@ creates a public release or updates the 60 private case verdicts. Refer to
 [GitHub's artifact attestation documentation](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
 for independent verification of the signed digest and signer identity.
 
+To validate the **actual installer file on the owner's machine before installation**, the read-only `tooling/owner_candidate_provenance.py` independently rehashes one downloaded package and its source-bound candidate receipt and requires a successful GitHub Sigstore verification for the fixed repository, signer workflow and exact source SHA. It never installs or launches the app, and the resulting private evidence deliberately reports human acceptance and release readiness as NOT_RUN / false. See [owner candidate provenance](reliability/v01-owner-candidate-provenance.md) for the exact no-overwrite command and security boundaries.
+
 For actual independent validation, use [private acceptance intake](acceptance/REVIEW_INTAKE.md) on explicitly chosen installed builds, with human reviewers and original private acceptance criteria.
