@@ -68,13 +68,31 @@ NATIVE_REASON_CLASSES = frozenset({
     "render_failed", "render_status", "render_result", "verification",
     "native_mux", "unclassified",
 })
+NATIVE_RENDER_FAILURE_CLASSES = frozenset({
+    'arguments', 'font_evidence', 'project_stage', 'vite_build',
+    'frame_export', 'browser_launch', 'page_load', 'render_wait',
+    'render_wait_timeout', 'renderer_state_frame_clock', 'renderer_state_authoring_protocol', 'renderer_log_authoring_protocol',
+    'renderer_state_playback_protocol', 'renderer_log_playback_protocol', 'renderer_log_exporter_missing', 'renderer_log_async_property',
+    'renderer_state_webgl_unavailable', 'renderer_log_webgl_unavailable', 'renderer_state_model_invariant', 'renderer_log_model_invariant',
+    'renderer_state_authoring_model', 'renderer_log_authoring_model', 'renderer_state_invalid_scene', 'renderer_log_invalid_scene',
+    'renderer_state_range_error', 'renderer_log_range_error', 'renderer_state_type_error', 'renderer_log_type_error',
+    'renderer_state_semwright_native', 'renderer_state_semwright_exporter', 'renderer_state_motion_core', 'renderer_state_motion_2d',
+    'renderer_state_before_first_frame', 'renderer_state_after_first_frame', 'renderer_state_error', 'renderer_log_error',
+    'render_result_aborted', 'render_result_error', 'render_result_unknown', 'render_nonzero',
+    'runtime_module_load', 'runtime_syntax', 'runtime_permission', 'runtime_oom',
+    'runtime_killed', 'runtime_cpu_limit', 'runtime_file_size_limit', 'runtime_signal',
+    'observation', 'finalize', 'startup',
+    'unclassified', 'not_applicable',
+})
+
 NATIVE_RECEIPT_COUNTS = frozenset({
     "plan_completed", "apply_completed", "render_start_completed",
     "render_start_dispatching", "render_status_seen", "render_result_seen",
     "verify_completed", "mux_seen",
 })
 NATIVE_ERROR_KEYS = frozenset({
-    "schema", "phase", "sdk_code", "reason_class", "sdk_outcome_known",
+    "schema", "phase", "sdk_code", "reason_class", "render_failure_class",
+    "sdk_outcome_known",
     "native_media_verified", "automatically_retried",
 }) | NATIVE_RECEIPT_COUNTS
 
@@ -95,6 +113,11 @@ def safe_native_error_category(path: Path) -> dict | None:
             or item["phase"] not in NATIVE_ERROR_PHASES
             or item["sdk_code"] not in NATIVE_ERROR_CODES
             or item["reason_class"] not in NATIVE_REASON_CLASSES
+            or item["render_failure_class"] not in NATIVE_RENDER_FAILURE_CLASSES
+            or (item["reason_class"] != "render_failed"
+                and item["render_failure_class"] != "not_applicable")
+            or (item["reason_class"] == "render_failed"
+                and item["render_failure_class"] == "not_applicable")
             or type(item["sdk_outcome_known"]) is not bool
             or item["native_media_verified"] is not False
             or item["automatically_retried"] is not False

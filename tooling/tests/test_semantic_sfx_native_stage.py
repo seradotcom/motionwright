@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from semantic_sfx_native_stage import STAGES, safe_stage, safe_native_error_category
+from semantic_sfx_native_stage import (STAGES, safe_stage, safe_native_error_category,
+                                        NATIVE_RENDER_FAILURE_CLASSES)
 
 
 class ClosedNativeStageTests(unittest.TestCase):
@@ -132,6 +133,7 @@ class ClosedSdkReasonCategories(unittest.TestCase):
             "phase": "native_request_error",
             "sdk_code": "BackendFailed",
             "reason_class": "composition_plan",
+            "render_failure_class": "not_applicable",
             "sdk_outcome_known": True,
             "plan_completed": 0,
             "apply_completed": 0,
@@ -176,6 +178,7 @@ class ClosedSdkReasonCategories(unittest.TestCase):
         for key, value in (
             ("sdk_code", "owner/secret/private"),
             ("reason_class", "private provider error payload"),
+            ("render_failure_class", "C:/owner/private"),
             ("phase", "some arbitrary phase"),
             ("native_media_verified", True),
             ("automatically_retried", True),
@@ -186,6 +189,38 @@ class ClosedSdkReasonCategories(unittest.TestCase):
             with self.subTest(key=key, value=value):
                 self.write({**self.evidence, key: value})
                 self.assertIsNone(safe_native_error_category(self.path))
+
+    def test_render_failure_class_is_allowlisted_and_bound_to_failed_render(self):
+        known = {**self.evidence, "reason_class": "render_failed",
+                 "render_failure_class": "renderer_state_model_invariant",
+                 "render_start_completed": 1, "render_status_seen": 6}
+        self.write(known)
+        read = safe_native_error_category(self.path)
+        self.assertIsNotNone(read)
+        self.assertEqual(read["render_failure_class"],
+                         "renderer_state_model_invariant")
+        self.assertFalse(read["native_media_verified"])
+        for invalid in (
+            {**known, "render_failure_class": "arbitrary provider stack"},
+            {**known, "reason_class": "composition_plan"},
+            {**self.evidence, "render_failure_class": "vite_build"},
+        ):
+            with self.subTest(invalid=invalid):
+                self.write(invalid)
+                self.assertIsNone(safe_native_error_category(self.path))
+
+    def test_closed_renderer_categories_match_native_source_contract(self):
+        # Producer and diagnostic validator must never drift silently.
+        import re
+        source = (Path(__file__).resolve().parents[2]
+                  / "crates/native/src/production.rs").read_text(encoding="utf-8")
+        body = source.split("fn motion_failure_class(data: &Value)", 1)[1]
+        body = body.split("let reported =", 1)[0]
+        supported = frozenset(re.findall(r'"([a-z0-9_]+)"', body))
+        self.assertEqual(
+            supported | {"unclassified", "not_applicable"},
+            NATIVE_RENDER_FAILURE_CLASSES,
+        )
 
     def test_duplicate_or_missing_or_oversized_fields_fail_closed(self):
         self.path.write_text('{"schema":"x","schema":"y"}', encoding="utf-8")

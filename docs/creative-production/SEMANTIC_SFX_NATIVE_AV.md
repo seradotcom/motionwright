@@ -147,3 +147,16 @@ An absent or untrusted record is printed as NOT_VERIFIED, never guessed.
 Receipt counts show what the owner journal observed; a missing recorded
 acknowledgment is not proof that an already-dispatched native operation never
 occurred. No retry or release is enabled by this diagnostic.
+
+## Exact pinned renderer failure class
+
+The previous (56cbeb7) source-only render CI confirmed a terminal
+render.status=failed after one acknowledged render.start, six status
+observations and no native mux. Baseline native AV also passed its own
+independent workflow. That evidence does not establish whether the cause is
+renderer-specific or transitory. The new diagnostic extracts ONLY the
+allowlisted RenderFailureClass already present in the existing Motionwright
+coordinator's sanitized error, validates parity with its canonical Rust enum
+list, and refuses foreign/unknown text. No raw provider error, local path,
+job reference or environment variables enter public logs. Native render failure
+remains a failed native run, never an audiovisual PASS.

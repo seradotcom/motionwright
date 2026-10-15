@@ -641,6 +641,70 @@ fn emit_sfx_bounded_native_error(
     } else {
         "unclassified"
     };
+    // Only the stable RenderFailureClass values from the pinned SDK path may
+    // escape. Never emit or truncate the provider's arbitrary message.
+    const RENDER_FAILURES: &[&str] = &[
+        "arguments",
+        "font_evidence",
+        "project_stage",
+        "vite_build",
+        "frame_export",
+        "browser_launch",
+        "page_load",
+        "render_wait",
+        "render_wait_timeout",
+        "renderer_state_frame_clock",
+        "renderer_state_authoring_protocol",
+        "renderer_log_authoring_protocol",
+        "renderer_state_playback_protocol",
+        "renderer_log_playback_protocol",
+        "renderer_log_exporter_missing",
+        "renderer_log_async_property",
+        "renderer_state_webgl_unavailable",
+        "renderer_log_webgl_unavailable",
+        "renderer_state_model_invariant",
+        "renderer_log_model_invariant",
+        "renderer_state_authoring_model",
+        "renderer_log_authoring_model",
+        "renderer_state_invalid_scene",
+        "renderer_log_invalid_scene",
+        "renderer_state_range_error",
+        "renderer_log_range_error",
+        "renderer_state_type_error",
+        "renderer_log_type_error",
+        "renderer_state_semwright_native",
+        "renderer_state_semwright_exporter",
+        "renderer_state_motion_core",
+        "renderer_state_motion_2d",
+        "renderer_state_before_first_frame",
+        "renderer_state_after_first_frame",
+        "renderer_state_error",
+        "renderer_log_error",
+        "render_result_aborted",
+        "render_result_error",
+        "render_result_unknown",
+        "render_nonzero",
+        "runtime_module_load",
+        "runtime_syntax",
+        "runtime_permission",
+        "runtime_oom",
+        "runtime_killed",
+        "runtime_cpu_limit",
+        "runtime_file_size_limit",
+        "runtime_signal",
+        "observation",
+        "finalize",
+        "startup",
+    ];
+    let render_failure_class = if reason_class == "render_failed" {
+        RENDER_FAILURES
+            .iter()
+            .copied()
+            .find(|candidate| message.contains(&format!("render failed (category: {candidate})")))
+            .unwrap_or("unclassified")
+    } else {
+        "not_applicable"
+    };
     let count = |command: &str, stage: Option<&str>| -> usize {
         receipts
             .iter()
@@ -655,6 +719,7 @@ fn emit_sfx_bounded_native_error(
         "phase": phase,
         "sdk_code": sdk_code,
         "reason_class": reason_class,
+        "render_failure_class": render_failure_class,
         "sdk_outcome_known": error.outcome_known,
         "plan_completed": count("driver.motion-canvas.composition.plan", Some("completed")),
         "apply_completed": count("driver.motion-canvas.composition.apply", Some("completed")),

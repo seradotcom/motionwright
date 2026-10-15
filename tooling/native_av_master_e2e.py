@@ -608,6 +608,7 @@ def main() -> None:
                     if typed is not None:
                         detail = (" sdk_code=" + typed["sdk_code"]
                                   + " reason_class=" + typed["reason_class"]
+                                  + " render_failure_class=" + typed["render_failure_class"]
                                   + " plan_ack=" + str(typed["plan_completed"])
                                   + " apply_ack=" + str(typed["apply_completed"])
                                   + " render_start_ack=" + str(typed["render_start_completed"])
