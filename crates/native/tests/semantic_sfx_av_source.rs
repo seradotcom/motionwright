@@ -1,7 +1,7 @@
 //! Original owner-local SFX source admission before AV mux dispatch.
 use motionwright_domain::{Change, Project, SFX_CUE_SCHEMA, SemanticSfxCue, SfxAnchor, SfxEvent};
 use motionwright_native::{
-    production::{MltAudioArtifact, verify_semantic_sfx_av_source},
+    production::{MltAudioArtifact, prepare_semantic_sfx_av_audio, verify_semantic_sfx_av_source},
     sfx_mix::{VerifiedSfxWav, mix_source_bound_semantic_sfx},
 };
 use motionwright_service::StudioService;
@@ -254,4 +254,139 @@ fn redirected_audio_symlink_is_never_admitted_as_owner_mix() {
     fs::rename(&path, root.join("retained.wav")).unwrap();
     symlink(root.join("retained.wav"), &path).unwrap();
     assert!(accept(&f).is_err());
+}
+
+fn prepare(
+    f: &Fixture,
+) -> semwright_native_sdk::Result<motionwright_native::production::PreparedSemanticSfxWav> {
+    prepare_semantic_sfx_av_audio(
+        &f.service,
+        f.project.id,
+        &f.project.stamp(),
+        f.deliverable,
+        60,
+        &f.source_root.path().join("owner-output"),
+    )
+}
+
+#[test]
+fn preparation_creates_one_exact_owner_source_and_is_content_addressed() {
+    let f = fixture();
+    let original = f.service.project(f.project.id).unwrap();
+    let first = prepare(&f).unwrap();
+    assert_eq!(first.audio.sha256, f.audio.sha256);
+    assert_eq!(first.audio.channels, 2);
+    assert_eq!(first.audio.sample_rate, 48_000);
+    assert_eq!(first.proof.revision, f.project.revision);
+    assert_eq!(first.proof.master_frames, 60);
+    assert_eq!(first.proof.original_asset_sha256.len(), 2);
+    let path = f
+        .source_root
+        .path()
+        .join("owner-output")
+        .join(&first.audio.relative_path);
+    let expected = fs::read(
+        f.source_root
+            .path()
+            .join("owner-output/semantic-sfx-master.wav"),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), expected);
+    let again = prepare(&f).unwrap();
+    assert_eq!(again.audio.relative_path, first.audio.relative_path);
+    assert_eq!(again.audio.sha256, first.audio.sha256);
+    assert_eq!(fs::read(&path).unwrap(), expected);
+    assert_eq!(f.service.project(f.project.id).unwrap(), original);
+}
+
+#[test]
+fn prepared_sha_filename_cannot_be_reused_for_alternate_pcm() {
+    let f = fixture();
+    let prepared = prepare(&f).unwrap();
+    let path = f
+        .source_root
+        .path()
+        .join("owner-output")
+        .join(&prepared.audio.relative_path);
+    let mut tampered = fs::read(&path).unwrap();
+    tampered[98] ^= 1;
+    fs::write(&path, &tampered).unwrap();
+    assert!(
+        prepare(&f).is_err(),
+        "existing content-addressed filename must not be overwritten"
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        tampered,
+        "fail closed; no hidden file repair"
+    );
+}
+
+#[test]
+fn stale_or_wrong_deliverable_cannot_create_a_prepared_audio_artifact() {
+    let mut f = fixture();
+    let owner_root = f.source_root.path().join("owner-output");
+    let files = || fs::read_dir(&owner_root).unwrap().count();
+    let start = files();
+    f.project.revision += 1;
+    assert!(prepare(&f).is_err());
+    f.project.revision -= 1;
+    f.project.generation = Uuid::new_v4();
+    assert!(prepare(&f).is_err());
+    f.project.generation = f.service.project(f.project.id).unwrap().generation;
+    f.deliverable = Uuid::new_v4();
+    assert!(prepare(&f).is_err());
+    assert_eq!(files(), start, "no false prepared WAV was emitted");
+}
+
+#[test]
+fn missing_or_invalid_owner_root_is_rejected_without_output() {
+    let f = fixture();
+    assert!(
+        prepare_semantic_sfx_av_audio(
+            &f.service,
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            60,
+            &f.source_root.path().join("missing-owner-root"),
+        )
+        .is_err()
+    );
+    let original = f
+        .source_root
+        .path()
+        .join("owner-output/semantic-sfx-master.wav");
+    assert!(
+        prepare_semantic_sfx_av_audio(
+            &f.service,
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            901,
+            &f.source_root.path().join("owner-output"),
+        )
+        .is_err()
+    );
+    assert!(original.is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_owner_output_root_is_rejected_before_source_creation() {
+    use std::os::unix::fs::symlink;
+    let f = fixture();
+    let alias = f.source_root.path().join("bad-owner-root");
+    symlink(f.source_root.path().join("owner-output"), &alias).unwrap();
+    assert!(
+        prepare_semantic_sfx_av_audio(
+            &f.service,
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            60,
+            &alias,
+        )
+        .is_err()
+    );
 }

@@ -160,3 +160,30 @@ coordinator's sanitized error, validates parity with its canonical Rust enum
 list, and refuses foreign/unknown text. No raw provider error, local path,
 job reference or environment variables enter public logs. Native render failure
 remains a failed native run, never an audiovisual PASS.
+
+
+## Production-use original SFX PCM preparation
+
+The native service can now prepare a source-bound WAV via the public
+ProductionCoordinator.prepare_native_semantic_sfx_av_audio method rather than
+requiring the separate CI-only semantic-sfx-av-prepare example. The underlying
+prepare_semantic_sfx_av_audio function reads original imported WAVs from
+StudioService using the current project generation/revision stamp, calls the
+existing source-exact native semantic SFX mixer, and writes a private 48 kHz,
+stereo PCM16 WAV to the authorized owner output directory.
+
+The filename is derived only from the project and generation UUIDs, revision,
+bounded frame count, and mixer SHA-256. It cannot be chosen by a browser or
+untrusted provider. Newly created files use exclusive creation and (on Unix)
+owner-only permissions; existing digest-named sources are reverified and never
+overwritten. A read-after-write full-byte comparison, owner root security
+checks and renewed project CAS check must pass before the method returns a
+PreparedSemanticSfxWav containing the verified MltAudioArtifact and source
+admission proof. Failed/stale creation never dispatches a native render.
+
+The prepared WAV may then be used with the existing
+assemble_native_semantic_sfx_av_master routine; the latter independently
+regenerates the authorized PCM before the pinned Semwright Native SDK's
+MLT AV mux. This closes the core native preparation-to-admission boundary.
+The actual Studio UI/Plugin export action, user approvals, optional voice/
+music stems and native MP4 creative acceptance are still separate gaps.
