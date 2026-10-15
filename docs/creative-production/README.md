@@ -18,6 +18,10 @@ A bounded generation-intent and budget journal has been adapted from experimenta
 
 The existing real-media OTIO bridge now rejects scene extensions and feeds an explicitly reviewed, loss-preserving single-revision cut commit for only reorder/end-trim operations. See [Owner OTIO cut review](V05_OTIO_OWNER_CUT_COMMIT.md). The new station is not a media relinker, NLE renderer or independent source/right verification.
 
+## Native source-pixel contrast ? human-scoped measurement (E09-02 partial)
+
+A separate Production ? Pixel contrast review reads original pinned Semwright-granted PNG bytes, samples two human-selected opaque full-resolution pixel neighborhoods and reports a bounded, source-SHA-linked numerical sRGB contrast ratio. It never labels this measurement aesthetic quality, textual accessibility approval or a creative PASS. See [Native pixel contrast](NATIVE_PIXEL_CONTRAST.md).
+
 ## Start a design session
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.
