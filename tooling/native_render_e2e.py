@@ -20,6 +20,7 @@ from pathlib import Path
 from native_av_failure_guard import NativeCommandFailure, run_sanitized_json
 
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
+from native_provider_live_watch import PassiveLiveBrokerWatch, public_lifecycle_kind_counts
 from native_render_stage_cost import assemble_native_stage_report, elapsed_us
 from native_direct_mediated_parity import (
     DirectParityError, checked_direct_artifact, compare_native_pngs,
@@ -433,6 +434,15 @@ def main() -> None:
             daemon, EVIDENCE / "native-provider-lifecycle.json", interval=2.0
         )
         lifecycle.start()
+        # A post-render read can miss lifecycle transitions when semwrightd
+        # dies mid-render. This one read-only owner-session subscription starts
+        # BEFORE the original native render and is stopped before teardown.
+        # Capture is bounded; it cannot grant effects or retry native jobs.
+        live_broker_watch = (
+            PassiveLiveBrokerWatch(SW_BINS / "semwright", socket, session, env=env)
+            if os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
+            else None
+        )
 
         try:
             wait_for_socket(daemon, socket, daemon_log)
@@ -457,6 +467,9 @@ def main() -> None:
                 raise AssertionError("pinned Motion Canvas provider exposed no capabilities")
             if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
                 raise AssertionError("Semwright did not create a private persistent session ticket")
+            if live_broker_watch is not None:
+                # No second render.start, effect grant, or provider restart.
+                live_broker_watch.start()
 
             connection_path = paths["config"] / "motionwright-connection.json"
             write_private_json(
@@ -761,6 +774,31 @@ def main() -> None:
                             "render_outcome": "not_proven",
                             "diagnostic_parse_error_class": type(error).__name__,
                         })
+                if live_broker_watch is not None:
+                    try:
+                        live_events = live_broker_watch.finish()
+                        live_events["motionwright_source_sha"] = GITHUB_SHA
+                        live_events["semwright_source_pin"] = PIN
+                        write_private_json(
+                            EVIDENCE / "native-provider-live-broker-events.json",
+                            live_events,
+                        )
+                        # Only closed-enum event COUNTS survive in public CI
+                        # logs; native refs, generations and raw watch output
+                        # remain inside ephemeral private CI evidence.
+                        safe_counts = public_lifecycle_kind_counts(live_events)
+                        print(
+                            "v01-provider-live-native-render-events="
+                            + live_events["observation"]
+                            + " counts=" + json.dumps(safe_counts, sort_keys=True)
+                            + " early_exit="
+                            + str(live_events["subscriber_exited_before_finalize"])
+                        )
+                    except (OSError, ValueError, TypeError, RuntimeError, KeyError):
+                        print(
+                            "v01-provider-live-native-render-events="
+                            "UNVERIFIED_OPTIONAL_OBSERVATION"
+                        )
                 lifecycle.stop()
             finally:
                 try:
