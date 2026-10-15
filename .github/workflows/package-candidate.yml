@@ -13,6 +13,8 @@ on:
       - "tooling/tests/test_candidate_receipt_source.py"
       - "tooling/candidate_attestation_input.py"
       - "tooling/tests/test_candidate_attestation_input.py"
+      - "tooling/owner_candidate_provenance.py"
+      - "tooling/tests/test_owner_candidate_provenance.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
@@ -37,6 +39,8 @@ on:
       - "tooling/tests/test_candidate_receipt_source.py"
       - "tooling/candidate_attestation_input.py"
       - "tooling/tests/test_candidate_attestation_input.py"
+      - "tooling/owner_candidate_provenance.py"
+      - "tooling/tests/test_owner_candidate_provenance.py"
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
@@ -66,7 +70,7 @@ jobs:
           python-version: "3.13"
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
-          python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py
+          python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
@@ -480,8 +484,28 @@ jobs:
           done < "$RUNNER_TEMP/motionwright-provenance/verified-subject-paths.txt"
           test "$count" -eq 4
           echo "v01-candidate-gh-attestation=VERIFIED subjects=4 unsigned_installers=YES human_acceptance=NOT_RUN release=BLOCKED"
+      # Exercise the identical read-only pre-install verification contract
+      # an owner can run, on an ACTUAL downloaded NSIS installer + GH signature.
+      # This is CI technical evidence, NOT an owner-installed/human PASS.
+      - name: Verify actual candidate using owner-side provenance CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t installers < <(find candidates/windows -type f -name '*-setup.exe')
+          test "${#installers[@]}" -eq 1
+          test -f "$GITHUB_WORKSPACE/candidates/windows/ci-evidence/windows-candidate.json"
+          python3 tooling/owner_candidate_provenance.py \
+            --source-sha "$GITHUB_SHA" \
+            --bundle-kind nsis \
+            --artifact "$GITHUB_WORKSPACE/${installers[0]}" \
+            --candidate-receipt "$GITHUB_WORKSPACE/candidates/windows/ci-evidence/windows-candidate.json" \
+            --output "$RUNNER_TEMP/motionwright-provenance/ci-preinstall-provenance.json"
+          python3 -m json.tool "$RUNNER_TEMP/motionwright-provenance/ci-preinstall-provenance.json" >/dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-v01-candidate-provenance-inputs
-          path: ${{ runner.temp }}/motionwright-provenance/verified-candidate-inputs.json
+          path: |
+            ${{ runner.temp }}/motionwright-provenance/verified-candidate-inputs.json
+            ${{ runner.temp }}/motionwright-provenance/ci-preinstall-provenance.json
           if-no-files-found: error

@@ -6,6 +6,8 @@ on:
     paths:
       - "tooling/runtime_first_use_audit.py"
       - "tooling/tests/test_runtime_first_use_audit.py"
+      - "tooling/owner_candidate_provenance.py"
+      - "tooling/tests/test_owner_candidate_provenance.py"
       - "apps/desktop/src-tauri/src/runtime_setup.rs"
       - "docs/owner-native-runtime-onboarding.md"
       - "docs/runtime-first-use-audit.md"
@@ -15,6 +17,8 @@ on:
     paths:
       - "tooling/runtime_first_use_audit.py"
       - "tooling/tests/test_runtime_first_use_audit.py"
+      - "tooling/owner_candidate_provenance.py"
+      - "tooling/tests/test_owner_candidate_provenance.py"
       - "apps/desktop/src-tauri/src/runtime_setup.rs"
       - "docs/owner-native-runtime-onboarding.md"
       - "docs/runtime-first-use-audit.md"
@@ -48,6 +52,7 @@ jobs:
         run: |
           python -m unittest discover -s tooling/tests -p test_runtime_first_use_audit.py -v
           python -m unittest discover -s tooling/tests -p test_runtime_first_use_reparse.py -v
+          python -m unittest discover -s tooling/tests -p test_owner_candidate_provenance.py -v
       - name: Reject unpinned runtime source or leaked project-private files
         run: python tooling/source_policy.py
 
