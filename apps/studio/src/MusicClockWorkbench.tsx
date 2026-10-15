@@ -105,7 +105,7 @@ export default function MusicClockWorkbench({
         base_revision:project.revision,
         acknowledge_absolute_anchors:acknowledge,
       });
-      setCutNote("Applied one scoped cut. Downstream scene starts reflowed. Existing cues and markers were not moved; review them against the new shot boundaries.");
+      setCutNote("Applied one scoped cut. Retimed scenes returned to Draft. Fixed-time cues stayed put and scene-linked SFX followed their scenes; inspect their new alignment.");
       setAcknowledge(false);
     } catch (error) {
       setCutError(error instanceof Error?error.message:String(error));
@@ -177,7 +177,7 @@ export default function MusicClockWorkbench({
       </div>}
       {proposalResult.error && <p className="production-help" role="status">{proposalResult.error}</p>}
       {proposal && <div className="music-cut-footnote"><ShieldAlert size={17} aria-hidden="true"/>
-        <p>Scenes after this cut move by the exact ripple. Authored keyframes stay at their original scene-local times. Absolute audio cues, markers and transcript timestamps stay fixed; scene-linked SFX remain attached to their scenes and can move with them, but their entire tails are prevalidated. The scene returns to Draft; any recorded plan approval is cleared. This is not an audio remix or renderer verification.</p>
+        <p>Scenes after this cut move by the exact ripple. Authored keyframes stay at their original scene-local times. Absolute audio cues, markers and transcript timestamps stay fixed; scene-linked SFX remain attached to their scenes and can move with them, but their entire tails are prevalidated. Every retimed scene returns to Draft; any recorded plan approval is cleared. This is not an audio remix or renderer verification.</p>
       </div>}
       {proposal?.anchors_need_acknowledgement && <label className="production-check music-cut-acknowledge">
         <input type="checkbox" aria-label="Acknowledge fixed audio and marker times" checked={acknowledge} onChange={e=>setAcknowledge(e.target.checked)}/>

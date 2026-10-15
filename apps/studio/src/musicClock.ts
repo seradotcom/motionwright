@@ -201,7 +201,9 @@ export function applyMusicCutToProject(project: Project, proposal: MusicCutPropo
   stagedScene.duration=structuredClone(proposal.new_duration);
   stagedScene.status="draft";
   let cursor: Fraction=ZERO;
-  for (const item of projected.scenes) {
+  for (let i=0;i<projected.scenes.length;i++) {
+    const item=projected.scenes[i];
+    if(compare(fraction(project.scenes[i].start),cursor)!==0)item.status="draft";
     item.start=asTime(cursor);
     cursor=add(cursor,fraction(item.duration));
   }

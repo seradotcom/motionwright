@@ -244,6 +244,13 @@ impl Project {
         scene.duration = reviewed.new_duration;
         scene.status = SceneStatus::Draft;
         staged.reflow_scene_starts()?;
+        // A downstream scene with a changed start cannot retain a previous
+        // editorial approval/status merely because its local keyframes remain.
+        for (before, after) in self.scenes.iter().zip(staged.scenes.iter_mut()) {
+            if before.start != after.start {
+                after.status = SceneStatus::Draft;
+            }
+        }
         if let Some(plan) = staged.production_design.plan.as_mut() {
             plan.approval = None;
         }
