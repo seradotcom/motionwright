@@ -34,6 +34,87 @@ FILES = {
 }
 
 
+# A negative CI artifact can report a closed technical observation only.
+# Raw provider/job/session receipts, original error messages and paths are
+# NEVER imported into the public bundle. This is not a provider root cause.
+FAILURE_REASONS = frozenset({
+    "command_deadline", "native_command_failed", "empty_native_response",
+    "oversized_native_failure_response", "typed_error_missing",
+    "unexpected_native_failure_shape", "malformed_native_failure_response",
+    "native_journal_missing_or_unbounded", "provider_generation_inactive",
+    "native_status_unconfirmed", "acknowledged_render_terminal_unverified",
+    "cli_exit_without_original_terminal",
+})
+FAILURE_OUTCOMES = frozenset({
+    "UNKNOWN", "NOT_VERIFIED", "FAILED_NOT_MEDIA_VERIFIED",
+})
+CLI_EXIT_CATEGORIES = frozenset({
+    "deadline", "signal", "not_observed", "nonzero_exit",
+    "zero_exit_invalid_protocol",
+})
+FAILURE_SCHEMA = "motionwright.v01-native-command-failure/1"
+
+
+def closed_failure_observation(root: Path, source: str, sdk: str) -> dict:
+    """Only fixed, source-bound enums from a privately retained CI failure."""
+    result: dict = {
+        "observation": "NOT_RECORDED",
+        "safe_reason": "NOT_AVAILABLE",
+        "source_outcome": "NOT_VERIFIED",
+        "acknowledged_start_observed": False,
+        "provider_generation_inactive_observed": False,
+        "cli_exit_category": "NOT_AVAILABLE",
+        "terminal_native_result_verified": False,
+        "provider_root_cause_verified": False,
+        "original_native_job_retried": False,
+    }
+    name = "native-render-failure-diagnostic.json"
+    path = root / name
+    if not path.exists() and not path.is_symlink():
+        return result
+    # A symlinked, oversized, malformed, foreign-source or private-looking
+    # diagnostic is not an excuse to export raw content or claim success.
+    result["observation"] = "UNTRUSTED_PRIVATE_DIAGNOSTIC"
+    try:
+        data = strict_object(read_bounded(root, name, 32_768))
+    except (PublicationError, OSError, ValueError, TypeError):
+        return result
+    if not isinstance(data, dict) or not (
+        data.get("schema") == FAILURE_SCHEMA
+        and data.get("result") == "FAIL"
+        and data.get("motionwright_source_sha") == source
+        and data.get("semwright_source_pin") == sdk
+        and isinstance(data.get("reason"), str)
+        and data["reason"] in FAILURE_REASONS
+        and isinstance(data.get("source_outcome"), str)
+        and data["source_outcome"] in FAILURE_OUTCOMES
+        and data.get("terminal_native_result_verified") is False
+        and data.get("decoded_media_verified") is False
+        and data.get("automatically_restarted_mutating_render") is False
+        and type(data.get("original_render_start_receipts_observed")) is int
+        and 0 <= data["original_render_start_receipts_observed"] <= 4096
+        and type(data.get("provider_generation_inactive_observed")) is bool
+    ):
+        return result
+    count = data["original_render_start_receipts_observed"]
+    # An enclosing CLI error (even a known one) does not prove the terminal
+    # result of an earlier ACKNOWLEDGED mutating render.
+    outcome = "UNKNOWN" if count else data["source_outcome"]
+    category = data.get("cli_exit_category")
+    return {
+        **result,
+        "observation": "SOURCE_BOUND_CI_FAILURE_CATEGORY",
+        "safe_reason": data["reason"],
+        "source_outcome": outcome,
+        "acknowledged_start_observed": count > 0,
+        "provider_generation_inactive_observed":
+            data["provider_generation_inactive_observed"],
+        "cli_exit_category":
+            category if isinstance(category, str) and category in CLI_EXIT_CATEGORIES
+            else "NOT_AVAILABLE",
+    }
+
+
 def sha256(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
 
@@ -113,17 +194,22 @@ def publish(root: Path, out: Path, source: str, sdk: str, ci_status: str) -> dic
             "source_identity_invalid")
     require(ci_status in VALID_STATUSES, "ci_status_invalid")
     require(not out.exists(), "public_artifact_already_exists")
+    require(root.is_dir() and not root.is_symlink(),
+            "missing_or_linked_private_evidence_root")
     src = root.resolve()
     dest = out.resolve()
     require(src != dest and src not in dest.parents and dest not in src.parents,
             "public_root_overlaps_private_source")
     blobs, rgba_sha = (checked_source(root, source, sdk)
                        if ci_status == "success" else ({}, None))
+    failure_summary = (closed_failure_observation(root, source, sdk)
+                       if ci_status != "success" else None)
     receipt = {
         "schema": SCHEMA,
         "motionwright_source_sha": source,
         "semwright_source_pin": sdk,
         "ci_native_motion_canvas_evidence": "PASS" if ci_status == "success" else "NOT_VERIFIED",
+        "ci_failure_observation": failure_summary,
         "native_frames_per_leg": 60 if ci_status == "success" else None,
         "native_rgba_direct_mediated_parity": (True if ci_status == "success" else None),
         "native_ordered_rgba_digest_sha256": rgba_sha,
