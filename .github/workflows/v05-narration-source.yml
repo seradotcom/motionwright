@@ -72,7 +72,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - run: npx vitest run src/audioNarrationProtectedMarkup.test.ts src/narrationTakeApprovalBrowser.test.ts
+      - run: npx vitest run src/audioNarrationProtectedMarkup.test.ts src/narrationTakeApprovalBrowser.test.ts src/narrationReviewApi.test.ts
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test tests/narration-review.spec.ts --project=chromium

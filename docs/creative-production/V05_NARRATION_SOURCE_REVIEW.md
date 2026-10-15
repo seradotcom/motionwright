@@ -54,6 +54,11 @@ revision. The user may then request a *read-only* comparison:
   rendered masters were regenerated. No replacement is automatically
   approved or committed by a comparison.
 
+Studio's read-only receipt decoder rejects unknown fields and claimed authorization,
+checks the exact active source voice, imported WAV digest, measured words/cues,
+caption delivery profile coverage and every current scene needing cut/B-roll review.
+Its source-matching checks are tested with deliberately forged wire receipts.
+
 Tauri's read-only commands `native_narration_take_snapshot` and
 `native_narration_replacement_impact` check project ID, generation and
 revision before and after computing. Studio rejects source mismatches,

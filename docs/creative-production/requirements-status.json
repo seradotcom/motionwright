@@ -669,7 +669,8 @@
         "apps/studio/src/audioNarrationProtectedMarkup.test.ts",
         "apps/studio/src/narrationTakeApprovalBrowser.test.ts",
         ".github/workflows/v05-narration-source.yml",
-        "docs/creative-production/V05_NARRATION_SOURCE_REVIEW.md"
+        "docs/creative-production/V05_NARRATION_SOURCE_REVIEW.md",
+        "apps/studio/src/narrationReviewApi.test.ts"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

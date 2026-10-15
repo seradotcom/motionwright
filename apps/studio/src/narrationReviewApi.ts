@@ -31,6 +31,19 @@ const canonical=(value:unknown):string=>{
  if(typeof literal!=="string")return invalid("Narration source contains an unserializable value.");
  return literal;
 };
+const matchesOriginalNarration=(project:Project,src:Record<string,unknown>):boolean=>{
+ const track=project.audio.voice_tracks.find(v=>v.id===project.audio.active_voice_track_id);
+ if(!track||canonical(src.voice_track)!==canonical(track))return false;
+ const asset=project.assets.find(asset=>asset.id===track.asset_id);
+ if(!asset||asset.content_sha256!==track.source_sha256||!asset.media_type.startsWith("audio/"))return false;
+ const segments=project.audio.transcript.filter(s=>s.voice_track_id===track.id);
+ if(!segments.length||segments.length>5000)return false;
+ const segmentIds=new Set(segments.map(s=>s.id));
+ const cues=project.audio.cues.filter(c=>c.source_segment_id!==null&&segmentIds.has(c.source_segment_id));
+ const byId=<T extends {id:string}>(items:T[])=>[...items].sort((a,b)=>a.id.localeCompare(b.id));
+ return canonical(byId(segments))===canonical(byId(src.transcript as typeof segments))&&
+   canonical(byId(cues))===canonical(byId(src.cues as typeof cues));
+};
 const noClaims=(row:Record<string,unknown>,list:string[],where:string)=>{
  for(const key of list)if(row[key]!==false)
    invalid(where+" must not claim human authentication, publication or native execution.");
@@ -56,7 +69,9 @@ export function validateNarrationSourceReply(project:Project,value:unknown):Narr
     typeof src.exact_content_sha256!=="string"||!HEX.test(src.exact_content_sha256)||
     !["REQUIRES_MANUAL_TIMING_REVIEW","SOURCE_MANUAL_OR_MEASURED_HIGH_CONFIDENCE_ONLY"].includes(src.timing_review as string)||
     !Array.isArray(src.transcript)||!Array.isArray(src.cues)||
-    src.transcript.length>5000||src.cues.length>5000)
+    src.transcript.length<1||src.transcript.length>5000||src.cues.length>5000||
+     src.source_classification!=="EXISTING_PROJECT_AUDIO_NOT_IMPORTED_ASR_TRUTH" ||
+     !matchesOriginalNarration(project,src))
    invalid("Narration baseline source, timing or digest is invalid.");
  noClaims(src,["human_owner_lock_authenticated","audio_media_bytes_decoded","publication_approved"],"Narration baseline");
  if(typeof reply.recordable_source_verified!=="boolean"||
@@ -78,6 +93,40 @@ export function validateNarrationImpactReply(project:Project,original:NarrationS
    invalid("Narration source preview cannot approve or execute a replacement.");
  const impact=record(reply.impact,"Narration impact");
  const timeline=record(reply.timeline_review,"Narration dependency map");
+ keys(impact,["schema","previous_project_revision","next_project_revision",
+   "previous_source_sha256","candidate_source_sha256","changed_segment_ids",
+   "changed_cue_ids","affected_spans","voice_media_replaced","caption_timing_invalidation",
+   "cuts_broll_invalidation","sound_mix_invalidation","scene_dependency_validation",
+   "origin_locked_source_unchanged","candidate_committed","human_owner_approved"],"Narration impact");
+ keys(timeline,["schema","project_id","generation","source_revision","current_revision",
+   "exact_source_sha256","locally_overlapping_scene_ids","scene_ids_requiring_cut_review",
+   "scene_ids_requiring_broll_review","deliverable_ids_requiring_caption_review",
+   "source_scene_count","dependency_scope","impact_reason","original_content_preserved",
+   "project_mutated","media_rendered","audio_regenerated","human_approved"],"Narration dependency map");
+ noClaims(impact,["candidate_committed","human_owner_approved"],"Narration impact");
+ if(impact.schema!=="motionwright.narration-impact-preview/1"||
+    impact.origin_locked_source_unchanged!==true||
+    impact.scene_dependency_validation!=="NOT_RUN"||
+    impact.caption_timing_invalidation!=="CAPTIONS_MUST_REGENERATE_AND_HUMAN_REVIEW"||
+    impact.cuts_broll_invalidation!=="CUTS_AND_BROLL_REQUIRE_REEVALUATION"||
+    !["MIX_VOICE_BUS_MUST_REMEASURE",
+      "MIX_MUST_REVIEW_CUE_AND_TIMING_CONSEQUENCES"].includes(impact.sound_mix_invalidation as string)||
+    typeof impact.voice_media_replaced!=="boolean"||
+    !Array.isArray(impact.changed_segment_ids)||!Array.isArray(impact.changed_cue_ids)||
+    !Array.isArray(impact.affected_spans)||impact.affected_spans.length>10000||
+    timeline.schema!=="motionwright.narration-timeline-dependency-preview/1"||
+    timeline.source_scene_count!==project.scenes.length||
+    timeline.dependency_scope!=="CONSERVATIVE_WHOLE_PROJECT_CUT_BROLL_REVIEW"||
+    timeline.original_content_preserved!==true)
+   invalid("Narration impact cannot claim verified editorial output or omit source evidence.");
+ const captions=project.deliverables.filter(profile=>profile.captions||profile.burn_in_captions).map(profile=>profile.id);
+ if(!Array.isArray(timeline.deliverable_ids_requiring_caption_review)||
+    canonical(timeline.deliverable_ids_requiring_caption_review)!==canonical(captions)||
+    !Array.isArray(timeline.locally_overlapping_scene_ids)||
+    timeline.locally_overlapping_scene_ids.some((id:unknown)=>typeof id!=="string"||
+      !project.scenes.some(scene=>scene.id===id))||
+    new Set(timeline.locally_overlapping_scene_ids).size!==timeline.locally_overlapping_scene_ids.length)
+   invalid("Narration impact omitted a caption profile or referenced a foreign scene.");
  if(impact.previous_source_sha256!==original.exact_content_sha256||
     impact.next_project_revision!==project.revision||
     impact.previous_project_revision!==original.revision||
