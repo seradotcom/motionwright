@@ -13,6 +13,8 @@ on:
       - 'crates/native/tests/semantic_sfx_av_source.rs'
       - 'tooling/native_av_master_e2e.py'
       - 'tooling/semantic_sfx_av_evidence.py'
+      - 'tooling/semantic_sfx_native_stage.py'
+      - 'tooling/tests/test_semantic_sfx_native_stage.py'
       - 'tooling/semantic_sfx_av_public_artifact.py'
       - 'tooling/tests/test_semantic_sfx_av_evidence.py'
       - '.github/workflows/semantic-sfx-native-av.yml'
@@ -80,8 +82,9 @@ jobs:
           cargo fmt --all -- --check
           python3 -m py_compile \
             tooling/native_av_master_e2e.py tooling/semantic_sfx_av_evidence.py \
-            tooling/semantic_sfx_av_public_artifact.py
+            tooling/semantic_sfx_av_public_artifact.py tooling/semantic_sfx_native_stage.py
           python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_av_*.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_native_stage.py' -v
       - name: Install pinned native media runtime and sandbox
         run: |
           set -euo pipefail

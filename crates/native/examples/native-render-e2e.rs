@@ -432,17 +432,52 @@ fn export_direct_parity_film(
     Ok(())
 }
 
+/// Restricted CI-only progress markers, never a native result or a durable
+/// acknowledgement. Deliberately no owner path, revision, job ref, stdout or
+/// private error content is serialized, even if the provider disappears.
+fn note_semantic_sfx_render_stage(evidence_path: &Path, stage: &'static str) {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+        || !matches!(
+            stage,
+            "entered"
+                | "owner_project_loaded"
+                | "fixture_checked"
+                | "owner_connection_ready"
+                | "native_request_entered"
+                | "native_request_returned"
+                | "native_result_checked"
+                | "motion_evidence_written"
+        )
+        || !evidence_path.parent().is_some_and(Path::is_dir)
+    {
+        return;
+    }
+    let marker = evidence_path.with_file_name("semantic-sfx-render-stage.json");
+    if let Ok(contents) = serde_json::to_vec(&json!({
+        "schema": "motionwright.sfx-ci-native-stage/1",
+        "stage": stage,
+        "final_av_master_verified": false,
+        "native_job_outcome_established": false,
+        "automatically_retried": false
+    })) {
+        let _ = fs::write(marker, contents);
+    }
+}
+
 async fn render(
     database: &Path,
     connection_path: &Path,
     evidence_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    note_semantic_sfx_render_stage(evidence_path, "entered");
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
     if projects.len() != 1 {
         return Err("native-render-e2e expected exactly one seeded project".into());
     }
     let project = projects.into_iter().next().expect("length checked");
+    note_semantic_sfx_render_stage(evidence_path, "owner_project_loaded");
     let scene = project
         .scenes
         .first()
@@ -453,6 +488,7 @@ async fn render(
         .ok_or("seeded project has no deliverable")?;
 
     let expected_frames = expected_fixture_frames(&project)?;
+    note_semantic_sfx_render_stage(evidence_path, "fixture_checked");
     if expected_frames == 60 && (deliverable.width, deliverable.height) != (1920, 1080) {
         return Err("native-render-e2e expected the canonical 1920x1080 master".into());
     }
@@ -462,6 +498,7 @@ async fn render(
         return Err("owner-provisioned connection is not bound to the seeded project".into());
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
+    note_semantic_sfx_render_stage(evidence_path, "owner_connection_ready");
     let options = if expected_frames == 540 {
         FilmBuildOptions {
             frame_rate: Rate::new(30, 1)?,
@@ -480,6 +517,7 @@ async fn render(
     } else {
         fixture_film_options(scene.id, expected_frames)?
     };
+    note_semantic_sfx_render_stage(evidence_path, "native_request_entered");
     let result = match coordinator
         .render_motion_canvas_segments(
             project.id,
@@ -521,6 +559,7 @@ async fn render(
         }
     };
 
+    note_semantic_sfx_render_stage(evidence_path, "native_request_returned");
     if result.generation != project.generation
         || result.revision != project.revision
         || result.segments.len() != 1
@@ -549,6 +588,7 @@ async fn render(
         return Err("native Motion Canvas verification support level was not native".into());
     }
 
+    note_semantic_sfx_render_stage(evidence_path, "native_result_checked");
     let parent = evidence_path
         .parent()
         .ok_or("evidence destination has no parent")?;
@@ -563,6 +603,7 @@ async fn render(
     file.write_all(&body)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
+    note_semantic_sfx_render_stage(evidence_path, "motion_evidence_written");
 
     println!(
         "{}",

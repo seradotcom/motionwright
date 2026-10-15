@@ -68,3 +68,26 @@ It also does not claim that arbitrary 3D or multi-scene sources have a
 compatible semantic audio mix. The exact 60-frame bounded scenario remains
 the evidence limit. Rust tests exercise real SQLite CAS source admission,
 wrong revision/deliverable, modified output bytes, missing audio and symlinks.
+
+
+## Safe native render phase diagnosis
+
+The previously tested SFX E2E failed at the Motion Canvas render-command
+boundary, **before the MP4 mux**. Its only public failure signal was
+malformed_native_failure_response; that does not prove a provider crash,
+an audio source problem or a successful/failed native mutation.
+
+For this explicit synthetic SFX CI fixture alone, native-render-e2e records
+one closed-enum phase marker next to the PRIVATE render evidence: entered,
+owner_project_loaded, fixture_checked, owner_connection_ready,
+native_request_entered, native_request_returned, native_result_checked or
+motion_evidence_written. The CI failure wrapper prints only that allowlisted
+phase or NOT_VERIFIED. No owner path, session, job ref, raw command output,
+provider message or receipt can be copied to a public artifact. An entered
+native request is NOT proof it was acknowledged; UNKNOWN remains unresolved.
+The original render is not retried automatically.
+
+The stage validator rejects unknown, duplicate, oversized and non-authoritative
+success-marked input. It is diagnostic visibility, not creative acceptance or
+native evidence. The AV master is still approved technically only after
+the actual source-bound WAV, pinned broker MLT mux and decoded AAC checks pass.

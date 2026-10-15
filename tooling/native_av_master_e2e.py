@@ -21,6 +21,7 @@ from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from semantic_sfx_av_evidence import inspect_native_sfx_av
+from semantic_sfx_native_stage import safe_stage
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
 from native_provider_broker_events import read_owner_broker_event_history
@@ -568,6 +569,13 @@ def main() -> None:
                             "fixture": FIXTURE,
                         },
                     )
+                if IS_SFX_AV:
+                    # The native error may be UNKNOWN. This is only an
+                    # allowlisted progress enum, never a result or job retry.
+                    stage = safe_stage(EVIDENCE / "semantic-sfx-render-stage.json")
+                    print("semantic-sfx-ci-stage=" + stage
+                          + " native_result_verified=false"
+                          + " automatic_retry=false", flush=True)
                 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA:
                     # Failed native evidence is retained as explicitly unverified
                     # diagnostic imagery, never promoted to a delivery receipt.
