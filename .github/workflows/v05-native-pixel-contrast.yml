@@ -1,0 +1,51 @@
+name: V05 exact native-frame pixel contrast
+
+on:
+  pull_request:
+    paths:
+      - 'apps/studio/src/nativePixelContrast*'
+      - 'apps/studio/src/NativeContrastWorkbench.tsx'
+      - 'apps/studio/src/native-contrast.css'
+      - 'apps/studio/src/ProductionDesignWorkspace.tsx'
+      - 'apps/studio/tests/native-pixel-contrast.spec.ts'
+      - 'docs/creative-production/NATIVE_PIXEL_CONTRAST.md'
+      - 'docs/creative-production/requirements-status.json'
+      - '.github/workflows/v05-native-pixel-contrast.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-native-pixel-contrast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-and-pixel-contrast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify source and truthful creative coverage
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Install locked Studio dependencies
+        run: npm --prefix apps/studio ci --no-audit --no-fund
+      - name: Verify mathematical and native-source bounds
+        run: npx vitest run src/nativePixelContrast.test.ts
+        working-directory: apps/studio
+      - name: Production type check and bundle
+        run: npm --prefix apps/studio run build
+      - name: Chromium native-source review
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test tests/native-pixel-contrast.spec.ts --project=chromium
+        working-directory: apps/studio

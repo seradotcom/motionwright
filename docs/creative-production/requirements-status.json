@@ -710,8 +710,8 @@
     {
       "id": "MW05-E09-02",
       "implementation": "partial",
-      "implemented_scope": "Manual source-linked findings and scoped repair review",
-      "remaining_scope": "Automated perceptual critics and complete A/B workflows remain open",
+      "implemented_scope": "Manual source-linked findings and scoped repair review Bounded new Native pixel-contrast desk reads exact pinned-native-granted original PNG frames, verifies signature/dimensions and SHA-256, and compares two manually selected stable opaque 3x3 browser-decoded sRGB patches at original resolution. Shows numeric reference contrast without claiming typography, aesthetics or WCAG compliance; no project mutation.",
+      "remaining_scope": "Authenticated exact per-pixel renderer provenance, calibrated color/ICC and accessibility fidelity, automatic text/background segmentation, multi-frame perceptual and temporal critics, other providers and full-master audio/visual critique, independent human aesthetic approval and actual editable repair usefulness remain NOT_VERIFIED. Manual two-point source contrast is not a creative-quality PASS.",
       "source_paths": [
         "apps/studio/src/nativeInspection.ts",
         "apps/studio/src/NativeInspectionWorkbench.tsx",
@@ -719,7 +719,15 @@
         "crates/domain/src/production_design.rs",
         "crates/domain/src/creative_revisions.rs",
         "apps/studio/src/CreativePatchWorkbench.tsx",
-        "crates/service/tests/creative_undo.rs"
+        "crates/service/tests/creative_undo.rs",
+        "apps/studio/src/nativePixelContrast.ts",
+        "apps/studio/src/nativePixelContrast.test.ts",
+        "apps/studio/src/NativeContrastWorkbench.tsx",
+        "apps/studio/src/native-contrast.css",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/tests/native-pixel-contrast.spec.ts",
+        "docs/creative-production/NATIVE_PIXEL_CONTRAST.md",
+        ".github/workflows/v05-native-pixel-contrast.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
