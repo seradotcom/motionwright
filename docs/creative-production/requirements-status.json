@@ -989,10 +989,19 @@
     },
     {
       "id": "MW05-E13-02",
-      "implementation": "not_implemented",
-      "implemented_scope": "No dynamic code promotion or installation system added",
-      "remaining_scope": "Disposable experiment and explicit owner admission required",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Bounded disposable, source-revision/scene/evaluator-digest-linked experiment for the existing typed first-party data-only evaluator. Compares the latest original recipe to one next-version candidate across 1?3 authored scenes, with pass/fail/abstain counts, criterion-ID regressions and removals, obligatory human-question abstention, no executable code or arbitrary providers. Owner rights and technical-limits acknowledgements precede an existing canonical register_creative_evaluator StudioService/Native SDK CAS; browser demo cannot claim canonical admission. No arbitrary skill is installed.",
+      "remaining_scope": "Executable dynamic-code sandbox, signed package trust/owner identity and policies, capability permission isolation, runtime/provider execution, audited experiment/provenance persistence and resource limits, independent aesthetic/rights review, true external package verification, cross-app native conformance and the 60 independent acceptance cases remain NOT_IMPLEMENTED/NOT_RUN. Local experiments do not constitute approval.",
+      "source_paths": [
+        "apps/studio/src/evaluatorExperiment.ts",
+        "apps/studio/src/evaluatorExperiment.test.ts",
+        "apps/studio/src/EvaluatorExperimentWorkbench.tsx",
+        "apps/studio/src/evaluator-experiment.css",
+        "apps/studio/src/CreativeEvaluatorWorkbench.tsx",
+        "apps/studio/tests/evaluator-experiment.spec.ts",
+        ".github/workflows/v05-evaluator-experiment.yml",
+        "docs/creative-production/V05_EVALUATOR_DATA_EXPERIMENT.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
