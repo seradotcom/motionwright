@@ -628,7 +628,10 @@ export interface Project {
   model_invocations: ModelInvocationReceipt[]; extensions: ExtensionProfile[]; handoffs: HandoffBinding[]; updated_at: string;
 }
 
+import type { BrandCampaignRollout } from "./brandCampaign";
+
 export type Change =
+  | { type:"apply_brand_campaign"; rollout:BrandCampaignRollout }
   | { type: "apply_otio_owner_cut_review"; review: OtioOwnerCutReview }
   | { type: "edit_paid_generation"; edit: PaidGenerationEdit }
   | { type: "undo_creative_patch"; patch_id: string }

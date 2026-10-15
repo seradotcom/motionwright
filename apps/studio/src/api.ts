@@ -1043,6 +1043,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "review_component_distillation":
       applyDistillationChange(next,change);
       break;
+    case "apply_brand_campaign":
+      throw new Error("Brand campaign rollout requires canonical desktop StudioService CAS; browser demos cannot register it.");
     case "set_brand_governance": {
       assertUnlocked(next, projectResource(next), ["content"]);
       next.production_design ??= emptyProductionDesign();

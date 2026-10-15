@@ -721,6 +721,7 @@ struct ApplyHandler {
 #[derive(Clone, Copy)]
 enum OperationKind {
     UndoCreativePatch,
+    ApplyBrandCampaign,
     UpsertProductHero,
     DetachProductHero,
     UpsertProductStage,
@@ -906,6 +907,16 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
         OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
             patch_id: uuid(args, "patch_id")?,
         }),
+        OperationKind::ApplyBrandCampaign => {
+            Ok(Change::ApplyBrandCampaign {
+                rollout: Box::new(
+                    serde_json::from_value(args.get("rollout").cloned().ok_or_else(|| {
+                        Error::invalid("brand campaign owner review is required")
+                    })?)
+                    .map_err(|_| Error::invalid("invalid bounded brand campaign rollout"))?,
+                ),
+            })
+        }
         OperationKind::UpsertProductHero => Ok(Change::UpsertProductHero {
             instance_id: uuid(args, "instance_id")?,
             scene_id: uuid(args, "scene_id")?,
@@ -2593,6 +2604,37 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::ApplyBrandCampaign,
+            descriptor(
+                "brand-campaign.owner-rollout",
+                "Apply existing brand accent/wordmark to selected attached editable Heroes with one owner-review CAS",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "rollout":{"type":"object","required":[
+                            "schema","project_id","generation","expected_revision","brand_sha256",
+                            "campaign","scene_ids","accent","wordmark","reviewer_declaration",
+                            "rationale","accepts_semantic_component_rebuild"
+                        ],"properties":{
+                            "schema":{"type":"string","const":"motionwright.brand-campaign-rollout/1"},
+                            "project_id":{"type":"string","format":"uuid"},
+                            "generation":{"type":"string","format":"uuid"},
+                            "expected_revision":{"type":"integer","minimum":0},
+                            "brand_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                            "campaign":{"type":"string","minLength":1,"maxLength":160},
+                            "scene_ids":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","format":"uuid"},"uniqueItems":true},
+                            "accent":{"type":["string","null"],"maxLength":7},
+                            "wordmark":{"type":["string","null"],"maxLength":8},
+                            "reviewer_declaration":{"type":"string","minLength":1,"maxLength":160},
+                            "rationale":{"type":"string","minLength":1,"maxLength":1200},
+                            "accepts_semantic_component_rebuild":{"type":"boolean","const":true}
+                        },"additionalProperties":false}
+                    }),
+                    &["ref", "rollout"],
+                ),
+            ),
+        ),
+        (
             OperationKind::UpsertProductHero,
             descriptor(
                 "product-hero.upsert",
@@ -3480,7 +3522,8 @@ mod tests {
         // Preserve both native SDK operation families admitted independently.
         assert!(names.contains(&"driver.motionwright.paid-generation.edit"));
         assert!(names.contains(&"driver.motionwright.otio-cut.owner-commit"));
-        assert_eq!(capabilities.len(), 78);
+        assert!(names.contains(&"driver.motionwright.brand-campaign.owner-rollout"));
+        assert_eq!(capabilities.len(), 79);
     }
 
     #[test]
@@ -4645,3 +4688,6 @@ mod generation_journal_tests;
 
 #[cfg(test)]
 mod otio_cut_tests;
+
+#[cfg(test)]
+mod brand_campaign_tests;
