@@ -112,6 +112,25 @@ test("one-use desktop semantic SFX master uses existing preview and owner-scoped
   await expect(sourceProof).toContainText("Original WAV assets");
   await expect(sourceProof).toContainText("2477 / 32767 PCM16");
   await expect(sourceProof).toContainText("REQUIRED");
+
+  // Source-bound cue list requires the authentic SFX receipt. The synthetic
+  // WebView cannot actually decode an MP4: seeking is an editorial UI action,
+  // and listening judgments stay disabled until a real media play event.
+  await page.getByRole("button",{name:"Review native MP4"}).click();
+  const audition=page.getByRole("region",{name:"Original semantic SFX listening review"});
+  await expect(audition).toBeVisible();
+  await expect(audition).toContainText("00:06f");
+  await expect(audition).toContainText("Frame 6–30");
+  await expect(audition).toContainText("48 kHz sample 9,600");
+  await expect(audition).toContainText("not persisted, certified or creative approval");
+  await expect(audition.getByRole("button",{name:"Sounds aligned"})).toBeDisabled();
+  await expect(audition.getByRole("button",{name:"Needs adjustment"})).toBeDisabled();
+  await audition.getByRole("button",{
+    name:"Seek verified MP4 to UI focus at frame 6",
+  }).click();
+  await expect(audition).toContainText("1 cue awaiting a listener's session note.");
+  await page.getByRole("button",{name:"Close native review"}).click();
+  await expect(audition).toHaveCount(0);
   const audit=await page.evaluate(()=>(window as unknown as {
     __SFX_IPC__:{requests:Array<Record<string,unknown>>;effects:Array<Record<string,unknown>>};
   }).__SFX_IPC__);

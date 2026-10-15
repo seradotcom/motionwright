@@ -308,3 +308,33 @@ there is no LUFS/true-peak mastering assertion. Generic measured-voice
 master receipts never synthesize an SFX source proof. Browser acceptance
 uses a clearly synthetic IPC mock; real WAV/MP4 source verification
 remains the separate pinned Linux Native SDK workflow.
+
+
+## Source-scoped cue listening review (installed Studio)
+
+The native MP4 review now offers a separate source-bound semantic SFX cue
+list next to the existing verified H.264/AAC WebView player. Each authored
+event carries its scene, stable cue ID, exact frame interval at 30 fps, exact
+48 kHz PCM sample offset and the shortened digest of the owner-imported WAV.
+The review requires the current project's native source-proof receipt, exact
+profile/generation/revision, and the current MP4 session export handle.
+Stale, edited, voice-mixed or unproven receipts produce no cue review.
+
+Clicking a cue seeks the SAME verified local MP4 player to the original
+frame address. A monotonically incremented seek signal allows repeating the
+same cue without reopening or re-decoding the MP4; ordinary preview and
+Program use the existing seek behavior unchanged. Native playback time can
+highlight the corresponding cue's authored source interval.
+
+The operator can manually mark each cue "Sounds aligned" or "Needs
+adjustment" only after the native video player has emitted a play event.
+These are **ephemeral, per-session observations**, not stored in SQLite,
+not inserted into a Project Review, and not passed to the native driver or
+creative approval process. Notes reset when the source MP4's project,
+generation, revision, profile, source PCM digest or opaque export token
+changes. They do not prove playback was heard; reviewers must listen.
+A missing/unsupported browser decoder cannot satisfy the source review.
+
+No native artifact or source data is imported by the cue UI, no new audio
+renderer is created, and the existing verified local MP4 export is unchanged.
+Production acceptance and human artistic sign-off remain separate.

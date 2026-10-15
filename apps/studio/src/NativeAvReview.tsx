@@ -16,6 +16,7 @@ export default function NativeAvReview({
   project,
   exportToken,
   seekTimeSeconds,
+  seekSignal,
   onMediaTime,
   onMediaPlay,
   embedded = false,
@@ -25,6 +26,9 @@ export default function NativeAvReview({
   exportToken: string;
   /** Optional exact Film output-relative time when embedded in Program. */
   seekTimeSeconds?: number;
+  /** Optional explicit cue-click counter. Repeated seek to the same
+   * source frame must replay without reopening the owner MP4. */
+  seekSignal?: number;
   onMediaTime?: (seconds: number) => void;
   onMediaPlay?: () => void;
   embedded?: boolean;
@@ -99,7 +103,7 @@ export default function NativeAvReview({
         // Some WebViews require loadedmetadata; that event re-applies the seek.
       }
     }
-  }, [playback.kind, seekTimeSeconds]);
+  }, [playback.kind, seekTimeSeconds, seekSignal]);
 
   useEffect(() => {
     if (editorialPlaying) videoRef.current?.pause();

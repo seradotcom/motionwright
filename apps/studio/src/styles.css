@@ -5980,3 +5980,136 @@ select:focus {
   font-size: 10px;
   line-height: 1.45;
 }
+
+
+/* MW05-E08: cue-level listening notes for one verified source-bound master.
+   These styles never imply project approval or a persisted review ledger. */
+.sfx-audition {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--panel-radius);
+  background: var(--surface-2);
+}
+.sfx-audition-heading,
+.sfx-audition-cue-heading,
+.sfx-audition-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.sfx-audition-heading > div,
+.sfx-audition-count {
+  display: grid;
+  gap: 3px;
+}
+.sfx-audition-heading strong { font-size: 13px; }
+.sfx-audition-heading span,
+.sfx-audition-footer { color: var(--muted); font-size: 11px; }
+.sfx-audition-count { text-align: right; }
+.sfx-audition-count strong { font-size: 12px; font-variant-numeric: tabular-nums; }
+.sfx-audition-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.55;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+}
+.sfx-audition-notice svg { flex-shrink: 0; margin-top: 2px; }
+.sfx-audition-notice strong { color: var(--text); font-weight: 600; }
+.sfx-audition-cues {
+  display: grid;
+  max-height: 540px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  gap: 8px;
+}
+.sfx-audition-cue {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.sfx-audition-cue[data-playing="true"] { border-color: var(--text); }
+.sfx-audition-cue-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.sfx-audition-cue-title .mono { color: var(--muted); font-size: 10px; }
+.sfx-audition-cue-title strong { font-size: 12px; }
+.sfx-audition-cue-title > span:last-child {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.sfx-audition-ruler {
+  position: relative;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--border);
+}
+.sfx-audition-ruler-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  background: var(--text);
+  border-radius: 2px;
+  opacity: 0.64;
+}
+.sfx-audition-ruler-head {
+  position: absolute;
+  z-index: 1;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: var(--text);
+}
+.sfx-audition-cue-metadata,
+.sfx-audition-decisions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+}
+.sfx-audition-cue-metadata {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.sfx-audition-decisions .button[aria-pressed="true"] {
+  border-color: var(--text);
+  color: var(--text);
+  font-weight: 650;
+}
+.sfx-audition-decisions .button:disabled { opacity: 0.44; }
+.sfx-audition-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.sfx-audition-footer { border-top: 1px solid var(--border); padding-top: 12px; }
+@media (max-width: 650px) {
+  .sfx-audition { padding: 10px; }
+  .sfx-audition-count { text-align: left; }
+  .sfx-audition-cue { padding: 10px; }
+  .sfx-audition-cue-heading { align-items: flex-start; }
+}

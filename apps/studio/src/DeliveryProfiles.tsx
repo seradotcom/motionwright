@@ -1,6 +1,8 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import NativeAvReview from "./NativeAvReview";
+import NativeSfxCueAudition from "./NativeSfxCueAudition";
+import { nativeSfxAuditionCues } from "./nativeSfxAudition";
 import {
   evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
   type ScopedRuntimeObservation,
@@ -148,6 +150,15 @@ export default function DeliveryProfiles({
   const [trustedMediaSha256, setTrustedMediaSha256] = useState("");
   const [verifiedMedia, setVerifiedMedia] = useState<PortableMediaVerification | null>(null);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
+  // Session-only, not project approvals. Always scope playback seeks and
+  // observed playback to the exact owner MP4+PCM source identity.
+  const [sfxSeek, setSfxSeek] = useState<{
+    sourceKey:string; seconds:number; nonce:number;
+  } | null>(null);
+  const [sfxPlaybackObservedKey, setSfxPlaybackObservedKey] = useState<string|null>(null);
+  const [sfxMediaTime, setSfxMediaTime] = useState<{
+    sourceKey:string; seconds:number;
+  } | null>(null);
   const [multiMaster, setMultiMaster] = useState<NativeMultisegmentAvMasterEvidence | null>(null);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
@@ -337,6 +348,15 @@ export default function DeliveryProfiles({
   const sfxSourceProof = currentOriginalSfxSourceProof(
     project, selected?.id??null, currentAv,
   );
+  const sfxReviewSourceKey = sfxSourceProof && activeExportToken
+    ? [project.id, project.generation, project.revision, selected?.id,
+      sfxSourceProof.exact_pcm_sha256, activeExportToken].join(":")
+    : null;
+  const sfxReviewCues = sfxReviewSourceKey
+    ? nativeSfxAuditionCues(project, selected?.id??null, currentAv)
+    : [];
+  const activeSfxSeek = sfxReviewSourceKey && sfxSeek?.sourceKey===sfxReviewSourceKey
+    ? sfxSeek : null;
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
@@ -1257,11 +1277,40 @@ export default function DeliveryProfiles({
                 </button>
               </div>
               {showNativeAvReview && reviewAvailable && activeExportToken && (
-                <NativeAvReview
-                  key={project.id + ":" + project.revision + ":" + activeExportToken}
-                  project={project}
-                  exportToken={activeExportToken}
-                />
+                <>
+                  <NativeAvReview
+                    key={project.id + ":" + project.revision + ":" + activeExportToken}
+                    project={project}
+                    exportToken={activeExportToken}
+                    seekTimeSeconds={activeSfxSeek?.seconds}
+                    seekSignal={activeSfxSeek?.nonce}
+                    onMediaPlay={() => {
+                      if (sfxReviewSourceKey) setSfxPlaybackObservedKey(sfxReviewSourceKey);
+                    }}
+                    onMediaTime={(seconds) => {
+                      if (sfxReviewSourceKey) setSfxMediaTime({
+                        sourceKey:sfxReviewSourceKey,seconds,
+                      });
+                    }}
+                  />
+                  {sfxReviewSourceKey && sfxSourceProof && sfxReviewCues.length>0 && (
+                    <NativeSfxCueAudition
+                      key={sfxReviewSourceKey}
+                      cues={sfxReviewCues}
+                      masterFrames={sfxSourceProof.master_frames}
+                      mediaSeconds={
+                        sfxMediaTime?.sourceKey===sfxReviewSourceKey
+                          ? sfxMediaTime.seconds : null
+                      }
+                      playbackObserved={sfxPlaybackObservedKey===sfxReviewSourceKey}
+                      onSeek={(seconds) => setSfxSeek(previous => ({
+                        sourceKey:sfxReviewSourceKey,
+                        seconds,
+                        nonce:(previous?.nonce??0)+1,
+                      }))}
+                    />
+                  )}
+                </>
               )}
               <div className="delivery-truth-note">
                 <CircleDashed size={14} /> Native master playback is an explicit, SHA-256-verified local review action limited to 16 MiB. Larger MP4 files must be exported for external playback. Decoder compatibility, timeline synchronization and human mix approval remain separate.
