@@ -73,7 +73,7 @@ describe("owner-reviewed source-bound multi-scene brand preflight",()=>{
     await expect(previewBrandCampaign(p,data)).rejects.toThrow(/protected/i);
     p.scenes[0].status="draft";
     p.locks.push({id:crypto.randomUUID(),resource:"scene:"+p.scenes[1].id,kind:"style",note:"human style"});
-    await expect(previewBrandCampaign(p,data)).rejects.toThrow(/locked/i);
+    await expect(previewBrandCampaign(p,data)).rejects.toThrow(/lock/i);
     p.locks=[];
     p.production_design!.brand_exceptions=[{
       id:crypto.randomUUID(),rule_id:p.production_design!.brand_profile!.rules[0].id,
@@ -90,7 +90,10 @@ describe("owner-reviewed source-bound multi-scene brand preflight",()=>{
     await expect(previewBrandCampaign(p,data)).rejects.toThrow(/No existing/i);
     p.production_design!.heroes.forEach(hero=>{hero.config.accent="#A5C8DF"});
     const result=await previewBrandCampaign(p,data);
-    expect(validateBrandCampaignReceipt(p,data,{...result,publication_approved:true})).toBe(false);
-    expect(validateBrandCampaignReceipt(p,data,{...result,committed:true})).toBe(false);
+    // Deliberately decode forged wire data without widening the product's literal-false authority flags.
+    const forgedPublish={...result,publication_approved:true} as unknown as typeof result;
+    const forgedCommit={...result,committed:true} as unknown as typeof result;
+    expect(validateBrandCampaignReceipt(p,data,forgedPublish)).toBe(false);
+    expect(validateBrandCampaignReceipt(p,data,forgedCommit)).toBe(false);
   });
 });
