@@ -85,6 +85,96 @@ fn persisted_completed_creates_survive_later_unknown_and_distinct_native_outputs
 }
 
 #[test]
+fn same_command_and_request_digest_reused_across_revisions_retains_uncertainty() {
+    use motionwright_domain::Change;
+    use motionwright_service::ProductionReceiptInput;
+    use serde_json::json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("mlt-revision-scoped-receipts.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let original = service.create_project("Revision-scoped MLT").unwrap();
+
+    service
+        .append_production_receipt(ProductionReceiptInput {
+            project_id: original.id,
+            generation: original.generation,
+            revision: original.revision,
+            request_id: "reused-across-creative-revisions".into(),
+            request_sha256: "a".repeat(64),
+            command: "driver.mlt-video.project.create".into(),
+            stage: "completed".into(),
+            payload: json!({"result":{
+                "provenance_checked":true,
+                "data":{"project":"verified-old-native-project","revision":"b".repeat(64)},
+                "execution":{"provenance":{
+                    "provider":"driver:mlt-video","provider_generation":7
+                }}
+            }}),
+        })
+        .unwrap();
+
+    let new_project = service
+        .apply(
+            original.id,
+            &original.stamp(),
+            "creative-scene-revision",
+            &Change::AddScene {
+                name: "Later revision".into(),
+                objective: "Source-scoped receipt accounting".into(),
+                duration_seconds: 2,
+            },
+        )
+        .unwrap()
+        .project;
+    assert!(new_project.revision > original.revision);
+
+    // Storage admits the *same* command, digest and request ID on the
+    // later creative revision. The earlier confirmed resource remains
+    // historical while the newer UNKNOWN attempt remains uncertain.
+    service
+        .append_production_receipt(ProductionReceiptInput {
+            project_id: new_project.id,
+            generation: new_project.generation,
+            revision: new_project.revision,
+            request_id: "reused-across-creative-revisions".into(),
+            request_sha256: "a".repeat(64),
+            command: "driver.mlt-video.project.create".into(),
+            stage: "outcome_unknown".into(),
+            payload: json!({"error":{"code":"Timeout","outcome_known":false}}),
+        })
+        .unwrap();
+
+    let observed = service
+        .mlt_cleanup_inventory_snapshot(
+            new_project.id,
+            new_project.generation,
+            new_project.revision,
+        )
+        .unwrap();
+    assert_eq!(observed.source_receipts_scanned, 2);
+    assert_eq!(observed.confirmed_native_creations_current_revision, 0);
+    assert_eq!(observed.confirmed_native_creations_historical, 1);
+    assert_eq!(observed.unconfirmed_or_invalid_creation_requests, 1);
+    assert_eq!(observed.disposition, "creation_outcome_not_fully_proven");
+    assert!(!observed.verified_native_project_cleanup);
+    assert!(!observed.automatic_destructive_cleanup_allowed);
+
+    drop(service);
+    let reopened = StudioService::open(&path).unwrap();
+    assert_eq!(
+        observed,
+        reopened
+            .mlt_cleanup_inventory_snapshot(
+                new_project.id,
+                new_project.generation,
+                new_project.revision,
+            )
+            .unwrap()
+    );
+}
+
+#[test]
 fn persisted_mlt_lifetime_survives_reopen_without_claiming_native_cleanup() {
     use motionwright_service::ProductionReceiptInput;
     use serde_json::json;
