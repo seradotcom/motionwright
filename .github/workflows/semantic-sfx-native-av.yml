@@ -8,6 +8,9 @@ on:
       - 'Cargo.lock'
       - 'crates/native/examples/semantic-sfx-av-prepare.rs'
       - 'crates/native/src/sfx_mix.rs'
+      - 'crates/native/src/production.rs'
+      - 'crates/native/src/production/semantic_sfx_av.rs'
+      - 'crates/native/tests/semantic_sfx_av_source.rs'
       - 'tooling/native_av_master_e2e.py'
       - 'tooling/semantic_sfx_av_evidence.py'
       - 'tooling/semantic_sfx_av_public_artifact.py'
@@ -112,6 +115,7 @@ jobs:
           cargo build --locked -p motionwright-native \
             --example native-render-e2e --example semantic-sfx-av-prepare
           cargo test --locked -p motionwright-native --test semantic_sfx_mix
+          cargo test --locked -p motionwright-native --test semantic_sfx_av_source
           cargo clippy --locked -p motionwright-native \
             --example semantic-sfx-av-prepare -- -D warnings
       - name: Render, mix and mux original semantic SFX via Native SDK

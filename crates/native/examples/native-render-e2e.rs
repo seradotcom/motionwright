@@ -618,20 +618,29 @@ async fn master(
         channels: 2,
     };
 
-    let result = match coordinator
-        .assemble_mlt_av_master(
-            project.id,
-            &RevisionStamp::from(&project),
-            MltAvMasterRequest {
-                request_id: "native-av-master-real-driver-host",
-                deliverable_id: deliverable.id,
-                motion: &motion,
-                audio: &audio,
-                sync: None,
-            },
-        )
-        .await
-    {
+    let request = MltAvMasterRequest {
+        request_id: "native-av-master-real-driver-host",
+        deliverable_id: deliverable.id,
+        motion: &motion,
+        audio: &audio,
+        sync: None,
+    };
+    let outcome = if project.audio.sfx_cues.is_empty() {
+        coordinator
+            .assemble_mlt_av_master(project.id, &RevisionStamp::from(&project), request)
+            .await
+    } else {
+        // Real semantic SFX claims demand a second source-admission gate
+        // that checks imported owner WAVs and every produced PCM byte.
+        coordinator
+            .assemble_native_semantic_sfx_av_master(
+                project.id,
+                &RevisionStamp::from(&project),
+                request,
+            )
+            .await
+    };
+    let result = match outcome {
         Ok(result) => result,
         Err(error) => {
             let diagnostic_path =

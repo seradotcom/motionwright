@@ -52,3 +52,19 @@ listening sign-off, or production release is established.
 
 MW05-E08-03 and MW05-E08-04 remain PARTIAL until these wider requirements
 are demonstrated with independent acceptance evidence.
+
+## ProductionCoordinator source admission (additional implementation)
+
+The same owner-CAS audio source can now be admitted through the dedicated
+ProductionCoordinator semantic SFX wrapper, which rebuilds the exact native
+PCM mix from current imported source blobs, refuses stale revision/generation,
+wrong deliverable, alternate mix bytes or substituted owner output file, and
+ONLY THEN calls the existing MLT AV mux. The CI render fixture exercises the
+wrapper rather than relying solely on the declared SHA of a supplied WAV.
+
+This is a native lower-level contract. It does not yet add a standalone
+user-facing Studio export action or generate the PCM artifact for the caller.
+It also does not claim that arbitrary 3D or multi-scene sources have a
+compatible semantic audio mix. The exact 60-frame bounded scenario remains
+the evidence limit. Rust tests exercise real SQLite CAS source admission,
+wrong revision/deliverable, modified output bytes, missing audio and symlinks.
