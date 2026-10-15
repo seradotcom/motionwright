@@ -612,6 +612,8 @@ export interface WorkflowOverview {
 
 import type { PaidGenerationEdit, PaidGenerationLedger } from "./paidGenerationTypes";
 
+import type { OtioOwnerCutReview } from "./otioCutReview";
+
 export interface Project {
   paid_generation?: PaidGenerationLedger;
   production_design?: ProductionDesign;
@@ -627,6 +629,7 @@ export interface Project {
 }
 
 export type Change =
+  | { type: "apply_otio_owner_cut_review"; review: OtioOwnerCutReview }
   | { type: "edit_paid_generation"; edit: PaidGenerationEdit }
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
