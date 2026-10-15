@@ -21,7 +21,7 @@ from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from semantic_sfx_av_evidence import inspect_native_sfx_av
-from semantic_sfx_native_stage import safe_stage
+from semantic_sfx_native_stage import safe_stage, safe_native_error_category
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
 from native_provider_broker_events import read_owner_broker_event_history
@@ -602,9 +602,24 @@ def main() -> None:
                             if isinstance(error, NativeCommandFailure) else "OtherOrMissing")
                     outcome = (error.diagnostic.get("source_outcome", "NOT_VERIFIED")
                                if isinstance(error, NativeCommandFailure) else "NOT_VERIFIED")
+                    typed = safe_native_error_category(
+                        EVIDENCE / "semantic-sfx-native-error-category.json"
+                    )
+                    if typed is not None:
+                        detail = (" sdk_code=" + typed["sdk_code"]
+                                  + " reason_class=" + typed["reason_class"]
+                                  + " plan_ack=" + str(typed["plan_completed"])
+                                  + " apply_ack=" + str(typed["apply_completed"])
+                                  + " render_start_ack=" + str(typed["render_start_completed"])
+                                  + " render_status_seen=" + str(typed["render_status_seen"])
+                                  + " render_result_seen=" + str(typed["render_result_seen"])
+                                  + " verify_ack=" + str(typed["verify_completed"])
+                                  + " mux_seen=" + str(typed["mux_seen"]))
+                    else:
+                        detail = " sdk_code=NOT_VERIFIED reason_class=unclassified"
                     print("semantic-sfx-ci-stage=" + stage
                           + " native_error_code=" + code
-                          + " source_outcome=" + outcome
+                          + " source_outcome=" + outcome + detail
                           + " native_result_verified=false"
                           + " automatic_retry=false", flush=True)
                 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA:

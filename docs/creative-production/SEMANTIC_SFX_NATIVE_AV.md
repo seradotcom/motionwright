@@ -126,3 +126,24 @@ failure is **not** a verified negative or positive native execution outcome
 unless the pinned SDK says the outcome is known. No failed native render is
 automatically dispatched again, and none of the new diagnostics can promote
 a WAV or MP4 into a public PASS result.
+
+
+## SDK-specific failure classification and receipt bounds
+
+The 62648bb acceptance run confirmed that the SDK returned a known negative
+result at Motion Canvas render, but the shared safe classifier grouped the
+native error enum as OtherOrMissing. This is NOT enough evidence to claim a
+provider crash or a defect in the SFX mixer.
+
+For the synthetic SFX acceptance fixture only, a separate source-private
+record now contains strictly validated SDK error categories (e.g. BackendFailed,
+InvalidArgument or Unsupported), closed source-defined reason classes and
+bounded non-identifying counts of native plan/apply/render/verify/mux receipts.
+No provider messages, file paths, session IDs, operation IDs, raw receipts or
+unrecognized strings are included. The companion CI reader validates the
+exact schema, rejects duplicate keys and refuses any successful-media claim.
+An absent or untrusted record is printed as NOT_VERIFIED, never guessed.
+
+Receipt counts show what the owner journal observed; a missing recorded
+acknowledgment is not proof that an already-dispatched native operation never
+occurred. No retry or release is enabled by this diagnostic.

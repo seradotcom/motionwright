@@ -599,6 +599,80 @@ fn emit_sfx_bounded_native_error(
             Some(json!({"command": command, "stage": stage, "payload": {}}))
         })
         .collect::<Vec<_>>();
+    // Categorize only source-defined errors. A provider may include sensitive
+    // data in its message; never reproduce or truncate that message into CI.
+    let sdk_code = match code.as_str() {
+        "BackendFailed" => "BackendFailed",
+        "InvalidArgument" => "InvalidArgument",
+        "Unsupported" => "Unsupported",
+        "StaleReference" => "StaleReference",
+        "Unavailable" => "Unavailable",
+        "Timeout" => "Timeout",
+        "PermissionDenied" => "PermissionDenied",
+        "Conflict" => "Conflict",
+        "Cancelled" => "Cancelled",
+        "Internal" => "Internal",
+        "ResourceExhausted" => "ResourceExhausted",
+        _ => "OtherOrMissing",
+    };
+    let message = error.message.as_str();
+    let reason_class = if message.contains("Provider capability generation is inactive") {
+        "provider_generation"
+    } else if message.contains("Motionwright project changed") {
+        "revision_mismatch"
+    } else if message.contains("Canonical Film") || message.contains("Film realization") {
+        "film_contract"
+    } else if message.contains("composition plan") || message.contains("composition.plan") {
+        "composition_plan"
+    } else if message.contains("composition apply") || message.contains("composition.apply") {
+        "composition_apply"
+    } else if message.contains("render did not return a job reference") {
+        "render_start"
+    } else if message.contains("render failed") {
+        "render_failed"
+    } else if message.contains("render status") {
+        "render_status"
+    } else if message.contains("render result") {
+        "render_result"
+    } else if message.contains("verification") || message.contains("composition.verify") {
+        "verification"
+    } else if message.contains("MLT audiovisual") || message.contains("av.mux") {
+        "native_mux"
+    } else {
+        "unclassified"
+    };
+    let count = |command: &str, stage: Option<&str>| -> usize {
+        receipts
+            .iter()
+            .filter(|receipt| {
+                receipt.command == command && stage.is_none_or(|expected| receipt.stage == expected)
+            })
+            .count()
+            .min(128)
+    };
+    let category = json!({
+        "schema": "motionwright.sfx-ci-native-error-category/1",
+        "phase": phase,
+        "sdk_code": sdk_code,
+        "reason_class": reason_class,
+        "sdk_outcome_known": error.outcome_known,
+        "plan_completed": count("driver.motion-canvas.composition.plan", Some("completed")),
+        "apply_completed": count("driver.motion-canvas.composition.apply", Some("completed")),
+        "render_start_completed": count("driver.motion-canvas.render.start", Some("completed")),
+        "render_start_dispatching": count("driver.motion-canvas.render.start", Some("dispatching")),
+        "render_status_seen": count("driver.motion-canvas.render.status", None),
+        "render_result_seen": count("driver.motion-canvas.render.result", None),
+        "verify_completed": count("driver.motion-canvas.composition.verify", Some("completed")),
+        "mux_seen": count("driver.mlt-video.av.mux", None),
+        "native_media_verified": false,
+        "automatically_retried": false,
+    });
+    if let Ok(body) = serde_json::to_vec(&category) {
+        let _ = fs::write(
+            evidence_path.with_file_name("semantic-sfx-native-error-category.json"),
+            body,
+        );
+    }
     println!(
         "{}",
         serde_json::to_string(&json!({

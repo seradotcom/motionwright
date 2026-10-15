@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from semantic_sfx_native_stage import STAGES, safe_stage
+from semantic_sfx_native_stage import STAGES, safe_stage, safe_native_error_category
 
 
 class ClosedNativeStageTests(unittest.TestCase):
@@ -118,6 +118,83 @@ class ClosedNativeErrorEnvelopeTests(unittest.TestCase):
         self.assertFalse(proof["terminal_native_result_verified"])
         self.assertFalse(proof["native_job_references_disclosed"])
         self.assertNotIn("/secret/path", json.dumps(proof))
+
+
+
+class ClosedSdkReasonCategories(unittest.TestCase):
+    """No source-derived secret or successful media claim can leak."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "error.json"
+        self.evidence = {
+            "schema": "motionwright.sfx-ci-native-error-category/1",
+            "phase": "native_request_error",
+            "sdk_code": "BackendFailed",
+            "reason_class": "composition_plan",
+            "sdk_outcome_known": True,
+            "plan_completed": 0,
+            "apply_completed": 0,
+            "render_start_completed": 0,
+            "render_start_dispatching": 0,
+            "render_status_seen": 0,
+            "render_result_seen": 0,
+            "verify_completed": 0,
+            "mux_seen": 0,
+            "native_media_verified": False,
+            "automatically_retried": False,
+        }
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, value=None):
+        self.path.write_text(json.dumps(
+            self.evidence if value is None else value
+        ), encoding="utf-8")
+
+    def test_exact_closed_sdk_error_without_any_success_claim(self):
+        self.write()
+        safe = safe_native_error_category(self.path)
+        self.assertIsNotNone(safe)
+        self.assertEqual(safe["sdk_code"], "BackendFailed")
+        self.assertEqual(safe["reason_class"], "composition_plan")
+        self.assertTrue(safe["sdk_outcome_known"])
+        self.assertFalse(safe["native_media_verified"])
+        self.assertFalse(safe["automatically_retried"])
+
+    def test_plausible_started_native_render_still_not_verified(self):
+        data = {**self.evidence, "render_start_completed": 1,
+                "sdk_outcome_known": False, "phase": "native_master_error"}
+        self.write(data)
+        safe = safe_native_error_category(self.path)
+        self.assertIsNotNone(safe)
+        self.assertEqual(safe["render_start_completed"], 1)
+        self.assertFalse(safe["native_media_verified"])
+
+    def test_private_or_unknown_error_codes_fail_closed(self):
+        for key, value in (
+            ("sdk_code", "owner/secret/private"),
+            ("reason_class", "private provider error payload"),
+            ("phase", "some arbitrary phase"),
+            ("native_media_verified", True),
+            ("automatically_retried", True),
+            ("render_start_completed", -1),
+            ("render_start_completed", 129),
+            ("sdk_outcome_known", 1),
+        ):
+            with self.subTest(key=key, value=value):
+                self.write({**self.evidence, key: value})
+                self.assertIsNone(safe_native_error_category(self.path))
+
+    def test_duplicate_or_missing_or_oversized_fields_fail_closed(self):
+        self.path.write_text('{"schema":"x","schema":"y"}', encoding="utf-8")
+        self.assertIsNone(safe_native_error_category(self.path))
+        self.write({key:value for key,value in self.evidence.items()
+                    if key!="reason_class"})
+        self.assertIsNone(safe_native_error_category(self.path))
+        self.path.write_bytes(b"x"*2100)
+        self.assertIsNone(safe_native_error_category(self.path))
 
 
 if __name__ == "__main__":
