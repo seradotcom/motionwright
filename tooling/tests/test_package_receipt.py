@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tooling"))
 SPEC = importlib.util.spec_from_file_location(
     "package_receipt", ROOT / "tooling" / "package_receipt.py"
 )
@@ -47,7 +48,10 @@ class PackageReceiptTests(unittest.TestCase):
             original = directory / "Motionwright_0.1.0_x64-setup.exe"
             original.write_bytes(b"untrusted-installed-byte-stream")
             link = directory / "Motionwright-linked-setup.exe"
-            link.symlink_to(original)
+            try:
+                link.symlink_to(original)
+            except (OSError, NotImplementedError):
+                self.skipTest("Unprivileged symlink creation unavailable")
             receipt = directory / "receipt.json"
             command = [
                 sys.executable, str(ROOT / "tooling" / "package_receipt.py"),
