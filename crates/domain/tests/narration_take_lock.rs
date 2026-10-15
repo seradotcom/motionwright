@@ -112,6 +112,17 @@ fn a_recorded_take_refuses_mutating_voice_words_and_cues_but_allows_new_mix() {
     segment.text = "Agent rewrote source".into();
     let invalid = [
         Change::UpsertTranscriptSegment { segment },
+        Change::AddTranscriptSegment {
+            segment: domain::TranscriptSegment {
+                id: id(32),
+                voice_track_id: id(20),
+                start: sec(2),
+                end: sec(3),
+                text: "Silent unauthorized additional words".into(),
+                speaker: None,
+                alignment: domain::AlignmentEvidence::Manual,
+            },
+        },
         Change::RemoveTranscriptSegment { segment_id: id(31) },
         Change::AddAudioCue {
             cue: domain::AudioCue {
@@ -124,6 +135,26 @@ fn a_recorded_take_refuses_mutating_voice_words_and_cues_but_allows_new_mix() {
         },
         Change::RemoveAudioCue { cue_id: id(40) },
         Change::SetActiveVoiceTrack { track_id: id(20) },
+        Change::ImportMeasuredVoice {
+            asset: domain::Asset {
+                id: id(11),
+                name: "Unreviewed voice replacement".into(),
+                media_type: "audio/wav".into(),
+                content_sha256: Some("cd".repeat(32)),
+                source_revision: None,
+            },
+            track: domain::VoiceTrack {
+                id: id(21),
+                asset_id: id(11),
+                label: "Unreviewed replacement".into(),
+                sample_rate_hz: 48_000,
+                channels: 1,
+                measured_duration: sec(3),
+                source_sha256: "cd".repeat(32),
+                loudness_lufs: None,
+                true_peak_dbfs: None,
+            },
+        },
     ];
     for change in invalid {
         let before = project.clone();

@@ -1079,10 +1079,13 @@ impl Project {
                 change,
                 Change::CheckoutBranch { .. }
                     | Change::MergeBranch { .. }
+                    | Change::ImportMeasuredVoice { .. }
                     | Change::AddVoiceTrack { .. }
                     | Change::SetActiveVoiceTrack { .. }
+                    | Change::AddTranscriptSegment { .. }
                     | Change::UpsertTranscriptSegment { .. }
                     | Change::RemoveTranscriptSegment { .. }
+                    | Change::AddAudioCue { .. }
                     | Change::UpsertAudioCue { .. }
                     | Change::RemoveAudioCue { .. }
             )

@@ -21,6 +21,16 @@ const keys=(row:Record<string,unknown>,set:string[],where:string)=>{
  if(Object.keys(row).length!==set.length||set.some(k=>!Object.hasOwn(row,k)))
    invalid(where+" contains unrecognized or missing fields.");
 };
+const canonical=(value:unknown):string=>{
+ if(Array.isArray(value))return "["+value.map(canonical).join(",")+"]";
+ if(value && typeof value==="object"){
+   const row=value as Record<string,unknown>;
+   return "{"+Object.keys(row).sort().map(key=>JSON.stringify(key)+":"+canonical(row[key])).join(",")+"}";
+ }
+ const literal=JSON.stringify(value);
+ if(typeof literal!=="string")return invalid("Narration source contains an unserializable value.");
+ return literal;
+};
 const noClaims=(row:Record<string,unknown>,list:string[],where:string)=>{
  for(const key of list)if(row[key]!==false)
    invalid(where+" must not claim human authentication, publication or native execution.");
@@ -55,7 +65,7 @@ export function validateNarrationSourceReply(project:Project,value:unknown):Narr
    (reply.recordable_source_verified!== (reply.recordable_content_sha256!==null)))
     invalid("Recordable narration source is inconsistent or unverifiable.");
  const recorded=project.production_design?.narration_take_lock??null;
- if(JSON.stringify(reply.recorded_take)!==JSON.stringify(recorded))
+ if(canonical(reply.recorded_take)!==canonical(recorded))
    invalid("Narration lock readback does not match current canonical project snapshot.");
  return reply as unknown as NarrationSourceResponse;
 }
