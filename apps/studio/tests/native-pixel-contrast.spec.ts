@@ -122,6 +122,7 @@ test("tampered synthetic PNG is refused before any contrast metric exists",async
   const {first,second}=await installSyntheticSource(page,true);
   await syntheticNativeRender(page,first.name,second.name);
   await page.getByRole("button",{name:"Read exact native source frame"}).click();
-  await expect(page.locator(".native-contrast [role=alert]")).toContainText("PNG IHDR");
+  // Existing desktop API rejects a corrupted PNG signature before the downstream IHDR check.
+  await expect(page.locator(".native-contrast [role=alert]")).toContainText("Native preview did not return valid PNG bytes");
   await expect(page.getByLabel("Measured source-pixel contrast")).toHaveCount(0);
 });
