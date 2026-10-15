@@ -22,6 +22,10 @@ The existing real-media OTIO bridge now rejects scene extensions and feeds an ex
 
 A separate Production ? Pixel contrast review reads original pinned Semwright-granted PNG bytes, samples two human-selected opaque full-resolution pixel neighborhoods and reports a bounded, source-SHA-linked numerical sRGB contrast ratio. It never labels this measurement aesthetic quality, textual accessibility approval or a creative PASS. See [Native pixel contrast](NATIVE_PIXEL_CONTRAST.md).
 
+## Disposable evaluator experiments (E13-02 ? technical partial)
+
+A new data-only experiment compares the latest registered evaluator to an original next-version candidate on up to three current scenes. It reuses first-party typed observations and only permits an explicitly acknowledged registration through the existing canonical CAS, not executable skill promotion. [Evaluator experiment documentation](V05_EVALUATOR_DATA_EXPERIMENT.md).
+
 ## Owner-reviewed campaign brand propagation (E14-01 partial)
 
 A source-digest-bound rollout applies a permitted existing palette accent/required wordmark across up to eight *attached* original Hero scenes as one candidate-validated StudioService CAS and Semwright Native SDK transaction. Existing author edits and brand exceptions can block the entire operation; unrelated assets and media are never rebuilt. [Campaign propagation](V05_BRAND_CAMPAIGN_ROLLOUT.md).
