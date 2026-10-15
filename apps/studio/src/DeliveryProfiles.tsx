@@ -21,7 +21,9 @@ import {
   renderMotionCanvas,
   productionRuntimeCompatibility,
 } from "./api";
-import { originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx } from "./sfxNativeDelivery";
+import {
+  currentOriginalSfxSourceProof, originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx,
+} from "./sfxNativeDelivery";
 import type {
   Change,
   DeliverableProfile,
@@ -332,6 +334,9 @@ export default function DeliveryProfiles({
     ? currentMultiMaster?.revision === project.revision
       ? currentMultiMaster.export_token : null
     : currentAv?.revision === project.revision ? currentAv.export_token : null;
+  const sfxSourceProof = currentOriginalSfxSourceProof(
+    project, selected?.id??null, currentAv,
+  );
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
@@ -1206,6 +1211,21 @@ export default function DeliveryProfiles({
                   <div><span>Applicability</span><strong>
                     {currentAv.revision === project.revision ? "CURRENT · NATIVE" : "STALE · HISTORICAL"}
                   </strong></div>
+                </div>
+              )}
+              {sfxSourceProof && (
+                <div className="portable-plan" role="status"
+                  aria-label="Original semantic SFX source verification">
+                  <div><span>Original scene cues</span>
+                    <strong>{currentAv?.semantic_sfx_cue_count ?? 0}</strong></div>
+                  <div><span>Original WAV assets</span>
+                    <strong>{sfxSourceProof.original_asset_sha256.length}</strong></div>
+                  <div><span>Mix PCM SHA-256</span>
+                    <strong className="mono">
+                      {sfxSourceProof.exact_pcm_sha256.slice(0, 16)}…</strong></div>
+                  <div><span>Sample peak</span>
+                    <strong>{sfxSourceProof.sample_peak_pcm16} / 32767 PCM16</strong></div>
+                  <div><span>Creative and sound approval</span><strong>REQUIRED</strong></div>
                 </div>
               )}
               {currentMultiMaster && (

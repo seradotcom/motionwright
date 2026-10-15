@@ -541,6 +541,20 @@ export interface NativeMultisegmentAvMasterEvidence {
 }
 
 export interface MltAvMasterEvidence {
+  /** Source-only semantic SFX receipt, present ONLY for the verified v0.5
+   * native SFX master; a general voice-only master never fabricates this. */
+  semantic_sfx_source_proof?: {
+    project_id: string;
+    generation: string;
+    revision: number;
+    deliverable_id: string;
+    master_frames: number;
+    original_asset_sha256: string[];
+    exact_pcm_sha256: string;
+    sample_peak_pcm16: number;
+  };
+  semantic_sfx_cue_count?: number;
+  semantic_sfx_human_creative_approval?: "REQUIRED";
   /** Ephemeral, source-verified desktop delivery handle; never a path. */
   export_token?: string | null;
   project_resource: string;

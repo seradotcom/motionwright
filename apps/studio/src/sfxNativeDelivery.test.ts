@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./fixture";
-import { originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx } from "./sfxNativeDelivery";
+import {
+  currentOriginalSfxSourceProof, originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx,
+} from "./sfxNativeDelivery";
 import { SFX_CUE_SCHEMA } from "./semanticSfx";
-import type { Project } from "./types";
+import type { MltAvMasterEvidence, Project } from "./types";
 
 const SHA = "a".repeat(64);
 const sceneId = "00000000-0000-4000-8000-0000000000f0";
@@ -40,6 +42,62 @@ describe("MW05-E08 Studio native semantic SFX delivery readiness",()=>{
     expect(r.cueCount).toBe(1);
     expect(r.sourceAuthority).toBe("editorial_only");
     expect(r.reason).toMatch(/Native CAS byte verification/);
+  });
+  it("accepts only source-provenance receipts matching project cues, revisions and PCM",()=>{
+    const project=source();
+    const profile=project.deliverables[0];
+    const native:MltAvMasterEvidence={
+      project_resource:"project:"+project.id,
+      generation:project.generation,revision:project.revision,
+      deliverable_id:profile.id,motion_segment_id:"owner-native",
+      frame_rate:{num:30,den:1},frame_count:180,
+      mezzanine:{},
+      source_audio:{relative_path:"private-source.wav",sha256:SHA,sample_rate:48000,channels:2},
+      master:{},decoded_audio:{},sync:null,
+      semantic_sfx_source_proof:{
+        project_id:project.id,generation:project.generation,revision:project.revision,
+        deliverable_id:profile.id,master_frames:180,
+        original_asset_sha256:[SHA],exact_pcm_sha256:SHA,
+        sample_peak_pcm16:2048,
+      },
+      semantic_sfx_cue_count:1,semantic_sfx_human_creative_approval:"REQUIRED",
+    };
+    expect(currentOriginalSfxSourceProof(project,profile.id,native)?.sample_peak_pcm16).toBe(2048);
+    // Two different owner-imported asset IDs may legitimately share identical
+    // source bytes. The source proof counts asset IDs, not distinct digests.
+    const identical=structuredClone(project);
+    const secondId="00000000-0000-4000-8000-0000000000a5";
+    identical.assets.push({
+      id:secondId,name:"Second admitted copy",media_type:"audio/wav",
+      content_sha256:SHA,source_revision:"original copied file",
+    });
+    identical.audio.sfx_cues!.push({
+      ...identical.audio.sfx_cues![0],
+      id:"00000000-0000-4000-8000-0000000000a6",
+      source_asset_id:secondId,offset_frames:100,
+    });
+    const identicalProof=structuredClone(native);
+    identicalProof.semantic_sfx_cue_count=2;
+    identicalProof.semantic_sfx_source_proof!.original_asset_sha256=[SHA,SHA];
+    expect(currentOriginalSfxSourceProof(identical,profile.id,identicalProof))
+      .not.toBeNull();
+    const swapped=structuredClone(native);
+    swapped.source_audio.sha256="b".repeat(64);
+    expect(currentOriginalSfxSourceProof(project,profile.id,swapped)).toBeNull();
+    swapped.source_audio.sha256=SHA;
+    swapped.semantic_sfx_source_proof!.original_asset_sha256=["b".repeat(64)];
+    expect(currentOriginalSfxSourceProof(project,profile.id,swapped)).toBeNull();
+    swapped.semantic_sfx_source_proof!.original_asset_sha256=[SHA];
+    swapped.semantic_sfx_source_proof!.sample_peak_pcm16=32768;
+    expect(currentOriginalSfxSourceProof(project,profile.id,swapped)).toBeNull();
+    expect(currentOriginalSfxSourceProof({...project,revision:project.revision+1},profile.id,native))
+      .toBeNull();
+    expect(currentOriginalSfxSourceProof(project,profile.id,{
+      ...native,semantic_sfx_human_creative_approval:undefined,
+    })).toBeNull();
+    const omitted=structuredClone(native);
+    delete omitted.semantic_sfx_source_proof;
+    expect(currentOriginalSfxSourceProof(project,profile.id,omitted)).toBeNull();
   });
   it("prevents silent omission of voice/music or native preview authority",()=>{
     const p=source();

@@ -46,6 +46,14 @@ test("one-use desktop semantic SFX master uses existing preview and owner-scoped
       sha256:sourceSHA,sample_rate:48000,channels:2},
     master:{profile:"h264-aac-mp4",artifact:{sha256:"d".repeat(64)}},
     decoded_audio:{kind:"synthetic-ipc-only"},sync:null,
+    semantic_sfx_source_proof:{
+      project_id:p.id,generation:p.generation,revision:p.revision,
+      deliverable_id:profile.id,master_frames:60,
+      original_asset_sha256:[sourceSHA],exact_pcm_sha256:sourceSHA,
+      sample_peak_pcm16:2477,
+    },
+    semantic_sfx_cue_count:1,
+    semantic_sfx_human_creative_approval:"REQUIRED",
   };
   await page.addInitScript(({initial,rendered,masteredResult})=>{
     const app=window as unknown as {
@@ -99,6 +107,11 @@ test("one-use desktop semantic SFX master uses existing preview and owner-scoped
   await assemble.click();
   await expect(page.getByLabel("Native AV master evidence")).toContainText("CURRENT · NATIVE");
   await expect(page.getByText(/Original PCM and native media were verified/)).toBeVisible();
+  const sourceProof=page.getByRole("status",{name:"Original semantic SFX source verification"});
+  await expect(sourceProof).toContainText("Original scene cues");
+  await expect(sourceProof).toContainText("Original WAV assets");
+  await expect(sourceProof).toContainText("2477 / 32767 PCM16");
+  await expect(sourceProof).toContainText("REQUIRED");
   const audit=await page.evaluate(()=>(window as unknown as {
     __SFX_IPC__:{requests:Array<Record<string,unknown>>;effects:Array<Record<string,unknown>>};
   }).__SFX_IPC__);

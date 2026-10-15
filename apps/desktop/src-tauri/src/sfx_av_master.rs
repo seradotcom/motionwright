@@ -3,16 +3,17 @@
 //! This deliberately does NOT create an alternate audio codec/render service,
 //! or silently combine narration/music with a source-only SFX master.
 use super::{
-    AppState, NativeAvMasterResponse,
+    AppState,
     av_master::canonical_av_request_id,
     effect_grants::{EffectKind, EffectScope},
     sanitized, selected_connection_path,
 };
 use motionwright_domain::RevisionStamp;
 use motionwright_native::production::{
-    MltAvMasterRequest, ProductionConnection, ProductionCoordinator, prepare_semantic_sfx_av_audio,
+    MltAvMasterEvidence, MltAvMasterRequest, ProductionConnection, ProductionCoordinator,
+    SemanticSfxAvSourceProof, prepare_semantic_sfx_av_audio,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
@@ -43,11 +44,23 @@ pub(crate) fn reject_unmixed_semantic_sfx(
     Ok(())
 }
 
+/// One audited source-only receipt, separate from measured voice mastering.
+/// The embedded source proof is not creative approval or a path capability.
+#[derive(Debug, Serialize)]
+pub struct NativeSemanticSfxAvResponse {
+    #[serde(flatten)]
+    evidence: MltAvMasterEvidence,
+    export_token: Option<Uuid>,
+    semantic_sfx_source_proof: SemanticSfxAvSourceProof,
+    semantic_sfx_cue_count: usize,
+    semantic_sfx_human_creative_approval: &'static str,
+}
+
 #[tauri::command]
 pub async fn assemble_semantic_sfx_av_master(
     state: State<'_, AppState>,
     request: AssembleSemanticSfxAvRequest,
-) -> Result<NativeAvMasterResponse, String> {
+) -> Result<NativeSemanticSfxAvResponse, String> {
     let project = state
         .service
         .project(request.project_id)
@@ -171,10 +184,16 @@ pub async fn assemble_semantic_sfx_av_master(
             "Native SFX master outcome is unconfirmed. Reconcile the original job with Semwright before another attempt.".to_owned()
         }
     })?;
+    if prepared.proof.exact_pcm_sha256 != evidence.source_audio.sha256 {
+        return Err("The original SFX source receipt and final native master input differ.".into());
+    }
     let export_token = state.av_delivery.register(&output_root, &evidence);
-    Ok(NativeAvMasterResponse {
+    Ok(NativeSemanticSfxAvResponse {
         evidence,
         export_token,
+        semantic_sfx_source_proof: prepared.proof,
+        semantic_sfx_cue_count: project.audio.sfx_cues.len(),
+        semantic_sfx_human_creative_approval: "REQUIRED",
     })
 }
 

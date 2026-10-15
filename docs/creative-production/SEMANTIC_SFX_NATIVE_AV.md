@@ -289,3 +289,22 @@ provider-defined media stream, or label an SFX-only MP4 a full creative
 soundtrack. When a combined mix is admitted, it must be reverified against
 both original source SHA-256 identities and the current visual frame clock.
 Unit/browser and desktop Rust tests cover the temporary fail-closed gate.
+
+
+## Source-origin evidence visible in Studio
+
+A verified **SFX-only** native master now returns an additive typed
+source-evidence section alongside the existing session delivery token and
+technical MP4/MLT receipt. It includes the current project identity,
+generation, revision and deliverable, original imported WAV SHA-256
+identities, actual original cue count, bounded PCM16 sample peak and the
+SHA-256 of the exact source PCM mix consumed by the native MLT mux.
+
+Studio displays the counts and a shortened PCM digest only while the
+evidence belongs to the current project generation, revision and profile.
+It never presents this technical proof as creative or legal acceptance:
+human sound and creative approval remain explicitly REQUIRED, and
+there is no LUFS/true-peak mastering assertion. Generic measured-voice
+master receipts never synthesize an SFX source proof. Browser acceptance
+uses a clearly synthetic IPC mock; real WAV/MP4 source verification
+remains the separate pinned Linux Native SDK workflow.

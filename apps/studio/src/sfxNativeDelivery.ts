@@ -1,7 +1,7 @@
 // Native AV readiness for original semantic SFX. This is an EDITORIAL
 // preflight only; the desktop still verifies the actual source CAS bytes,
 // revision, preview token and one-use render permission before any mux.
-import type { DeliverableProfile, Project, RationalTime } from "./types";
+import type { DeliverableProfile, MltAvMasterEvidence, Project, RationalTime } from "./types";
 import { validateSfxProject } from "./semanticSfx";
 
 /** A legacy single/multisegment voice-only MLT master cannot represent
@@ -10,6 +10,53 @@ import { validateSfxProject } from "./semanticSfx";
  */
 export function voiceOnlyMasterMayExcludeSfx(project: Project): boolean {
   return (project.audio.sfx_cues?.length ?? 0) === 0;
+}
+
+/** Source-proof admission is only a UI consistency guard. The trusted
+ * desktop independently reads owner CAS WAVs and verifies actual native media.
+ * A forged/partial/obsolete WebView receipt never becomes a reviewed proof.
+ */
+export function currentOriginalSfxSourceProof(
+  project:Project, deliverableId:string|null, receipt:MltAvMasterEvidence|null,
+): NonNullable<MltAvMasterEvidence["semantic_sfx_source_proof"]>|null {
+  const proof=receipt?.semantic_sfx_source_proof;
+  const cues=project.audio.sfx_cues??[];
+  if (!proof || !receipt || !deliverableId
+    || receipt.project_resource!=="project:"+project.id
+    || receipt.generation!==project.generation
+    || receipt.revision!==project.revision
+    || receipt.deliverable_id!==deliverableId
+    || !Number.isSafeInteger(receipt.frame_count)
+    || receipt.frame_count<1 || receipt.frame_count>900
+    || receipt.source_audio?.sample_rate!==48000 || receipt.source_audio?.channels!==2
+    || !Number.isSafeInteger(proof.master_frames)
+    || proof.master_frames!==receipt.frame_count
+    || proof.project_id!==project.id || proof.generation!==project.generation
+    || proof.revision!==project.revision
+    || proof.deliverable_id!==deliverableId
+    || receipt.semantic_sfx_human_creative_approval!=="REQUIRED"
+    || receipt.semantic_sfx_cue_count!==cues.length
+    || cues.length===0 || cues.length>64
+    || !Number.isInteger(proof.sample_peak_pcm16)
+    || proof.sample_peak_pcm16<0 || proof.sample_peak_pcm16>32767
+  ) return null;
+  const sha=(value:string)=>/^[0-9a-f]{64}$/.test(value);
+  if (!sha(proof.exact_pcm_sha256)
+    || receipt.source_audio?.sha256!==proof.exact_pcm_sha256
+    || !Array.isArray(proof.original_asset_sha256)
+    || proof.original_asset_sha256.length===0
+    || proof.original_asset_sha256.length>64
+    || proof.original_asset_sha256.some(v=>typeof v!=="string"||!sha(v)))return null;
+  // Two distinct imported asset IDs can legitimately have identical
+  // immutable SHA-256 bytes. Validate the owner asset count separately
+  // from distinct digests, rather than rejecting a valid same-content mix.
+  const authored=new Set(cues.map(cue=>cue.source_sha256));
+  const assetCount=new Set(cues.map(cue=>cue.source_asset_id)).size;
+  const reported=new Set(proof.original_asset_sha256);
+  if (assetCount!==proof.original_asset_sha256.length
+    || authored.size!==reported.size
+    || [...authored].some(digest=>!reported.has(digest)))return null;
+  return proof;
 }
 
 export type OriginalSfxAvReadiness = {
