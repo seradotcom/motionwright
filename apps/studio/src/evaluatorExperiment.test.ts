@@ -107,7 +107,8 @@ describe("E13 bounded first-party, data-only evaluator experiment",()=>{
     const forged=structuredClone(result);
     forged.comparisons[0].candidatePass=999;
     await expect(revalidateEvaluatorExperiment(p,forged)).rejects.toThrow(/changed/);
-    const forgedFlags=structuredClone(result);forgedFlags.evaluatorInstalled=true;
+    // Deliberately emulate malformed untrusted JSON without broadening the product's literal-false type.
+    const forgedFlags={...structuredClone(result),evaluatorInstalled:true} as unknown as typeof result;
     await expect(revalidateEvaluatorExperiment(p,forgedFlags)).rejects.toThrow(/ungranted/);
   });
 });

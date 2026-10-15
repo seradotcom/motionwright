@@ -79,7 +79,7 @@ test("an approved owner registration sends one scoped canonical evaluator change
             scope.revision!==project.revision)throw new Error("Synthetic CAS refused stale evaluator");
         if(scope.change.type!=="register_creative_evaluator")throw new Error("Unexpected mutation");
         if(!project.production_design)throw new Error("Synthetic fixture lacks creative state");
-        project.production_design.evaluator_bundles.push(structuredClone(scope.change.bundle));
+        (project.production_design.evaluator_bundles ??= []).push(structuredClone(scope.change.bundle));
         project.revision++;
         return structuredClone(project);
       }
