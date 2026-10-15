@@ -741,6 +741,7 @@ enum OperationKind {
     RegisterCaptureSource,
     RegisterCreativeEvaluator,
     EvaluateCreativeScene,
+    EditPaidGeneration,
     RegisterIdentityOrigin,
     RevokeIdentityOrigin,
     ApplyCreativePatch,
@@ -1011,6 +1012,12 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .ok_or_else(|| Error::invalid("capture record is required"))?,
             )
             .map_err(|_| Error::invalid("invalid bounded first-party capture source record"))?,
+        }),
+        OperationKind::EditPaidGeneration => Ok(Change::EditPaidGeneration {
+            edit: serde_json::from_value(args.get("edit").cloned().ok_or_else(|| {
+                Error::invalid("source-bound generation journal edit is required")
+            })?)
+            .map_err(|_| Error::invalid("invalid non-executable generation journal edit"))?,
         }),
         OperationKind::RegisterIdentityOrigin => Ok(Change::RegisterIdentityOrigin {
             record: serde_json::from_value(
@@ -2944,6 +2951,26 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::EditPaidGeneration,
+            descriptor(
+                "paid-generation.edit",
+                "Append a project accounting declaration; never contact, pay, approve or retry an external provider",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "edit":{"type":"object","required":["kind"],"properties":{
+                            "kind":{"type":"string","enum":["create","append"]},
+                            "spec":{"type":"object"},
+                            "job_id":{"type":"string","format":"uuid"},
+                            "expected_history_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                            "event":{"type":"object"}
+                        },"additionalProperties":false}
+                    }),
+                    &["ref", "edit"],
+                ),
+            ),
+        ),
+        (
             OperationKind::RegisterIdentityOrigin,
             descriptor(
                 "identity-origin.register",
@@ -3412,7 +3439,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.product-stage.capture.bind"));
         assert!(names.contains(&"driver.motionwright.product-stage.capture.detach"));
         // Preserve both native SDK operation families admitted independently.
-        assert_eq!(capabilities.len(), 76);
+        assert!(names.contains(&"driver.motionwright.paid-generation.edit"));
+        assert_eq!(capabilities.len(), 77);
     }
 
     #[test]
@@ -4571,3 +4599,6 @@ mod music_clock_contract_tests {
         assert!(change_from_args(OperationKind::ConformScenesToMusic, &malformed).is_err());
     }
 }
+
+#[cfg(test)]
+mod generation_journal_tests;

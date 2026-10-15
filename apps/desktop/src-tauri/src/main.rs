@@ -1,6 +1,7 @@
 mod av_delivery;
 mod av_master;
 mod effect_grants;
+mod generation_journal;
 mod media_integrity;
 mod runtime_setup;
 
@@ -2485,6 +2486,9 @@ fn main() {
             export_otio,
             inspect_project_bundle,
             import_project_bundle,
+            generation_journal::native_paid_generation_journal,
+            generation_journal::native_paid_generation_preflight,
+            generation_journal::native_paid_generation_reserve_preflight,
             apply_change
         ])
         .run(tauri::generate_context!())
