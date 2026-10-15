@@ -42,6 +42,10 @@ class OriginalSfxSourceAdmission(unittest.TestCase):
         original_wav(self.root / "original-focus-sfx.wav", a)
         original_wav(self.root / "original-confirm-sfx.wav", b)
         original_wav(self.root / "semantic-sfx-master.wav", mix)
+        self.native_relative = "mw-sfx-source-owner-r8-f60-0123456789abcdef.wav"
+        (self.root / self.native_relative).write_bytes(
+            (self.root / "semantic-sfx-master.wav").read_bytes()
+        )
         self.receipt = {
             "schema": "motionwright.semantic-sfx-av-prepared/1",
             "frames": 60,
@@ -50,6 +54,10 @@ class OriginalSfxSourceAdmission(unittest.TestCase):
             "sample_rate": 48000,
             "channels": 2,
             "revision": 8,
+            "native_preparation_verified": True,
+            "native_preparation_revision": 8,
+            "original_source_count": 2,
+            "audio_relative": self.native_relative,
             "first_source_sha256": sha(self.root / "original-focus-sfx.wav"),
             "second_source_sha256": sha(self.root / "original-confirm-sfx.wav"),
             "audio_sha256": sha(self.root / "semantic-sfx-master.wav"),
@@ -79,6 +87,10 @@ class OriginalSfxSourceAdmission(unittest.TestCase):
             ("frames", 59),
             ("sample_rate", 44100),
             ("revision", 0),
+            ("native_preparation_verified", False),
+            ("native_preparation_revision", 7),
+            ("original_source_count", 1),
+            ("audio_relative", "../owner-private.wav"),
         ):
             with self.subTest(field=field):
                 candidate = dict(self.receipt)
@@ -89,6 +101,17 @@ class OriginalSfxSourceAdmission(unittest.TestCase):
         moved["scheduled_sfx"][1]["first_sample"] = 31000
         with self.assertRaises(MediaProbeError):
             inspect_original_sources(self.root, moved)
+
+    def test_alternate_or_corrupt_native_prepared_wav_is_rejected(self):
+        native = self.root / self.native_relative
+        initial = native.read_bytes()
+        native.write_bytes(initial[:100] + bytes([initial[100] ^ 1])
+                           + initial[101:])
+        with self.assertRaises(MediaProbeError):
+            inspect_original_sources(self.root, self.receipt)
+        native.write_bytes(initial)
+        self.assertEqual(inspect_original_sources(self.root, self.receipt)
+                         ["exact_sfx_sample_count"], MASTER_FRAMES)
 
     def test_curated_artifact_cannot_claim_pass_without_master(self):
         with tempfile.TemporaryDirectory() as folder:

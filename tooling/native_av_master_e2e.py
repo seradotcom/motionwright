@@ -238,7 +238,14 @@ def main() -> None:
                 or sfx_prepared.get("generation") != seeded.get("generation")
                 or sfx_prepared.get("revision", -1) <= seeded.get("revision", -1)
                 or sfx_prepared.get("frames") != EXPECTED_FRAMES
-                or sfx_prepared.get("audio_relative") != "semantic-sfx-master.wav"):
+                or sfx_prepared.get("native_preparation_verified") is not True
+                or sfx_prepared.get("native_preparation_revision") != sfx_prepared.get("revision")
+                or sfx_prepared.get("original_source_count") != 2
+                or not isinstance(sfx_prepared.get("audio_relative"), str)
+                or not sfx_prepared["audio_relative"].startswith("mw-sfx-")
+                or not sfx_prepared["audio_relative"].endswith(".wav")
+                or "/" in sfx_prepared["audio_relative"]
+                or "\\" in sfx_prepared["audio_relative"]):
                 raise AssertionError("original SFX source is not this persisted render project's revision")
             seeded["revision"] = sfx_prepared["revision"]
             write_private_json(EVIDENCE / "sfx-prepared.json", sfx_prepared)

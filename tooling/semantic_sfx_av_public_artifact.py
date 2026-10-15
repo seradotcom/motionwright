@@ -69,6 +69,13 @@ def curate(source: Path, output: Path, sha: str, success: bool) -> dict:
             assert run["frame_count"]==60
             assert run["semantic_sfx_source_project_revision"]==prep["revision"]
             assert prep["schema"]=="motionwright.semantic-sfx-av-prepared/1"
+            assert prep["native_preparation_verified"] is True
+            assert prep["native_preparation_revision"]==prep["revision"]
+            assert prep["original_source_count"]==2
+            assert isinstance(prep["audio_relative"],str)
+            assert prep["audio_relative"].startswith("mw-sfx-")
+            assert "/" not in prep["audio_relative"] and "\\" not in prep["audio_relative"]
+            assert decoded["source_wav_sha256"]==prep["audio_sha256"]
             assert prep["project_id"]==decoded["project_id"]
             assert prep["generation"]==decoded["generation"]
             assert prep["revision"]==decoded["revision"]

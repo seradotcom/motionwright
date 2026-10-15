@@ -90,7 +90,25 @@ def inspect_original_sources(folder: Path, receipt: dict[str, Any]) -> dict[str,
         == [(6, 30, 9600, 38400), (20, 44, 32000, 38400)],
         "SFX original frame/sample mapping changed",
     )
+    require(receipt.get("native_preparation_verified") is True
+            and receipt.get("native_preparation_revision") == receipt.get("revision")
+            and receipt.get("original_source_count") == 2,
+            "No verified first-class native owner SFX WAV preparation")
+    audio_relative = receipt.get("audio_relative")
+    require(isinstance(audio_relative, str)
+            and audio_relative.startswith("mw-sfx-")
+            and audio_relative.endswith(".wav")
+            and len(audio_relative) <= 160
+            and "/" not in audio_relative
+            and "\\" not in audio_relative
+            and ".." not in audio_relative,
+            "Native SFX audio source is not a bounded digest-addressed owner file")
+    actual_prepared = folder / audio_relative
     a, b, mixed = folder / SOURCE_A, folder / SOURCE_B, folder / MIX
+    require(sha(actual_prepared) == receipt["audio_sha256"],
+            "First-class owner PCM differs from prepared native source digest")
+    require(actual_prepared.read_bytes() == mixed.read_bytes(),
+            "Portable SFX review master is not the actual native mux WAV")
     for src, key in ((a, "first_source_sha256"), (b, "second_source_sha256"),
                      (mixed, "audio_sha256")):
         value = receipt.get(key)

@@ -2,7 +2,10 @@
 //! Motionwright will render, then prepare an exact 48 kHz stereo PCM master.
 //! The pinned Semwright Driver Host performs the later H.264/AAC mux.
 use motionwright_domain::{Change, Project, SFX_CUE_SCHEMA, SemanticSfxCue, SfxAnchor, SfxEvent};
-use motionwright_native::sfx_mix::{VerifiedSfxWav, mix_source_bound_semantic_sfx};
+use motionwright_native::{
+    production::prepare_semantic_sfx_av_audio,
+    sfx_mix::{VerifiedSfxWav, mix_source_bound_semantic_sfx},
+};
 use motionwright_service::StudioService;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -223,7 +226,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("native original SFX mix is incomplete or silent".into());
     }
-    original_file(output, "semantic-sfx-master.wav", &mixed.wav_bytes)?;
+    // The independent numeric original-source control is now compared with
+    // the first-class owner-native preparation, not used as the mux source.
+    let prepared = prepare_semantic_sfx_av_audio(
+        &service,
+        project.id,
+        &project.stamp(),
+        project.deliverables[0].id,
+        MASTER_FRAMES,
+        output,
+    )?;
+    let prepared_bytes = fs::read(output.join(&prepared.audio.relative_path))?;
+    if prepared.proof.exact_pcm_sha256 != mixed.output_sha256
+        || prepared.audio.sha256 != mixed.output_sha256
+        || prepared.proof.revision != project.revision
+        || prepared_bytes != mixed.wav_bytes
+    {
+        return Err("First-class source-bound native SFX preparation changed original PCM".into());
+    }
+    // Portable public synthetic evidence keeps its fixed review filename.
+    // The Native SDK mux consumes the *source-digest-addressed* private WAV.
+    original_file(output, "semantic-sfx-master.wav", &prepared_bytes)?;
     let persisted = service.project(project.id)?;
     if persisted != project {
         return Err("persisted owner project differs from the actual SFX authoring state".into());
@@ -247,8 +270,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "second_source_sha256":sources[1].source_sha256,
             "source_cue_ids": project.audio.sfx_cues.iter().map(|c|c.id).collect::<Vec<_>>(),
             "scheduled_sfx":schedule,
-            "audio_relative":"semantic-sfx-master.wav",
-            "audio_sha256":mixed.output_sha256,
+            "audio_relative":prepared.audio.relative_path,
+            "audio_sha256":prepared.audio.sha256,
+            "native_preparation_verified": true,
+            "native_preparation_revision": prepared.proof.revision,
+            "original_source_count":prepared.proof.original_asset_sha256.len(),
             "sample_peak_pcm16":mixed.sample_peak_pcm16,
             "creative_approval":"REQUIRED",
             "legal_rights":"NOT_PERFORMED"

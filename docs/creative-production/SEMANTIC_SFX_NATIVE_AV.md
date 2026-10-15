@@ -187,3 +187,21 @@ regenerates the authorized PCM before the pinned Semwright Native SDK's
 MLT AV mux. This closes the core native preparation-to-admission boundary.
 The actual Studio UI/Plugin export action, user approvals, optional voice/
 music stems and native MP4 creative acceptance are still separate gaps.
+
+
+## Native end-to-end path uses the production preparation API
+
+The source-bound SFX audiovisual fixture now invokes the SAME
+prepare_semantic_sfx_av_audio routine after importing the two original WAVs
+and authoring their semantic cues through owner-local StudioService CAS.
+The previous numeric original-source mixer remains an independent control:
+its entire PCM output must match the bytes of the prepared digest-named WAV,
+but it is **not** substituted for the production WAV at native mux time.
+
+The MLT request uses the verified digest-named private WAV. A separate
+immutable copy under semantic-sfx-master.wav exists only for synthetic
+human/independent decoder evidence. The evidence verifier and curated
+artifact admission check these bytes are identical, and fail closed if the
+preparation flag, revision, source count, digest, filename or PCM differs.
+This is a real native output preparation path, but the target Motion Canvas
+provider still needs separate AV acceptance and creative sign-off.
