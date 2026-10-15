@@ -39,4 +39,31 @@ Each new `ci-evidence/*-smoke.json` records `automated_inspection.status=PASS` *
 
 The real package checks run only after the corresponding `tauri build` and candidate receipt creation. Their SHA-256 findings and the two-launch SQLite persistence proof are uploaded alongside the existing unsigned installers and source-bound candidate receipt, without changing the release/tag/update policy. A failed smoke gate retains the build evidence in the workflow logs; it must be corrected or documented, never replaced with a fabricated PASS.
 
+## Optional GitHub workflow build-provenance attestation (still no signed installers)
+
+After all **three** disposable CI package jobs pass, trusted `workflow_dispatch`
+runs and successful `main` pushes execute a separate, narrowly privileged
+`attest-candidates` job. It downloads the four unsigned candidate artifacts,
+independently checks their actual bytes against the exact-source, Semwright-pinned
+package receipts, and refuses substituted/missing packages or any receipt
+claiming distribution signing, notarization, publication or human acceptance.
+
+Only that final verification job has GitHub OIDC and attestation-write permissions;
+the package-build jobs have read-only repository access. The action version is
+pinned by immutable SHA. GitHub Sigstore then signs a workflow **attestation of
+the four exact package digests**; the job separately verifies each signature
+and its exact source commit/signer workflow with `gh attestation verify`.
+The temporary source-check report deliberately says
+`gh_attestation_signature_verified=false` until the independent CLI check
+has actually succeeded. Pull requests test the input contract but intentionally
+**do not** mint a trusted provenance attestation; the signing job is skipped.
+
+This proves a GitHub workflow signed a statement about those bytes, **not**
+that the executable inside is safe, the build was reproducible, the package
+has a Windows Authenticode or Apple Developer signature, macOS notarization
+succeeded, or an independent human accepted the installed product. It never
+creates a public release or updates the 60 private case verdicts. Refer to
+[GitHub's artifact attestation documentation](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
+for independent verification of the signed digest and signer identity.
+
 For actual independent validation, use [private acceptance intake](acceptance/REVIEW_INTAKE.md) on explicitly chosen installed builds, with human reviewers and original private acceptance criteria.
