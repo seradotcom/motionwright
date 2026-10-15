@@ -432,6 +432,7 @@ fn single_cut_preview_and_apply_preserve_sfx_tail_without_partial_write() {
 fn single_cut_discloses_rippled_sfx_and_requires_acknowledgement() {
     let (mut project, ids) = setup();
     scene_linked_sfx(&mut project, ids[2], 0, 30);
+    project.scenes[2].status = SceneStatus::Approved;
     let before = project.clone();
     let review = project.inspect_music_cut(ids[0], 2, AUDIO_SHA).unwrap();
     assert_eq!(review.affected_sfx_cue_count, 1);
@@ -462,4 +463,5 @@ fn single_cut_discloses_rippled_sfx_and_requires_acknowledgement() {
         project.validated_sfx_schedule().unwrap()[0].absolute_start_frame,
         17 * 30
     );
+    assert_eq!(project.scenes[2].status, SceneStatus::Draft);
 }

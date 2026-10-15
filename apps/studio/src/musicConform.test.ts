@@ -235,7 +235,7 @@ describe("MW05-E08 music cuts preserve semantic SFX tails",()=>{
     expect(p).toEqual(withCue);
     expect(old.scenes[0].duration).toEqual(p.scenes[0].duration);
   });
-  it("single cut discloses downstream semantic SFX without shifting its source bytes",()=>{
+  it("single cut discloses downstream semantic SFX without shifting its source bytes",async()=>{
     const p=original();
     const cue=attachedSfx(p,2,0,30);
     const original=structuredClone(p.audio.sfx_cues);
@@ -244,6 +244,14 @@ describe("MW05-E08 music cuts preserve semantic SFX tails",()=>{
     expect(review.anchors_need_acknowledgement).toBe(true);
     expect(p.audio.sfx_cues).toEqual(original);
     expect(validateSfxProject(p).find(item=>item.cue_id===cue.id)?.absolute_start_frame)
-      .toBe(22*30);
+      .toBe(16*30);
+    const next=await applyChange(p,{
+      type:"snap_scene_cut_to_music",
+      scene_id:p.scenes[0].id,beat_index:2,source_sha256:SHA,
+      base_revision:p.revision,acknowledge_absolute_anchors:true,
+    });
+    expect(next.scenes[1].status).toBe("draft");
+    expect(next.scenes[2].status).toBe("draft");
+    expect(next.audio.sfx_cues).toEqual(original);
   });
 });
