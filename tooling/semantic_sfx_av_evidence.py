@@ -231,7 +231,7 @@ def inspect_native_sfx_av(
     ], max_bytes=2*FRAME_WIDTH*FRAME_HEIGHT*3)
     video = inspect_decoded_video(pixels)
     return {
-        "evidence_scope":"real_same_project_original_sfx_pcm_to_native_sewright_av_aac_and_decoded_mp4",
+        "evidence_scope":"real_same_project_original_sfx_pcm_to_native_semwright_av_aac_and_decoded_mp4",
         "source_wav_sha256":original["mixed_sha256"],
         "master_sha256":sha(master),
         "technical_source_pcm":"PASS",

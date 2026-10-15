@@ -78,7 +78,7 @@ jobs:
           python3 -m py_compile \
             tooling/native_av_master_e2e.py tooling/semantic_sfx_av_evidence.py \
             tooling/semantic_sfx_av_public_artifact.py
-          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_av_evidence.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_av_*.py' -v
       - name: Install pinned native media runtime and sandbox
         run: |
           set -euo pipefail
