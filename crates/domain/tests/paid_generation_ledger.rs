@@ -593,7 +593,8 @@ fn capability_routing_checks_kind_model_input_policy_and_consent_without_grantin
         supports_consented_identity: false,
         maximum_declared_charge_microusd: 4_000_000,
     };
-    let proposal = d::preview_paid_provider_route(&p, &request, &[declaration.clone()]).unwrap();
+    let proposal =
+        d::preview_paid_provider_route(&p, &request, std::slice::from_ref(&declaration)).unwrap();
     assert!(proposal.matched_declared_provider);
     assert!(proposal.rights_and_input_requirements_checked);
     assert!(!proposal.provider_capability_signature_verified && !proposal.owner_execution_grant);
