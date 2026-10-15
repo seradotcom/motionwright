@@ -85,3 +85,11 @@ evaluator providers and human approval workflows with recorded judgment
 evidence. That requires additional security and comparative experiments.
 MW05-E13-02, arbitrary dynamic code promotion, remains explicitly
 **not implemented**, not silently permitted by these bundles.
+
+## Follow-on E13-02: disposable data comparison (partial)
+
+[The bounded evaluator experiment](V05_EVALUATOR_DATA_EXPERIMENT.md) compares
+two immutable typed recipes without executing code, and requires a separate
+explicit owner-declared admission to register a new version through the same
+source CAS. **Arbitrary executable package promotion and trusted skill
+installation remain not implemented**; this experiment is not an approval.
