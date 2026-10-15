@@ -631,6 +631,8 @@ export interface Project {
 import type { BrandCampaignRollout } from "./brandCampaign";
 
 export type Change =
+  | { type:"record_narration_take"; expected_source_sha256:string; expected_project_revision:number; reviewer:string; reason:string }
+  | { type:"release_narration_take"; expected_source_sha256:string; reviewer:string; reason:string }
   | { type:"apply_brand_campaign"; rollout:BrandCampaignRollout }
   | { type: "apply_otio_owner_cut_review"; review: OtioOwnerCutReview }
   | { type: "edit_paid_generation"; edit: PaidGenerationEdit }

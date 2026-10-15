@@ -722,6 +722,8 @@ struct ApplyHandler {
 enum OperationKind {
     UndoCreativePatch,
     ApplyBrandCampaign,
+    RecordNarrationTake,
+    ReleaseNarrationTake,
     UpsertProductHero,
     DetachProductHero,
     UpsertProductStage,
@@ -906,6 +908,20 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
     match kind {
         OperationKind::UndoCreativePatch => Ok(Change::UndoCreativePatch {
             patch_id: uuid(args, "patch_id")?,
+        }),
+        OperationKind::RecordNarrationTake => Ok(Change::RecordNarrationTake {
+            expected_source_sha256: string(args, "expected_source_sha256", 64)?,
+            expected_project_revision: args
+                .get("expected_project_revision")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| Error::invalid("exact original project revision is required"))?,
+            reviewer: string(args, "reviewer", 200)?,
+            reason: string(args, "reason", 2000)?,
+        }),
+        OperationKind::ReleaseNarrationTake => Ok(Change::ReleaseNarrationTake {
+            expected_source_sha256: string(args, "expected_source_sha256", 64)?,
+            reviewer: string(args, "reviewer", 200)?,
+            reason: string(args, "reason", 2000)?,
         }),
         OperationKind::ApplyBrandCampaign => {
             Ok(Change::ApplyBrandCampaign {
@@ -2604,6 +2620,45 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
             ),
         ),
         (
+            OperationKind::RecordNarrationTake,
+            descriptor(
+                "narration.take.record",
+                "Record an exact active measured narration source through canonical project CAS; no voice generation or authenticated signature",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "expected_source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                        "expected_project_revision":{"type":"integer","minimum":0},
+                        "reviewer":{"type":"string","minLength":1,"maxLength":200},
+                        "reason":{"type":"string","minLength":1,"maxLength":2000}
+                    }),
+                    &[
+                        "ref",
+                        "expected_source_sha256",
+                        "expected_project_revision",
+                        "reviewer",
+                        "reason",
+                    ],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ReleaseNarrationTake,
+            descriptor(
+                "narration.take.release",
+                "Explicitly release the exact source-locked narration take; source approval is owner-declared, not certified",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "expected_source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                        "reviewer":{"type":"string","minLength":1,"maxLength":200},
+                        "reason":{"type":"string","minLength":1,"maxLength":2000}
+                    }),
+                    &["ref", "expected_source_sha256", "reviewer", "reason"],
+                ),
+            ),
+        ),
+        (
             OperationKind::ApplyBrandCampaign,
             descriptor(
                 "brand-campaign.owner-rollout",
@@ -3523,7 +3578,9 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.paid-generation.edit"));
         assert!(names.contains(&"driver.motionwright.otio-cut.owner-commit"));
         assert!(names.contains(&"driver.motionwright.brand-campaign.owner-rollout"));
-        assert_eq!(capabilities.len(), 79);
+        assert!(names.contains(&"driver.motionwright.narration.take.record"));
+        assert!(names.contains(&"driver.motionwright.narration.take.release"));
+        assert_eq!(capabilities.len(), 81);
     }
 
     #[test]
@@ -4691,3 +4748,6 @@ mod otio_cut_tests;
 
 #[cfg(test)]
 mod brand_campaign_tests;
+
+#[cfg(test)]
+mod narration_tests;

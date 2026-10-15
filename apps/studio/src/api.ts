@@ -1,4 +1,5 @@
 export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
+export {nativeNarrationSourceSnapshot,nativeNarrationReplacementImpact} from "./narrationReviewApi";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
@@ -1043,6 +1044,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "review_component_distillation":
       applyDistillationChange(next,change);
       break;
+    case "record_narration_take":
+    case "release_narration_take":
+      throw new Error("Narration source decisions require canonical desktop StudioService revision and Native SDK approval.");
     case "apply_brand_campaign":
       throw new Error("Brand campaign rollout requires canonical desktop StudioService CAS; browser demos cannot register it.");
     case "set_brand_governance": {

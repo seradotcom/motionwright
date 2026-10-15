@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import SemanticSfxWorkbench from "./SemanticSfxWorkbench";
+import NarrationTakeReview from "./NarrationTakeReview";
 import type {
   AudioCue,
   Change,
@@ -527,6 +528,7 @@ export default function AudioWorkspace({
             </div>
           </section>
 
+          <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
           <SemanticSfxWorkbench project={project} commit={commit} onSeek={onSeek}/>
           <section className="audio-editor-section audio-mix-section">
             <header><div><strong>Mix intent</strong><span>Targets are intent; they are not measured output evidence.</span></div></header>

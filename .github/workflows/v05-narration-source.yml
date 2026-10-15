@@ -1,0 +1,78 @@
+name: V05 narration source lock and dependency review
+
+on:
+  pull_request:
+    paths:
+      - 'crates/domain/src/narration_*.rs'
+      - 'crates/domain/src/lib.rs'
+      - 'crates/domain/src/production_design.rs'
+      - 'crates/domain/tests/narration_*.rs'
+      - 'crates/service/tests/approved_narration_cas.rs'
+      - 'crates/native/src/narration_tests.rs'
+      - 'crates/native/src/lib.rs'
+      - 'apps/desktop/src-tauri/src/narration_native.rs'
+      - 'apps/desktop/src-tauri/src/main.rs'
+      - 'apps/studio/src/NarrationTakeReview.tsx'
+      - 'apps/studio/src/narrationReview*'
+      - 'apps/studio/src/narration-review.css'
+      - 'apps/studio/src/audioNarrationProtectedMarkup.test.ts'
+      - 'apps/studio/src/narrationTakeApprovalBrowser.test.ts'
+      - 'apps/studio/src/AudioWorkspace.tsx'
+      - 'apps/studio/src/api.ts'
+      - 'apps/studio/src/creativeProduction.ts'
+      - 'apps/studio/src/types.ts'
+      - 'docs/creative-production/V05_NARRATION_SOURCE_REVIEW.md'
+      - 'docs/creative-production/requirements-status.json'
+      - '.github/workflows/v05-narration-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-narration-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-domain-and-sqlite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - run: python3 tooling/source_policy.py && python3 tooling/creative_status_policy.py
+      - run: cargo fmt --all -- --check
+      - name: Original narration lock and conservative timelines
+        run: |
+          cargo test -p motionwright-domain --test narration_take_lock
+          cargo test -p motionwright-domain --test narration_impact
+          cargo test -p motionwright-service --test approved_narration_cas
+          cargo test -p motionwright-native --lib narration_tests
+      - name: Strict canonical domain, service, Native SDK consumer
+        run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+
+  studio-and-desktop-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/audioNarrationProtectedMarkup.test.ts src/narrationTakeApprovalBrowser.test.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/narration-review.spec.ts --project=chromium

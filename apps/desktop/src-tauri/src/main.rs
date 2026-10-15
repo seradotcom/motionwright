@@ -3,6 +3,7 @@ mod av_master;
 mod effect_grants;
 mod generation_journal;
 mod media_integrity;
+mod narration_native;
 mod runtime_setup;
 
 use av_delivery::{
@@ -2486,6 +2487,8 @@ fn main() {
             export_otio,
             inspect_project_bundle,
             import_project_bundle,
+            narration_native::native_narration_take_snapshot,
+            narration_native::native_narration_replacement_impact,
             generation_journal::native_paid_generation_journal,
             generation_journal::native_paid_generation_preflight,
             generation_journal::native_paid_generation_reserve_preflight,
