@@ -18,6 +18,10 @@ A bounded generation-intent and budget journal has been adapted from experimenta
 
 The existing real-media OTIO bridge now rejects scene extensions and feeds an explicitly reviewed, loss-preserving single-revision cut commit for only reorder/end-trim operations. See [Owner OTIO cut review](V05_OTIO_OWNER_CUT_COMMIT.md). The new station is not a media relinker, NLE renderer or independent source/right verification.
 
+## Disposable evaluator experiments (E13-02 ? technical partial)
+
+A new data-only experiment compares the latest registered evaluator to an original next-version candidate on up to three current scenes. It reuses first-party typed observations and only permits an explicitly acknowledged registration through the existing canonical CAS, not executable skill promotion. [Evaluator experiment documentation](V05_EVALUATOR_DATA_EXPERIMENT.md).
+
 ## Start a design session
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.
