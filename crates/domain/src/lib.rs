@@ -1,3 +1,4 @@
+mod brand_campaign;
 mod brand_governance;
 mod camera_reframe;
 mod canvas;
@@ -23,6 +24,7 @@ mod production_design;
 mod render_tail_impact;
 mod semantic_sfx;
 mod stage_capture;
+pub use brand_campaign::*;
 pub use brand_governance::*;
 pub use camera_reframe::*;
 pub use canvas::*;
@@ -1057,6 +1059,7 @@ impl Project {
         }
         match change {
             Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
+            Change::ApplyBrandCampaign { rollout } => self.apply_brand_campaign(rollout)?,
             Change::UpsertProductHero {
                 instance_id,
                 scene_id,
@@ -2514,6 +2517,9 @@ impl Project {
 pub enum Change {
     UndoCreativePatch {
         patch_id: Uuid,
+    },
+    ApplyBrandCampaign {
+        rollout: Box<BrandCampaignRollout>,
     },
     UpsertProductHero {
         instance_id: Uuid,

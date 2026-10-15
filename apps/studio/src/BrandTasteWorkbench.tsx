@@ -1,4 +1,5 @@
 import { useState } from "react";
+import BrandCampaignWorkbench from "./BrandCampaignWorkbench";
 import type { Project, Change } from "./types";
 import type { BrandRule, BrandProfile, TastePreference } from "./brandGovernance";
 import { brandDigest } from "./brandGovernance";
@@ -110,5 +111,6 @@ export default function BrandTasteWorkbench({project,commit,busy}:Props) {
       <label className="production-field"><span>Decision</span><textarea rows={2} value={decision} onChange={e=>setDecision(e.target.value)}/></label>
       <button className="secondary-button" disabled={disabled||!sceneId||!author.trim()||!rationale.trim()||!decision.trim()} onClick={()=>submit({type:"record_creative_decision",decision:{id:crypto.randomUUID(),scene_id:sceneId,author,decision,rationale}})}>Record decision for selected scene</button>
     </section>
+    <BrandCampaignWorkbench project={project} busy={busy} commit={commit}/>
   </div>;
 }

@@ -1038,12 +1038,23 @@
     },
     {
       "id": "MW05-E14-01",
-      "implementation": "inherited_not_reassessed",
-      "implemented_scope": "Existing linked output profiles and overrides retained",
-      "remaining_scope": "Global campaign/brand propagation not extended here",
+      "implementation": "partial",
+      "implemented_scope": "Original single-project, saved BrandProfile-backed campaign brand rollout for 1?8 pre-attached Hero scenes: source profile SHA-256, exact project/generation/revision, explicit reviewer campaign and bounded palette/required wordmark, read-only row previews, separate owner acknowledgment, one canonical StudioService SQLite CAS revision through Semwright Native SDK, atomic rollback on any late human override/style lock, per-scene original decision records. No arbitrary providers or executable package is admitted.",
+      "remaining_scope": "Organization-wide and cross-project campaign/brand propagation, authenticated owner identity and policy distribution/IAM, arbitrary Stage/procedural/layout family or non-hero target propagation, multi-renderer verified media, language/font accessibility, full human visual review and actual customer adoption remain NOT_IMPLEMENTED/NOT_VERIFIED. One local project CAS does not establish external brand rights or broad campaign consistency.",
       "source_paths": [
-        "crates/domain/src/delivery.rs",
-        "apps/studio/src/DeliveryProfiles.tsx"
+        "crates/domain/src/brand_campaign.rs",
+        "crates/domain/tests/brand_campaign.rs",
+        "crates/service/tests/brand_campaign_persistence.rs",
+        "crates/native/src/brand_campaign_tests.rs",
+        "crates/native/src/lib.rs",
+        "apps/studio/src/brandCampaign.ts",
+        "apps/studio/src/brandCampaign.test.ts",
+        "apps/studio/src/BrandCampaignWorkbench.tsx",
+        "apps/studio/src/BrandTasteWorkbench.tsx",
+        "apps/studio/src/brand-campaign.css",
+        "apps/studio/tests/brand-campaign.spec.ts",
+        ".github/workflows/v05-brand-campaign.yml",
+        "docs/creative-production/V05_BRAND_CAMPAIGN_ROLLOUT.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
