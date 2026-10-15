@@ -98,6 +98,7 @@ def classify_native_command_failure(
         "read_only_status_timeout_observed": False,
         "read_only_status_unavailable_observed": False,
         "original_render_start_receipts_observed": 0,
+        "original_render_start_identity_ambiguous": False,
         "terminal_native_result_verified": False,
         "decoded_media_verified": False,
         "automatically_restarted_mutating_render": False,
@@ -174,7 +175,12 @@ def classify_native_command_failure(
         if not isinstance(receipts, list) or len(receipts) > MAX_RECEIPTS:
             continue
         has_bounded_journal = True
-        starts_in_envelope = 0
+        # Repeated append-only stage rows with the SAME request identity
+        # are not independent native starts. If the legacy/native response
+        # lacks a request ID, a single anonymous bucket is the only safe
+        # lower bound; never pretend to know how many distinct jobs exist.
+        start_identities: set[tuple[object, ...]] = set()
+        anonymous_start_observed = False
         for item in receipts:
             if not isinstance(item, dict):
                 continue
@@ -186,7 +192,22 @@ def classify_native_command_failure(
             observed = payload.get("error")
             receipt_error = observed if isinstance(observed, dict) else {}
             if command == "driver.motion-canvas.render.start" and stage == "completed":
-                starts_in_envelope += 1
+                request_id = item.get("request_id")
+                if isinstance(request_id, str) and 0 < len(request_id) <= 1024:
+                    # Scope the opaque ID by creative generation/revision when
+                    # available. Those private values remain in-memory only.
+                    scope = tuple(
+                        value if isinstance(value, (str, int)) and not isinstance(value, bool)
+                        else None
+                        for value in (
+                            item.get("project_id"), item.get("generation"),
+                            item.get("revision"),
+                        )
+                    )
+                    start_identities.add((*scope, request_id))
+                else:
+                    anonymous_start_observed = True
+                    report["original_render_start_identity_ambiguous"] = True
             if command == "driver.motion-canvas.render.status":
                 if receipt_error.get("code") == "Timeout":
                     report["read_only_status_timeout_observed"] = True
@@ -194,8 +215,13 @@ def classify_native_command_failure(
                     report["read_only_status_unavailable_observed"] = True
                 if _matches_generation_loss(receipt_error.get("message")):
                     report["provider_generation_inactive_observed"] = True
-        # Different streams can describe the same durable request history.
-        # Never double count original native mutation acknowledgements.
+        # Different streams can describe the same durable request history:
+        # use only the largest within-stream distinct count, never add
+        # duplicate stdout/stderr copies of an original mutation receipt.
+        # Anonymous stages may duplicate a known request. Count them only
+        # as evidence that at least one start was observed, never assert
+        # an additional distinct mutation without a request identity.
+        starts_in_envelope = max(len(start_identities), int(anonymous_start_observed))
         report["original_render_start_receipts_observed"] = max(
             report["original_render_start_receipts_observed"], starts_in_envelope
         )
@@ -213,4 +239,13 @@ def classify_native_command_failure(
     ):
         report["reason"] = "native_status_unconfirmed"
         report["source_outcome"] = "UNKNOWN"
+
+    if report["original_render_start_receipts_observed"] > 0:
+        # A known failure of the enclosing CLI or a later read-only status
+        # does not establish the original acknowledged render's terminal
+        # outcome. Without a separately verified original job result it
+        # remains UNKNOWN, regardless of a typed outcome_known=True.
+        if report["source_outcome"] != "UNKNOWN":
+            report["reason"] = "acknowledged_render_terminal_unverified"
+            report["source_outcome"] = "UNKNOWN"
     return report
