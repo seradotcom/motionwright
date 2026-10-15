@@ -28,6 +28,8 @@ pub struct MusicCutReview {
     pub ripple: RationalTime,
     pub downstream_scene_ids: Vec<Uuid>,
     pub affected_cue_count: usize,
+    /// Scene-linked SFX that move or change proximity to the cut.
+    pub affected_sfx_cue_count: usize,
     pub affected_marker_count: usize,
     pub affected_transcript_count: usize,
     pub approval_invalidated: bool,
@@ -36,6 +38,7 @@ pub struct MusicCutReview {
 impl MusicCutReview {
     pub fn anchors_need_acknowledgement(&self) -> bool {
         self.affected_cue_count > 0
+            || self.affected_sfx_cue_count > 0
             || self.affected_marker_count > 0
             || self.affected_transcript_count > 0
     }
@@ -156,6 +159,26 @@ impl Project {
         } else {
             old_end
         };
+        // Validate the proposed SFX placement before claiming a cut is safe.
+        // This catches a shortened scene that would sever an authored tail.
+        let mut projected = self.clone();
+        projected.scenes[scene_index].duration = new_duration;
+        projected.reflow_scene_starts()?;
+        projected.validated_sfx_schedule().map_err(|error| {
+            DomainError::Invalid(format!(
+                "music cut would invalidate a semantic SFX tail or mix: {error}"
+            ))
+        })?;
+        let affected_sfx_cue_count = self
+            .audio
+            .sfx_cues
+            .iter()
+            .filter(|cue| {
+                self.scenes[scene_index..]
+                    .iter()
+                    .any(|scene| scene.id == cue.scene_id)
+            })
+            .count();
         Ok(MusicCutReview {
             scene_id,
             beat_index,
@@ -170,6 +193,7 @@ impl Project {
                 .iter()
                 .map(|item| item.id)
                 .collect(),
+            affected_sfx_cue_count,
             affected_cue_count: self
                 .audio
                 .cues
@@ -206,20 +230,25 @@ impl Project {
         }
         let reviewed = self.inspect_music_cut(scene_id, beat_index, source_sha256)?;
         if reviewed.anchors_need_acknowledgement() && !acknowledge_absolute_anchors {
-            return Err(DomainError::Invalid("music cut changes scene boundaries near fixed audio/marker anchors; acknowledge the retained absolute times".into()));
+            return Err(DomainError::Invalid("music cut affects fixed-time anchors or scene-linked SFX; acknowledge the timing review".into()));
         }
-        let scene = self
+        // Do not expose a partially reflowed timeline to direct in-memory
+        // callers when a later validation fails. Service CAS still owns the
+        // actual revision and durable write.
+        let mut staged = self.clone();
+        let scene = staged
             .scenes
             .iter_mut()
             .find(|scene| scene.id == scene_id)
             .ok_or_else(|| DomainError::NotFound(format!("scene:{scene_id}")))?;
         scene.duration = reviewed.new_duration;
         scene.status = SceneStatus::Draft;
-        self.reflow_scene_starts()?;
-        // An approval digest of a concept is not approval for re-timed shots.
-        if let Some(plan) = self.production_design.plan.as_mut() {
+        staged.reflow_scene_starts()?;
+        if let Some(plan) = staged.production_design.plan.as_mut() {
             plan.approval = None;
         }
+        staged.validate()?;
+        *self = staged;
         Ok(())
     }
 }

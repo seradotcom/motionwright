@@ -173,14 +173,15 @@ export default function MusicClockWorkbench({
         <div><span>Time ripple</span><strong>{readableTime(proposal.ripple)}</strong></div>
         <div><span>Following scenes shifted</span><strong>{proposal.downstream_scene_ids.length}</strong></div>
         <div><span>Absolute cues / markers / transcript segments</span><strong>{proposal.affected_cue_count} / {proposal.affected_marker_count} / {proposal.affected_transcript_count}</strong></div>
+        <div><span>Scene-linked SFX to review</span><strong>{proposal.affected_sfx_cue_count}</strong></div>
       </div>}
       {proposalResult.error && <p className="production-help" role="status">{proposalResult.error}</p>}
       {proposal && <div className="music-cut-footnote"><ShieldAlert size={17} aria-hidden="true"/>
-        <p>Scenes after this cut move by the exact ripple. Authored keyframes stay at their original scene-local times. Existing audio cues, markers and transcript timestamps remain fixed to the global timeline. The scene returns to Draft; any recorded plan approval is cleared. This is not an audio remix or renderer verification.</p>
+        <p>Scenes after this cut move by the exact ripple. Authored keyframes stay at their original scene-local times. Absolute audio cues, markers and transcript timestamps stay fixed; scene-linked SFX remain attached to their scenes and can move with them, but their entire tails are prevalidated. The scene returns to Draft; any recorded plan approval is cleared. This is not an audio remix or renderer verification.</p>
       </div>}
       {proposal?.anchors_need_acknowledgement && <label className="production-check music-cut-acknowledge">
         <input type="checkbox" aria-label="Acknowledge fixed audio and marker times" checked={acknowledge} onChange={e=>setAcknowledge(e.target.checked)}/>
-        I understand existing absolute-time cues, markers and transcript segments will not move; I will inspect those alignments after this cut.
+        I understand fixed-time cues, markers and transcripts will not move, while {proposal.affected_sfx_cue_count} scene-linked SFX require new listening review.
       </label>}
       <div className="production-button-row">
         <button type="button" className="primary-button" disabled={locked || !proposal || (proposal.anchors_need_acknowledgement && !acknowledge)}

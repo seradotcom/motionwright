@@ -3,7 +3,8 @@ import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import type { Change, Project } from "./types";
 import type { MusicConformTarget } from "./musicClock";
-import { applyMusicConformToProject, inspectMusicConform } from "./musicClock";
+import { applyMusicConformToProject, inspectMusicConform, inspectMusicCut } from "./musicClock";
+import { validateSfxProject, type SemanticSfxCue } from "./semanticSfx";
 import type { ProductionPlan } from "./creativeProduction";
 
 const SHA="a".repeat(64);
@@ -170,5 +171,79 @@ describe("MW05-E08-01 one-transaction multi-scene conform",()=>{
     const reversed=structuredClone(p);
     expect(()=>applyMusicConformToProject(p,review)).toThrow("order");
     expect(p).toEqual(reversed);
+  });
+});
+
+
+function attachedSfx(project:Project,sceneIndex:number,offset_frames:number,source_frames:number):SemanticSfxCue {
+  const cue:SemanticSfxCue={
+    schema:"motionwright.semantic-sfx/1",
+    id:crypto.randomUUID(),scene_id:project.scenes[sceneIndex].id,
+    event:"transition",anchor:{kind:"scene_start"},
+    offset_frames,source_asset_id:ASSET,source_sha256:SHA,
+    source_frames,gain_milli_db:-18000,attack_frames:0,release_frames:10,
+    original_source_attestation:"Author-owned original test source",
+  };
+  project.audio.sfx_cues??=[];
+  project.audio.sfx_cues.push(cue);
+  validateSfxProject(project);
+  return cue;
+}
+describe("MW05-E08 music cuts preserve semantic SFX tails",()=>{
+  it("rejects shortened batch and single cuts at preview, without touching the project",async()=>{
+    const p=original();
+    attachedSfx(p,0,30,180); // starts 1s, 6s source, original scene is 7s
+    const unchanged=structuredClone(p);
+    const shortening:MusicConformTarget[]=[
+      {scene_id:p.scenes[0].id,beat_index:1}, // 5s (would sever the 7s SFX tail)
+      {scene_id:p.scenes[1].id,beat_index:3},
+    ];
+    expect(()=>inspectMusicConform(p,shortening,SHA)).toThrow(/semantic SFX tail/);
+    expect(()=>inspectMusicCut(p,p.scenes[0].id,1,SHA)).toThrow(/semantic SFX tail/);
+    await expect(applyChange(p,{...command(p,true),targets:shortening}))
+      .rejects.toThrow(/semantic SFX tail/);
+    expect(p).toEqual(unchanged);
+  });
+  it("retimes scene-linked SFX with the scene, discloses impact and requires acknowledgement",async()=>{
+    const p=original();
+    const cue=attachedSfx(p,2,0,90);
+    const old=validateSfxProject(p).find(item=>item.cue_id===cue.id)!;
+    const review=inspectMusicConform(p,targets(p),SHA);
+    expect(review.affected_sfx_cue_count).toBe(1);
+    expect(review.anchors_need_acknowledgement).toBe(true);
+    await expect(applyChange(p,command(p))).rejects.toThrow(/Acknowledge/);
+    const after=await applyChange(p,command(p,true));
+    const next=validateSfxProject(after).find(item=>item.cue_id===cue.id)!;
+    expect(next.absolute_start_frame).toBe(18*30);
+    expect(next.absolute_start_frame).not.toBe(old.absolute_start_frame);
+    expect(after.audio.sfx_cues).toEqual(p.audio.sfx_cues);
+    expect(after.scenes[2].start).toEqual(at(18));
+  });
+  it("rejects a stale local conform review before mutating the timeline",()=>{
+    const p=original();
+    const shortening:MusicConformTarget[]=[
+      {scene_id:p.scenes[0].id,beat_index:1},
+      {scene_id:p.scenes[1].id,beat_index:3},
+    ];
+    const review=inspectMusicConform(p,shortening,SHA);
+    const old=structuredClone(p);
+    // Simulate a newly authored SFX after a preview without revision update:
+    // a local adversarial contract case; the real CAS requires a new revision.
+    attachedSfx(p,0,30,180);
+    const withCue=structuredClone(p);
+    expect(()=>applyMusicConformToProject(p,review)).toThrow(/SFX source tail/);
+    expect(p).toEqual(withCue);
+    expect(old.scenes[0].duration).toEqual(p.scenes[0].duration);
+  });
+  it("single cut discloses downstream semantic SFX without shifting its source bytes",()=>{
+    const p=original();
+    const cue=attachedSfx(p,2,0,30);
+    const original=structuredClone(p.audio.sfx_cues);
+    const review=inspectMusicCut(p,p.scenes[0].id,2,SHA);
+    expect(review.affected_sfx_cue_count).toBe(1);
+    expect(review.anchors_need_acknowledgement).toBe(true);
+    expect(p.audio.sfx_cues).toEqual(original);
+    expect(validateSfxProject(p).find(item=>item.cue_id===cue.id)?.absolute_start_frame)
+      .toBe(22*30);
   });
 });
