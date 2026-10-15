@@ -15,6 +15,7 @@ mod integrations;
 mod measured_data;
 mod music_clock;
 mod music_conform;
+mod paid_generation;
 mod procedural;
 mod product_stage;
 mod production_design;
@@ -38,6 +39,7 @@ pub use integrations::*;
 pub use measured_data::*;
 pub use music_clock::*;
 pub use music_conform::*;
+pub use paid_generation::*;
 pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
@@ -492,6 +494,9 @@ pub struct Project {
     pub handoffs: Vec<HandoffBinding>,
     #[serde(default)]
     pub production_design: ProductionDesign,
+    /// Project-wide append-only declarations. Never restored from creative branches.
+    #[serde(default, skip_serializing_if = "PaidGenerationLedger::is_empty")]
+    pub paid_generation: PaidGenerationLedger,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -624,6 +629,7 @@ impl Project {
             extensions: vec![],
             handoffs: vec![],
             production_design: ProductionDesign::default(),
+            paid_generation: PaidGenerationLedger::default(),
             updated_at: now,
         };
         project.validate()?;
@@ -648,7 +654,8 @@ impl Project {
         }
         if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
             let empty = ProductionDesign::default();
-            if self.production_design != empty
+            if !self.paid_generation.is_empty()
+                || self.production_design != empty
                 || self.branch_workspaces.iter().any(|workspace| {
                     workspace.base_state.production_design != empty
                         || workspace.current_state.production_design != empty
@@ -677,6 +684,7 @@ impl Project {
         self.production_design.validate_identity_origins(self)?;
         self.production_design.validate_distillations(self)?;
         self.validate_stage_capture_cards()?;
+        self.paid_generation.validate(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
         for scene in &self.scenes {
@@ -1150,6 +1158,7 @@ impl Project {
                 evaluator_version,
                 scene_id,
             } => self.evaluate_creative_scene(*evaluator_id, *evaluator_version, *scene_id)?,
+            Change::EditPaidGeneration { edit } => self.edit_paid_generation(edit)?,
             Change::RegisterIdentityOrigin { record } => self.register_identity_origin(record)?,
             Change::RevokeIdentityOrigin { revocation } => {
                 self.revoke_identity_origin(revocation)?
@@ -2582,6 +2591,9 @@ pub enum Change {
     },
     RegisterCaptureSource {
         record: CaptureSourceRecord,
+    },
+    EditPaidGeneration {
+        edit: PaidGenerationEdit,
     },
     RegisterIdentityOrigin {
         record: IdentityOriginRecord,

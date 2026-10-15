@@ -1,3 +1,4 @@
+export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
@@ -1059,6 +1060,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design.taste_profile=structuredClone(change.profile);
       break;
     }
+    case "edit_paid_generation":
+      throw new Error("Paid-generation accounting requires canonical desktop CAS; browser demos cannot reserve or charge.");
     case "register_creative_evaluator":
     case "evaluate_creative_scene": {
       await applyEvaluatorChange(next,change);
