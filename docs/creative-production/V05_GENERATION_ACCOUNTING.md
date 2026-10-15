@@ -60,7 +60,8 @@ The desktop preflight performs current project reads **before and after**
 domain validation. The TypeScript boundary rejects stale project identity,
 unrecognized fields, missing/ambiguous success flags, unauthorized
 provider/payment claims, changed normalized specifications, inconsistent
-amounts and a fabricated task reconciliation status. This is defense in
+amounts (including totals recomputed from the same canonical project revision)
+and a fabricated task reconciliation status. This is defense in
 depth, not cryptographic authentication of a Tauri process. The canonical
 SQLite service is still the source of truth.
 

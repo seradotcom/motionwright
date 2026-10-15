@@ -58,6 +58,24 @@ describe("generation accounting is strict source data, never provider authority"
     expect(()=>validateDraftReply(project,spec,{...draft,budget:{...draft.budget,provider_reported_cost_microusd:1}})).toThrow();
     expect(()=>validateDraftReply(project,spec,{...draft,budget:{...draft.budget,actual_payment_settled:true}})).toThrow();
   });
+  it("rejects source-inconsistent monetary totals even with valid formatting and false authority flags",()=>{
+    const {project,spec,draft,reserve,journal}=fixture();
+    expect(()=>validateDraftReply(project,spec,{
+      ...draft,budget:{...draft.budget,project_reserved_microusd:1}
+    })).toThrow();
+    expect(()=>validateReservationReply(project,spec.id,{
+      ...reserve,budget:{...reserve.budget,project_reserved_microusd:reserve.budget.project_reserved_microusd-1}
+    })).toThrow();
+    expect(()=>validateReservationReply(project,spec.id,{
+      ...reserve,budget:{...reserve.budget,unresolved_reserved_microusd:0}
+    })).toThrow();
+    expect(()=>validateJournalReply(project,{
+      ...journal,budget:{...journal.budget,unresolved_reserved_microusd:1}
+    })).toThrow();
+    const committed=project.paid_generation!.jobs[0];
+    committed.state="reserved";committed.reserved_microusd=committed.spec.max_charge_microusd;
+    expect(()=>validateJournalReply(project,journal)).toThrow();
+  });
   it("cannot replace a reservation with dispatch, another job or another amount",()=>{
     const {project,spec,reserve}=fixture();
     expect(()=>validateReservationReply(project,"other",reserve)).toThrow();
@@ -80,6 +98,7 @@ describe("generation accounting is strict source data, never provider authority"
     journal.rows[0].known_task_id=job.task_id;
     const query={schema:"motionwright.paid-generation-reconcile-query/1",job_id:job.spec.id,provider_id:job.spec.provider_id,logical_idempotency_sha256:job.spec.logical_idempotency_sha256,known_task_id:job.task_id,operation:"query_existing_task_only",launches_new_task:false,billing_verified:false,provider_observation_verified:false};
     journal.rows[0].reconciliation_query=query;
+    journal.budget={...journal.budget,project_reserved_microusd:job.reserved_microusd,unresolved_reserved_microusd:job.reserved_microusd};
     expect(validateJournalReply(project,journal).rows[0].reconciliation_query?.launches_new_task).toBe(false);
     for(const patch of [{operation:"retry"},{launches_new_task:true},{known_task_id:"new.task"},{billing_verified:true},{provider_observation_verified:true}]) {
       expect(()=>validateJournalReply(project,{...journal,rows:[{...journal.rows[0],reconciliation_query:{...query,...patch}}]})).toThrow();

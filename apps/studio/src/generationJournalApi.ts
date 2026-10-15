@@ -40,6 +40,34 @@ function budget(value: unknown) {
   const reserved = money(b.project_reserved_microusd);
   if (money(b.provider_reported_cost_microusd) > reserved || money(b.unresolved_reserved_microusd) > reserved) fail();
 }
+/** The displayed totals must match the exact project CAS snapshot, not only an
+ * untrusted desktop response. A reservation preflight adds one draft cap. */
+function budgetMatchesProject(project: Project, value: unknown, reserveJobId?: string) {
+  const observed = record(value);
+  let total = 0, reported = 0, unresolved = 0;
+  const jobs = project.paid_generation?.jobs ?? [];
+  if (jobs.length > 256) fail();
+  for (const job of jobs) {
+    const amount = money(job.reserved_microusd);
+    total += amount;
+    if (job.provider_reported_spend_microusd !== null) {
+      reported += money(job.provider_reported_spend_microusd);
+    }
+    if (job.state === "reserved" || job.state === "unknown_outcome") {
+      unresolved += amount;
+    }
+  }
+  if (reserveJobId) {
+    const selected = jobs.find(job => job.spec.id === reserveJobId);
+    if (!selected || selected.state !== "draft" || selected.reserved_microusd !== 0) fail();
+    const cap = money(selected.spec.max_charge_microusd);
+    total += cap; unresolved += cap;
+  }
+  money(total); money(reported); money(unresolved);
+  if (observed.project_reserved_microusd !== total ||
+      observed.provider_reported_cost_microusd !== reported ||
+      observed.unresolved_reserved_microusd !== unresolved) fail();
+}
 function envelope(project: Project, value: unknown, schema: string, fields: string[]) {
   const result = record(value);
   exactKeys(result, ["schema", "project_id", "generation", "revision", ...fields]);
@@ -54,6 +82,7 @@ export function validateDraftReply(project: Project, spec: PaidGenerationSpec, v
   digest(normalized.logical_idempotency_sha256);
   if (stable({ ...normalized, logical_idempotency_sha256: "" }) !== stable({ ...spec, logical_idempotency_sha256: "" })) fail();
   if (stable(reply.normalized_edit) !== stable({ kind: "create", spec: normalized })) fail();
+  budgetMatchesProject(project, reply.budget);
   return reply as unknown as PaidGenerationDraftPreview;
 }
 export function validateReservationReply(project: Project, jobId: string, value: unknown): PaidGenerationReservationPreview {
@@ -69,6 +98,7 @@ export function validateReservationReply(project: Project, jobId: string, value:
   exactKeys(event, ["id", "kind"]);
   if (typeof event.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(event.id)) fail();
   if (stable(event.kind) !== stable({ kind: "reserve", maximum_charge_microusd: job!.spec.max_charge_microusd })) fail();
+  budgetMatchesProject(project, reply.budget, jobId);
   return reply as unknown as PaidGenerationReservationPreview;
 }
 export function validateJournalReply(project: Project, value: unknown): PaidGenerationJournalObservation {
@@ -100,6 +130,7 @@ export function validateJournalReply(project: Project, value: unknown): PaidGene
           query.billing_verified !== false || query.provider_observation_verified !== false) fail();
     } else if (row.reconciliation_query !== null) fail();
   }
+  budgetMatchesProject(project, reply.budget);
   return reply as unknown as PaidGenerationJournalObservation;
 }
 
