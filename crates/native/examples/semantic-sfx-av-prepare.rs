@@ -51,16 +51,27 @@ fn original_file(root: &Path, name: &str, bytes: &[u8]) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn attach(
-    service: &StudioService,
-    project: &mut Project,
-    output: &Path,
-    name: &str,
+struct StemSpec {
+    name: &'static str,
     event: SfxEvent,
     offset: i16,
     gain_milli_db: i32,
     tones: (f64, f64),
+}
+
+fn attach(
+    service: &StudioService,
+    project: &mut Project,
+    output: &Path,
+    spec: StemSpec,
 ) -> Result<VerifiedSfxWav, Box<dyn std::error::Error>> {
+    let StemSpec {
+        name,
+        event,
+        offset,
+        gain_milli_db,
+        tones,
+    } = spec;
     let original = original_stereo_wav(tones.0, tones.1);
     original_file(output, name, &original)?;
     let imported = service.import_asset_file(
@@ -158,21 +169,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &service,
         &mut project,
         output,
-        "original-focus-sfx.wav",
-        SfxEvent::UiFocus,
-        6,
-        -12_000,
-        (440.0, 660.0),
+        StemSpec {
+            name: "original-focus-sfx.wav",
+            event: SfxEvent::UiFocus,
+            offset: 6,
+            gain_milli_db: -12_000,
+            tones: (440.0, 660.0),
+        },
     )?;
     let second = attach(
         &service,
         &mut project,
         output,
-        "original-confirm-sfx.wav",
-        SfxEvent::Confirmation,
-        20,
-        -12_000,
-        (740.0, 980.0),
+        StemSpec {
+            name: "original-confirm-sfx.wav",
+            event: SfxEvent::Confirmation,
+            offset: 20,
+            gain_milli_db: -12_000,
+            tones: (740.0, 980.0),
+        },
     )?;
     if project.id != original_project_id
         || project.generation != original_generation
