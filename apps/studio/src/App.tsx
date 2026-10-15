@@ -55,6 +55,7 @@ import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
+import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
 import NativeAvReview from "./NativeAvReview";
@@ -700,6 +701,9 @@ function DeliverView({
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
+
+      <OtioCutReviewWorkbench project={project} commit={commit} desktopMode={desktopMode}
+        busy={portableBusy !== null}/>
 
       <section className="portable-project" aria-label="Portable project">
         <header className="portable-heading">

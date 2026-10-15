@@ -14,6 +14,10 @@ The current creative baseline includes four bounded first-party composition fami
 
 A bounded generation-intent and budget journal has been adapted from experimental PR #100 into the current SQLite/Native SDK project architecture. It records original synthetic pilot intent, duplicate-safe one-shot reservations, and unknown-task reconciliation without calling a paid provider or granting real-person generation consent. See [Generation accounting](V05_GENERATION_ACCOUNTING.md). Real provider billing, independent consent, outcome verification and human approval are not implemented.
 
+## Source-scoped OTIO cut acceptance (E11-03 partial)
+
+The existing real-media OTIO bridge now rejects scene extensions and feeds an explicitly reviewed, loss-preserving single-revision cut commit for only reorder/end-trim operations. See [Owner OTIO cut review](V05_OTIO_OWNER_CUT_COMMIT.md). The new station is not a media relinker, NLE renderer or independent source/right verification.
+
 ## Start a design session
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.

@@ -750,6 +750,7 @@ enum OperationKind {
     AddClaim,
     SetNarrativePremise,
     AddScene,
+    ApplyOtioOwnerCutReview,
     MoveScene,
     UpdateSceneObjective,
     SetSceneRenderer,
@@ -1113,6 +1114,16 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                     .take(4000)
                     .collect(),
                 duration_seconds,
+            })
+        }
+        OperationKind::ApplyOtioOwnerCutReview => {
+            Ok(Change::ApplyOtioOwnerCutReview {
+                review: Box::new(
+                    serde_json::from_value(args.get("review").cloned().ok_or_else(|| {
+                        Error::invalid("owner-reviewed OTIO preview is required")
+                    })?)
+                    .map_err(|_| Error::invalid("invalid bounded OTIO cut owner review"))?,
+                ),
             })
         }
         OperationKind::MoveScene => Ok(Change::MoveScene {
@@ -1767,6 +1778,34 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
                         "duration_seconds": {"type":"integer","minimum":1,"maximum":86400}
                     }),
                     &["ref", "name", "duration_seconds"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::ApplyOtioOwnerCutReview,
+            descriptor(
+                "otio-cut.owner-commit",
+                "Apply only a reviewed reorder/end trim in one canonical project CAS, never an external NLE effect",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "review":{"type":"object","required":[
+                            "preview","reviewer_declaration","rationale",
+                            "acknowledges_property_losses",
+                            "acknowledges_absolute_audio_marker_positions",
+                            "confirms_single_revision_change"
+                        ],"properties":{
+                            "preview":{"type":"object","required":["schema","project_id","generation",
+                                "expected_project_revision","original_scene_order","proposed_scene_order",
+                                "native_change_proposals"],"additionalProperties":true},
+                            "reviewer_declaration":{"type":"string","minLength":1,"maxLength":160},
+                            "rationale":{"type":"string","minLength":1,"maxLength":1600},
+                            "acknowledges_property_losses":{"type":"boolean","const":true},
+                            "acknowledges_absolute_audio_marker_positions":{"type":"boolean"},
+                            "confirms_single_revision_change":{"type":"boolean","const":true}
+                        },"additionalProperties":false}
+                    }),
+                    &["ref", "review"],
                 ),
             ),
         ),
@@ -3440,7 +3479,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.product-stage.capture.detach"));
         // Preserve both native SDK operation families admitted independently.
         assert!(names.contains(&"driver.motionwright.paid-generation.edit"));
-        assert_eq!(capabilities.len(), 77);
+        assert!(names.contains(&"driver.motionwright.otio-cut.owner-commit"));
+        assert_eq!(capabilities.len(), 78);
     }
 
     #[test]
@@ -4602,3 +4642,6 @@ mod music_clock_contract_tests {
 
 #[cfg(test)]
 mod generation_journal_tests;
+
+#[cfg(test)]
+mod otio_cut_tests;

@@ -5980,3 +5980,46 @@ select:focus {
   font-size: 10px;
   line-height: 1.45;
 }
+
+/* OTIO acceptance is a restrained editorial change ledger, not a card dashboard. */
+.otio-cut-review .portable-heading strong { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.otio-cut-review .portable-operation { align-items: start; }
+.otio-cut-review .portable-operation > .button { align-self: end; }
+.otio-cut-review textarea,
+.otio-cut-review .otio-cut-approval input[type="text"],
+.otio-cut-review .otio-cut-approval input:not([type]) {
+  width: 100%; min-width: 0; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--control-radius);
+  padding: 9px 11px; font-size: 12px; line-height: 1.5; resize: vertical;
+}
+.otio-cut-review textarea::placeholder { color: var(--muted); }
+.otio-cut-review .portable-plan {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 13px;
+  padding: 15px 0; border-bottom: 1px solid var(--border-soft);
+}
+.otio-cut-review .portable-plan > div { padding: 0; }
+.otio-cut-order,
+.otio-cut-edits,
+.otio-cut-losses { list-style: none; margin: 0; padding: 0; }
+.otio-cut-order li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px; align-items: center; min-height: 33px; padding: 5px 0;
+  font-size: 12px; border-bottom: 1px solid var(--border-soft); }
+.otio-cut-order li .mono { color: var(--accent); font-variant-numeric: tabular-nums; }
+.otio-cut-review .otio-cut-order li > .field-label { color: var(--muted); }
+.otio-cut-edits li { font-size: 12px; padding: 3px 0; }
+.otio-cut-losses li { font-size: 11px; line-height: 1.5; padding: 4px 0 4px 14px;
+  position: relative; color: var(--muted); }
+.otio-cut-losses li::before { content: "–"; position: absolute; left: 1px; color: var(--muted); }
+.otio-cut-review details { border-top: 1px solid var(--border-soft); padding-top: 11px; }
+.otio-cut-review summary { cursor: pointer; font-size: 12px; font-weight: 650; }
+.otio-cut-approval { display: grid; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border-soft); }
+.otio-cut-approval > label:not(.otio-cut-check) { display: grid; gap: 5px; }
+.otio-cut-check { display: flex; align-items: flex-start; gap: 10px;
+  max-width: 80ch; color: var(--text); font-size: 12px; line-height: 1.5; }
+.otio-cut-check input { flex-shrink: 0; margin-top: 3px; accent-color: var(--accent); }
+.otio-cut-review .portable-error { color: var(--danger); font-size: 12px; line-height: 1.5; }
+.otio-cut-review .portable-actions { justify-content: flex-start; flex-wrap: wrap; }
+@media (max-width: 860px) {
+  .otio-cut-review .portable-operation { grid-template-columns: minmax(0, 1fr); }
+  .otio-cut-review .portable-operation > .button { grid-column: 1; justify-self: start; }
+}

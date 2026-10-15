@@ -1060,6 +1060,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design.taste_profile=structuredClone(change.profile);
       break;
     }
+    case "apply_otio_owner_cut_review":
+      throw new Error("OTIO owner cut mutation needs canonical desktop CAS; browser demos are read-only.");
     case "edit_paid_generation":
       throw new Error("Paid-generation accounting requires canonical desktop CAS; browser demos cannot reserve or charge.");
     case "register_creative_evaluator":
