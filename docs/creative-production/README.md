@@ -48,6 +48,17 @@ In **Scoped changes**, queue edits with a reason, inspect the editorial A/B, the
 
 In **Native inspection**, select the output profile matching a current native receipt. Read at most eight sampled source frames, inspect an onion/difference view and record a frame-linked manual finding. A finding contains a source PNG digest, time, scene/object, constraint, severity, confidence and proposed local repair. The native frame grant is not written into the finding. Missing or stale native evidence is an explicit unavailable state. The optional **Draft scoped repair** action now transfers a selected native-frame digest and human repair note into the existing Scoped changes editor without generating replacement text, changing the project or bypassing preview/commit. See [Native review to scoped repair](NATIVE_REVIEW_TO_SCOPED_REPAIR.md).
 
+## Independent owner-local Native SDK clients (MW05-E10-03)
+
+A bounded one-shot CLI actor and GitHub Actions test allow two independent OS
+processes to page the real Semwright Native SDK catalog, observe the same
+canonical Studio SQLite project, preview changes without writes and perform
+three explicit owner-local CAS revisions. Stale revisions/cursors, forged
+operations and wrong generations are rejected. The full owner-local event log
+stays private in CI; public output includes only verified source-bound facts.
+This is **not** remote-agent authorization or cross-machine collaboration.
+See [Local SDK clients](V05_EXTERNAL_AGENT_LOCAL_CLIENTS.md).
+
 ## Versioned data-only creative evaluators (MW05-E13-01)
 
 **Production → Evaluators** admits owner-authored, versioned, non-executable creative playbooks and records deterministic technical observations against the exact source project and revision. Human artistic questions remain NOT_ASSESSED and cannot become automatic aesthetic PASS, approval or promotion of executable code. See [Creative Evaluators](CREATIVE_EVALUATORS.md). The original Semwright Native SDK and Studio CAS remain the only mutation authority.
