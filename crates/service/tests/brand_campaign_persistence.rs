@@ -135,7 +135,11 @@ fn competing_owner_sessions_cannot_both_commit_same_source_revision() {
                 .is_ok()
         }));
     }
-    let applied = handles.into_iter().filter(|h| h.join().unwrap()).count();
+    let applied = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|ok| *ok)
+        .count();
     assert_eq!(
         applied, 1,
         "only one independent owner client may commit the shared revision"
