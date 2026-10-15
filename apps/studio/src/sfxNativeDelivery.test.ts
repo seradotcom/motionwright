@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./fixture";
-import { originalSfxAvReadiness } from "./sfxNativeDelivery";
+import { originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx } from "./sfxNativeDelivery";
 import { SFX_CUE_SCHEMA } from "./semanticSfx";
 import type { Project } from "./types";
 
@@ -60,6 +60,16 @@ describe("MW05-E08 Studio native semantic SFX delivery readiness",()=>{
     expect(check(p).ready).toBe(false);
     d.included_scene_ids=[];d.container="mov";
     expect(check(p).ready).toBe(false);
+  });
+  it("never silently promotes an old voice-only master while original SFX exist",()=>{
+    const original=source();
+    expect(voiceOnlyMasterMayExcludeSfx(original)).toBe(false);
+    expect(voiceOnlyMasterMayExcludeSfx(structuredClone(fixtureProject))).toBe(true);
+    original.deliverables[0].voice_track_id="00000000-0000-4000-8000-0000000000ab";
+    expect(voiceOnlyMasterMayExcludeSfx(original)).toBe(false);
+    expect(check(original).ready).toBe(false);
+    original.audio.sfx_cues=[];
+    expect(voiceOnlyMasterMayExcludeSfx(original)).toBe(true);
   });
   it("guards exact scene cuts, SFX source and 900-frame native audio cap",()=>{
     const p=source();

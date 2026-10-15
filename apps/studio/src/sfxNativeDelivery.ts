@@ -4,6 +4,14 @@
 import type { DeliverableProfile, Project, RationalTime } from "./types";
 import { validateSfxProject } from "./semanticSfx";
 
+/** A legacy single/multisegment voice-only MLT master cannot represent
+ * separately authored semantic SFX. Keep its route disabled until a combined
+ * owner-CAS mix is independently admitted rather than dropping the cues.
+ */
+export function voiceOnlyMasterMayExcludeSfx(project: Project): boolean {
+  return (project.audio.sfx_cues?.length ?? 0) === 0;
+}
+
 export type OriginalSfxAvReadiness = {
   ready: boolean;
   reason: string;

@@ -1477,6 +1477,7 @@ async fn assemble_av_master(
     if project.generation != request.generation || project.revision != request.revision {
         return Err("AV master input was invalidated by a project revision.".into());
     }
+    sfx_av_master::reject_unmixed_semantic_sfx(&project)?;
     let profile = project
         .deliverables
         .iter()
@@ -1596,6 +1597,7 @@ async fn assemble_multisegment_av_master(
     if project.generation != request.generation || project.revision != request.revision {
         return Err("Multisegment master input was invalidated by a creative revision.".into());
     }
+    sfx_av_master::reject_unmixed_semantic_sfx(&project)?;
     let profile = project
         .deliverables
         .iter()

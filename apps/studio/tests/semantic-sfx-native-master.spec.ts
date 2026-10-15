@@ -120,3 +120,59 @@ test("browser demo has no native SFX master authority even with editable sound",
   await expect(page.getByRole("button",{name:"Assemble native AV master"})).toBeDisabled();
   await expect(page.getByRole("button",{name:"Assemble original semantic SFX native MP4"})).toHaveCount(0);
 });
+
+
+test("desktop delivery explicitly blocks voice-only master when authored SFX would be dropped",async({page})=>{
+  const boot=structuredClone(fixtureBootstrap);
+  boot.native_sdk.mode="tauri";
+  const project=boot.project,profile=project.deliverables[0];
+  const originalAssetId="40000000-0000-4000-8000-000000000001";
+  const voiceAssetId="40000000-0000-4000-8000-000000000002";
+  const voiceId="40000000-0000-4000-8000-000000000003";
+  const sourceSHA="b".repeat(64),voiceSHA="c".repeat(64);
+  project.assets.push(
+    {id:originalAssetId,name:"Original sound.wav",media_type:"audio/wav",
+      content_sha256:sourceSHA,source_revision:"owned"},
+    {id:voiceAssetId,name:"Measured voice.wav",media_type:"audio/wav",
+      content_sha256:voiceSHA,source_revision:"owned"},
+  );
+  project.audio.voice_tracks.push({
+    id:voiceId,asset_id:voiceAssetId,label:"Measured original narration",
+    sample_rate_hz:48000,channels:2,measured_duration:{num:"16",den:"1"},
+    source_sha256:voiceSHA,loudness_lufs:null,true_peak_dbfs:null,
+  });
+  profile.voice_track_id=voiceId;
+  project.audio.sfx_cues=[{
+    schema:"motionwright.semantic-sfx/1",
+    id:"40000000-0000-4000-8000-000000000004",
+    scene_id:project.scenes[0].id,
+    event:"ui_focus",anchor:{kind:"scene_start"},offset_frames:6,
+    source_asset_id:originalAssetId,source_sha256:sourceSHA,
+    source_frames:24,gain_milli_db:-12000,
+    attack_frames:3,release_frames:6,
+    original_source_attestation:"Owned numerical tone",
+  }];
+  await page.addInitScript(({initial})=>{
+    const app=window as unknown as {
+      __TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>};
+    };
+    app.__TAURI_INTERNALS__={invoke:async(command)=>{
+      if(command==="bootstrap")return structuredClone(initial);
+      if(command==="production_runtime_status")return {
+        status:"ready",expected_version:"1.0.0",observed_version:"1.0.0",
+        version_compatible:true,executable_sha256:"a".repeat(64),
+        connection_identity:"b".repeat(64),pinned_revision:"c".repeat(40),
+      };
+      if(command==="production_jobs")return [];
+      throw new Error("Blocked combined master must not request a native mutation: "+command);
+    }};
+  },{initial:boot});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Deliver",exact:true}).click();
+  const panel=page.getByRole("region",{name:"Canonical audiovisual mastering"});
+  await expect(panel).toContainText("A voice-only master would omit the authored effects");
+  await expect(panel.getByRole("button",{name:"Assemble native AV master"})).toBeDisabled();
+  await expect(panel.getByRole("button",{name:"Assemble original semantic SFX native MP4"}))
+    .toBeDisabled();
+  await expect(panel).toContainText("cannot combine narration or music");
+});

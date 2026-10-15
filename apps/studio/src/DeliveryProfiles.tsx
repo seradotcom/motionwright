@@ -21,7 +21,7 @@ import {
   renderMotionCanvas,
   productionRuntimeCompatibility,
 } from "./api";
-import { originalSfxAvReadiness } from "./sfxNativeDelivery";
+import { originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx } from "./sfxNativeDelivery";
 import type {
   Change,
   DeliverableProfile,
@@ -303,7 +303,10 @@ export default function DeliveryProfiles({
     && selected.audio_sample_rate_hz === 48000
     && selected.color_space === "rec709"
     && selected.container === "mp4");
-  const masterReady = Boolean(desktopMode && selected && !dirty
+  // Voice-only MLT omits the separate semantic SFX source. Never let a
+  // profile containing both sources appear to be a fully mastered AV mix.
+  const hasSemanticSfx = !voiceOnlyMasterMayExcludeSfx(project);
+  const masterReady = Boolean(desktopMode && selected && !dirty && !hasSemanticSfx
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
   const sfxMaster = originalSfxAvReadiness(
     project, selected, currentMotion?.segments[0]?.frame_count ?? null,
@@ -321,7 +324,7 @@ export default function DeliveryProfiles({
   const multiVoiceAligned = Number.isFinite(voiceDurationSeconds)
     && Number.isFinite(multiVideoSeconds)
     && Math.abs(voiceDurationSeconds - multiVideoSeconds) <= 1 / 48_000;
-  const multiMasterReady = Boolean(desktopMode && selected && !dirty
+  const multiMasterReady = Boolean(desktopMode && selected && !dirty && !hasSemanticSfx
     && verifiedWavIntent && multiVoiceAligned && multiSourceToken
     && currentMultiSource && currentMultiSource.total_frames === multiSourceFrames
     && masterProfileSupported);
@@ -1154,6 +1157,15 @@ export default function DeliveryProfiles({
               {!masterPreviewToken && !multiSourceToken && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.
+                </div>
+              )}
+              {hasSemanticSfx && selectedVoice && (
+                <div className="delivery-truth-note warning" role="status">
+                  <CircleDashed size={14} />
+                  The current project contains original semantic SFX and a measured voice.
+                  A voice-only master would omit the authored effects, so it is blocked.
+                  SFX-only delivery also refuses narration. Combined mixing requires
+                  independently admitted audio source verification and review.
                 </div>
               )}
               {!verifiedWavIntent && (

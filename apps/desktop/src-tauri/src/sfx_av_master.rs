@@ -28,6 +28,21 @@ pub struct AssembleSemanticSfxAvRequest {
     preview_token: Uuid,
 }
 
+/// A measured-voice or multisegment master cannot silently drop scene-
+/// authored SFX. Existing voice-only behavior is unchanged for projects
+/// without semantic SFX; a combined master requires a separately approved
+/// source-bound mixing path.
+pub(crate) fn reject_unmixed_semantic_sfx(
+    project: &motionwright_domain::Project,
+) -> Result<(), String> {
+    if !project.audio.sfx_cues.is_empty() {
+        return Err(
+            "This voice-only native AV route cannot omit authored semantic SFX. Use a separately verified combined-audio master or explicitly remove the SFX cues before voice-only mastering.".into()
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn assemble_semantic_sfx_av_master(
     state: State<'_, AppState>,
@@ -178,6 +193,35 @@ mod tests {
             "deliverable_id":Uuid::new_v4(),
             "preview_token":Uuid::new_v4(),
         })
+    }
+
+    #[test]
+    fn voice_only_route_rejects_existing_semantic_sfx_instead_of_muting_it() {
+        let mut project = motionwright_domain::Project::new("Original audio edit").unwrap();
+        assert!(reject_unmixed_semantic_sfx(&project).is_ok());
+        project
+            .audio
+            .sfx_cues
+            .push(motionwright_domain::SemanticSfxCue {
+                schema: motionwright_domain::SFX_CUE_SCHEMA.into(),
+                id: Uuid::new_v4(),
+                scene_id: Uuid::new_v4(),
+                event: motionwright_domain::SfxEvent::Transition,
+                anchor: motionwright_domain::SfxAnchor::SceneStart,
+                offset_frames: 0,
+                source_asset_id: Uuid::new_v4(),
+                source_sha256: "a".repeat(64),
+                source_frames: 30,
+                gain_milli_db: -12_000,
+                attack_frames: 0,
+                release_frames: 0,
+                original_source_attestation: "Owned source".into(),
+            });
+        assert!(
+            reject_unmixed_semantic_sfx(&project)
+                .unwrap_err()
+                .contains("cannot omit authored semantic SFX")
+        );
     }
 
     #[test]

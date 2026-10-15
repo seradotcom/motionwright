@@ -266,3 +266,26 @@ the separately green exact-SHA Linux original-PCM/native H.264/AAC lane.
 Real user listening, creative quality, original source rights, combined
 voice+SFX ducking, arbitrary-frame timing and multisegment MLT AV delivery
 remain separate open requirements; they are not asserted by this UI action.
+
+
+## Prevention of silent audio omission during migration to combined mixing
+
+The existing voice-only assemble_av_master and
+assemble_multisegment_av_master commands **cannot silently exclude**
+authored semantic SFX. Both desktop service entrypoints check the current
+project's SFX cues and fail before consuming any RenderLocal grant, before
+staging an audio source, and before dispatching a native mutation.
+Their original behavior is unchanged when the project has no semantic SFX.
+
+Studio applies the same conservative gate to both voice-only master buttons.
+If a project has a measured voice and authored SFX, it displays a clear
+warning that neither voice-only mastering nor SFX-only mastering can satisfy
+that combined intent. The latter also retains its existing voice-track
+rejection and will not claim silent narration or music as rendered.
+
+Independent original voice/music/SFX ducking work is tracked separately.
+This slice intentionally does not duplicate its mixing algorithm, ingest a
+provider-defined media stream, or label an SFX-only MP4 a full creative
+soundtrack. When a combined mix is admitted, it must be reverified against
+both original source SHA-256 identities and the current visual frame clock.
+Unit/browser and desktop Rust tests cover the temporary fail-closed gate.
