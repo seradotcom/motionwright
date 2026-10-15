@@ -16,6 +16,8 @@ STAGES = frozenset({
     "owner_connection_ready",
     "native_request_entered",
     "native_request_returned",
+    "native_request_error",
+    "native_master_error",
     "native_result_checked",
     "motion_evidence_written",
 })

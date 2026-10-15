@@ -103,3 +103,26 @@ native provider running or mutating. Audio assets must remain outside
 the visual Film asset registry; every authored shot, temporal constraint and
 object identifier must be identical. The preflight has a scoped SHA-256
 record and is not a native render success or finished audiovisual evidence.
+
+
+## Bounded typed native errors (SFX fixture only)
+
+The previous native error was downgraded to
+`malformed_native_failure_response` because the native test binary wrote
+a full private JSON diagnostic followed by a Rust error line. This prevented
+the safe CI classifier from learning even the SDK's closed error code.
+
+The owner-local full error/receipts remain in a private file. For this SFX
+acceptance fixture alone, the binary now additionally emits a *closed typed
+error envelope* containing only an allowlisted SDK code, the SDK's
+outcome-known flag, and an allowlisted list of operation kinds and stages
+(with deliberately empty receipt payloads). Identifiers, native job references,
+paths, untrusted provider messages and raw stderr are never included.
+The existing secure failure classifier handles that limited envelope and
+prints a bounded count of acknowledged render starts.
+
+The render and master errors have distinct diagnostic phase values. A typed
+failure is **not** a verified negative or positive native execution outcome
+unless the pinned SDK says the outcome is known. No failed native render is
+automatically dispatched again, and none of the new diagnostics can promote
+a WAV or MP4 into a public PASS result.

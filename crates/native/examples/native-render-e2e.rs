@@ -513,6 +513,8 @@ fn note_semantic_sfx_render_stage(evidence_path: &Path, stage: &'static str) {
                 | "owner_connection_ready"
                 | "native_request_entered"
                 | "native_request_returned"
+                | "native_request_error"
+                | "native_master_error"
                 | "native_result_checked"
                 | "motion_evidence_written"
         )
@@ -530,6 +532,86 @@ fn note_semantic_sfx_render_stage(evidence_path: &Path, stage: &'static str) {
     })) {
         let _ = fs::write(marker, contents);
     }
+}
+
+/// A failed SFX native operation emits only a CLOSED error code and
+/// allowlisted operation stages into the CI command result. The original
+/// full SDK error, broker receipts and job refs remain owner-private.
+fn emit_sfx_bounded_native_error(
+    evidence_path: &Path,
+    phase: &'static str,
+    error: &semwright_native_sdk::Error,
+    receipts: &[motionwright_storage::ProductionReceipt],
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+    {
+        return Ok(false);
+    }
+    if !matches!(phase, "native_request_error" | "native_master_error") {
+        return Err("unrecognized closed SFX error phase".into());
+    }
+    note_semantic_sfx_render_stage(evidence_path, phase);
+    let code = format!("{:?}", error.code);
+    let safe_code = match code.as_str() {
+        "Unavailable" => "Unavailable",
+        "Timeout" => "Timeout",
+        "ConsentRequired" => "ConsentRequired",
+        "Conflict" => "Conflict",
+        "StaleReference" => "StaleReference",
+        "ResourceExhausted" => "ResourceExhausted",
+        "NotFound" => "NotFound",
+        "Cancelled" => "Cancelled",
+        "InvalidArguments" => "InvalidArguments",
+        "Internal" => "Internal",
+        "PermissionDenied" => "PermissionDenied",
+        "Unknown" => "Unknown",
+        _ => "OtherOrMissing",
+    };
+    let safe_receipts = receipts
+        .iter()
+        .filter_map(|receipt| {
+            let command = match receipt.command.as_str() {
+                "driver.motion-canvas.composition.inspect" => {
+                    "driver.motion-canvas.composition.inspect"
+                }
+                "driver.motion-canvas.composition.plan" => "driver.motion-canvas.composition.plan",
+                "driver.motion-canvas.composition.apply" => {
+                    "driver.motion-canvas.composition.apply"
+                }
+                "driver.motion-canvas.composition.verify" => {
+                    "driver.motion-canvas.composition.verify"
+                }
+                "driver.motion-canvas.render.start" => "driver.motion-canvas.render.start",
+                "driver.motion-canvas.render.status" => "driver.motion-canvas.render.status",
+                "driver.motion-canvas.render.result" => "driver.motion-canvas.render.result",
+                "driver.mlt-video.frames.encode" => "driver.mlt-video.frames.encode",
+                "driver.mlt-video.av.mux" => "driver.mlt-video.av.mux",
+                _ => return None,
+            };
+            let stage = match receipt.stage.as_str() {
+                "dispatching" => "dispatching",
+                "completed" => "completed",
+                "failed" => "failed",
+                "outcome_unknown" => "outcome_unknown",
+                _ => "unrecognized",
+            };
+            Some(json!({"command": command, "stage": stage, "payload": {}}))
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "error": {
+                "code": safe_code,
+                "outcome_known": error.outcome_known
+            },
+            "receipts": safe_receipts,
+            "native_media_verified": false,
+            "automatic_mutating_retry": false
+        }))?
+    );
+    Ok(true)
 }
 
 async fn render(
@@ -611,7 +693,7 @@ async fn render(
                     "outcome_known": error.outcome_known,
                     "candidates": &error.candidates,
                 },
-                "receipts": receipts,
+                "receipts": &receipts,
             });
             let body = serde_json::to_vec_pretty(&diagnostic)?;
             let mut file = OpenOptions::new()
@@ -621,7 +703,14 @@ async fn render(
             file.write_all(&body)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            if !emit_sfx_bounded_native_error(
+                evidence_path,
+                "native_request_error",
+                &error,
+                &receipts,
+            )? {
+                eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            }
             return Err(error.into());
         }
     };
@@ -765,7 +854,7 @@ async fn master(
                     "outcome_known": error.outcome_known,
                     "candidates": &error.candidates,
                 },
-                "receipts": receipts,
+                "receipts": &receipts,
             });
             let body = serde_json::to_vec_pretty(&diagnostic)?;
             let mut file = OpenOptions::new()
@@ -775,7 +864,14 @@ async fn master(
             file.write_all(&body)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            if !emit_sfx_bounded_native_error(
+                evidence_path,
+                "native_master_error",
+                &error,
+                &receipts,
+            )? {
+                eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            }
             return Err(error.into());
         }
     };

@@ -57,5 +57,68 @@ class ClosedNativeStageTests(unittest.TestCase):
         self.assertEqual(safe_stage(self.file), "NOT_VERIFIED")
 
 
+
+class ClosedNativeErrorEnvelopeTests(unittest.TestCase):
+    """A Rust error plus arbitrary private stderr must never enter CI logs."""
+
+    def test_bounded_stdout_error_survives_unstructured_rust_stderr(self):
+        from native_av_failure_guard import classify_native_command_failure
+        envelope = json.dumps({
+            "error": {"code": "Unavailable", "outcome_known": False},
+            "receipts": [],
+            "native_media_verified": False,
+            "automatic_mutating_retry": False,
+        }).encode("utf-8")
+        sensitive = b"Error: owner/session/private-broker-id"
+        proof = classify_native_command_failure(
+            stdout=envelope, stderr=sensitive, exit_code=1,
+        )
+        self.assertEqual(proof["reported_error_code"], "Unavailable")
+        self.assertEqual(proof["source_outcome"], "UNKNOWN")
+        self.assertFalse(proof["decoded_media_verified"])
+        self.assertFalse(proof["raw_cli_output_in_diagnostic"])
+        self.assertFalse(proof["automatically_restarted_mutating_render"])
+        self.assertNotIn(b"private-broker-id".decode(), json.dumps(proof))
+
+    def test_authoritative_failure_code_cannot_be_reclassified_as_success(self):
+        from native_av_failure_guard import classify_native_command_failure
+        for known in (True, False):
+            with self.subTest(known=known):
+                raw = json.dumps({
+                    "error": {"code": "Conflict", "outcome_known": known},
+                    "receipts": [],
+                }).encode("utf-8")
+                proof = classify_native_command_failure(
+                    stdout=raw, stderr=b"", exit_code=1,
+                )
+                self.assertNotEqual(proof["source_outcome"], "SUCCESS")
+                self.assertFalse(proof["terminal_native_result_verified"])
+                self.assertFalse(proof["automatically_restarted_mutating_render"])
+
+    def test_closed_receipts_count_start_without_exposing_job_identifiers(self):
+        from native_av_failure_guard import classify_native_command_failure
+        safe_error = {
+            "error": {"code": "Conflict", "outcome_known": False},
+            "receipts": [
+                {"command": "driver.motion-canvas.render.start",
+                 "stage": "completed", "payload": {}},
+                {"command": "driver.motion-canvas.render.status",
+                 "stage": "outcome_unknown", "payload": {}},
+            ],
+            "native_media_verified": False,
+            "automatic_mutating_retry": False,
+        }
+        proof = classify_native_command_failure(
+            stdout=json.dumps(safe_error).encode("utf-8"),
+            stderr=b"Error: local owner file /secret/path and job ref",
+            exit_code=1,
+        )
+        self.assertEqual(proof["original_render_start_receipts_observed"], 1)
+        self.assertEqual(proof["source_outcome"], "UNKNOWN")
+        self.assertFalse(proof["terminal_native_result_verified"])
+        self.assertFalse(proof["native_job_references_disclosed"])
+        self.assertNotIn("/secret/path", json.dumps(proof))
+
+
 if __name__ == "__main__":
     unittest.main()

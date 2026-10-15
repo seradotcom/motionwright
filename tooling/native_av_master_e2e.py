@@ -598,7 +598,13 @@ def main() -> None:
                     # The native error may be UNKNOWN. This is only an
                     # allowlisted progress enum, never a result or job retry.
                     stage = safe_stage(EVIDENCE / "semantic-sfx-render-stage.json")
+                    code = (error.diagnostic.get("reported_error_code", "OtherOrMissing")
+                            if isinstance(error, NativeCommandFailure) else "OtherOrMissing")
+                    outcome = (error.diagnostic.get("source_outcome", "NOT_VERIFIED")
+                               if isinstance(error, NativeCommandFailure) else "NOT_VERIFIED")
                     print("semantic-sfx-ci-stage=" + stage
+                          + " native_error_code=" + code
+                          + " source_outcome=" + outcome
                           + " native_result_verified=false"
                           + " automatic_retry=false", flush=True)
                 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA:
