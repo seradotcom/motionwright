@@ -4599,3 +4599,6 @@ mod music_clock_contract_tests {
         assert!(change_from_args(OperationKind::ConformScenesToMusic, &malformed).is_err());
     }
 }
+
+#[cfg(test)]
+mod generation_journal_tests;

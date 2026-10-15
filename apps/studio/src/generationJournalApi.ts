@@ -28,7 +28,9 @@ function stable(value: unknown): string {
     const object = value as Record<string, unknown>;
     return "{" + Object.keys(object).sort().map(key => JSON.stringify(key) + ":" + stable(object[key])).join(",") + "}";
   }
-  return JSON.stringify(value);
+  const encoded = JSON.stringify(value);
+  if (typeof encoded !== "string") fail();
+  return encoded;
 }
 function budget(value: unknown) {
   const b = record(value);
@@ -65,7 +67,7 @@ export function validateReservationReply(project: Project, jobId: string, value:
   if (!job || job.state !== "draft") fail();
   const event = record(edit.event);
   exactKeys(event, ["id", "kind"]);
-  if (typeof event.id !== "string" || !/^[0-9a-f-]{36}$/.test(event.id)) fail();
+  if (typeof event.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(event.id)) fail();
   if (stable(event.kind) !== stable({ kind: "reserve", maximum_charge_microusd: job!.spec.max_charge_microusd })) fail();
   return reply as unknown as PaidGenerationReservationPreview;
 }

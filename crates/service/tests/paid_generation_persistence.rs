@@ -68,7 +68,9 @@ fn one_unknown_paid_task_survives_multiple_sqlite_reopens_without_double_reservi
         &project,
         "paid:plan",
         Change::EditPaidGeneration {
-            edit: PaidGenerationEdit::Create { spec: spec.clone() },
+            edit: PaidGenerationEdit::Create {
+                spec: Box::new(spec.clone()),
+            },
         },
     );
     let stamp = project.stamp();
@@ -189,7 +191,9 @@ fn saved_draft(service: &StudioService) -> Project {
         &p,
         "source-intent",
         Change::EditPaidGeneration {
-            edit: PaidGenerationEdit::Create { spec: request },
+            edit: PaidGenerationEdit::Create {
+                spec: Box::new(request),
+            },
         },
     )
 }
@@ -301,7 +305,9 @@ fn portable_reimport_keeps_unknown_history_but_gets_a_new_cas_generation() {
                 &imported.stamp(),
                 "duplicate-after-import",
                 &Change::EditPaidGeneration {
-                    edit: PaidGenerationEdit::Create { spec: duplicate }
+                    edit: PaidGenerationEdit::Create {
+                        spec: Box::new(duplicate)
+                    }
                 }
             )
             .is_err()

@@ -62,7 +62,9 @@ pub async fn native_paid_generation_preflight(
         .expected_idempotency(project.id)
         .map_err(|e| e.to_string())?;
     spec.validate(&project).map_err(|e| e.to_string())?;
-    let edit = PaidGenerationEdit::Create { spec: spec.clone() };
+    let edit = PaidGenerationEdit::Create {
+        spec: Box::new(spec.clone()),
+    };
     let mut candidate = project.paid_generation.clone();
     candidate
         .apply(&project, &edit)

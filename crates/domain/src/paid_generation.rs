@@ -281,7 +281,8 @@ pub struct PaidGenerationLedger {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PaidGenerationEdit {
     Create {
-        spec: PaidGenerationSpec,
+        // Preserve the public JSON contract while bounding the in-memory enum.
+        spec: Box<PaidGenerationSpec>,
     },
     Append {
         job_id: Uuid,
@@ -591,7 +592,9 @@ impl PaidGenerationLedger {
                         "paid request already exists: do not duplicate a charge".into(),
                     ));
                 }
-                proposed.jobs.push(PaidGenerationJob::initial(spec.clone()));
+                proposed
+                    .jobs
+                    .push(PaidGenerationJob::initial(spec.as_ref().clone()));
             }
             PaidGenerationEdit::Append {
                 job_id,

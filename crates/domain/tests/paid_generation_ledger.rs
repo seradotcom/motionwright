@@ -61,7 +61,9 @@ fn spec(project: &Project, id: u128, scope: Scope, kind: Kind, variant: u16) -> 
 fn create(project: &mut Project, spec: PaidGenerationSpec) {
     project
         .apply_change(&Change::EditPaidGeneration {
-            edit: PaidGenerationEdit::Create { spec },
+            edit: PaidGenerationEdit::Create {
+                spec: Box::new(spec),
+            },
         })
         .unwrap();
 }
@@ -339,7 +341,7 @@ fn identical_paid_semantic_request_cannot_be_billed_twice_with_a_new_uuid() {
     assert!(
         p.apply_change(&Change::EditPaidGeneration {
             edit: PaidGenerationEdit::Create {
-                spec: duplicate.clone()
+                spec: Box::new(duplicate.clone())
             }
         })
         .is_err()
@@ -463,7 +465,9 @@ fn misleading_identifiers_unapproved_identity_and_wrong_usage_fail_closed() {
     let before = p.clone();
     assert!(
         p.apply_change(&Change::EditPaidGeneration {
-            edit: PaidGenerationEdit::Create { spec: person }
+            edit: PaidGenerationEdit::Create {
+                spec: Box::new(person)
+            }
         })
         .is_err()
     );
@@ -723,7 +727,9 @@ fn changing_notes_caps_or_input_order_cannot_duplicate_the_same_logical_attempt(
     let before = p.clone();
     assert!(
         p.apply_change(&Change::EditPaidGeneration {
-            edit: PaidGenerationEdit::Create { spec: duplicate }
+            edit: PaidGenerationEdit::Create {
+                spec: Box::new(duplicate)
+            }
         })
         .is_err()
     );
@@ -762,7 +768,9 @@ fn branch_checkout_cannot_restore_an_empty_reservation_history() {
         duplicate.logical_idempotency_sha256 = duplicate.expected_idempotency(p.id).unwrap();
         assert!(
             p.apply_change(&Change::EditPaidGeneration {
-                edit: PaidGenerationEdit::Create { spec: duplicate }
+                edit: PaidGenerationEdit::Create {
+                    spec: Box::new(duplicate)
+                }
             })
             .is_err()
         );
@@ -789,7 +797,9 @@ fn generation_edits_respect_both_project_and_scene_content_locks() {
         let before = p.clone();
         assert!(
             p.apply_change(&Change::EditPaidGeneration {
-                edit: PaidGenerationEdit::Create { spec: request }
+                edit: PaidGenerationEdit::Create {
+                    spec: Box::new(request)
+                }
             })
             .is_err()
         );
