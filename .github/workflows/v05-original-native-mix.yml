@@ -1,0 +1,99 @@
+name: V05 physical original 3-bus mix and audition
+
+on:
+  pull_request:
+    paths:
+      - 'crates/native/src/original_mix.rs'
+      - 'crates/native/src/lib.rs'
+      - 'crates/native/tests/original_mix.rs'
+      - 'crates/native/examples/native_mix_fixture.rs'
+      - 'crates/service/src/audio.rs'
+      - 'crates/service/src/lib.rs'
+      - 'crates/service/tests/original_mix_custody.rs'
+      - 'apps/desktop/src-tauri/src/original_mix_native.rs'
+      - 'apps/desktop/src-tauri/src/main.rs'
+      - 'apps/studio/src/NativeOriginalMixReview.tsx'
+      - 'apps/studio/src/nativeMixTypes.ts'
+      - 'apps/studio/src/nativeOriginalMixBrowser.test.ts'
+      - 'apps/studio/src/AudioWorkspace.tsx'
+      - 'apps/studio/src/api.ts'
+      - 'apps/studio/tests/native-original-mix.spec.ts'
+      - 'tooling/native-original-mix/**'
+      - 'docs/creative-production/V05_ORIGINAL_NATIVE_PCM_MIX.md'
+      - 'docs/creative-production/requirements-status.json'
+      - '.github/workflows/v05-original-native-mix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v05-original-native-mix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-source-and-independent-meter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: v05-original-first-party-source-mix-1.98.1
+          cache-on-failure: true
+      - name: Source policy and creative requirement truth
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+          cargo fmt --all -- --check
+      - name: Full-source PCM hashes, clipping bounds, source custody, independent replay
+        run: |
+          cargo test --locked -p motionwright-native --test original_mix
+          cargo test --locked -p motionwright-service --test original_mix_custody
+          cargo clippy --locked -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+          cargo build --locked -p motionwright-native --example native_mix_fixture
+          python3 -m py_compile tooling/native-original-mix/original_mix_e2e.py
+      - name: Independent FFmpeg true peak and EBU R128 instrument on disposable runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
+      - name: Actual three-locale WAV decode and source-specific duck measurements
+        run: /usr/bin/python3 tooling/native-original-mix/original_mix_e2e.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: V05-original-mix-technical-NOT_MASTERED-${{ github.sha }}
+          path: verification/original-voice-music-sfx/
+          if-no-files-found: warn
+          retention-days: 7
+
+  studio-audition:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run src/nativeOriginalMixBrowser.test.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/native-original-mix.spec.ts --project=chromium

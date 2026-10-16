@@ -6,6 +6,7 @@ on:
       - 'tooling/native_av_failure_guard.py'
       - 'tooling/native_av_master_e2e.py'
       - 'tooling/tests/test_native_av_failure_guard.py'
+      - 'tooling/tests/test_native_failure_acknowledgement.py'
       - 'tooling/tests/test_native_cli_failure_redaction.py'
       - 'tooling/native_render_e2e.py'
       - 'tooling/native_mlt_sequence_e2e.py'
@@ -17,6 +18,7 @@ on:
       - 'tooling/native_av_failure_guard.py'
       - 'tooling/native_av_master_e2e.py'
       - 'tooling/tests/test_native_av_failure_guard.py'
+      - 'tooling/tests/test_native_failure_acknowledgement.py'
       - 'tooling/tests/test_native_cli_failure_redaction.py'
       - 'tooling/native_render_e2e.py'
       - 'tooling/native_mlt_sequence_e2e.py'
@@ -44,6 +46,7 @@ jobs:
           python3 tooling/source_policy.py
           python3 -m py_compile tooling/native_av_failure_guard.py tooling/native_av_master_e2e.py
           python3 -m unittest discover -s tooling/tests -p 'test_native_av_failure_guard.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_native_failure_acknowledgement.py' -v
           python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
       - name: Check no automatic success promotion is claimed
         run: |

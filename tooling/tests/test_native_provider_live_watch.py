@@ -216,6 +216,30 @@ class BoundedLiveProviderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             live.public_lifecycle_kind_counts(private)
 
+    def test_native_render_lane_observes_broker_during_original_job(self):
+        root = Path(__file__).resolve().parents[2]
+        runner = (root / "tooling/native_render_e2e.py").read_text()
+        workflow = (root / ".github/workflows/native-render-e2e.yml").read_text()
+        from native_render_public_artifact import FILES
+        self.assertIn("PassiveLiveBrokerWatch", runner)
+        self.assertIn("public_lifecycle_kind_counts(live_events)", runner)
+        self.assertIn("live_broker_watch.start()", runner)
+        self.assertIn("live_broker_watch.finish()", runner)
+        self.assertIn("native-provider-live-broker-events.json", runner)
+        self.assertIn('MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: \'1\'', workflow)
+        self.assertEqual(workflow.count("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'"), 2)
+        self.assertIn("test_native_provider_live_watch.py", workflow)
+        self.assertIn(
+            'test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json"',
+            workflow,
+        )
+        self.assertIn('native_provider_causation_proven"] is False', workflow)
+        self.assertIn('original_render_retry_permitted"] is False', workflow)
+        self.assertNotIn("native-provider-live-broker-events.json", FILES)
+        self.assertNotIn('native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json', (
+            root / ".github/workflows/native-av-master-e2e.yml"
+        ).read_text())
+
     def test_ci_wiring_is_baseline_only_no_native_retry(self):
         root = Path(__file__).resolve().parents[2]
         runner = (root / "tooling/native_av_master_e2e.py").read_text()

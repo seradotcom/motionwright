@@ -2075,3 +2075,41 @@ export async function previewCreativePatch(project: Project, patch: CreativePatc
     dirty_start:source.start, dirty_end:{num:String(num),den:String(den)},
     kind:"semantic_diff_full_scene_invalidation_not_pixel_verification" as const };
 }
+
+export async function nativeOriginalMixAudition(
+  project:Project,options:import('./nativeMixTypes').OriginalMixPreviewOptions
+):Promise<Uint8Array>{
+  if(!isTauri())throw new Error('Original multi-bus WAV playback requires the verified desktop domain service.');
+  if(!options.owner_attests_preview_rights||
+      ![options.music_asset_id,options.sfx_asset_id].every(assetId=>
+        project.assets.some(asset=>asset.id===assetId&&asset.media_type.startsWith('audio/')&&
+          /^[a-f0-9]{64}$/.test(asset.content_sha256??'')))||
+      options.music_asset_id===options.sfx_asset_id||
+      !project.deliverables.some(profile=>profile.id===options.deliverable_profile_id)||
+      ![options.sfx_gain_db,options.duck_attenuation_db].every(Number.isFinite)||
+      options.sfx_gain_db< -80||options.sfx_gain_db>12||
+      options.duck_attenuation_db<0||options.duck_attenuation_db>30||
+      ![options.duck_attack_samples,options.duck_release_samples].every(value=>
+        Number.isInteger(value)&&value>=1&&value<=48000)){
+    throw new Error('Original mixing needs explicitly selected source-bound assets, an approved local-preview attestation and bounded sample gains.');
+  }
+  const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request:{
+    project_id:project.id,generation:project.generation,revision:project.revision,...options
+  }});
+  const bytes=result instanceof Uint8Array?result:
+    result instanceof ArrayBuffer?new Uint8Array(result):
+    Array.isArray(result)?Uint8Array.from(result):null;
+  if(!bytes||bytes.byteLength<44||bytes.byteLength>3*1024*1024||
+     bytes[0]!==82||bytes[1]!==73||bytes[2]!==70||bytes[3]!==70||
+     bytes[8]!==87||bytes[9]!==65||bytes[10]!==86||bytes[11]!==69){
+    throw new Error('Native source mixer did not return a bounded original RIFF/WAVE audition.');
+  }
+  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  if(bytes.byteLength!==view.getUint32(4,true)+8||
+     view.getUint16(20,true)!==1||view.getUint16(22,true)!==2||
+     view.getUint32(24,true)!==48000||view.getUint16(34,true)!==16||
+     bytes[36]!==100||bytes[37]!==97||bytes[38]!==116||bytes[39]!==97||
+     view.getUint32(40,true)!==bytes.byteLength-44)
+    throw new Error("Native source mixer returned a malformed or mismatched stereo PCM payload.");
+  return bytes;
+}
