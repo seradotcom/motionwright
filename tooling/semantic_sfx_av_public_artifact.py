@@ -65,8 +65,14 @@ def curate(source: Path, output: Path, sha: str, success: bool) -> dict:
             decoded=read_json(source/"decoded-media-proof.json")
             assert run["motionwright_sha"]==sha
             assert run["native_av_master_e2e"]=="PASS"
-            assert run["fixture"]=="semantic-sfx-av"
-            assert run["frame_count"]==60
+            fixture=run["fixture"]
+            assert fixture in ("semantic-sfx-av","semantic-sfx-composition-av")
+            composition=fixture=="semantic-sfx-composition-av"
+            frames=540 if composition else 60
+            assert run["frame_count"]==frames
+            assert prep["frames"]==frames
+            assert len(prep["scene_ids"])==(3 if composition else 1)
+            assert len(prep["scheduled_sfx"])==2
             assert run["semantic_sfx_source_project_revision"]==prep["revision"]
             assert prep["schema"]=="motionwright.semantic-sfx-av-prepared/1"
             assert prep["native_preparation_verified"] is True
@@ -85,12 +91,23 @@ def curate(source: Path, output: Path, sha: str, success: bool) -> dict:
             assert decoded["master_sha256"]==run["master_sha256"]
             assert decoded["technical_h264_aac_mux"]=="PASS"
             assert decoded["technical_source_pcm"]=="PASS"
-            assert decoded["video_frames_decoded"]==60
+            assert decoded["video_frames_decoded"]==frames
+            assert decoded["exact_sfx_sample_count"]==frames*1600
             assert decoded["changed_channel_bytes"]>=85
-            assert decoded["absolute_first_onset_error_samples"]<=1024
-            assert decoded["stereo_channel_identity"]=="confirmed_scene_linked_440_660_and_740_980_hz"
+            if composition:
+                assert decoded["max_absolute_onset_error_samples"]<=1024
+                assert decoded["observed_onset_samples"] and len(decoded["observed_onset_samples"])==2
+                assert decoded["expected_onset_samples"]==[9600,608000]
+                assert decoded["original_scene_count"]==3
+                assert decoded["middle_scene_silence_sample_count"]==180*1600
+                assert decoded["stereo_channel_identity"]=="confirmed_scene0_440_660_scene2_740_980_hz"
+            else:
+                assert decoded["absolute_first_onset_error_samples"]<=1024
+                assert decoded["stereo_channel_identity"]=="confirmed_scene_linked_440_660_and_740_980_hz"
             assert decoded["human_creative_approval"]=="REQUIRED"
             for name,max_bytes in FILES.items():
+                if composition and name=="semantic-sfx-master.wav":
+                    max_bytes=4*1024*1024
                 path=source/name
                 assert path.is_file() and not path.is_symlink() and 44<path.stat().st_size<=max_bytes
                 result["files"][name]={"sha256":digest(path),"bytes":path.stat().st_size}
@@ -102,7 +119,13 @@ def curate(source: Path, output: Path, sha: str, success: bool) -> dict:
                 shutil.copyfile(source/name,output/name)
             result["technical_result"]="PASS"
             result["native_sdk_mux"]="REAL_PINNED_DRIVER_HOST"
-            result["decoded_aac_onset_error_samples"]=decoded["absolute_first_onset_error_samples"]
+            result["fixture"]=fixture
+            result["original_scene_count"]=3 if composition else 1
+            result["native_frame_count"]=frames
+            result["decoded_aac_onset_error_samples"]=(
+                decoded["max_absolute_onset_error_samples"] if composition
+                else decoded["absolute_first_onset_error_samples"]
+            )
         except (AssertionError,KeyError,TypeError,ValueError,OSError,json.JSONDecodeError):
             # Never emit candidate media from failed or ambiguous evidence.
             for name in FILES:
