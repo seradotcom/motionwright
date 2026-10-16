@@ -285,7 +285,7 @@ mod tests {
     use super::*;
     use motionwright_domain::{Change, ExtensionKind, ExtensionProfile};
 
-    const PIN: &str = "04142a2ae16e53a58bb6cf43135786e396a4b720";
+    const PIN: &str = "54d3459a051adbce4cae9f60c0dea8f60c824be6";
     fn project() -> Project {
         let mut p = Project::new("Owner camera/render project").unwrap();
         p.apply_change(&Change::AddScene {

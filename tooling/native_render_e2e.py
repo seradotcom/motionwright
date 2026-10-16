@@ -22,6 +22,7 @@ from native_av_failure_guard import NativeCommandFailure, run_sanitized_json
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_live_watch import PassiveLiveBrokerWatch, public_lifecycle_kind_counts
 from native_render_stage_cost import assemble_native_stage_report, elapsed_us
+from native_caption_pixels import compare_caption_overlay
 from native_direct_mediated_parity import (
     DirectParityError, checked_direct_artifact, compare_native_pngs,
     run_direct_native_film,
@@ -38,6 +39,9 @@ GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 # A repeated CI-owned full render gets a distinct durable evidence directory,
 # preserving both immutable receipts without overwriting the original run.
 # This is deliberately not an arbitrary user-supplied filesystem suffix.
+CAPTION_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_CAPTION_E2E", "0")
+if CAPTION_E2E not in {"0", "1"}:
+    raise SystemExit("Unknown native caption E2E mode")
 RUN_LABEL = os.environ.get("MOTIONWRIGHT_NATIVE_RUN_LABEL", "")
 if RUN_LABEL not in {"", "repeat-02"}:
     raise SystemExit("Unrecognized CI-only native render evidence label")
@@ -755,6 +759,109 @@ def main() -> None:
                     },
                 },
             )
+
+            if CAPTION_E2E == "1":
+                # A second, explicitly authored NEW revision of the same
+                # canonical owner project; never a retry of the baseline job.
+                source = run_json(
+                    [str(MW_BIN), "caption-prepare", str(database),
+                     str(paths["motionwright-data"] / "source-captions-tone.wav")],
+                    env=env, timeout=35,
+                )
+                if (
+                    source.get("caption_source") != "PASS"
+                    or source.get("project_id") != seeded["project_id"]
+                    or source.get("generation") != seeded["generation"]
+                    or source.get("revision", 0) <= seeded["revision"]
+                    or source.get("native_cue_count") != 2
+                    or source.get("render_count") != 60
+                    or len(source.get("voice_sha256", "")) != 64
+                ):
+                    raise AssertionError("second caption revision is not source-bound")
+                try:
+                    captioned = run_json(
+                        [str(MW_BIN), "render", str(database), str(connection_path),
+                         str(EVIDENCE / "caption-motionwright-render-evidence.json")],
+                        env=env, timeout=420,
+                    )
+                except NativeCommandFailure as failure:
+                    # Print ONLY fields from the existing closed-enum,
+                    # secret-redacting classifier. Do not report provider
+                    # error messages, receipts, ticket paths or raw stdout.
+                    safe = {
+                        key: failure.diagnostic[key]
+                        for key in (
+                            "reason", "reported_error_code", "source_outcome",
+                            "cli_exit_category", "provider_generation_inactive_observed",
+                            "original_render_start_receipts_observed",
+                            "reported_caption_stage", "reported_caption_native_class",
+                            "reported_caption_verification_gate",
+                        )
+                        if key in failure.diagnostic
+                    }
+                    write_private_json(EVIDENCE / "caption-native-failure-summary.json", {
+                        "schema": "motionwright-native-caption-failure/1",
+                        "outcome": "NOT_VERIFIED", "retry": "FORBIDDEN",
+                        "source_sha": GITHUB_SHA, "semwright_pin": PIN,
+                        "closed_diagnostic": safe,
+                    })
+                    print("caption-native-failure-class=" + json.dumps(
+                        safe, sort_keys=True
+                    ), flush=True)
+                    raise AssertionError(
+                        "Native caption provider outcome NOT_VERIFIED; no retry dispatched"
+                    ) from None
+                except subprocess.TimeoutExpired:
+                    write_private_json(EVIDENCE / "caption-native-failure-summary.json", {
+                        "schema": "motionwright-native-caption-failure/1",
+                        "outcome": "UNKNOWN", "retry": "FORBIDDEN",
+                        "source_sha": GITHUB_SHA, "semwright_pin": PIN,
+                    })
+                    raise AssertionError(
+                        "Native caption subprocess deadline UNKNOWN; no retry dispatched"
+                    ) from None
+                if (
+                    captioned.get("native_render_e2e") != "PASS"
+                    or captioned.get("frame_count") != 60
+                    or captioned.get("revision") != source["revision"]
+                    or captioned.get("generation") != source["generation"]
+                    or captioned.get("project_id") != source["project_id"]
+                    or captioned.get("job_ref") == result.get("job_ref")
+                ):
+                    raise AssertionError(
+                        "caption render failed exact source revision or independent-job binding"
+                    )
+                caption_artifact = captioned.get("artifact", {})
+                caption_dir = caption_artifact.get("directory")
+                if not isinstance(caption_dir, str) or not caption_dir:
+                    raise AssertionError("native caption artifact is missing")
+                # Same owner output root; bound manifest/frames from original
+                # provider are read independently by FFmpeg (not an overlay).
+                caption_path = paths["output"] / caption_dir
+                checked = compare_caption_overlay(
+                    baseline_root=artifact_root,
+                    captioned_root=caption_path,
+                    expected_cue_count=source["native_cue_count"],
+                )
+                checked.update({
+                    "motionwright_source_sha": GITHUB_SHA,
+                    "semwright_source_sha": PIN,
+                    "project_id": source["project_id"],
+                    "generation": source["generation"],
+                    "source_revision": source["revision"],
+                    "caption_job_separate_from_baseline": True,
+                    "effect_grant_or_retry_inferred": False,
+                    "speech_identity_or_content_verified": False,
+                })
+                write_private_json(
+                    EVIDENCE / "caption-native-decoded-pixel-evidence.json", checked
+                )
+                # No owner session, private receipt, WAV, transcript or original
+                # pixel bytes ever enter the public workflow artifact.
+                print(
+                    "caption-native-pixels=PASS source-sha=" + GITHUB_SHA
+                    + " frames=0,22,42,59 separate-native-owner-revision=1"
+                )
         finally:
             # Preserve only source-bound error classes and status timestamps.
             # Even malformed optional diagnostic input cannot prevent proper

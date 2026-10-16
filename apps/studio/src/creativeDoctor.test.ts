@@ -3,7 +3,7 @@ import { fixtureBootstrap, fixtureProject } from "./fixture";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import type { ExtensionProfile, Project } from "./types";
 
-const PIN="04142a2ae16e53a58bb6cf43135786e396a4b720";
+const PIN="54d3459a051adbce4cae9f60c0dea8f60c824be6";
 function project():Project {return structuredClone(fixtureProject);}
 
 describe("MW05-E15-02 creative runtime doctor: browser never invents native readiness",()=>{

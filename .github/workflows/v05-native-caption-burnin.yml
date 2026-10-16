@@ -1,0 +1,194 @@
+name: V05 source-bound native caption pixels
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+      - 'crates/domain/**'
+      - 'crates/native/src/film.rs'
+      - 'crates/native/src/film_captions.rs'
+      - 'crates/native/src/production.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'crates/native/tests/native_caption_burn_in.rs'
+      - 'tooling/native_render_e2e.py'
+      - 'tooling/native_caption_pixels.py'
+      - 'tooling/tests/test_native_caption_pixels.py'
+      - '.github/workflows/v05-native-caption-burnin.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'crates/native/src/film.rs'
+      - 'crates/native/src/film_captions.rs'
+      - 'crates/native/examples/native-render-e2e.rs'
+      - 'tooling/native_caption_pixels.py'
+      - '.github/workflows/v05-native-caption-burnin.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-caption-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+  MOTIONWRIGHT_NATIVE_CAPTION_E2E: '1'
+
+jobs:
+  actual-native-caption-pixels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Read pinned Semwright SHA
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json;print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Assert exact source checkout and Native SDK
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+          python3 -m unittest discover -s tooling/tests -p 'test_native_caption_pixels.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_native_caption_failure_classification.py' -v
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-caption-1.98.1
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            _semwright -> target
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+
+      - name: Install native owner runtime (disposable CI only)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap libpipewire-0.3-dev pkg-config clang ffmpeg
+          mkdir -p verification/native-render-e2e
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-render-e2e/sandbox-profile.txt"
+
+      - name: Prepare exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build pinned Semwright owner Broker, CLI and native provider
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver
+
+      - name: Compile source-bound Motionwright producer and caption negatives
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-native --test native_caption_burn_in -- --nocapture
+          cargo build --locked -p motionwright-native --example native-render-e2e
+
+      - name: Render actual captions from a new owner CAS revision and independently decode
+        env:
+          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '0'
+        run: |
+          set -euo pipefail
+          python3 tooling/native_render_e2e.py \
+            | tee verification/native-render-e2e/native-caption-e2e.log
+          test -s "verification/native-render-e2e/${GITHUB_SHA}/caption-native-decoded-pixel-evidence.json"
+
+      - name: Publish bounded technical result, never broker output or pixels
+        if: always()
+        env:
+          NATIVE_CAPTION_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p verification/native-caption-public
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          private = Path("verification/native-render-e2e") / os.environ["GITHUB_SHA"] / "caption-native-decoded-pixel-evidence.json"
+          verified = False
+          changes = None
+          if os.environ["NATIVE_CAPTION_JOB_OUTCOME"] == "success" and private.is_file() and private.stat().st_size < 32768:
+              report = json.loads(private.read_text())
+              samples = report["sampled_frames"]
+              changes = [samples[str(index)]["actual_native_lower_frame_changed_pixel_count"] for index in (22,42)]
+              verified = (
+                  report["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
+                  and report["semwright_source_sha"] == json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"]
+                  and report["original_geometry_retained_outside_overlay"] is True
+                  and report["captions_drawn_only_when_cues_active"] is True
+                  and samples["0"]["inactive_all_pixels_identical"] is True
+                  and samples["59"]["inactive_all_pixels_identical"] is True
+                  and all(type(number) is int and 100 <= number <= 200000 for number in changes)
+              )
+          summary = {
+              "schema":"motionwright-native-caption-public-evidence/1",
+              "motionwright_sha":os.environ["GITHUB_SHA"],
+              "semwright_sha": json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"],
+              "caption_overlay_native_decoded_pixels":"PASS" if verified else "NOT_VERIFIED",
+              "sample_frame_indices":[0,22,42,59] if verified else [],
+              "measured_changed_pixel_counts":changes if verified else None,
+              "separate_revision_render":"PROVEN" if verified else "NOT_VERIFIED",
+              "original_private_pngs_or_source_audio_published":False,
+              "human_legibility": "NOT_RUN",
+              "captioned_h264_aac_master": "NOT_RUN",
+              "commercial_release_ready":False
+          }
+          dest = Path("verification/native-caption-public/technical-evidence.json")
+          dest.write_text(json.dumps(summary,sort_keys=True,indent=2)+"\n")
+          print("caption-public-proof="+summary["caption_overlay_native_decoded_pixels"])
+          PY
+          python3 -m json.tool verification/native-caption-public/technical-evidence.json >/dev/null
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: motionwright-v05-caption-native-${{ github.sha }}
+          path: verification/native-caption-public/
+          if-no-files-found: error
+          retention-days: 14
