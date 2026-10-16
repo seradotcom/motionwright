@@ -1004,6 +1004,63 @@ fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<
         .ok_or_else(|| backend(context))
 }
 
+/// Source-independent, closed check classification for a failed *caption*
+/// verification. Only these static labels may reach a CLI/CI summary; actual
+/// findings, provider strings, job references and frame data remain private.
+fn native_caption_verification_gate(value: &Value) -> &'static str {
+    if value
+        .pointer("/report/execution_status")
+        .and_then(Value::as_str)
+        != Some("completed")
+    {
+        return "incomplete";
+    }
+    if value
+        .pointer("/report/support_level")
+        .and_then(Value::as_str)
+        != Some("native")
+    {
+        return "not_native";
+    }
+    let Some(checks) = value
+        .pointer("/measurement/validation/checks")
+        .and_then(Value::as_array)
+    else {
+        return "checks_missing";
+    };
+    if checks.is_empty() {
+        return "checks_missing";
+    }
+    for (rule, label) in [
+        ("caption-timing", "caption_timing"),
+        ("resolved-cues", "resolved_cues"),
+        ("native-frame-coverage", "frame_coverage"),
+    ] {
+        if checks.iter().any(|check| {
+            check.get("rule").and_then(Value::as_str) == Some(rule)
+                && check.get("verdict").and_then(Value::as_str) != Some("PASS")
+        }) {
+            return label;
+        }
+    }
+    if checks
+        .iter()
+        .any(|check| check.get("verdict").and_then(Value::as_str) != Some("PASS"))
+    {
+        return "other_rule";
+    }
+    match value
+        .pointer("/measurement/findings")
+        .and_then(Value::as_array)
+    {
+        None => "findings_missing",
+        Some(findings) if !findings.is_empty() => "unresolved_findings",
+        _ => "unclassified",
+    }
+}
+
+/// Strict existing validator remains authoritative; categorization above is
+/// read-only and can never convert a failed check into an accepted render.
 pub(crate) fn ensure_native_motion_verification(value: &Value) -> NativeResult<()> {
     if value
         .pointer("/report/execution_status")
@@ -1089,6 +1146,10 @@ impl ProductionCoordinator {
             ));
         }
 
+        let captions_requested = project
+            .deliverables
+            .iter()
+            .any(|profile| profile.id == deliverable_id && profile.burn_in_captions);
         let segments = build_motion_canvas_segments(&project, deliverable_id, options)?;
         if segments.is_empty() {
             return Err(Error::new(
@@ -1297,7 +1358,18 @@ impl ProductionCoordinator {
                 )
                 .await?;
             let verification = response_data(&verified)?.clone();
-            ensure_native_motion_verification(&verification)?;
+            if let Err(error) = ensure_native_motion_verification(&verification) {
+                if captions_requested {
+                    // A failed native measurement must never be suppressed or
+                    // treated as pixel evidence. Emit only an exact static
+                    // category from the pinned Semwright check vocabulary.
+                    return Err(backend(format!(
+                        "Motion Canvas caption native verification rejected (gate: {})",
+                        native_caption_verification_gate(&verification),
+                    )));
+                }
+                return Err(error);
+            }
 
             evidence.push(MotionCanvasSegmentEvidence {
                 segment_id: segment.id,
@@ -2406,6 +2478,48 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             })),
             "runtime_oom",
         );
+    }
+
+    #[test]
+    fn native_caption_failed_validation_exposes_only_a_closed_rule_category() {
+        let secret = "/owner/private/media/take.wav job_ref=secret";
+        for (rule, expected) in [
+            ("caption-timing", "caption_timing"),
+            ("resolved-cues", "resolved_cues"),
+            ("native-frame-coverage", "frame_coverage"),
+            ("foreign-untrusted-rule", "other_rule"),
+        ] {
+            let view = json!({
+                "report": {"execution_status":"completed", "support_level":"native"},
+                "measurement": {
+                    "findings": [{"rule": rule, "reason": secret}],
+                    "validation": {"checks":[
+                        {"rule":"native-frame-coverage","verdict":"PASS"},
+                        {"rule":rule,"verdict":"FAIL", "reason":secret}
+                    ]}
+                },
+                "raw_provider_receipt":secret
+            });
+            assert!(ensure_native_motion_verification(&view).is_err());
+            let gate = native_caption_verification_gate(&view);
+            assert_eq!(gate, expected);
+            assert!(!gate.contains(secret));
+        }
+        let unknown = json!({
+            "report": {"execution_status":"completed", "support_level":"native"},
+            "measurement": {"findings":[{"id":"untrusted", "reason":secret}],
+                "validation":{"checks":[{"rule":"caption-timing","verdict":"PASS"}]}}
+        });
+        assert_eq!(
+            native_caption_verification_gate(&unknown),
+            "unresolved_findings"
+        );
+        assert!(ensure_native_motion_verification(&unknown).is_err());
+        let missing = json!({"report":{"execution_status":"completed","support_level":"native"}});
+        assert_eq!(native_caption_verification_gate(&missing), "checks_missing");
+        assert!(ensure_native_motion_verification(&missing).is_err());
+        let not_native = json!({"report":{"execution_status":"completed","support_level":"mock"}});
+        assert_eq!(native_caption_verification_gate(&not_native), "not_native");
     }
 
     #[test]

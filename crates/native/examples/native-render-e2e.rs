@@ -524,6 +524,29 @@ fn caption_native_closed_diagnostic(message: &str) -> (&'static str, &'static st
     ("unclassified", "unclassified")
 }
 
+/// Strict static gate vocabulary mirrored from Motionwright's bounded
+/// caption-specific native verification. Do not pass through arbitrary text.
+fn caption_native_closed_gate(message: &str) -> &'static str {
+    const GATES: &[&str] = &[
+        "caption_timing",
+        "resolved_cues",
+        "frame_coverage",
+        "other_rule",
+        "unresolved_findings",
+        "findings_missing",
+        "checks_missing",
+        "incomplete",
+        "not_native",
+        "unclassified",
+    ];
+    for &gate in GATES {
+        if message == format!("Motion Canvas caption native verification rejected (gate: {gate})") {
+            return gate;
+        }
+    }
+    "unclassified"
+}
+
 /// A deliberately NEW authorized project revision, not a render retry.
 /// The single CI-generated stereo tone stands for measured PCM provenance;
 /// captions are explicitly written by this fixture, not ASR or a person.
@@ -774,6 +797,7 @@ async fn render(
                 // job refs, original transcripts or raw provider messages.
                 let (caption_stage, caption_native_class) =
                     caption_native_closed_diagnostic(&error.message);
+                let caption_verification_gate = caption_native_closed_gate(&error.message);
                 println!(
                     "{}",
                     serde_json::to_string(&json!({
@@ -784,6 +808,7 @@ async fn render(
                         "caption_native_pixels": "NOT_VERIFIED",
                         "caption_stage": caption_stage,
                         "caption_native_class": caption_native_class,
+                        "caption_verification_gate": caption_verification_gate,
                         "retry_authorized": false,
                     }))?
                 );
@@ -2369,5 +2394,46 @@ mod composition_seed_contract_tests {
             .and_then(|node| node.text.as_deref());
         assert_eq!(label, Some("Synthetic rate · 37.5%"));
         assert!(source.with_file_name("composition.motionwright").exists());
+    }
+}
+
+#[cfg(test)]
+mod native_caption_closed_gate_tests {
+    use super::*;
+
+    #[test]
+    fn never_forward_untrusted_driver_or_source_values_as_native_verification_gates() {
+        for expected in [
+            "caption_timing",
+            "resolved_cues",
+            "frame_coverage",
+            "other_rule",
+            "unresolved_findings",
+            "findings_missing",
+            "checks_missing",
+            "incomplete",
+            "not_native",
+            "unclassified",
+        ] {
+            assert_eq!(
+                caption_native_closed_gate(&format!(
+                    "Motion Canvas caption native verification rejected (gate: {expected})"
+                )),
+                expected,
+            );
+        }
+        for untrusted in [
+            "../../private/source.wav",
+            "caption_timing) /owner/secret",
+            "unknown",
+            "caption_timing\nprovider secret",
+            "caption_timing) job_ref=secret",
+        ] {
+            assert_eq!(caption_native_closed_gate(untrusted), "unclassified");
+        }
+        assert_eq!(
+            caption_native_closed_gate("unrelated native owner status"),
+            "unclassified",
+        );
     }
 }

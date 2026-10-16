@@ -13,7 +13,7 @@ PRIVATE = "C:/users/private/owner/job_ref=SECRET/voice.wav"
 
 
 class CaptionFailureReportTests(unittest.TestCase):
-    def sample(self, stage, native_class, unknown=False):
+    def sample(self, stage, native_class, unknown=False, gate="unclassified"):
         return classify_native_command_failure(
             stdout=json.dumps({
                 "error": {
@@ -23,6 +23,7 @@ class CaptionFailureReportTests(unittest.TestCase):
                 "caption_native_pixels": "NOT_VERIFIED",
                 "caption_stage": stage,
                 "caption_native_class": native_class,
+                "caption_verification_gate": gate,
                 "retry_authorized": False,
             }).encode(), stderr=PRIVATE.encode(), exit_code=1,
         )
@@ -31,6 +32,7 @@ class CaptionFailureReportTests(unittest.TestCase):
         result = self.sample("render_terminal", "observation")
         self.assertEqual(result["reported_caption_stage"], "render_terminal")
         self.assertEqual(result["reported_caption_native_class"], "observation")
+        self.assertEqual(result["reported_caption_verification_gate"], "unclassified")
         self.assertEqual(result["source_outcome"], "FAILED_NOT_MEDIA_VERIFIED")
         self.assertFalse(result["terminal_native_result_verified"])
         self.assertNotIn(PRIVATE, json.dumps(result, sort_keys=True))
@@ -51,6 +53,21 @@ class CaptionFailureReportTests(unittest.TestCase):
                     result["reported_caption_native_class"],
                 })
 
+    def test_closed_semwright_caption_check_names_never_leak_raw_provider_receipts(self):
+        for gate in ("caption_timing", "resolved_cues", "frame_coverage",
+                     "other_rule", "unresolved_findings", "checks_missing",
+                     "not_native"):
+            with self.subTest(gate=gate):
+                result = self.sample("native_verification", "unclassified", gate=gate)
+                self.assertEqual(result["reported_caption_verification_gate"], gate)
+                self.assertFalse(result["terminal_native_result_verified"])
+                self.assertNotIn(PRIVATE, json.dumps(result))
+        for unsafe in (PRIVATE, "caption_timing extra", "../../private", None, 42):
+            with self.subTest(gate=unsafe):
+                result = self.sample("native_verification", "unclassified", gate=unsafe)
+                self.assertEqual(result["reported_caption_verification_gate"], "unclassified")
+                self.assertNotIn(PRIVATE, json.dumps(result))
+
     def test_missing_optional_caption_fields_leave_non_caption_v01_unchanged(self):
         result = classify_native_command_failure(
             stdout=json.dumps({
@@ -59,6 +76,7 @@ class CaptionFailureReportTests(unittest.TestCase):
         )
         self.assertNotIn("reported_caption_stage", result)
         self.assertNotIn("reported_caption_native_class", result)
+        self.assertNotIn("reported_caption_verification_gate", result)
         self.assertEqual(result["source_outcome"], "UNKNOWN")
 
 

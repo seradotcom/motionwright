@@ -795,6 +795,7 @@ def main() -> None:
                             "cli_exit_category", "provider_generation_inactive_observed",
                             "original_render_start_receipts_observed",
                             "reported_caption_stage", "reported_caption_native_class",
+                            "reported_caption_verification_gate",
                         )
                         if key in failure.diagnostic
                     }

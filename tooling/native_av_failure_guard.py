@@ -24,6 +24,11 @@ CAPTION_STAGES = frozenset((
     "film_projection", "composition_plan", "composition_apply",
     "render_terminal", "render_readback", "native_verification", "unclassified",
 ))
+CAPTION_VERIFICATION_GATES = frozenset((
+    "caption_timing", "resolved_cues", "frame_coverage", "other_rule",
+    "unresolved_findings", "findings_missing", "checks_missing",
+    "incomplete", "not_native", "unclassified",
+))
 CAPTION_NATIVE_CLASSES = frozenset((
     "arguments", "font_evidence", "project_stage", "vite_build", "frame_export",
     "browser_launch", "page_load", "render_wait", "render_wait_timeout",
@@ -224,6 +229,11 @@ def classify_native_command_failure(
         report["reported_caption_native_class"] = (
             native_class if isinstance(native_class, str)
             and native_class in CAPTION_NATIVE_CLASSES else "unclassified"
+        )
+        gate = parsed.get("caption_verification_gate")
+        report["reported_caption_verification_gate"] = (
+            gate if isinstance(gate, str) and gate in CAPTION_VERIFICATION_GATES
+            else "unclassified"
         )
     if error.get("outcome_known") is False:
         report["source_outcome"] = "UNKNOWN"

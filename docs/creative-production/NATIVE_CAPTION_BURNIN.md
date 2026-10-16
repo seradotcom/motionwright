@@ -107,3 +107,15 @@ Unknown or unrecognized provider messages remain "unclassified";
 no raw errors, source audio, private file paths, Broker receipts or
 opaque provider references are printed or placed in public artifacts.
 A known CLI exit code alone never establishes verified caption pixels.
+
+### Bounded native check diagnostics (not a verification bypass)
+
+When Semwright completes a render but rejects the verification report, the
+Motionwright coordinator keeps the failure and maps only exact pinned rule
+identities to one static diagnostic gate: caption_timing, resolved_cues,
+frame_coverage, other_rule, unresolved_findings, findings_missing,
+checks_missing, incomplete, not_native or unclassified. Unknown field values
+cannot reach CI logs. No change to the existing all-PASS verifier, automatic
+retry policy, audio rights, original pixel contents or master-release gate.
+Dedicated Rust and Python adversarial tests reject forged error labels and
+any private provider message or job reference.
