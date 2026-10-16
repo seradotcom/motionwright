@@ -784,16 +784,38 @@ def main() -> None:
                          str(EVIDENCE / "caption-motionwright-render-evidence.json")],
                         env=env, timeout=420,
                     )
-                except (NativeCommandFailure, subprocess.TimeoutExpired):
-                    # Never echo private owner receipts or pretend an unknown
-                    # native job can be safely re-dispatched. No retries.
+                except NativeCommandFailure as failure:
+                    # Print ONLY fields from the existing closed-enum,
+                    # secret-redacting classifier. Do not report provider
+                    # error messages, receipts, ticket paths or raw stdout.
+                    safe = {
+                        key: failure.diagnostic[key]
+                        for key in (
+                            "reason", "reported_error_code", "source_outcome",
+                            "cli_exit_category", "provider_generation_inactive_observed",
+                            "original_render_start_receipts_observed",
+                        )
+                    }
                     write_private_json(EVIDENCE / "caption-native-failure-summary.json", {
                         "schema": "motionwright-native-caption-failure/1",
                         "outcome": "NOT_VERIFIED", "retry": "FORBIDDEN",
                         "source_sha": GITHUB_SHA, "semwright_pin": PIN,
+                        "closed_diagnostic": safe,
                     })
+                    print("caption-native-failure-class=" + json.dumps(
+                        safe, sort_keys=True
+                    ), flush=True)
                     raise AssertionError(
                         "Native caption provider outcome NOT_VERIFIED; no retry dispatched"
+                    ) from None
+                except subprocess.TimeoutExpired:
+                    write_private_json(EVIDENCE / "caption-native-failure-summary.json", {
+                        "schema": "motionwright-native-caption-failure/1",
+                        "outcome": "UNKNOWN", "retry": "FORBIDDEN",
+                        "source_sha": GITHUB_SHA, "semwright_pin": PIN,
+                    })
+                    raise AssertionError(
+                        "Native caption subprocess deadline UNKNOWN; no retry dispatched"
                     ) from None
                 if (
                     captioned.get("native_render_e2e") != "PASS"

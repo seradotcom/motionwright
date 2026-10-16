@@ -563,7 +563,7 @@ fn prepare_caption_source(
     if projected.len() != 1
         || projected[0].frame_count != 60
         || projected[0].film.cues.cues.len() != 2
-        || projected[0].film.assets.len() != 0
+        || !projected[0].film.assets.is_empty()
     {
         return Err("caption Film did not preserve the original source/frames".into());
     }
@@ -677,15 +677,27 @@ async fn render(
             file.write_all(b"\n")?;
             file.sync_all()?;
             if deliverable.burn_in_captions {
-                // CI logs cannot disclose owner job references or untrusted
-                // raw native receipts. Keep diagnostics in private runner files.
+                // A strict, typed, closed-field CI diagnostic is the ONLY
+                // CLI payload for failed caption effects. It cannot disclose
+                // job refs, original transcripts or raw provider messages.
+                println!(
+                    "{}",
+                    serde_json::to_string(&json!({
+                        "error": {
+                            "code": format!("{:?}", error.code),
+                            "outcome_known": error.outcome_known,
+                        },
+                        "caption_native_pixels": "NOT_VERIFIED",
+                        "retry_authorized": false,
+                    }))?
+                );
                 eprintln!(
                     "native-caption-producer=NOT_VERIFIED category={:?} outcome_known={}",
                     error.code, error.outcome_known
                 );
-            } else {
-                eprintln!("{}", serde_json::to_string(&diagnostic)?);
+                return Err("Source-bound caption render failed; no retry authorized".into());
             }
+            eprintln!("{}", serde_json::to_string(&diagnostic)?);
             return Err(error.into());
         }
     };
