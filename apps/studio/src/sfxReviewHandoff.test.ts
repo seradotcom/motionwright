@@ -92,7 +92,7 @@ describe("v0.5 human SFX issue → same original cue edit handoff",()=>{
   });
   it("does not let untrusted JSON or a changed anchor impersonate a native finding",()=>{
     const p=fixture(),correct=p.reviews[0].body;
-    for(const body of ["garbage", "", "{}", "{\\"schema\\":\\"x\\"}"]){
+    for(const body of ["garbage", "", "{}", JSON.stringify({schema:"x"})]){
       p.reviews[0].body=body;
       expect(openOriginalSfxReviewHandoffs(p)).toEqual([]);
     }
