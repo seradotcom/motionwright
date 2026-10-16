@@ -2094,7 +2094,7 @@ export async function nativeOriginalMixAudition(
     throw new Error('Original mixing needs explicitly selected source-bound assets, an approved local-preview attestation and bounded sample gains.');
   }
   const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request:{
-    ...nativeScope(project),...options
+    project_id:project.id,generation:project.generation,revision:project.revision,...options
   }});
   const bytes=result instanceof Uint8Array?result:
     result instanceof ArrayBuffer?new Uint8Array(result):
