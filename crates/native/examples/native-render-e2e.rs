@@ -345,9 +345,14 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// visual Film assets or change a single authored shot/timing node.
 fn preflight_original_sfx_visual_film(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
-        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+        || !matches!(
+            std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref(),
+            Ok("semantic-sfx-av" | "semantic-sfx-composition-av")
+        )
     {
-        return Err("SFX visual parity is allowed only on the disposable CI fixture".into());
+        return Err(
+            "SFX visual parity is allowed only on an original disposable CI fixture".into(),
+        );
     }
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
@@ -356,32 +361,72 @@ fn preflight_original_sfx_visual_film(database: &Path) -> Result<(), Box<dyn std
     }
     let project = &projects[0];
     project.validate()?;
-    if project.scenes.len() != 1
+    let composition = project.scenes.len() == 3;
+    let frames = if composition { 540 } else { 60 };
+    if !(project.scenes.len() == 1 || composition)
         || project.audio.sfx_cues.len() != 2
-        || project.assets.len() != 2
-        || project
-            .assets
-            .iter()
-            .any(|asset| asset.media_type != "audio/wav")
-        || project.scenes[0].duration != RationalTime::new(2, 1)?
+        || project.scenes.iter().enumerate().any(|(index, scene)| {
+            scene.start
+                != RationalTime::new((index * if composition { 6 } else { 2 }) as i64, 1)
+                    .unwrap_or(RationalTime::ZERO)
+                || scene.duration
+                    != RationalTime::new(if composition { 6 } else { 2 }, 1)
+                        .unwrap_or(RationalTime::ZERO)
+        })
+        || !project.audio.sfx_cues.iter().all(|cue| {
+            project.assets.iter().any(|asset| {
+                asset.id == cue.source_asset_id
+                    && asset.media_type == "audio/wav"
+                    && asset.content_sha256.as_deref() == Some(cue.source_sha256.as_str())
+            })
+        })
     {
-        return Err("SFX visual parity needs exactly the original 60-frame source".into());
+        return Err(
+            "SFX visual parity requires the unchanged 60- or 540-frame original Film".into(),
+        );
     }
     let deliverable_id = project
         .deliverables
         .first()
         .ok_or("SFX visual parity master deliverable missing")?
         .id;
-    let options = fixture_film_options(project.scenes[0].id, 60)?;
+    let options = if composition {
+        FilmBuildOptions {
+            frame_rate: Rate::new(30, 1)?,
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::ObjectSpotlight,
+                })
+                .collect(),
+        }
+    } else {
+        fixture_film_options(project.scenes[0].id, 60)?
+    };
     let original = build_motion_canvas_segments(project, deliverable_id, &options)?;
     let mut visual_only = project.clone();
+    let original_sound_ids = visual_only
+        .audio
+        .sfx_cues
+        .iter()
+        .map(|cue| cue.source_asset_id)
+        .collect::<std::collections::BTreeSet<_>>();
     visual_only.audio.sfx_cues.clear();
-    visual_only.assets.clear();
+    // Removing unrelated measured-data JSON sources would corrupt the real
+    // editable composition. Only the TWO original SFX WAVs are excluded.
+    visual_only
+        .assets
+        .retain(|asset| !original_sound_ids.contains(&asset.id));
     let pristine = build_motion_canvas_segments(&visual_only, deliverable_id, &options)?;
     if original.len() != 1
         || pristine.len() != 1
-        || original[0].frame_count != 60
-        || !original[0].film.assets.is_empty()
+        || original[0].frame_count != frames
+        || original[0].film.assets != pristine[0].film.assets
     {
         return Err("SFX fixture has an unexpected Motion Canvas Film shape".into());
     }
@@ -395,7 +440,9 @@ fn preflight_original_sfx_visual_film(database: &Path) -> Result<(), Box<dyn std
         serde_json::to_string(&json!({
             "schema": "motionwright.sfx-visual-film-parity/1",
             "visual_film_unchanged": true,
-            "frame_count": 60,
+            "frame_count": frames,
+            "scene_count": project.scenes.len(),
+            "original_sound_source_count": original_sound_ids.len(),
             "film_sha256": hex::encode(Sha256::digest(&actual)),
             "project_id": project.id,
             "generation": project.generation,
@@ -504,7 +551,10 @@ fn export_direct_parity_film(
 /// private error content is serialized, even if the provider disappears.
 fn note_semantic_sfx_render_stage(evidence_path: &Path, stage: &'static str) {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
-        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+        || !matches!(
+            std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref(),
+            Ok("semantic-sfx-av" | "semantic-sfx-composition-av")
+        )
         || !matches!(
             stage,
             "entered"
@@ -544,7 +594,10 @@ fn emit_sfx_bounded_native_error(
     receipts: &[motionwright_storage::ProductionReceipt],
 ) -> Result<bool, Box<dyn std::error::Error>> {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
-        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+        || !matches!(
+            std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref(),
+            Ok("semantic-sfx-av" | "semantic-sfx-composition-av")
+        )
     {
         return Ok(false);
     }

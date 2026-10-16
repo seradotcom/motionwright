@@ -21,6 +21,7 @@ from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from semantic_sfx_av_evidence import inspect_native_sfx_av
+from semantic_sfx_composition_av_evidence import inspect_native_multiscene_sfx_av
 from semantic_sfx_native_stage import safe_stage, safe_native_error_category
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
@@ -61,12 +62,15 @@ IS_MEASURED = FIXTURE == "measured-data"
 IS_COMPOSITION = FIXTURE == "composition-stack"
 IS_PROCEDURAL = FIXTURE in PROCEDURAL_MODES
 IS_HERO = FIXTURE in HERO_ASPECTS
-IS_SFX_AV = FIXTURE == "semantic-sfx-av"
-if FIXTURE not in {"baseline", "semantic-sfx-av", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
+IS_SFX_COMPOSITION = FIXTURE == "semantic-sfx-composition-av"
+IS_SFX_AV = FIXTURE in {"semantic-sfx-av", "semantic-sfx-composition-av"}
+COMPOSITION_SEED = IS_COMPOSITION or IS_SFX_COMPOSITION
+if FIXTURE not in {"baseline", "semantic-sfx-av", "semantic-sfx-composition-av", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
     raise SystemExit("unknown bounded E2E fixture")
-EXPECTED_FRAMES = 540 if IS_COMPOSITION else 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else 60
+EXPECTED_FRAMES = 540 if COMPOSITION_SEED else 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else 60
 EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
 EVIDENCE = ROOT / "verification" / (
+    "semantic-sfx-multiscene-av-e2e" if IS_SFX_COMPOSITION else
     "semantic-sfx-av-e2e" if IS_SFX_AV else
     "composition-native-e2e" if IS_COMPOSITION else
     "camera-reframe-e2e" if IS_CAMERA else
@@ -194,7 +198,7 @@ def main() -> None:
         elif IS_PROCEDURAL:
             mode = FIXTURE.removeprefix("procedural-")
             seed_command = [str(MW_BIN), "seed-procedural", str(database), mode, str(EVIDENCE / "editable-project.json")]
-        elif IS_COMPOSITION:
+        elif COMPOSITION_SEED:
             seed_command = [str(MW_BIN), "seed-composition", str(database), str(EVIDENCE / "editable-project.json")]
         seeded = run_json(seed_command, env=env)
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
@@ -219,12 +223,16 @@ def main() -> None:
             raise AssertionError("Native measured fixture did not bind a versioned source table")
         if IS_PROCEDURAL and seeded.get("fixture") != f"procedural-field-{mode}/1":
             raise AssertionError("Native procedural fixture does not match the requested authored field")
-        if IS_COMPOSITION and (seeded.get("fixture") != "composition-stack/1"
+        if COMPOSITION_SEED and (seeded.get("fixture") != "composition-stack/1"
                                or seeded.get("original_ui_not_real_capture") is not True
                                or seeded.get("data_truth") != "synthetic_fixture_not_real_world_metric"
                                or len(seeded.get("scene_ids", [])) != 3):
             raise AssertionError("Native composition fixture is not an original source-bound three-scene project")
 
+        # The original visual composition's exact pre-audio project bytes
+        # remain the frame/pixel oracle, while native Film parity independently
+        # proves those visuals unchanged after SFX CAS authoring.
+        visual_seed = dict(seeded) if IS_SFX_COMPOSITION else None
         sfx_prepared = None
         if IS_SFX_AV:
             # Must be the SAME source project/revision that the native
@@ -241,6 +249,7 @@ def main() -> None:
                 or sfx_prepared.get("native_preparation_verified") is not True
                 or sfx_prepared.get("native_preparation_revision") != sfx_prepared.get("revision")
                 or sfx_prepared.get("original_source_count") != 2
+                or len(sfx_prepared.get("scene_ids", [])) != (3 if IS_SFX_COMPOSITION else 1)
                 or not isinstance(sfx_prepared.get("audio_relative"), str)
                 or not sfx_prepared["audio_relative"].startswith("mw-sfx-")
                 or not sfx_prepared["audio_relative"].endswith(".wav")
@@ -270,6 +279,8 @@ def main() -> None:
                 or visual.get("revision") != seeded["revision"]
                 or visual.get("frame_count") != EXPECTED_FRAMES
                 or visual.get("sfx_cue_count") != 2
+                or visual.get("scene_count") != (3 if IS_SFX_COMPOSITION else 1)
+                or visual.get("original_sound_source_count") != 2
                 or not isinstance(visual.get("film_sha256"), str)
                 or len(visual["film_sha256"]) != 64):
                 raise AssertionError("Owner SFX visual source parity was not verified")
@@ -586,7 +597,7 @@ def main() -> None:
                         str(EVIDENCE / "motionwright-render-evidence.json"),
                     ],
                     env=env,
-                    timeout=1500 if IS_COMPOSITION else 420,
+                    timeout=1500 if COMPOSITION_SEED else 420,
                 )
             except Exception as error:
                 if isinstance(error, NativeCommandFailure):
@@ -685,9 +696,12 @@ def main() -> None:
             if IS_PROCEDURAL:
                 from procedural_native_evidence import inspect_procedural_frames
                 inspect_procedural_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
-            if IS_COMPOSITION:
+            if IS_COMPOSITION or IS_SFX_COMPOSITION:
                 from composition_native_evidence import inspect_composition_frames
-                inspect_composition_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
+                inspector_seed = visual_seed if IS_SFX_COMPOSITION else seeded
+                inspect_composition_frames(
+                    frames, EVIDENCE, inspector_seed, source_sha=GITHUB_SHA, provider_sha=PIN,
+                )
 
             if IS_SFX_AV:
                 if sfx_prepared is None:
@@ -741,6 +755,9 @@ def main() -> None:
             # All require measured non-silent, distinct stereo channel tones
             # and native pixel movement. No decoder runs in the shipped app.
             decoded = (
+                inspect_native_multiscene_sfx_av(
+                    master_path, paths["output"], sfx_prepared, ffmpeg, ffprobe,
+                ) if IS_SFX_COMPOSITION else
                 inspect_native_sfx_av(
                     master_path, paths["output"], sfx_prepared, ffmpeg, ffprobe,
                 ) if IS_SFX_AV else probe_native_mp4(
@@ -766,9 +783,10 @@ def main() -> None:
             if IS_PROCEDURAL:
                 from procedural_native_evidence import inspect_procedural_mp4
                 inspect_procedural_mp4(master_path, EVIDENCE, seeded, ffmpeg)
-            if IS_COMPOSITION:
+            if IS_COMPOSITION or IS_SFX_COMPOSITION:
                 from composition_native_evidence import inspect_composition_mp4
-                inspect_composition_mp4(master_path, EVIDENCE, seeded, ffmpeg)
+                inspector_seed = visual_seed if IS_SFX_COMPOSITION else seeded
+                inspect_composition_mp4(master_path, EVIDENCE, inspector_seed, ffmpeg)
 
             write_private_json(
                 EVIDENCE / "result.json",
@@ -789,7 +807,7 @@ def main() -> None:
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
                     "fixture": FIXTURE,
-                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or IS_COMPOSITION else "not_assessed",
+                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or COMPOSITION_SEED else "not_assessed",
                     "camera_native_pixel_evidence_sha256": (
                         digest(EVIDENCE / "camera-native-inspection.json") if IS_CAMERA else None
                     ),
@@ -804,7 +822,14 @@ def main() -> None:
                         if IS_PROCEDURAL else None
                     ),
                     "joint_native_pixel_evidence_sha256": (
-                        digest(EVIDENCE / "composition-native-inspection.json") if IS_COMPOSITION else None
+                        digest(EVIDENCE / "composition-native-inspection.json")
+                        if IS_COMPOSITION or IS_SFX_COMPOSITION else None
+                    ),
+                    "visual_source_revision_before_original_sfx": (
+                        visual_seed["revision"] if IS_SFX_COMPOSITION else None
+                    ),
+                    "visual_film_sha256_after_original_sfx": (
+                        visual["film_sha256"] if IS_SFX_COMPOSITION else None
                     ),
                     "audio_kind": (
                         "original_semantic_scene_bound_sfx_native_pcm_to_pinned_semwright_av_mux" if IS_SFX_AV

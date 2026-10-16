@@ -13,7 +13,8 @@ use std::{fs, io::Write, path::Path};
 use uuid::Uuid;
 
 const FPS: u64 = 30;
-const MASTER_FRAMES: u64 = 60;
+const SHORT_FRAMES: u64 = 60;
+const COMPOSITION_FRAMES: u64 = 540;
 const AUDIO_RATE: usize = 48_000;
 const SFX_FRAMES: u16 = 24;
 
@@ -60,6 +61,7 @@ struct StemSpec {
     offset: i16,
     gain_milli_db: i32,
     tones: (f64, f64),
+    scene_index: usize,
 }
 
 fn attach(
@@ -74,6 +76,7 @@ fn attach(
         offset,
         gain_milli_db,
         tones,
+        scene_index,
     } = spec;
     let original = original_stereo_wav(tones.0, tones.1);
     original_file(output, name, &original)?;
@@ -95,7 +98,7 @@ fn attach(
     let cue = SemanticSfxCue {
         schema: SFX_CUE_SCHEMA.into(),
         id: Uuid::new_v4(),
-        scene_id: project.scenes[0].id,
+        scene_id: project.scenes[scene_index].id,
         event,
         anchor: SfxAnchor::SceneStart,
         offset_frames: offset,
@@ -151,10 +154,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("semantic SFX native AV requires exactly one existing owner project".into());
     }
     let mut project = projects.into_iter().next().unwrap();
-    if project.scenes.len() != 1
-        || project.scenes[0].start != motionwright_domain::RationalTime::ZERO
-        || project.scenes[0].duration != motionwright_domain::RationalTime::new(2, 1)?
-        || project.scenes[0].beats.len() > 1
+    let composition =
+        std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() == Ok("semantic-sfx-composition-av");
+    let master_frames = if composition {
+        COMPOSITION_FRAMES
+    } else {
+        SHORT_FRAMES
+    };
+    let expected_scene_duration = if composition { 6 } else { 2 };
+    if project.scenes.len() != if composition { 3 } else { 1 }
+        || project.scenes.iter().enumerate().any(|(index, scene)| {
+            scene.start
+                != motionwright_domain::RationalTime::new(
+                    (index as i64) * expected_scene_duration,
+                    1,
+                )
+                .unwrap_or(motionwright_domain::RationalTime::ZERO)
+                || scene.duration
+                    != motionwright_domain::RationalTime::new(expected_scene_duration, 1)
+                        .unwrap_or(motionwright_domain::RationalTime::ZERO)
+                || !scene.beats.is_empty()
+        })
         || !project.audio.sfx_cues.is_empty()
         || project.deliverables.is_empty()
         || project.deliverables[0].frame_rate.num != FPS as i64
@@ -162,7 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || project.deliverables[0].audio_sample_rate_hz != 48_000
     {
         return Err(
-            "semantic SFX AV fixture needs exact original 60-frame audio-capable project".into(),
+            "semantic SFX AV fixture needs the exact original 60- or 540-frame authored project"
+                .into(),
         );
     }
     let original_project_id = project.id;
@@ -178,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             offset: 6,
             gain_milli_db: -12_000,
             tones: (440.0, 660.0),
+            scene_index: 0,
         },
     )?;
     let second = attach(
@@ -190,6 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             offset: 20,
             gain_milli_db: -12_000,
             tones: (740.0, 980.0),
+            scene_index: if composition { 2 } else { 0 },
         },
     )?;
     if project.id != original_project_id
@@ -205,8 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if schedule.len() != 2
         || schedule[0].absolute_start_frame != 6
         || schedule[0].absolute_end_frame != 30
-        || schedule[1].absolute_start_frame != 20
-        || schedule[1].absolute_end_frame != 44
+        || schedule[1].absolute_start_frame != if composition { 380 } else { 20 }
+        || schedule[1].absolute_end_frame != if composition { 404 } else { 44 }
     {
         return Err(
             "SFX native original sample schedule differs from authored frame anchors".into(),
@@ -217,10 +240,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &project,
         project.deliverables[0].id,
         &sources,
-        MASTER_FRAMES,
+        master_frames,
     )?;
-    if mixed.rendered_frames != MASTER_FRAMES
-        || mixed.wav_bytes.len() != 44 + MASTER_FRAMES as usize * 1600 * 4
+    if mixed.rendered_frames != master_frames
+        || mixed.wav_bytes.len() != 44 + master_frames as usize * 1600 * 4
         || mixed.sample_peak_pcm16 == 0
         || mixed.original_sources != 2
     {
@@ -233,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         project.id,
         &project.stamp(),
         project.deliverables[0].id,
-        MASTER_FRAMES,
+        master_frames,
         output,
     )?;
     let prepared_bytes = fs::read(output.join(&prepared.audio.relative_path))?;
@@ -260,12 +283,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "generation":project.generation,
             "revision":project.revision,
             "scene_id":project.scenes[0].id,
+            "scene_ids":project.scenes.iter().map(|s|s.id).collect::<Vec<_>>(),
             "deliverable_id":project.deliverables[0].id,
-            "frames":MASTER_FRAMES,
+            "frames":master_frames,
             "fps":"30/1",
             "sample_rate":48000,
             "channels":2,
-            "sample_count":MASTER_FRAMES * 1600,
+            "sample_count":master_frames * 1600,
             "first_source_sha256":sources[0].source_sha256,
             "second_source_sha256":sources[1].source_sha256,
             "source_cue_ids": project.audio.sfx_cues.iter().map(|c|c.id).collect::<Vec<_>>(),
