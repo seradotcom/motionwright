@@ -192,10 +192,31 @@ pub(super) fn attach_native_caption_cues(
                             .ok_or_else(|| {
                                 invalid("Native caption editorial text color is missing")
                             })?;
+                        // Motion Canvas keeps Txt layout enabled for native
+                        // shaping. A root-level Txt with Fixed geometry can
+                        // nevertheless participate in its parent row/column
+                        // flow, shifting original Canvas pixels even while
+                        // invisible. Isolate Txt inside an absolutely placed,
+                        // native non-layout Group instead. This is still a
+                        // real editable native Semwright semantic subject.
+                        let overlay_id = format!("mw-caption-container-{}", cue.id.simple());
+                        shot.subjects.push(Subject {
+                            id: overlay_id.clone(),
+                            role: "caption-overlay-root".to_owned(),
+                            parent: None,
+                            layer: CAPTION_LAYER.to_owned(),
+                            content: SubjectContent::Group,
+                            layout: SpatialIntent::Fixed {
+                                position: Point { x: 0.0, y },
+                                size: Size { width, height },
+                            },
+                            initially_visible: true,
+                            clip_intentional: false,
+                        });
                         shot.subjects.push(Subject {
                             id: subject_id.clone(),
                             role: "caption".to_owned(),
-                            parent: None,
+                            parent: Some(overlay_id),
                             layer: CAPTION_LAYER.to_owned(),
                             content: SubjectContent::Text {
                                 runs: vec![TextRun {
@@ -211,7 +232,7 @@ pub(super) fn attach_native_caption_cues(
                                 truncate: false,
                             },
                             layout: SpatialIntent::Fixed {
-                                position: Point { x: 0.0, y },
+                                position: Point { x: 0.0, y: 0.0 },
                                 size: Size { width, height },
                             },
                             initially_visible: false,

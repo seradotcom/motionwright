@@ -676,7 +676,16 @@ async fn render(
             file.write_all(&body)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            if deliverable.burn_in_captions {
+                // CI logs cannot disclose owner job references or untrusted
+                // raw native receipts. Keep diagnostics in private runner files.
+                eprintln!(
+                    "native-caption-producer=NOT_VERIFIED category={:?} outcome_known={}",
+                    error.code, error.outcome_known
+                );
+            } else {
+                eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            }
             return Err(error.into());
         }
     };

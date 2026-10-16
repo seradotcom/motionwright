@@ -86,3 +86,13 @@ All source checks and Rust tests are distinct from actual native pixel
 evidence. Until the exact head run passes, the pixel conclusion is
 **NOT_VERIFIED**. Even a PASS is not an end-to-end captioned MP4/AAC
 master, authenticated speech or a human legibility approval.
+
+### Native text layout isolation
+
+In pinned Motion Canvas, a top-level Txt subject can participate in the
+shot root's flow even when its opacity is zero. Each caption is therefore
+a native editable text subject nested inside its own fixed, layout-disabled
+Group wrapper, rather than a flattened rendered overlay or a top-level
+flow participant. This keeps the original producer's object geometry
+stable while permitting native DOM font shaping on the nested text.
+The pixel comparison rejects any unintended baseline-frame difference.

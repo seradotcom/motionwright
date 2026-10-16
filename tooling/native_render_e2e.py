@@ -778,11 +778,23 @@ def main() -> None:
                     or len(source.get("voice_sha256", "")) != 64
                 ):
                     raise AssertionError("second caption revision is not source-bound")
-                captioned = run_json(
-                    [str(MW_BIN), "render", str(database), str(connection_path),
-                     str(EVIDENCE / "caption-motionwright-render-evidence.json")],
-                    env=env, timeout=420,
-                )
+                try:
+                    captioned = run_json(
+                        [str(MW_BIN), "render", str(database), str(connection_path),
+                         str(EVIDENCE / "caption-motionwright-render-evidence.json")],
+                        env=env, timeout=420,
+                    )
+                except (NativeCommandFailure, subprocess.TimeoutExpired):
+                    # Never echo private owner receipts or pretend an unknown
+                    # native job can be safely re-dispatched. No retries.
+                    write_private_json(EVIDENCE / "caption-native-failure-summary.json", {
+                        "schema": "motionwright-native-caption-failure/1",
+                        "outcome": "NOT_VERIFIED", "retry": "FORBIDDEN",
+                        "source_sha": GITHUB_SHA, "semwright_pin": PIN,
+                    })
+                    raise AssertionError(
+                        "Native caption provider outcome NOT_VERIFIED; no retry dispatched"
+                    ) from None
                 if (
                     captioned.get("native_render_e2e") != "PASS"
                     or captioned.get("frame_count") != 60

@@ -9,7 +9,9 @@ use motionwright_native::film::{
     build_motion_canvas_segments,
 };
 use semwright_media_time::{Rate, ResolvedCue};
-use semwright_motion_authoring::{Archetype, NarrativeRole, SubjectContent, realize};
+use semwright_motion_authoring::{
+    Archetype, NarrativeRole, SpatialIntent, SubjectContent, realize,
+};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -150,6 +152,18 @@ fn transcript_enters_native_film_as_timed_drawable_subjects_without_changing_fra
         let node = shot.subjects.iter().find(|s| s.id == c.subject).unwrap();
         assert_eq!(node.role, "caption");
         assert!(!node.initially_visible);
+        let native_parent = node
+            .parent
+            .as_ref()
+            .expect("text must not shift original root flow");
+        let wrapper = shot
+            .subjects
+            .iter()
+            .find(|subject| &subject.id == native_parent)
+            .unwrap();
+        assert!(matches!(&wrapper.content, SubjectContent::Group));
+        assert!(matches!(&wrapper.layout, SpatialIntent::Fixed { .. }));
+        assert!(wrapper.initially_visible);
         match &node.content {
             SubjectContent::Text { runs, style, .. } => {
                 assert_eq!(style, "mw-native-caption-v1");
