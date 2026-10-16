@@ -1,4 +1,13 @@
 import {expect,test} from "@playwright/test";
+import {readFileSync} from "node:fs";
+
+const sourceLock = JSON.parse(readFileSync(new URL("../../../SOURCE_LOCK.json", import.meta.url), "utf8")) as {
+  dependencies: {semwright: {revision: string}};
+};
+const pinnedRevision = sourceLock.dependencies.semwright.revision;
+if (!/^[0-9a-f]{40}$/.test(pinnedRevision)) {
+  throw new Error("Creative runtime doctor test requires one exact source-locked Semwright commit");
+}
 
 test("browser creative doctor provides real source counts without fabricating a Broker", async ({page})=>{
   await page.goto("/");
@@ -13,7 +22,7 @@ test("browser creative doctor provides real source counts without fabricating a 
   await expect(panel).toContainText("not tested");
   await expect(panel).toContainText("No");
   await expect(panel).not.toContainText("Broker session verified");
-  await expect(panel).toContainText("04142a2ae16e");
+  await expect(panel).toContainText(pinnedRevision.slice(0, 12));
 });
 
 test("runtime doctor remains read-only and does not promote a browser demo",async({page})=>{
