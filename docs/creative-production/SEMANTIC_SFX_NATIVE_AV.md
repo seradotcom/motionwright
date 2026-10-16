@@ -338,3 +338,36 @@ A missing/unsupported browser decoder cannot satisfy the source review.
 No native artifact or source data is imported by the cue UI, no new audio
 renderer is created, and the existing verified local MP4 export is unchanged.
 Production acceptance and human artistic sign-off remain separate.
+
+
+## Explicit manual SFX listening issue → existing revisioned Review
+
+The session-only "Needs adjustment" cue note can now be elevated by a
+separate, explicit **Record open creative review** action. The reviewer
+must start the real native MP4 player and enter 10–640 printable characters
+explaining the audible mismatch. The system never interprets a playback event
+as proof of human listening or automatically creates a positive verdict.
+
+The existing StudioService/AddReview CAS path records a normal open creative
+review scoped to the current scene, active branch, source revision and
+deliverable. Its start/end anchors are reduced, exact rational times at 30
+fps. The human-authored review body includes only bounded, source-stable
+identifiers and digests: original cue identity, original scene/asset SHA,
+absolute frame/sample positions, source PCM SHA, verified native MP4 SHA,
+generation and project revision. It does not store owner filesystem paths,
+provider job handles, decoded user audio, private session tokens or raw
+native receipts.
+
+Recording a review changes the project revision, making the old render and
+preview tokens historical and requiring a new authorized render for any
+new production revision. The action never edits a cue, performs a native
+render, retries a failed job, resolves any review, or grants creative
+acceptance. The existing History/Reviews screen can track and resolve the
+new issue through its established human-authored workflow. Unsubmitted
+session labels and text drafts are still ephemeral.
+
+Tests verify original source integrity, rational-time anchoring, explicit
+played-media precondition, current revision, master WAV+MP4 SHA, exact cue
+identity, printable text budget, canonical AddReview persistence and stale
+native preview invalidation. This fills the handoff from listening review to
+a real actionable correction without introducing another approval ledger.

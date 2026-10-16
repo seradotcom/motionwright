@@ -2,7 +2,10 @@ import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from 
 import { useEffect, useMemo, useState } from "react";
 import NativeAvReview from "./NativeAvReview";
 import NativeSfxCueAudition from "./NativeSfxCueAudition";
-import { nativeSfxAuditionCues } from "./nativeSfxAudition";
+import {
+  nativeSfxAuditionCues, originalSfxListeningIssue,
+  type NativeSfxAuditionCue,
+} from "./nativeSfxAudition";
 import {
   evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
   type ScopedRuntimeObservation,
@@ -166,7 +169,7 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "sfx-master" | "export-master" | "verify-media" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "sfx-master" | "sfx-review" | "export-master" | "verify-media" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -1303,6 +1306,26 @@ export default function DeliveryProfiles({
                           ? sfxMediaTime.seconds : null
                       }
                       playbackObserved={sfxPlaybackObservedKey===sfxReviewSourceKey}
+                      issueBusy={busy!==null}
+                      onRecordIssue={(cue:NativeSfxAuditionCue,observation:string)=>{
+                        return run("sfx-review",async()=>{
+                          if(!selected || !currentAv || !sfxReviewSourceKey) {
+                            throw new Error("Original native SFX review source expired.");
+                          }
+                          const change=originalSfxListeningIssue(
+                            project,selected.id,currentAv,cue,observation,
+                            sfxPlaybackObservedKey===sfxReviewSourceKey,
+                          );
+                          await commit(change);
+                          setShowNativeAvReview(false);
+                          setSfxSeek(null);
+                          setSfxPlaybackObservedKey(null);
+                          setSfxMediaTime(null);
+                          setMessage("Open source-anchored SFX creative review recorded at source r"
+                            + project.revision + ". The previous MP4 preview is now historical. "
+                            + "No sound was changed or approved automatically.");
+                        });
+                      }}
                       onSeek={(seconds) => setSfxSeek(previous => ({
                         sourceKey:sfxReviewSourceKey,
                         seconds,

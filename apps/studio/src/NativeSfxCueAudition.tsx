@@ -10,14 +10,20 @@ type SessionNote = "aligned" | "needs-adjustment";
  */
 export default function NativeSfxCueAudition({
   cues, masterFrames, mediaSeconds, playbackObserved, onSeek,
+  onRecordIssue, issueBusy = false,
 }:{
   cues:NativeSfxAuditionCue[];
   masterFrames:number;
   mediaSeconds:number|null;
   playbackObserved:boolean;
   onSeek:(timeSeconds:number)=>void;
+  /** Explicit manual CAS review creation, never an automatic approval. */
+  onRecordIssue?:(cue:NativeSfxAuditionCue,observation:string)=>Promise<void>;
+  issueBusy?:boolean;
 }) {
   const [notes,setNotes]=useState<Record<string,SessionNote>>({});
+  const [observations,setObservations]=useState<Record<string,string>>({});
+  const [recordingCue,setRecordingCue]=useState<string|null>(null);
   const reviewed=cues.filter(cue=>notes[cue.cueId]!==undefined).length;
   const needsAdjustment=cues.filter(cue=>notes[cue.cueId]==="needs-adjustment").length;
   const activeFrame=mediaSeconds===null ? null
@@ -26,6 +32,18 @@ export default function NativeSfxCueAudition({
   const mark=(id:string,value:SessionNote)=>{
     if(!playbackObserved)return;
     setNotes(previous=>({...previous,[id]:value}));
+  };
+  const record=async(cue:NativeSfxAuditionCue)=>{
+    if(!playbackObserved || notes[cue.cueId]!=="needs-adjustment"
+      || !onRecordIssue || recordingCue || issueBusy)return;
+    const observation=(observations[cue.cueId]??"").trim();
+    if(observation.length<10 || [...observation].length>640)return;
+    setRecordingCue(cue.cueId);
+    try {
+      await onRecordIssue(cue,observation);
+    } finally {
+      setRecordingCue(null);
+    }
   };
   return (
     <section className="sfx-audition" role="region"
@@ -45,7 +63,9 @@ export default function NativeSfxCueAudition({
         <span>
           Play the MP4, then seek to each authored sound and record a subjective
           alignment note. These notes exist only in this review session:
-          they are <strong>not persisted, certified or creative approval</strong>.
+          session labels are <strong>not persisted, certified or creative approval</strong>.
+          Only the separate “Record open creative review” action saves a human
+          issue to the current project, invalidating this native preview.
         </span>
       </div>
       {cues.length>0 && (
@@ -106,6 +126,30 @@ export default function NativeSfxCueAudition({
                     </span>
                   )}
                 </div>
+                {choice==="needs-adjustment" && onRecordIssue && (
+                  <div className="sfx-audition-record">
+                    <label>
+                      <span className="field-label">What sounded wrong at this cue?</span>
+                      <textarea rows={2} maxLength={640}
+                        aria-label={"Original SFX listening issue for "+cue.event}
+                        placeholder="Describe the audible mismatch and what needs to change"
+                        value={observations[cue.cueId]??""}
+                        disabled={!playbackObserved || issueBusy || recordingCue!==null}
+                        onChange={(event)=>setObservations(prev=>({
+                          ...prev,[cue.cueId]:event.target.value,
+                        }))}/>
+                    </label>
+                    <button className="button compact" type="button"
+                      aria-label={"Record open creative review for "+cue.event}
+                      disabled={!playbackObserved || issueBusy || recordingCue!==null
+                        || (observations[cue.cueId]??"").trim().length<10}
+                      onClick={()=>void record(cue)}>
+                      {recordingCue===cue.cueId?"Recording review…":"Record open creative review"}
+                    </button>
+                    <span>Explicit project edit; the native source preview becomes historical.
+                      No audio is changed or approved automatically.</span>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -119,7 +163,7 @@ export default function NativeSfxCueAudition({
             + " a listener's session note."}</span>
         <button type="button" className="button compact"
           disabled={reviewed===0}
-          onClick={()=>setNotes({})}>
+          onClick={()=>{setNotes({});setObservations({});}}>
           <RotateCcw size={13} aria-hidden="true"/>
           Clear session notes
         </button>

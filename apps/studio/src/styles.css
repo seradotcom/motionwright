@@ -6156,3 +6156,33 @@ select:focus {
   .otio-cut-review .portable-operation { grid-template-columns: minmax(0, 1fr); }
   .otio-cut-review .portable-operation > .button { grid-column: 1; justify-self: start; }
 }
+
+
+/* A manual issue is a separate, explicit review action. Session notes never
+   become a CAS mutation or creative approval without this owner click. */
+.sfx-audition-record {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+}
+.sfx-audition-record label { display: grid; gap: 6px; min-width: 0; }
+.sfx-audition-record textarea {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+}
+.sfx-audition-record .button { justify-self: start; }
+.sfx-audition-record > span { font-size: 10px; line-height: 1.5; color: var(--muted); }
