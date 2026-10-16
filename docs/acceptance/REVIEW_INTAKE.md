@@ -77,6 +77,18 @@ This applies to the private session manifest parent on `init` and `verify` as
 well as the evidence root on `fingerprint`. An upstream junction cannot be
 made safe by placing an ordinary directory beneath it.
 
+The private evidence root and manifest must also be outside **all
+worktrees belonging to this Motionwright repository**, not just the current
+checkout. This includes the main checkout and sibling linked worktrees with
+separate `.git` files. The verifier checks Git's bounded worktree listing for
+this repository and refuses any path located under those known worktree roots.
+If that source worktree list is unavailable or malformed, it fails closed.
+An unrelated Git repository in the user's home directory is not treated as
+another Motionwright worktree: Downloads beneath such a directory remain
+usable. This is not a general guarantee against accidentally committing
+private media to an unrelated repository, nor is it an atomic filesystem
+access control against a privileged attacker.
+
 The manifest is opened through a checked file descriptor with a bounded 8 MiB
 read, not by a path-only read_bytes(). Its physical identity, modification
 indicators and exact byte digest are checked after reading it. On verify,
