@@ -1371,6 +1371,11 @@ export default function DeliveryProfiles({
               {!desktopMode && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Desktop filesystem capability is required.</div>
               )}
+              {draft.burn_in_captions && (
+                <div className="delivery-truth-note warning" role="status">
+                  <CircleDashed size={14} /> Saved Burn-in renders timed transcript text through the pinned Semwright Motion Canvas Film when the current voice digest and exact frame times are valid. Sidecar export remains separate. The final MLT H.264/AAC master still rejects burned-in captions; native pixel, font and human legibility review are required before publication.
+                </div>
+              )}
               {draft.captions && profileTranscript.length === 0 && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> The selected voice take has no transcript segments; no caption file is implied.</div>
               )}

@@ -1,3 +1,6 @@
+#[path = "film_captions.rs"]
+mod film_captions;
+
 use crate::component_text::fixed_component_text;
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
@@ -1597,12 +1600,22 @@ pub fn build_motion_canvas_segments(
         .find(|profile| profile.id == deliverable_id)
         .ok_or_else(|| invalid("Deliverable profile not found"))?;
     let runs = motion_canvas_runs(project, deliverable)?;
-    runs.iter()
+    let mut segments = runs
+        .iter()
         .enumerate()
         .map(|(index, scenes)| {
             build_segment(project, scenes, index, deliverable, options, &intents)
         })
-        .collect()
+        .collect::<NativeResult<Vec<_>>>()?;
+    // Burn-in is an explicit saved deliverable choice. Sidecar-only profiles
+    // retain their historical native pixels and do not import voice audio.
+    film_captions::attach_native_caption_cues(
+        project,
+        deliverable,
+        options.frame_rate,
+        &mut segments,
+    )?;
+    Ok(segments)
 }
 
 #[cfg(test)]

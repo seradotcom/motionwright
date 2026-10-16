@@ -1115,8 +1115,8 @@
     {
       "id": "MW05-E14-03",
       "implementation": "partial",
-      "implemented_scope": "Three exact native H264/AAC test masters verified, source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI",
-      "remaining_scope": "Broader profile and audible sync/quality acceptance, actual native caption rendering, multilingual reading calibration, glyph legibility, real viewer comprehension and physical-device human review remain open",
+      "implemented_scope": "Three exact native H264/AAC test masters verified (not caption-burned); explicit saved Burn-in now projects exact-frame-aligned source-bound native Motion Canvas caption subjects and CueGraph under a bounded authoring grammar, with exact-SHA native pixel observation still pending; source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI",
+      "remaining_scope": "Broader profile and audible sync/quality acceptance, actual Semwright PNG decoded caption pixel observation, MLT final-master burn-in support, multilingual reading calibration, glyph legibility, real viewer comprehension and physical-device human review remain open",
       "source_paths": [
         ".github/workflows/creative-conformance.yml",
         ".github/workflows/product-hero-e2e.yml",
