@@ -80,7 +80,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            bubblewrap fontconfig xz-utils libpipewire-0.3-dev pkg-config clang
+            bubblewrap fontconfig xz-utils libpipewire-0.3-dev pkg-config clang python3-pil
           curl --fail --location --retry 3 --output /tmp/blender.tar.xz "$BLENDER_URL"
           echo "$BLENDER_SHA256  /tmp/blender.tar.xz" | sha256sum --check -
           sudo tar -xJf /tmp/blender.tar.xz -C /usr/local
@@ -110,6 +110,7 @@ jobs:
       - name: Realize application-owned scene through real Broker and Blender Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          MOTIONWRIGHT_TEST_LIT_SHOT: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
         run: |
           python3 tooling/native_blender_e2e.py \
@@ -123,6 +124,7 @@ jobs:
           test -s "verification/native-blender-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-blender-evidence.json"
           test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-contribution.glb"
+          test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-lit-still.png"
           python3 - <<'PY'
           import json, os, struct
           from pathlib import Path
@@ -133,6 +135,10 @@ jobs:
           assert len(result["semwright_sha"]) == 40
           assert result["glb"]["meshes"] >= 2
           assert result["glb"]["materials"] >= 2
+          assert result["lit_still"]["width"] == 640
+          assert result["lit_still"]["height"] == 360
+          assert result["lit_still"]["decoded_grayscale_stddev"] >= 2.0
+          assert result["lit_still"]["human_quality_approved"] is False
           data = (root / "motionwright-contribution.glb").read_bytes()
           magic, version, length = struct.unpack("<4sII", data[:12])
           assert magic == b"glTF" and version == 2 and length == len(data)

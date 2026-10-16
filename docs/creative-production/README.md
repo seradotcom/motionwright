@@ -38,6 +38,10 @@ The original measured narration can now be recorded/released through the existin
 
 Audio now provides an explicit read-only source-owned voice/music/SFX mix audition with imported WAV custody, exact pinned-revision PCM, deterministic ducking and clipping refusal. Disposable CI independently decodes actual synthetic WAVs with FFmpeg and meters loudness and intersample peak, but this is not a finished mix master or human listening approval. [Physical 3-bus audition](V05_ORIGINAL_NATIVE_PCM_MIX.md).
 
+## Physically lit original Blender still (E07-04 partial)
+
+A source-SHA-bound Native SDK Blender operation now observes a real owner-provisioned camera and light and renders an actual bounded CPU Cycles PNG after the existing editable geometry GLB. The live driver E2E independently hashes and decodes pixels. No authored lighting rig, video camera move, artistic approval or automatic Blender Python is claimed. [Native lit still](V05_NATIVE_BLENDER_LIT_STILL.md).
+
 ## Start a design session
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.

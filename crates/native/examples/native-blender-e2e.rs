@@ -1,7 +1,9 @@
 use motionwright_domain::{
     BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
 };
-use motionwright_native::production::{ProductionConnection, ProductionCoordinator};
+use motionwright_native::production::{
+    BlenderLitStillProfile, ProductionConnection, ProductionCoordinator,
+};
 use motionwright_service::StudioService;
 use serde_json::json;
 use std::{
@@ -247,6 +249,27 @@ async fn realize(
         return Err("verified Blender artifact metadata is outside certified bounds".into());
     }
 
+    let lit_still = if std::env::var("MOTIONWRIGHT_TEST_LIT_SHOT").as_deref() == Ok("1") {
+        Some(
+            coordinator
+                .render_blender_lit_still(
+                    project.id,
+                    &expected,
+                    "native-blender-real-lit-owner-shot",
+                    "native-blender-real-driver-host",
+                    scene.id,
+                    BlenderLitStillProfile {
+                        width: 640,
+                        height: 360,
+                        samples: 8,
+                        owner_provisioned_camera_and_light: true,
+                    },
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
     let receipts = coordinator.receipts(project.id, 256)?;
     let completed_commands: BTreeSet<_> = receipts
         .iter()
@@ -283,6 +306,7 @@ async fn realize(
         "result": result,
         "receipt_count": receipts.len(),
         "completed_commands": completed_commands,
+        "lit_still": lit_still,
     });
     let body = serde_json::to_vec_pretty(&evidence)?;
     let mut file = OpenOptions::new()

@@ -615,10 +615,17 @@
     },
     {
       "id": "MW05-E07-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "No new lit native Blender shot renderer",
-      "remaining_scope": "Editable geometry alone is not cinematography evidence",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Original owner-provisioned real Blender Cycles CPU lit PNG route after existing source-verified editable geometry GLB through pinned Semwright Broker/Blender Driver Host. Read-only source camera/LIGHT observation with truncated inventory refusal; exact project/generation/revision and prior original GLB SHA receipt; bounded 320?1920 by 180?1080 8-bit RGB(A) still, 4?32 Cycles samples, anti-overwrite source-digest name and local path/SHA verification. Existing disposable CI now decodes and independently hashes real 640x360 original PNG pixels with camera/light attestation instead of accepting editable geometry as cinematography.",
+      "remaining_scope": "Editable camera lens rigs, authored/staged 3-point light objects, temporal lighting continuity, physically faithful materials and shading across arbitrary native host profiles, animation/video masters, user-facing Cinema UI, HDR/grade, commercial render output rights and independently adjudicated human creative image/video acceptance remain NOT_IMPLEMENTED/NOT_RUN. Host-provisioned camera/light is not independent lighting or aesthetic proof.",
+      "source_paths": [
+        "crates/native/src/production/blender_lit.rs",
+        "crates/native/src/production.rs",
+        "crates/native/examples/native-blender-e2e.rs",
+        "tooling/native_blender_e2e.py",
+        ".github/workflows/native-blender-e2e.yml",
+        "docs/creative-production/V05_NATIVE_BLENDER_LIT_STILL.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
