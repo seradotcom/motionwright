@@ -4,7 +4,10 @@ use crate::{
     mlt_edit_plan::MltNativeVideoRecipe,
     production::{MltPreparedMezzanines, verified_native_media_path},
 };
-use motionwright_domain::{AudioCodec, OutputColorSpace, OutputContainer, Project, VideoCodec};
+use motionwright_domain::{
+    AlignmentEvidence, AudioCodec, DeliverableProfile, OutputColorSpace, OutputContainer, Project,
+    VideoCodec, transcript_for_profile,
+};
 use motionwright_service::VerifiedMasterVoice;
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
@@ -247,9 +250,74 @@ pub struct MultiSegmentAudioReadiness {
     pub fps_num: u32,
     pub fps_den: u32,
     pub final_profile: String,
+    /// Optional source-bound native Film caption grammar for the saved Burn-in
+    /// choice. This does NOT certify the final lossy MP4 pixels or readability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_cue_count: Option<usize>,
     /// Deterministic source digest for a later, separately authorized mux.
     pub source_fingerprint: String,
     pub evidence_scope: String,
+}
+
+/// Reject any purported captioned master that lacks an authored, frame-exact,
+/// voice-bound source. The real film/shot containment and every rendered
+/// frame are independently verified by preflight_multi_segment_mlt above this
+/// audio gate. This helper never authenticates speech, performs recognition,
+/// measures the final H.264 pixels or approves release.
+fn validated_native_caption_cues(
+    project: &Project,
+    profile: &DeliverableProfile,
+    voice: &motionwright_domain::VoiceTrack,
+    fps_num: u32,
+    fps_den: u32,
+) -> NativeResult<Option<(usize, String)>> {
+    if !profile.burn_in_captions {
+        return Ok(None);
+    }
+    if !profile.captions || profile.voice_track_id != Some(voice.id) || fps_num == 0 || fps_den == 0
+    {
+        return Err(unsupported(
+            "Native captioned master requires enabled captions, Burn-in and exactly the bound measured voice",
+        ));
+    }
+    let cues = transcript_for_profile(project, profile).map_err(|_| {
+        unsupported("Native captioned master requires an exact, owner-authored transcript for the selected source cut")
+    })?;
+    if cues.is_empty() || cues.len() > 96 {
+        return Err(unsupported(
+            "Native captioned master admits 1–96 known source cues",
+        ));
+    }
+    let aligned = |time: motionwright_domain::RationalTime| {
+        let numerator = i128::from(time.num) * i128::from(fps_num);
+        let denominator = i128::from(time.den) * i128::from(fps_den);
+        denominator > 0 && numerator >= 0 && numerator % denominator == 0
+    };
+    let less_or_equal = |left: motionwright_domain::RationalTime,
+                         right: motionwright_domain::RationalTime| {
+        i128::from(left.num) * i128::from(right.den) <= i128::from(right.num) * i128::from(left.den)
+    };
+    for (index, cue) in cues.iter().enumerate() {
+        if cue.voice_track_id != voice.id
+            || !aligned(cue.start)
+            || !aligned(cue.end)
+            || !less_or_equal(cue.end, voice.measured_duration)
+            || !less_or_equal(cue.start, cue.end)
+            || cue.start == cue.end
+            || matches!(cue.alignment, AlignmentEvidence::Unknown)
+            || matches!(&cue.alignment,
+                AlignmentEvidence::Measured { source_sha256, .. }
+                    if source_sha256 != &voice.source_sha256)
+            || (index > 0 && !less_or_equal(cues[index - 1].end, cue.start))
+        {
+            return Err(unsupported(
+                "Native Burn-in is not source-bound, frame-exact, nonoverlapping or within measured voice duration",
+            ));
+        }
+    }
+    let serialized = serde_json::to_vec(&cues)
+        .map_err(|_| invalid("Native caption source hash could not be serialized"))?;
+    Ok(Some((cues.len(), hex::encode(Sha256::digest(serialized)))))
 }
 
 /// Exact audio + already-produced FFV1 input compatibility. A future owner
@@ -301,10 +369,9 @@ pub fn preflight_multi_segment_audio(
         || profile.video_codec != VideoCodec::H264
         || profile.container != OutputContainer::Mp4
         || profile.color_space != OutputColorSpace::Rec709
-        || profile.burn_in_captions
     {
         return Err(unsupported(
-            "Multi-segment AV requires exactly bound measured stereo 48 kHz WAV and H.264/AAC Rec.709 MP4 without unimplemented caption burn-in",
+            "Multi-segment AV requires exactly bound measured stereo 48 kHz WAV and H.264/AAC Rec.709 MP4",
         ));
     }
     if project.audio.mix.voice_gain_db != 0.0
@@ -444,6 +511,18 @@ pub fn preflight_multi_segment_audio(
         ));
     }
 
+    // Native caption admission uses the same selected measured voice and
+    // exact output-frame clock as the already-verified Motion Canvas Film.
+    // Its authoritative per-shot and per-frame validation happens before
+    // native FFV1 encoding, not in a second renderer.
+    let captions = validated_native_caption_cues(
+        project,
+        profile,
+        track,
+        recipe.provider_profile.fps_num,
+        recipe.provider_profile.fps_den,
+    )?;
+
     // Stable, nonpath identity. No real media, absolute CAS paths or raw
     // source payloads are serialized to the result or available to WebView.
     let input = serde_json::to_vec(&(
@@ -461,6 +540,22 @@ pub fn preflight_multi_segment_audio(
     ))
     .map_err(|_| invalid("Multi-segment AV readiness source could not be serialized"))?;
     let source_fingerprint = hex::encode(Sha256::digest(input));
+    // Preserve the exact legacy fingerprint for projects without Burn-in.
+    // A captioned project additionally commits to the complete selected
+    // transcript bytes through a digest, without exposing speech/text.
+    let source_fingerprint = if let Some((count, digest)) = &captions {
+        hex::encode(Sha256::digest(
+            serde_json::to_vec(&(
+                &source_fingerprint,
+                count,
+                digest,
+                "native-captions-original-film-v1",
+            ))
+            .map_err(|_| invalid("Native captioned source fingerprint could not be serialized"))?,
+        ))
+    } else {
+        source_fingerprint
+    };
     Ok(MultiSegmentAudioReadiness {
         project_resource: project.resource_key(),
         generation: project.generation,
@@ -478,8 +573,14 @@ pub fn preflight_multi_segment_audio(
         fps_num: recipe.provider_profile.fps_num,
         fps_den: recipe.provider_profile.fps_den,
         final_profile: recipe.final_mux_profile.clone(),
+        caption_cue_count: captions.as_ref().map(|(count, _)| *count),
         source_fingerprint,
-        evidence_scope: "verified-owner-audio-ffv1-inputs-not-muxed-mp4".into(),
+        evidence_scope: if captions.is_some() {
+            "verified-owner-audio-ffv1-native-captioned-source-not-muxed-mp4"
+        } else {
+            "verified-owner-audio-ffv1-inputs-not-muxed-mp4"
+        }
+        .into(),
     })
 }
 
@@ -491,7 +592,9 @@ mod tests {
         mlt_edit_plan::mlt_native_video_recipe,
         production::MltVerifiedMezzanine,
     };
-    use motionwright_domain::{Asset, Change, RationalTime, VoiceTrack};
+    use motionwright_domain::{
+        AlignmentEvidence, Asset, Change, RationalTime, TranscriptSegment, VoiceTrack,
+    };
     use tempfile::TempDir;
 
     struct Fixture {
@@ -716,6 +819,66 @@ mod tests {
         f = fixture();
         f.project.audio.mix.target_lufs = Some(-14.0);
         assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn native_captioned_av_readiness_binds_exact_measured_voice_timing_and_text_hash() {
+        let mut f = fixture();
+        let original = check(&f).unwrap();
+        assert_eq!(original.caption_cue_count, None);
+        let voice_track_id = f.project.audio.voice_tracks[0].id;
+        f.project.deliverables[0].captions = true;
+        f.project.deliverables[0].burn_in_captions = true;
+        // Two canonical one-shot transcript intervals in separate scenes.
+        f.project.audio.transcript = [
+            (1, 2, 1, 1, "Source-bound native caption one"),
+            (5, 2, 3, 1, "Source-bound native caption two"),
+        ]
+        .into_iter()
+        .map(
+            |(start_num, start_den, end_num, end_den, text)| TranscriptSegment {
+                id: Uuid::now_v7(),
+                voice_track_id,
+                start: RationalTime::new(start_num, start_den).unwrap(),
+                end: RationalTime::new(end_num, end_den).unwrap(),
+                text: text.into(),
+                speaker: None,
+                alignment: AlignmentEvidence::Manual,
+            },
+        )
+        .collect();
+        let admitted = check(&f).unwrap();
+        assert_eq!(admitted.caption_cue_count, Some(2));
+        assert_eq!(
+            admitted.evidence_scope,
+            "verified-owner-audio-ffv1-native-captioned-source-not-muxed-mp4"
+        );
+        assert_ne!(admitted.source_fingerprint, original.source_fingerprint);
+        assert!(digest_valid(&admitted.source_fingerprint));
+        let same = check(&f).unwrap();
+        assert_eq!(same, admitted);
+        f.project.audio.transcript[0].text = "Corrected, independently authored words".into();
+        assert_ne!(
+            check(&f).unwrap().source_fingerprint,
+            admitted.source_fingerprint
+        );
+        f.project.audio.transcript[0].alignment = AlignmentEvidence::Unknown;
+        assert!(check(&f).is_err());
+        f.project.audio.transcript[0].alignment = AlignmentEvidence::Measured {
+            engine: "fixture".into(),
+            source_sha256: "c".repeat(64),
+            confidence_millis: Some(900),
+        };
+        assert!(check(&f).is_err());
+        f.project.audio.transcript[0].alignment = AlignmentEvidence::Manual;
+        f.project.audio.transcript[0].start = RationalTime::new(51, 100).unwrap();
+        assert!(check(&f).is_err()); // no silent 30 fps rounding
+        f.project.audio.transcript[0].start = RationalTime::new(1, 2).unwrap();
+        f.project.deliverables[0].captions = false;
+        assert!(check(&f).is_err()); // declared Burn-in cannot be silent
+        f.project.deliverables[0].captions = true;
+        f.project.audio.transcript.clear();
+        assert!(check(&f).is_err()); // never admit an empty burned-in master
     }
 
     #[test]

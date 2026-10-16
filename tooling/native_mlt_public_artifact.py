@@ -19,15 +19,17 @@ from cross_app_public_artifact import (
 
 SCHEMA = "motionwright.v01-native-mlt-public-evidence/1"
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
-MODES = {"pcm", "video-only", "final-mp4"}
+MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4"}
 VALID_STATUS = {"success", "failure", "cancelled", "skipped"}
 NO_CLEANUP = "not_requested_requires_foreground_broker_consent"
 SCOPES = {
     "pcm": "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master",
     "video-only": "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master",
     "final-mp4": "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master",
+    "captioned-mp4": "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master",
 }
 FINAL_SCOPE = "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+CAPTIONED_SCOPE = "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved"
 LIMIT = 256_000_000
 
 
@@ -118,7 +120,7 @@ def verify_private_source(root: Path, mode: str, source_sha: str,
             and len(media) == result.get("video_bytes"),
             "native_mlt_media_digest_mismatch")
     admitted = {name: media}
-    if mode == "final-mp4":
+    if mode in ("final-mp4", "captioned-mp4"):
         master = read_bounded(root, "native-multisegment-master.mp4", LIMIT)
         require(len(master) >= 12 and master[4:8] == b"ftyp",
                 "invalid_native_mlt_master")
@@ -134,7 +136,8 @@ def verify_private_source(root: Path, mode: str, source_sha: str,
                 == "distinct_source_400hz_left_600hz_right"
                 and type(result.get("measured_voice_pcm_frames")) is int
                 and result["measured_voice_pcm_frames"] == 52800
-                and result.get("final_evidence_scope") == FINAL_SCOPE,
+                and result.get("final_evidence_scope")
+                    == (CAPTIONED_SCOPE if mode == "captioned-mp4" else FINAL_SCOPE),
                 "native_mlt_master_evidence_invalid")
         stereo = strict_object(read_bounded(
             root, "decoded-stereo-content-proof.json", 128_000
@@ -148,6 +151,42 @@ def verify_private_source(root: Path, mode: str, source_sha: str,
             and 52_800 <= result["decoded_master_pcm_frames"] <= 53_824,
             "native_mlt_stereo_evidence_invalid",
         )
+        if mode == "captioned-mp4":
+            # Original native PNG and FFV1/H264 bytes were inspected on the
+            # disposable runner. Admit only closed numerical evidence from
+            # the independent decoder, never transcript/media/session data.
+            bounded = strict_object(read_bounded(
+                root, "captioned-master-pixel-evidence.json", 32_768
+            ))
+            masks = bounded.get("active_caption_frames")
+            counts = result.get("native_caption_mask_pixels")
+            require(
+                bounded.get("schema") == "motionwright-v05-native-captioned-master-pixels/1"
+                and bounded.get("captioned_master_decoded_pixels") == "PASS"
+                and bounded.get("motionwright_source_sha") == source_sha
+                and bounded.get("semwright_source_sha") == semwright_sha
+                and bounded.get("original_native_ffv1_frame_indices") == [0, 14, 15, 31, 32]
+                and bounded.get("decoded_h264_frame_indices") == [0, 15, 32]
+                and bounded.get("native_cue_count") == 2
+                and bounded.get("original_ffv1_sha256") == result["video_sha256"]
+                and bounded.get("actual_master_mp4_sha256") == result["final_master_sha256"]
+                and bounded.get("human_readability") == "NOT_RUN"
+                and bounded.get("commercial_release_authorized") is False
+                and bounded.get("original_owner_media_or_transcript_published") is False
+                and isinstance(masks, dict) and set(masks) == {"15", "32"}
+                and isinstance(counts, dict) and set(counts) == {"15", "32"}
+                and all(
+                    isinstance(masks[key], dict)
+                    and type(masks[key].get("native_caption_mask_pixels")) is int
+                    and 350 <= masks[key]["native_caption_mask_pixels"] <= 100_000
+                    and masks[key]["native_caption_mask_pixels"] == counts[key]
+                    for key in ("15", "32")
+                )
+                and result.get("captioned_master_decoded_pixels") == "PASS"
+                and result.get("captioned_source_cue_count") == 2
+                and result.get("native_captioned_human_legibility") == "NOT_RUN",
+                "native_captioned_master_decoded_pixels_not_verified",
+            )
         admitted["native-multisegment-master.mp4"] = master
     return admitted
 
@@ -176,6 +215,9 @@ def publish_mlt(root: Path, output: Path, mode: str, source_sha: str,
         "mode": mode,
         "ci_native_mlt_evidence": "PASS" if job_status == "success" else "NOT_VERIFIED",
         "native_video_frames": 33 if job_status == "success" else None,
+        "native_captioned_h264_decoded_pixels":
+            "PASS" if job_status == "success" and mode == "captioned-mp4" else "NOT_VERIFIED",
+        "human_caption_readability": "NOT_RUN",
         "final_master_human_approved": False,
         "verified_native_project_cleanup": False,
         "foreground_cleanup_consent_obtained": False,

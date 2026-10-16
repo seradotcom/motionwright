@@ -422,6 +422,7 @@ impl ProductionCoordinator {
                 "Project revision changed during native multisegment AV mux",
             ));
         }
+        let captioned = audio_readiness.caption_cue_count.is_some();
         Ok(MltMultisegmentAvMasterEvidence {
             project_resource: project.resource_key(),
             generation: project.generation,
@@ -433,9 +434,15 @@ impl ProductionCoordinator {
             staged_audio: audio.clone(),
             master,
             decoded_audio,
-            evidence_scope:
+            evidence_scope: if captioned {
+                // Native Film already verified exact caption activity before
+                // FFV1; MLT's mux binds actual source file SHA and frame count.
+                // The lossy MP4 pixels still need independent decoded review.
+                "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved"
+            } else {
                 "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
-                    .into(),
+            }
+            .into(),
         })
     }
 }
