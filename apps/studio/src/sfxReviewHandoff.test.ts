@@ -12,6 +12,11 @@ function fixture():Project{
   const project=structuredClone(fixtureProject);
   project.scenes=[project.scenes[0]];
   project.scenes[0].id=sceneId;
+  // The shared studio fixture already owns an unrelated creative review.
+  // Isolate the one manually authored SFX review for targeted mutations.
+  // Otherwise reviews[0] targets the old fixture review rather than ours.
+  const unrelated=structuredClone(project.reviews);
+  project.reviews=[];
   project.audio.sfx_cues=[{
     schema:"motionwright.semantic-sfx/1",id:cueId,scene_id:sceneId,
     event:"ui_focus",anchor:{kind:"scene_start"},offset_frames:5,
@@ -44,11 +49,16 @@ function fixture():Project{
       },
     }),
   });
+  // Keep the unrelated historical review accessible in the test so the
+  // filter is also exercised with a mixed real-world review collection.
+  if (unrelated.length > 0) project.reviews.push(...unrelated);
   return project;
 }
 describe("v0.5 human SFX issue → same original cue edit handoff",()=>{
   it("finds an open scene-bound review without inventing a quality approval",()=>{
     const p=fixture(),before=structuredClone(p);
+    expect(p.reviews[0].id).toBe(reviewId);
+    expect(p.reviews.length).toBeGreaterThan(1);
     const rows=openOriginalSfxReviewHandoffs(p);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
