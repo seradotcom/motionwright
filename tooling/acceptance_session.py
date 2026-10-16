@@ -47,28 +47,91 @@ def _strict_json_object(pairs: list[tuple[str, object]]) -> dict:
 
 
 def outside_public_checkout(path: Path, *, purpose: str) -> Path:
-    """Resolve an evidence location without admitting files inside source."""
+    """Reject linked ancestors and evidence locations within public source."""
+    _reject_private_path_chain(path, kind="Private acceptance")
     resolved = path.resolve(strict=True)
     if resolved.is_relative_to(ROOT.resolve()):
         raise IntakeError(f"Private acceptance {purpose} must reside outside the public checkout")
     return resolved
 
 
-def load_private_manifest(path: Path) -> object:
-    """Read a bounded private review file without following final symlinks."""
-    outside_public_checkout(path.parent, purpose="manifest")
-    if path.is_symlink() or not path.is_file():
-        raise IntakeError("Private acceptance manifest must be a regular file")
-    size = path.stat().st_size
-    if not 0 < size <= MAX_MANIFEST_BYTES:
-        raise IntakeError("Private acceptance manifest must be bounded and nonempty")
-    raw = path.read_bytes()
-    if len(raw) != size:
-        raise IntakeError("Private acceptance manifest changed while reading")
+def _reject_indirect_path_component(path: Path, *, kind: str) -> None:
+    """Refuse symlinks and Windows NTFS junction/reparse links, including on 3.11.
+
+    Path.is_symlink alone misses junctions on Windows Python 3.11. The
+    FILE_ATTRIBUTE_REPARSE_POINT check also covers non-symlink reparse types.
+    """
+    if path.is_symlink():
+        raise IntakeError(f"{kind} path traverses a symlink or reparse point")
     try:
-        return json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
+        info = path.lstat()
+        reparse_bit = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        is_reparse = bool(getattr(info, "st_file_attributes", 0) & reparse_bit)
+        is_junction = getattr(path, "is_junction", None)
+        if is_reparse or (callable(is_junction) and is_junction()):
+            raise IntakeError(f"{kind} path traverses a symlink or reparse point")
+    except OSError as exc:
+        raise IntakeError(f"{kind} path component is unavailable") from exc
+
+
+def _reject_private_path_chain(path: Path, *, kind: str) -> None:
+    """Refuse reparse ancestors even when only the final path is a real directory.
+
+    Checking just the evidence root misses C:/private/junction/real-root
+    where the middle directory is a junction pointing elsewhere.
+    Deliberately refuse dot-dot path components before resolution.
+    """
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        if part == "..":
+            raise IntakeError(f"{kind} paths must not contain parent components")
+        current = current / part
+        _reject_indirect_path_component(current, kind=kind)
+
+
+def _private_manifest_snapshot(path: Path) -> tuple[object, tuple[tuple[int, int, int, int, int], str]]:
+    """Read an outside-checkout manifest via an identity-checked descriptor.
+
+    Its identity and exact byte SHA can be rechecked after evidence hashing.
+    This is a conservative best-effort filesystem snapshot, not an atomic
+    transaction or a signature of the claimed independent reviewer.
+    """
+    outside_public_checkout(path.parent, purpose="manifest")
+    _reject_indirect_path_component(path, kind="Manifest")
+    try:
+        before = path.stat()
+        if not stat.S_ISREG(before.st_mode) or before.st_ino <= 0 or before.st_nlink != 1:
+            raise IntakeError("Private acceptance manifest must be a single-linked identifiable regular file")
+        size = before.st_size
+        if not 0 < size <= MAX_MANIFEST_BYTES:
+            raise IntakeError("Private acceptance manifest must be bounded and nonempty")
+        identity = _file_fingerprint_identity(before)
+        flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or _file_fingerprint_identity(opened) != identity:
+                raise IntakeError("Private acceptance manifest identity changed before reading")
+            raw = stream.read(MAX_MANIFEST_BYTES + 1)
+            after_read = os.fstat(stream.fileno())
+            if _file_fingerprint_identity(after_read) != identity:
+                raise IntakeError("Private acceptance manifest identity changed while reading")
+        _reject_indirect_path_component(path, kind="Manifest")
+        if _file_fingerprint_identity(path.stat()) != identity or len(raw) != size:
+            raise IntakeError("Private acceptance manifest identity changed after reading")
+    except OSError as exc:
+        raise IntakeError("Private acceptance manifest is unavailable") from exc
+    try:
+        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise IntakeError("Private acceptance manifest is not valid UTF-8 JSON") from exc
+    return doc, (identity, sha256(raw).hexdigest())
+
+
+def load_private_manifest(path: Path) -> object:
+    """Read a bounded, identity-checked private review file without replacing it."""
+    return _private_manifest_snapshot(path)[0]
 
 
 def utc_now() -> str:
@@ -184,11 +247,15 @@ def validated_path(root: Path, relative: object) -> Path:
         raise IntakeError("Evidence paths must not be absolute or contain parent/dot components")
     if "\\" in relative or normalized.parts[0].startswith("~"):
         raise IntakeError("Evidence paths must not use backslashes or home expansion")
+    # Colon would name an NTFS alternate data stream or drive-relative path.
+    # Treat evidence descriptors as portable paths on every platform.
+    if ":" in relative:
+        raise IntakeError("Evidence paths must not use Windows stream or drive syntax")
+    _reject_indirect_path_component(root, kind="Evidence")
     current = root
     for part in normalized.parts:
         current = current / part
-        if current.is_symlink():
-            raise IntakeError(f"Evidence path traverses a symlink: {relative}")
+        _reject_indirect_path_component(current, kind="Evidence")
     resolved_root = root.resolve(strict=True)
     resolved = current.resolve(strict=True)
     if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
@@ -351,7 +418,7 @@ def verify_private_session(manifest: Path, *, evidence_root: Path) -> dict[str, 
     even if the stored private JSON contains a syntactically valid SHA.
     This still cannot authenticate the external binary or reviewer identity.
     """
-    doc = load_private_manifest(manifest)
+    doc, manifest_stamp = _private_manifest_snapshot(manifest)
     if not isinstance(doc, dict):
         raise IntakeError("Private acceptance session must be a JSON object")
     source = doc.get("source")
@@ -365,6 +432,9 @@ def verify_private_session(manifest: Path, *, evidence_root: Path) -> dict[str, 
     # Do not emit a source-bound success until the SAME HEAD and tracked
     # inputs have been checked again after all evidence bytes were read.
     checked_intake_source(source_sha)
+    _, after_manifest_stamp = _private_manifest_snapshot(manifest)
+    if after_manifest_stamp != manifest_stamp:
+        raise IntakeError("Private acceptance manifest changed during evidence verification")
     return totals
 
 
@@ -388,9 +458,9 @@ def main() -> int:
             # public repository. Refuse replacing an existing session.
             # Resolve the *parent* to guard public-checkout paths hidden by
             # symlink aliases; the final file must not exist yet.
-            output = args.output.parent.resolve(strict=True) / args.output.name
-            if output.is_relative_to(ROOT.resolve()):
-                raise IntakeError("Review intake must be created outside the public source checkout")
+            output = outside_public_checkout(args.output.parent, purpose="manifest") / args.output.name
+            if ":" in args.output.name:
+                raise IntakeError("Private acceptance manifest name must not contain drive or stream syntax")
             data = create_session(
                 source_sha=checked_intake_source(args.source_sha),
                 executed_by=args.executed_by,

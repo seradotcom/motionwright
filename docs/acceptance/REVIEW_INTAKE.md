@@ -63,6 +63,35 @@ python3 tooling/acceptance_session.py verify \
 
 The final `verify` command also requires the private manifest's Motionwright source SHA to match the **current exact, clean, tracked Git checkout**, checked **both before and after reading all private evidence**. This prevents a mid-verification checkout update or tracked edit from retaining a stale source-bound success; it does not make filesystem operations atomic or attest a signed installed binary. A reviewer must use the source checkout of the tested build rather than silently validating an older/newer version using another checkout. The validator checks exact 60-case cardinality, source SHA formats, pinned Semwright SHA, UTC event order, independent reviewer distinct from executor, PASS rationale, per-case evidence folder and unique evidence path, actual evidence file existence/size/SHA-256, no symlink traversal, no path escape and bounded file sizes. It refuses duplicate JSON keys, malformed UTF-8 and private session manifests above 8 MiB before evaluating any claims. Large evidence files are hashed in 1 MiB chunks. Private media is **not** copied to the repository or uploaded by this tool.
 
+### Filesystem identity during a long independent review
+
+Both the private session manifest and each evidence file must be an identifiable,
+single-linked regular file. An NTFS directory junction, symbolic link or other
+Windows reparse point is refused at any component *inside the evidence root*,
+including when a junction targets another case within the same evidence root.
+Windows colon streams and drive-relative syntax are not portable evidence names.
+The same conservative reparse check applies to the manifest file itself on
+Windows Python 3.11 as well as newer versions. Root directories and their ancestors must be real,
+not linked aliases; choose a direct private directory outside the public checkout.
+This applies to the private session manifest parent on `init` and `verify` as
+well as the evidence root on `fingerprint`. An upstream junction cannot be
+made safe by placing an ordinary directory beneath it.
+
+The manifest is opened through a checked file descriptor with a bounded 8 MiB
+read, not by a path-only read_bytes(). Its physical identity, modification
+indicators and exact byte digest are checked after reading it. On verify,
+the *same manifest identity and bytes* must still exist after every individual
+piece of private evidence has been hashed. This detects swapped session files
+or same-size rewrites even when timestamps have been restored. The operation
+does not copy private records to CI or GitHub; error paths contain no private
+manifest body. It does not attest human review, binary origin, or provide an
+atomic filesystem transaction against an actively hostile administrator.
+
+The Windows-specific real-junction regression runs on a Windows CI runner in
+the Security and Delivery workflow, while portable mocked reparse/manifest
+mutation regressions run in the original Linux source-boundary suite. These
+are **synthetic security checks**, never any of the 60 product PASS cases.
+
 **Important: identity fields are self-attested.** The validator cannot authenticate identities, prove a screenshot depicts the correct app, prove a video was actually reviewed, or tell whether a human truly followed the private scenario. Such judgments remain the independent reviewer's responsibility. A `PASS` in this private session does not automatically promote public `docs/acceptance/acceptance-status.json`; the maintainer must manually review the evidence and privacy/licensing constraints before publishing any safe pointer. The source/Semwright SHAs need to match the exact tested binaries; the tool verifies the lock and formatting but cannot attest binary signing or the provenance of an external installation.
 
 The CI `source-policy` job runs synthetic, lightweight regression tests for the intake guardrails, including tampered bytes, forged/self-review, missing evidence, timestamps, path traversal and symlinks. Its green status is **not** one of the 60 PASS cases.
