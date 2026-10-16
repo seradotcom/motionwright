@@ -187,11 +187,22 @@ def main() -> None:
         actual_warnings = collect_warning_ids(audit)
         expected_ids = set(expected)
         actual_ids = set(actual_warnings)
-        if actual_ids != expected_ids:
-            missing = sorted(expected_ids - actual_ids)
-            unexpected = sorted(actual_ids - expected_ids)
+        # cargo-audit audits registry package identities. The exact reviewed
+        # local-path glib backport is ABSENT from its warning set even though
+        # its upstream RUSTSEC advisory remains OPEN. This is an explicit
+        # coverage gap, not an ignore/waiver and not evidence of remediation.
+        # verify_glib_owner_chain() above already fails closed unless Cargo
+        # selects the one audited local path and EVERY upstream source byte
+        # is compared with the original registry tarball.
+        local_path_advisory = "RUSTSEC-2024-0429"
+        if glib_owner_chain.get("reviewed_backport_source_verified") is not True:
+            fail("local glib source audit gap has no independently verified backport")
+        required_ids = expected_ids - {local_path_advisory}
+        missing = sorted(required_ids - actual_ids)
+        unexpected = sorted(actual_ids - expected_ids)
+        if missing or unexpected:
             fail(
-                "cargo-audit warning set changed; "
+                "cargo-audit warning set changed outside reviewed local path; "
                 f"missing={missing} unexpected={unexpected}. A new security review is required."
             )
         for advisory_id, category in actual_warnings.items():
@@ -220,9 +231,18 @@ def main() -> None:
             for advisory_id, advisory in sorted(expected.items())
         ],
         "actual_warning_ids": sorted(actual_warnings) if actual_warnings is not None else None,
+        "open_advisories_absent_from_registry_audit": (
+            sorted(set(expected) - set(actual_warnings))
+            if actual_warnings is not None else None
+        ),
+        "local_path_crate_audit_coverage_complete": False,
+        "upstream_glib_advisory_resolved": False,
         "statement": (
-            "Known warnings remain open; this evidence only proves the exact reviewed "
-            "warning set and dependency context did not drift."
+            "Known advisories remain OPEN. cargo-audit cannot establish that the "
+            "locally patched glib 0.18.5 source is safe: the registry advisory may "
+            "disappear from its report for this path dependency. Exact upstream "
+            "source custody is independently verified, but installed product "
+            "remediation and human acceptance are NOT proven."
         ),
     }
     if args.output is not None:
@@ -230,7 +250,11 @@ def main() -> None:
         args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(
         "security-advisory-policy=ok "
-        f"known={len(expected)} audit_checked={str(actual_warnings is not None).lower()}"
+        f"known_open={len(expected)} audit_checked={str(actual_warnings is not None).lower()}"
+        + (" path_glib_audit_absence="
+           + str("RUSTSEC-2024-0429" not in actual_warnings).lower()
+           + " glib_remediation=NOT_PROVEN"
+           if actual_warnings is not None else "")
     )
 
 

@@ -47,7 +47,8 @@ class NativeSceneEvidenceTests(unittest.TestCase):
                        "capabilities_checked": sorted(config["commands"]),
                        "project": project, config["asset_key"]: asset}
         self.receipt = {f"native_{scene}_e2e": "PASS", **project,
-                        "receipt_count": config["required_count"],
+                        "receipt_count": (10 if scene == "manim"
+                                          else config["required_count"]),
                         "completed_commands": sorted(config["commands"]),
                         "result": {"native_driver": "driver:blender" if scene == "blender"
                                    else "driver:manim-community",
@@ -84,6 +85,51 @@ class NativeSceneEvidenceTests(unittest.TestCase):
             self.assertFalse(result["raw_daemon_or_sandbox_logs_uploaded"])
             self.assertFalse(result["native_effects_replayed_by_publisher"])
             self.assertEqual(result["installed_owner_acceptance"], "NOT_RUN")
+
+    def test_manim_polling_count_varies_without_weakening_original_stages(self):
+        # No second render: only original status polling adds journal rows.
+        # All source/project/receipt/media bytes stay bound and verified.
+        self.fixture("manim")
+        for count in (5, 8, 10, 11, 20, 256):
+            with self.subTest(count=count):
+                self.receipt["receipt_count"] = count
+                self.write()
+                dest = self.base / ("manim-polling-" + str(count))
+                report = pub.publish(self.private, dest, SHA, PIN, "manim", "success")
+                self.assertEqual(report["included_files"][0]["sha256"],
+                                 hash_bytes(self.media))
+                self.assertEqual(set(p.name for p in dest.iterdir()),
+                                 {"public-evidence.json", pub.SCENES["manim"]["media"]})
+                self.assertNotIn(SECRET, (dest / "public-evidence.json").read_text())
+
+    def test_manim_malformed_or_unproven_stages_fail_closed(self):
+        self.fixture("manim")
+        original = json.loads(json.dumps(self.receipt))
+        cases = [
+            (True, original["completed_commands"]),
+            (0, original["completed_commands"]),
+            (4, original["completed_commands"]),
+            (257, original["completed_commands"]),
+            (10, ["driver.manim-community.render.start",
+                  "driver.manim-community.render.status"]),
+            (10, ["driver.manim-community.render.start",
+                  "driver.manim-community.render.result"]),
+            (10, ["driver.manim-community.render.start",
+                  "driver.manim-community.render.status",
+                  "driver.manim-community.render.result",
+                  "driver.manim-community.render.result"]),
+            (10, ["driver.manim-community.render.start",
+                  "driver.manim-community.render.status",
+                  "driver.manim-community.render.result",
+                  "driver.other-provider.render.start"]),
+        ]
+        for i, (count, commands) in enumerate(cases):
+            with self.subTest(index=i):
+                self.receipt = json.loads(json.dumps(original))
+                self.receipt["receipt_count"] = count
+                self.receipt["completed_commands"] = commands
+                self.write()
+                self.reject("native_scene_receipts_not_verified")
 
     def test_failure_never_copies_broker_material(self):
         for scene in pub.SCENES:

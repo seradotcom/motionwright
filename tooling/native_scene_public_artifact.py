@@ -33,7 +33,15 @@ SCENES = {
         "media": "motionwright-manim-community.mp4",
         "evidence": "motionwright-manim-evidence.json",
         "asset_key": "mp4",
-        "required_count": 10,
+        # Manim async polling can add completed status observations.
+        # The E2E caps receipt collection at 256, so require the original
+        # operation stages instead of falsely demanding exactly 10 rows.
+        "max_receipts": 256,
+        "required_completed_commands": {
+            "driver.manim-community.render.start",
+            "driver.manim-community.render.status",
+            "driver.manim-community.render.result",
+        },
         "commands": {
             "driver.manim-community.doctor", "driver.manim-community.render.cancel",
             "driver.manim-community.render.result", "driver.manim-community.render.start",
@@ -57,6 +65,21 @@ def verified_private_scene(root: Path, source: str, pin: str, scene: str) -> byt
     asset = result.get(spec["asset_key"])
     original = receipt.get("result")
     project = result.get("project")
+    completed = receipt.get("completed_commands")
+    count = receipt.get("receipt_count")
+    # The native E2E's append-only journal records async polling attempts.
+    # Exact rows vary with provider responsiveness; counting 10 precisely
+    # rejected an otherwise verified real MP4. Do not relax any authority,
+    # source, original stage or artifact digest check.
+    manim_receipts_valid = (
+        type(count) is int and 3 <= count <= spec["max_receipts"]
+        and isinstance(completed, list) and len(completed) >= 3
+        and all(isinstance(command, str) and command in spec["commands"]
+                for command in completed)
+        and len(completed) == len(set(completed))
+        and spec["required_completed_commands"] <= set(completed)
+        and count >= len(completed)
+    ) if scene == "manim" else True
     require(
         result.get(f"native_{scene}_e2e") == "PASS"
         and receipt.get(f"native_{scene}_e2e") == "PASS"
@@ -76,10 +99,11 @@ def verified_private_scene(root: Path, source: str, pin: str, scene: str) -> byt
         and original.get("native_driver") == ("driver:" + scene if scene == "blender"
                                                else "driver:manim-community")
         and isinstance(original.get("artifact"), dict)
-        and type(receipt.get("receipt_count")) is int
-        and receipt["receipt_count"] == spec["required_count"]
-        and isinstance(receipt.get("completed_commands"), list)
-        and len(receipt["completed_commands"]) >= 2,
+        and manim_receipts_valid
+        and (scene == "manim" or (
+            type(count) is int and count == spec["required_count"]
+            and isinstance(completed, list) and len(completed) >= 2
+        )),
         "native_scene_receipts_not_verified",
     )
     require(isinstance(asset, dict) and

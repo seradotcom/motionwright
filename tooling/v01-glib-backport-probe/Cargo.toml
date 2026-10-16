@@ -1,0 +1,11 @@
+[package]
+name = "motionwright-v01-glib-backport-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Independent sandbox fixture, not a Motionwright product crate or runtime.
+[workspace]
+
+[dependencies]
+glib = { path = "../../vendor/glib-0.18.5" }
