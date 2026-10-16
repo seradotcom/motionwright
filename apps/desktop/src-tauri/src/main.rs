@@ -198,6 +198,9 @@ struct NativeMultisegmentAvResponse {
     audio_channels: u16,
     master_sha256: String,
     export_token: Uuid,
+    /// Captioned video is owner-SHA-verified but NOT production-local
+    /// decoded-glyph-verified. A token permits read-only review, not export.
+    review_only: bool,
     /// A verified media output is not proof that destructive MLT cleanup
     /// was approved. Expose the exact deferred status, not hidden success.
     provider_project_cleanup: &'static str,
@@ -1751,7 +1754,7 @@ async fn assemble_multisegment_av_master(
         .av_delivery
         .register_multisegment(&output_root, &master)
         .ok_or_else(|| {
-            "Verified native master was retained but could not be authorized for export."
+            "Original native master was retained but no safe revision-scoped review or delivery token could be issued."
                 .to_string()
         })?;
     let master_sha256 = master
@@ -1759,6 +1762,7 @@ async fn assemble_multisegment_av_master(
         .pointer("/artifact/sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| "Native multisegment MP4 lost its verified content digest.".to_string())?;
+    let review_only = master.measured_voice.caption_cue_count.is_some();
     Ok(NativeMultisegmentAvResponse {
         project_resource: project.resource_key(),
         generation: project.generation,
@@ -1772,8 +1776,13 @@ async fn assemble_multisegment_av_master(
         audio_channels: 2,
         master_sha256: master_sha256.to_owned(),
         export_token,
+        review_only,
         provider_project_cleanup: "not_requested_requires_foreground_broker_consent",
-        evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved",
+        evidence_scope: if review_only {
+            "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved"
+        } else {
+            "native-multisegment-av-verified-technical-output-not-human-approved"
+        },
     })
 }
 
@@ -1793,6 +1802,12 @@ async fn export_native_av_master(
         return Err("Native master export belongs to a previous creative revision.".into());
     }
     let source = state.av_delivery.resolve(&project, request.export_token)?;
+    // Fail BEFORE using a one-time DeliverLocal permission. Synthetic CI
+    // pixel evidence never qualifies an installed owner captioned master
+    // for export, even with a valid review session token.
+    if !source.export_allowed() {
+        return Err("Captioned native AV master is review-only until decoded pixels are independently verified on this owner device.".into());
+    }
     let scope = checked_effect_scope(
         &state,
         request.project_id,

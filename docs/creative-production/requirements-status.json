@@ -1115,8 +1115,8 @@
     {
       "id": "MW05-E14-03",
       "implementation": "partial",
-      "implemented_scope": "Three exact native H264/AAC test masters verified (not caption-burned); explicit saved Burn-in now projects exact-frame-aligned source-bound native Motion Canvas caption subjects and CueGraph under a bounded authoring grammar, with independent original Semwright PNG decode verified at 0/22/42/59 and CI PASS in merged Motionwright PR #233 (2026-10-16); source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI New bounded, source-bound MLT multi-segment H.264/AAC captioned-source route under implementation: exact voice/transcript frame/digest preflight, native Film verification, FFV1 original manifests and separate native MLT AV mux; tests additionally compare decoded original FFV1 with lossy MP4 glyph masks in the exact 33-frame / 2-cue CI fixture. The candidate H.264 captioned master does not count as completed until the exact-head real media CI independently passes.",
-      "remaining_scope": "Native decoded PNG subtitle pixels are verified for the bounded Film fixture; independent decoded final MLT H264 caption mask acceptance on the new exact head remains pending, along with broader real projects, captioned clips across multiple-frame shots, international text shaping, font contrast, speech truth, synchronization with authentic human voice, physical-device human legibility, rights and release. Owner's 60 independent creative acceptance cases remain NOT_RUN.",
+      "implemented_scope": "Three exact native H264/AAC test masters verified (not caption-burned); explicit saved Burn-in now projects exact-frame-aligned source-bound native Motion Canvas caption subjects and CueGraph under a bounded authoring grammar, with independent original Semwright PNG decode verified at 0/22/42/59 and CI PASS in merged Motionwright PR #233 (2026-10-16); source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI New bounded, source-bound MLT multi-segment H.264/AAC captioned-source route under implementation: exact voice/transcript frame/digest preflight, native Film verification, FFV1 original manifests and separate native MLT AV mux; tests additionally compare decoded original FFV1 with lossy MP4 glyph masks in the exact 33-frame / 2-cue CI fixture. Bounded captioned MLT H.264/AAC fixture decoded-pixel proof passed exact-head GitHub Actions in merged Motionwright PR #239 (103 passed, 3 skipped, 0 failed); commercial media output and human reading remain unverified. Desktop now admits a source-SHA-verified, owner-revision-bound captioned MP4 for capped 16 MiB read-only browser review. The actual installed decoded MP4 caption pixels have no independent approved observer, so neither direct export nor optional integrity sidecar can be produced; explicit RenderLocal/DeliverLocal permission boundaries and original uncaptioned master export behavior remain.",
+      "remaining_scope": "Installed-device independent original H.264/AAC caption decoded-pixel attestation remains NOT_VERIFIED, so new captioned delivery is review-only and never commercial-export authorized. Human legibility, font/language access, speech identity and alignment, signed content rights, large-master local playback, full product release and 60 independent acceptance cases remain NOT_RUN.",
       "source_paths": [
         ".github/workflows/creative-conformance.yml",
         ".github/workflows/product-hero-e2e.yml",
@@ -1147,7 +1147,12 @@
         "tooling/tests/test_native_mlt_caption_pixels.py",
         "crates/native/src/mlt_av_audio.rs",
         "crates/native/src/production/mlt_multisegment_av.rs",
-        ".github/workflows/native-mlt-sequence-e2e.yml"
+        ".github/workflows/native-mlt-sequence-e2e.yml",
+        "apps/desktop/src-tauri/src/av_delivery.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/studio/src/NativeAvReview.tsx",
+        "apps/studio/tests/native-multisegment-av.spec.ts",
+        "docs/creative-production/CAPTIONED_MASTER_OWNER_REVIEW.md"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

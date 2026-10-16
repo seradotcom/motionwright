@@ -68,11 +68,31 @@ struct DeliveryHandle {
     owner_root: PathBuf,
     relative_path: String,
     sha256: String,
+    /// A captioned master without *device-local decoded pixel verification*
+    /// can be previewed from the owner root, NEVER exported as verified.
+    review_only: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct NativeMasterDeliveryRegistry {
     entries: Arc<Mutex<VecDeque<DeliveryHandle>>>,
+}
+
+/// An original captioned master is reviewable, not exportable, until its
+/// actual device-local decoded pixels are independently admitted. CI proof on
+/// synthetic fixtures cannot grant production delivery authority.
+fn multisegment_review_only(scope: &str, cue_count: Option<usize>) -> Option<bool> {
+    match (scope, cue_count) {
+        (
+            "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved",
+            None,
+        ) => Some(false),
+        (
+            "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved",
+            Some(1..=96),
+        ) => Some(true),
+        _ => None,
+    }
 }
 
 fn valid_sha256(digest: &str) -> bool {
@@ -114,6 +134,7 @@ impl NativeMasterDeliveryRegistry {
             owner_root: owner_root.to_path_buf(),
             relative_path: relative_path.to_owned(),
             sha256: sha256.to_owned(),
+            review_only: false,
         };
         let mut entries = self.entries.lock().ok()?;
         if entries.len() >= MAX_DELIVERY_HANDLES {
@@ -125,16 +146,20 @@ impl NativeMasterDeliveryRegistry {
 
     /// Accept only trusted current exact-source multisegment production
     /// receipts. No JS/WebView input is an artifact path or a digest.
-    /// The same one-use export capability is returned for an independently
-    /// audited native H.264/AAC master from a semantic MLT cut.
+    /// An ordinary master receives a scoped export capability. A native
+    /// captioned master receives a *review-only* token until actual original
+    /// decoded MP4 glyph evidence exists on this owner device. Its CI fixture
+    /// PASS does not authorize commercial export.
     pub fn register_multisegment(
         &self,
         owner_root: &Path,
         evidence: &MltMultisegmentAvMasterEvidence,
     ) -> Option<Uuid> {
-        if evidence.evidence_scope
-            != "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
-            || evidence.master.get("profile")?.as_str()? != "h264-aac-mp4"
+        let review_only = multisegment_review_only(
+            &evidence.evidence_scope,
+            evidence.measured_voice.caption_cue_count,
+        )?;
+        if evidence.master.get("profile")?.as_str()? != "h264-aac-mp4"
             || evidence.video.project_resource != evidence.project_resource
             || evidence.video.generation != evidence.generation
             || evidence.video.revision != evidence.revision
@@ -186,6 +211,7 @@ impl NativeMasterDeliveryRegistry {
             owner_root: owner_root.to_path_buf(),
             relative_path: path.to_owned(),
             sha256: sha256.to_owned(),
+            review_only,
         };
         let mut entries = self.entries.lock().ok()?;
         if entries.len() >= MAX_DELIVERY_HANDLES {
@@ -230,6 +256,7 @@ impl NativeMasterDeliveryRegistry {
             frame_rate_num: entry.frame_rate_num,
             frame_rate_den: entry.frame_rate_den,
             frame_count: entry.frame_count,
+            review_only: entry.review_only,
         })
     }
 }
@@ -245,6 +272,7 @@ pub struct DeliverySource {
     frame_rate_num: u32,
     frame_rate_den: u32,
     frame_count: u64,
+    review_only: bool,
 }
 
 fn validated_destination(value: &str) -> Result<PathBuf, String> {
@@ -293,6 +321,12 @@ fn validated_destination(value: &str) -> Result<PathBuf, String> {
 }
 
 impl DeliverySource {
+    /// Explicitly refuse a delivery grant for a master whose native caption
+    /// source is verified but whose *actual decoded master pixels* are not.
+    pub fn export_allowed(&self) -> bool {
+        !self.review_only
+    }
+
     /// Optional portable integrity metadata is written only after the exact
     /// destination MP4 has been exported and independently SHA-256 verified.
     /// An owner-scoped export grant authorizes the media destination and its
@@ -306,6 +340,9 @@ impl DeliverySource {
         include_integrity_manifest: bool,
         native_sdk_revision: &str,
     ) -> Result<MasterExportReceipt, String> {
+        if !self.export_allowed() {
+            return Err("Captioned native MP4 is review-only: independently decoded device-local caption pixels are not yet verified for export.".into());
+        }
         if !include_integrity_manifest {
             return self.copy_to(destination);
         }
@@ -429,6 +466,9 @@ impl DeliverySource {
     /// Copy only the SHA-256-verified canonical owner artifact. Existing user
     /// files are NEVER overwritten, and source paths stay backend-private.
     pub fn copy_to(&self, destination: &str) -> Result<MasterExportReceipt, String> {
+        if !self.export_allowed() {
+            return Err("Captioned native MP4 is review-only: source glyphs are not an exportable master pixel attestation.".into());
+        }
         let destination = validated_destination(destination)?;
         let original = verified_native_media_path(
             &self.owner_root,
@@ -548,6 +588,94 @@ mod tests {
 
     fn project() -> Project {
         Project::new("Native AV delivery fixture").unwrap()
+    }
+
+    #[test]
+    fn original_multisegment_master_can_export_but_captioned_master_never_inherits_the_grant() {
+        assert_eq!(
+            multisegment_review_only(
+                "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved",
+                None,
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            multisegment_review_only(
+                "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved",
+                Some(2),
+            ),
+            Some(true)
+        );
+        for count in [None, Some(0), Some(97)] {
+            assert_eq!(
+                multisegment_review_only(
+                    "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved",
+                    count,
+                ),
+                None,
+                "missing or over-budget captions cannot mint a token",
+            );
+        }
+        assert_eq!(
+            multisegment_review_only(
+                "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved",
+                Some(2),
+            ),
+            None,
+            "captioned source cannot adopt uncaptioned delivery authority",
+        );
+        assert_eq!(multisegment_review_only("unknown-source", Some(2)), None);
+    }
+
+    #[test]
+    fn real_sha_bound_captioned_master_token_is_read_only_even_with_integrity_manifest() {
+        let owner = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let project = project();
+        let media = b"\0\0\0\x18ftypisom\0\0\0\0private-native-frames";
+        let file = owner.path().join("captioned-source-review.mp4");
+        fs::write(&file, media).unwrap();
+        let source = DeliverySource {
+            owner_root: owner.path().to_path_buf(),
+            relative_path: "captioned-source-review.mp4".into(),
+            sha256: hex::encode(Sha256::digest(media)),
+            revision: project.revision,
+            deliverable_id: project.deliverables[0].id,
+            project_id: project.id,
+            generation: project.generation,
+            frame_rate_num: 30,
+            frame_rate_den: 1,
+            frame_count: 33,
+            review_only: true,
+        };
+        assert!(!source.export_allowed());
+        assert_eq!(source.review_bytes().unwrap(), media);
+        let target = destination.path().join("final.mp4");
+        let filename = target.to_str().unwrap();
+        assert!(
+            source
+                .copy_to(filename)
+                .unwrap_err()
+                .contains("review-only")
+        );
+        assert!(
+            source
+                .copy_with_integrity(filename, true, "a".repeat(40).as_str())
+                .unwrap_err()
+                .contains("review-only")
+        );
+        assert!(!target.exists());
+        assert!(
+            !destination
+                .path()
+                .join("final.mp4.motionwright-integrity.json")
+                .exists()
+        );
+        // A forged producer-side change without a fresh matching SHA cannot
+        // alter even review-only bytes.
+        fs::write(&file, b"forged MP4 payload").unwrap();
+        assert!(source.review_bytes().is_err());
+        assert!(!target.exists());
     }
 
     #[test]

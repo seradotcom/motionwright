@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
 
-test("desktop multisegment final AV is source-token-bound, measured and export-authorized", async ({ page }) => {
+for (const captioned of [false, true]) {
+test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" : "final AV is source-token-bound, measured and export-authorized"), async ({ page }) => {
   // Synthetic IPC contract only. Real FFV1/AV mux and decoded audio gates are
   // independently executed in exact-SHA Semwright Broker CI, never faked here.
   const boot = structuredClone(fixtureBootstrap);
@@ -23,6 +24,10 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
     source_sha256: wavDigest, loudness_lufs: null, true_peak_dbfs: null,
   });
   profile.voice_track_id = wavTrack;
+  if (captioned) {
+    profile.captions = true;
+    profile.burn_in_captions = true;
+  }
 
   const token = "77777777-7777-4777-8777-777777777777";
   const native = {
@@ -50,17 +55,21 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
     video_codec: "h264", audio_codec: "aac",
     audio_sample_rate: 48000, audio_channels: 2,
     master_sha256: "b".repeat(64), export_token: "synthetic-export-token",
+    review_only: captioned,
     provider_project_cleanup: "not_requested_requires_foreground_broker_consent",
-    evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved",
+    evidence_scope: captioned
+      ? "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved"
+      : "native-multisegment-av-verified-technical-output-not-human-approved",
   };
   await page.addInitScript(({ initial, original, previewToken, av }) => {
     const shim = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
       __MULTI_AV__: { sources: Array<Record<string, unknown>>;
         assemblies: Array<Record<string, unknown>>;
-        exports: Array<Record<string, unknown>>; effects: number };
+        exports: Array<Record<string, unknown>>;
+        reviews: Array<Record<string, unknown>>; effects: number };
     };
-    shim.__MULTI_AV__ = { sources: [], assemblies: [], exports: [], effects: 0 };
+    shim.__MULTI_AV__ = { sources: [], assemblies: [], exports: [], reviews: [], effects: 0 };
     shim.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
         if (command === "production_runtime_status") return {
@@ -113,6 +122,13 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
           shim.__MULTI_AV__.assemblies.push(request);
           return structuredClone(av);
         }
+        if (command === "review_native_av_master") {
+          shim.__MULTI_AV__.reviews.push(args?.request as Record<string, unknown>);
+          return new Uint8Array([
+            0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109,
+            0, 0, 0, 0, 109, 112, 52, 50, 0, 0, 0, 0,
+          ]);
+        }
         if (command === "export_native_av_master") {
           const request = args?.request as Record<string, unknown>;
           shim.__MULTI_AV__.exports.push(request);
@@ -131,7 +147,9 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
   await page.goto("/");
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
   const panel = page.getByRole("region", { name: "Canonical audiovisual mastering" });
-  const assemble = panel.getByRole("button", { name: "Assemble multi-segment MP4" });
+  const assemble = panel.getByRole("button", {
+    name: captioned ? "Assemble captioned MP4 for review" : "Assemble multi-segment MP4",
+  });
   await expect(assemble).toHaveCount(0);
   for (const scene of scenes) {
     await page.getByLabel(scene.name + " narrative role").selectOption("mechanism");
@@ -154,6 +172,10 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
   await expect(receipt).toContainText("2 semantic MLT segments");
   await expect(receipt).toContainText("480");
   await expect(receipt).toContainText("H.264 · AAC · 48 kHz stereo");
+  await expect(receipt).toContainText(
+    captioned ? "REVIEW ONLY · CAPTION PIXELS NOT VERIFIED LOCALLY"
+      : "Verified source · export eligible",
+  );
   await expect(receipt).toContainText("Pending foreground Broker consent");
   await expect(receipt).toContainText("CURRENT · NATIVE");
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
@@ -176,6 +198,26 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
   const exportButton = delivery.getByRole("button", { name: "Export verified MP4" });
   await expect(exportButton).toBeDisabled();
   await page.getByLabel("Verified MP4 export path").fill("/tmp/motionwright-test-multi.mp4");
+  if (captioned) {
+    await expect(exportButton).toBeDisabled();
+    await expect(panel.getByText(/This captioned H.264\/AAC master is review-only/)).toBeVisible();
+    const playback = panel.getByRole("button", { name: "Review native MP4" });
+    await expect(playback).toBeEnabled();
+    await playback.click();
+    await expect(page.getByRole("region", { name: "Native master playback review" }))
+      .toContainText("no export");
+    const ipc = await page.evaluate(() => (
+      (window as unknown as { __MULTI_AV__: { reviews: Record<string, unknown>[];
+        exports: Record<string, unknown>[]; effects: number } }).__MULTI_AV__
+    ));
+    expect(ipc.reviews).toHaveLength(1);
+    expect(ipc.reviews[0]).toMatchObject({
+      project_id: boot.project.id, export_token: "synthetic-export-token",
+    });
+    expect(ipc.exports).toHaveLength(0);
+    expect(ipc.effects).toBe(2);
+    return;
+  }
   await expect(exportButton).toBeEnabled();
   await exportButton.click();
   await expect(page.getByLabel("Verified MP4 delivery receipt"))
@@ -192,3 +234,4 @@ test("desktop multisegment final AV is source-token-bound, measured and export-a
   expect(sent.exports[0]).not.toHaveProperty("source_path");
   expect(sent.exports[0]).not.toHaveProperty("sha256");
 });
+}
