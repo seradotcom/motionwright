@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AudioLines, Plus, Trash2 } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
@@ -7,6 +7,11 @@ import {
 } from "./semanticSfx";
 import type { SemanticSfxCue, SfxEvent } from "./semanticSfx";
 import { openOriginalSfxReviewHandoffs } from "./sfxReviewHandoff";
+import { originalSfxWaveform as loadOriginalSfxWaveform } from "./api";
+import OriginalSfxWaveformPanel from "./OriginalSfxWaveformPanel";
+import {
+  originalSfxWaveformMatches, type OriginalSfxWaveform,
+} from "./originalSfxWaveform";
 
 type Props = {
   project: Project;
@@ -38,12 +43,32 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
   const [generation,setGeneration]=useState(project.generation);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
+  const [waveform,setWaveform]=useState<{
+    scope:string;busy:boolean;error:string|null;report:OriginalSfxWaveform|null;
+  }|null>(null);
+  const observationId=useRef(0);
   const stale=base!==project.revision || generation!==project.generation;
+  const scope=(c:SemanticSfxCue)=>[
+    project.id,project.generation,project.revision,c.id,
+    c.source_asset_id,c.source_sha256,c.source_frames,
+  ].join(":");
+  const inspectedCue=waveform
+    ? cues.find(c=>scope(c)===waveform.scope)??null : null;
+  const inspectedReport=inspectedCue
+    && waveform && originalSfxWaveformMatches(project,inspectedCue,waveform.report)
+      ? waveform.report : null;
   useEffect(()=>{
     setBase(project.revision);setGeneration(project.generation);setError(null);
     // Preserve unsaved draft on same-generation remote project revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[project.generation]);
+  // Do not let delayed CAS results revive an earlier project/revision's
+  // waveform. The cue editor draft itself retains its existing stale-base
+  // behavior on revision changes, independently of this observation.
+  useEffect(()=>{
+    observationId.current++;
+    setWaveform(null);
+  },[project.id,project.generation,project.revision]);
   const scene=project.scenes.find(s=>s.id===sceneId);
   const source=assets.find(a=>a.id===sourceId);
   const editingCue=editingId===null?null:cues.find(c=>c.id===editingId)??null;
@@ -88,6 +113,28 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
     setRelease(existing.release_frames);
     setAttestation(existing.original_source_attestation);
     setError(null);
+  }
+  async function inspectOriginal(c:SemanticSfxCue) {
+    if(stale||busy)return;
+    const key=scope(c),id=++observationId.current;
+    setWaveform({scope:key,busy:true,error:null,report:null});
+    try {
+      const report=await loadOriginalSfxWaveform(project,c.id);
+      if(observationId.current!==id)return;
+      if(!originalSfxWaveformMatches(project,c,report)) {
+        setWaveform({scope:key,busy:false,report:null,
+          error:report===null
+            ?"Original SFX waveform requires the installed desktop runtime."
+            :"The original source waveform cannot be verified for this revision."});
+      }else {
+        setWaveform({scope:key,busy:false,error:null,report});
+      }
+    }catch(e){
+      if(observationId.current===id) {
+        setWaveform({scope:key,busy:false,report:null,
+          error:"Original WAV source analysis unavailable: "+describe(e)});
+      }
+    }
   }
   async function add(){
     if(stale||busy||locked||!preview.scheduled)return;
@@ -265,6 +312,12 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
         }}>{c.event.replaceAll("_"," ")} / {c.source_frames} frames</button>
         <span className="mono">{c.source_sha256.slice(0,12)} / {c.gain_milli_db/1000} dB</span>
         <button className="button compact" type="button"
+          aria-label={"Inspect original SFX waveform "+c.id}
+          disabled={stale||busy}
+          onClick={()=>void inspectOriginal(c)}>
+          Inspect WAV
+        </button>
+        <button className="button compact" type="button"
           aria-label={"Edit original SFX "+c.id}
           disabled={stale||busy||lockedFor(c.scene_id)}
           onClick={()=>edit(c)}>Edit</button>
@@ -274,5 +327,17 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
       </article>)}
       {!cues.length && <p className="audio-truth-line">No original semantic SFX placements recorded.</p>}
     </div>
+    {waveform && inspectedCue && (
+      <div className="original-sfx-waveform-wrapper">
+        {waveform.busy && <p role="status">Verifying original SFX WAV samples…</p>}
+        {waveform.error && <p role="alert">{waveform.error}</p>}
+        {inspectedReport && (
+          <OriginalSfxWaveformPanel key={waveform.scope}
+            report={inspectedReport}
+            cueStartFrame={validateSemanticSfx(project,inspectedCue).absolute_start_frame}
+            onSeek={onSeek}/>
+        )}
+      </div>
+    )}
   </section>;
 }

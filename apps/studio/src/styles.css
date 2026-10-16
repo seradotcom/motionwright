@@ -6231,3 +6231,71 @@ select:focus {
   font-size: 11px;
   line-height: 1.5;
 }
+
+
+/* v0.5 — source-CAS original PCM16 SFX waveform, stereo and per-frame.
+   Exact native extrema only; no fabricated LUFS, audition or release PASS. */
+.original-sfx-waveform-wrapper {min-width:0; margin-top:12px;}
+.original-sfx-waveform {
+  display:grid;
+  gap:12px;
+  padding:14px;
+  min-width:0;
+  border:1px solid var(--border);
+  border-radius:6px;
+  background:var(--surface-2);
+}
+.original-sfx-waveform header {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px 16px;
+}
+.original-sfx-waveform header > div {display:grid;gap:4px;}
+.original-sfx-waveform header strong {font-size:12px;}
+.original-sfx-waveform header span {font-size:11px;color:var(--muted);}
+.original-sfx-waveform .mono {font-variant-numeric:tabular-nums;}
+.original-sfx-waveform-stereo {display:grid;gap:10px;min-width:0;}
+.original-sfx-waveform-track {display:grid;gap:5px;min-width:0;}
+.original-sfx-waveform-track > span {font-size:11px;color:var(--muted);}
+.original-sfx-waveform-peaks {
+  height:82px;
+  display:flex;
+  align-items:center;
+  gap:1px;
+  padding:8px 3px;
+  border:1px solid var(--border);
+  border-radius:4px;
+  background:var(--surface);
+  overflow:hidden;
+}
+.original-sfx-waveform-peak {
+  display:block;
+  flex:1 1 0;
+  min-width:1px;
+  background:var(--text);
+  border-radius:1px;
+  opacity:.55;
+}
+.original-sfx-waveform-peak[data-selected="true"] {opacity:1;}
+.original-sfx-waveform-actions {
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  align-items:end;
+}
+.original-sfx-waveform-actions label {
+  display:grid;
+  flex:1 1 200px;
+  gap:6px;
+  color:var(--muted);
+  font-size:11px;
+  font-variant-numeric:tabular-nums;
+}
+.original-sfx-waveform-actions input[type="range"] {width:100%;accent-color:var(--text);}
+.original-sfx-waveform-actions .button {max-width:100%;white-space:normal;}
+@media(max-width:650px) {
+  .original-sfx-waveform {padding:10px;}
+  .original-sfx-waveform-peaks {height:64px;}
+}

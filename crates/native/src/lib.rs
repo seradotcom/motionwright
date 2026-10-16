@@ -27,6 +27,7 @@ pub mod multi_renderer;
 pub mod owner_reconciliation;
 pub mod production;
 pub mod sfx_mix;
+pub mod sfx_waveform;
 
 pub const APP_ID: &str = "motionwright";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
