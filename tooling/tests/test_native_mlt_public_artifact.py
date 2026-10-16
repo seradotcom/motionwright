@@ -92,7 +92,7 @@ class MltPublicTests(unittest.TestCase):
                 "revision": 0,
             },
         }
-        if mode == "final-mp4":
+        if mode in ("final-mp4", "captioned-mp4"):
             mp4 = b"\x00\x00\x00\x18ftypisom" + b"source-bound-av-master"
             (self.root / "native-multisegment-master.mp4").write_bytes(mp4)
             (self.root / "decoded-stereo-content-proof.json").write_text(
@@ -115,8 +115,39 @@ class MltPublicTests(unittest.TestCase):
                 "decoded_stereo_content": "distinct_source_400hz_left_600hz_right",
                 "measured_voice_pcm_frames": 52800,
                 "decoded_master_pcm_frames": 53248,
-                "final_evidence_scope": pub.FINAL_SCOPE,
+                "final_evidence_scope": (
+                    pub.CAPTIONED_SCOPE if mode == "captioned-mp4" else pub.FINAL_SCOPE
+                ),
             })
+        if mode == "captioned-mp4":
+            self.result.update({
+                "captioned_master_decoded_pixels": "PASS",
+                "captioned_source_cue_count": 2,
+                "native_caption_mask_pixels": {"15": 999, "32": 800},
+                "native_captioned_human_legibility": "NOT_RUN",
+            })
+            (self.root / "captioned-master-pixel-evidence.json").write_text(
+                json.dumps({
+                    "schema": "motionwright-v05-native-captioned-master-pixels/1",
+                    "captioned_master_decoded_pixels": "PASS",
+                    "motionwright_source_sha": MW,
+                    "semwright_source_sha": SW,
+                    "original_native_ffv1_frame_indices": [0, 14, 15, 31, 32],
+                    "decoded_h264_frame_indices": [0, 15, 32],
+                    "native_cue_count": 2,
+                    "original_ffv1_sha256": self.result["video_sha256"],
+                    "actual_master_mp4_sha256": self.result["final_master_sha256"],
+                    "human_readability": "NOT_RUN",
+                    "commercial_release_authorized": False,
+                    "original_owner_media_or_transcript_published": False,
+                    "active_caption_frames": {
+                        "15": {"native_caption_mask_pixels": 999},
+                        "32": {"native_caption_mask_pixels": 800},
+                    },
+                    "original_source_owner_path": "PRIVATE-NATIVE-SOURCE-EXCLUDED",
+                }),
+                encoding="utf-8",
+            )
         self.store()
         for private in ("semwrightd.log", "run.log", "owner-session.json",
                         "native-provider-lifecycle.json"):
@@ -135,8 +166,8 @@ class MltPublicTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, code)
         self.assertFalse(self.out.exists())
 
-    def test_three_modes_have_exact_media_allowlist_and_hashes(self):
-        for mode in ("pcm", "video-only", "final-mp4"):
+    def test_four_modes_have_exact_media_allowlist_and_hashes(self):
+        for mode in ("pcm", "video-only", "final-mp4", "captioned-mp4"):
             with self.subTest(mode=mode):
                 self.fixture(mode)
                 out = self.out.with_name("published-" + mode)
@@ -152,8 +183,13 @@ class MltPublicTests(unittest.TestCase):
                     "native-two-segment-lossless.mkv" if mode == "pcm"
                     else "native-two-segment-video-only.mkv"
                 )}
-                if mode == "final-mp4":
+                if mode in ("final-mp4", "captioned-mp4"):
                     expected.add("native-multisegment-master.mp4")
+                self.assertEqual(
+                    receipt["native_captioned_h264_decoded_pixels"],
+                    "PASS" if mode == "captioned-mp4" else "NOT_VERIFIED",
+                )
+                self.assertEqual(receipt["human_caption_readability"], "NOT_RUN")
                 self.assertEqual({p.name for p in out.iterdir()}, expected)
                 for item in receipt["included_files"]:
                     data = (out / item["name"]).read_bytes()
@@ -232,6 +268,31 @@ class MltPublicTests(unittest.TestCase):
         self.result["native_mlt_lifetime_inventory_sha256"] = digest(content)
         self.store()
         self.refused("inventory_project_scope_mismatch")
+
+    def test_captioned_mp4_rejects_forged_or_missing_native_decoded_pixels(self):
+        self.fixture("captioned-mp4")
+        manifest = self.root / "captioned-master-pixel-evidence.json"
+        original = json.loads(manifest.read_text())
+        for changed in [
+            {"captioned_master_decoded_pixels": "NOT_VERIFIED"},
+            {"motionwright_source_sha": "f" * 40},
+            {"actual_master_mp4_sha256": "b" * 64},
+            {"human_readability": "PASS"},
+            {"native_cue_count": 0},
+        ]:
+            with self.subTest(changed=changed):
+                manifest.write_text(json.dumps({**original, **changed}))
+                self.refused("native_captioned_master_decoded_pixels_not_verified")
+        manifest.write_text(json.dumps(original))
+        self.result["native_caption_mask_pixels"]["15"] = 3
+        self.store()
+        self.refused("native_captioned_master_decoded_pixels_not_verified")
+        self.result["native_caption_mask_pixels"]["15"] = 999
+        self.store()
+        manifest.unlink()
+        with self.assertRaises(pub.PublicationError):
+            pub.publish_mlt(self.root, self.out, self.mode, MW, SW, "success")
+        self.assertFalse(self.out.exists())
 
     def test_final_decoded_audio_proof_mismatch_rejected(self):
         self.fixture("final-mp4")

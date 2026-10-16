@@ -1373,7 +1373,7 @@ export default function DeliveryProfiles({
               )}
               {draft.burn_in_captions && (
                 <div className="delivery-truth-note warning" role="status">
-                  <CircleDashed size={14} /> Saved Burn-in renders timed transcript text through the pinned Semwright Motion Canvas Film when the current voice digest and exact frame times are valid. Sidecar export remains separate. The final MLT H.264/AAC master still rejects burned-in captions; native pixel, font and human legibility review are required before publication.
+                  <CircleDashed size={14} /> Saved Burn-in renders timed transcript text through the pinned Semwright Motion Canvas Film when the current voice digest and exact frame times are valid. Sidecar export remains separate. A separately authorized native MLT H.264/AAC master is restricted to two or more verified Motion Canvas segments and a measured WAV. Its decoded pixel proof and human font/legibility review remain independent publication gates; other profiles cannot silently burn in captions.
                 </div>
               )}
               {draft.captions && profileTranscript.length === 0 && (

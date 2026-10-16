@@ -1115,8 +1115,8 @@
     {
       "id": "MW05-E14-03",
       "implementation": "partial",
-      "implemented_scope": "Three exact native H264/AAC test masters verified (not caption-burned); explicit saved Burn-in now projects exact-frame-aligned source-bound native Motion Canvas caption subjects and CueGraph under a bounded authoring grammar, with exact-SHA native pixel observation still pending; source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI",
-      "remaining_scope": "Broader profile and audible sync/quality acceptance, actual Semwright PNG decoded caption pixel observation, MLT final-master burn-in support, multilingual reading calibration, glyph legibility, real viewer comprehension and physical-device human review remain open",
+      "implemented_scope": "Three exact native H264/AAC test masters verified (not caption-burned); explicit saved Burn-in now projects exact-frame-aligned source-bound native Motion Canvas caption subjects and CueGraph under a bounded authoring grammar, with independent original Semwright PNG decode verified at 0/22/42/59 and CI PASS in merged Motionwright PR #233 (2026-10-16); source-bound read-only caption timing and editorial reading preflight across selected voice, scene cuts, measured alignment digests and caption sidecar drafts; separate source-pinned three-scene 540-frame native/decoded H264 technical experiment, pending exact-head CI New bounded, source-bound MLT multi-segment H.264/AAC captioned-source route under implementation: exact voice/transcript frame/digest preflight, native Film verification, FFV1 original manifests and separate native MLT AV mux; tests additionally compare decoded original FFV1 with lossy MP4 glyph masks in the exact 33-frame / 2-cue CI fixture. The candidate H.264 captioned master does not count as completed until the exact-head real media CI independently passes.",
+      "remaining_scope": "Native decoded PNG subtitle pixels are verified for the bounded Film fixture; independent decoded final MLT H264 caption mask acceptance on the new exact head remains pending, along with broader real projects, captioned clips across multiple-frame shots, international text shaping, font contrast, speech truth, synchronization with authentic human voice, physical-device human legibility, rights and release. Owner's 60 independent creative acceptance cases remain NOT_RUN.",
       "source_paths": [
         ".github/workflows/creative-conformance.yml",
         ".github/workflows/product-hero-e2e.yml",
@@ -1141,7 +1141,13 @@
         "tooling/composition_native_public_artifact.py",
         "tooling/tests/test_composition_native_public_artifact.py",
         ".github/workflows/composition-native-e2e.yml",
-        "docs/creative-production/JOINT_NATIVE_MASTER.md"
+        "docs/creative-production/JOINT_NATIVE_MASTER.md",
+        "docs/creative-production/NATIVE_CAPTIONED_MLT_MASTER.md",
+        "tooling/native_mlt_caption_pixels.py",
+        "tooling/tests/test_native_mlt_caption_pixels.py",
+        "crates/native/src/mlt_av_audio.rs",
+        "crates/native/src/production/mlt_multisegment_av.rs",
+        ".github/workflows/native-mlt-sequence-e2e.yml"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },

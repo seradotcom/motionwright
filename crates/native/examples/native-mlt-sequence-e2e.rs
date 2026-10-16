@@ -2,10 +2,11 @@
 //! Never run on the developer workstation; the workflow provisions the
 //! Semwright and Motion Canvas/MLT sandbox in a disposable CI runner.
 use motionwright_domain::{
-    BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RationalTime, RevisionStamp,
+    AlignmentEvidence, BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RationalTime,
+    RevisionStamp, TranscriptSegment,
 };
 use motionwright_native::{
-    film::{FilmBuildOptions, SceneFilmIntent},
+    film::{FilmBuildOptions, SceneFilmIntent, build_motion_canvas_segments},
     production::{
         MltAudioArtifact, MltMultisegmentAvMasterRequest, ProductionConnection,
         ProductionCoordinator,
@@ -163,7 +164,10 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             )?
             .project;
     }
-    if std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("final-mp4") {
+    if matches!(
+        std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref(),
+        Ok("final-mp4" | "captioned-mp4")
+    ) {
         let wav = path.with_extension("synthetic-owner-voice.wav");
         write_synthetic_stereo_wav(&wav)?;
         project = service
@@ -198,6 +202,11 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("Master profile lost after voice import")?
             .clone();
         profile.voice_track_id = Some(track_id);
+        let captioned = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("captioned-mp4");
+        if captioned {
+            profile.captions = true;
+            profile.burn_in_captions = true;
+        }
         project = service
             .apply(
                 project.id,
@@ -206,6 +215,45 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 &Change::UpsertDeliverable { profile },
             )?
             .project;
+        if captioned {
+            // Native 32+1-frame segmentation means captions must be contained
+            // in an exact single 1/30s shot. No invented scene crossing,
+            // silent frame rounding, voice synthesis or audio mastering.
+            for (index, (start, end, text)) in [
+                (
+                    RationalTime::new(15, 30)?,
+                    RationalTime::new(16, 30)?,
+                    "SOURCE CAPTION 15",
+                ),
+                (
+                    RationalTime::new(32, 30)?,
+                    RationalTime::new(33, 30)?,
+                    "SOURCE CAPTION 32",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                project = service
+                    .apply(
+                        project.id,
+                        &RevisionStamp::from(&project),
+                        &format!("native-captioned-master-cue-{index}"),
+                        &Change::AddTranscriptSegment {
+                            segment: TranscriptSegment {
+                                id: Uuid::now_v7(),
+                                voice_track_id: track_id,
+                                start,
+                                end,
+                                text: text.into(),
+                                speaker: None,
+                                alignment: AlignmentEvidence::Manual,
+                            },
+                        },
+                    )?
+                    .project;
+            }
+        }
     }
     let profile = project
         .deliverables
@@ -271,7 +319,11 @@ async fn assemble(
         return Err("Semwright owner connection belongs to a foreign resource".into());
     }
     eprintln!("mlt-e2e-stage: source-loaded");
-    let final_master_mode = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("final-mp4");
+    let final_master_mode = matches!(
+        std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref(),
+        Ok("final-mp4" | "captioned-mp4")
+    );
+    let captioned_mode = std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("captioned-mp4");
     let staged_audio = if final_master_mode {
         let track_id = profile
             .voice_track_id
@@ -319,6 +371,25 @@ async fn assemble(
             })
             .collect(),
     };
+    if captioned_mode {
+        // Recompute the canonical native Film from the reopened owner source,
+        // rather than inferring captions merely from a saved checkbox.
+        let projected = build_motion_canvas_segments(&project, profile.id, &options)?;
+        let cue_count: usize = projected
+            .iter()
+            .map(|segment| segment.film.cues.cues.len())
+            .sum();
+        let shot_count: usize = projected
+            .iter()
+            .flat_map(|segment| &segment.film.sequences)
+            .flat_map(|sequence| &sequence.beats)
+            .flat_map(|beat| &beat.shots)
+            .map(|shot| shot.captions.len())
+            .sum();
+        if projected.len() != 2 || cue_count != 2 || shot_count != 2 {
+            return Err("Captioned source was not two exact Semwright native Film cues".into());
+        }
+    }
     eprintln!("mlt-e2e-stage: motion-render-start");
     let render = coordinator
         .render_motion_canvas_segments(
@@ -338,7 +409,7 @@ async fn assemble(
     }
     let video_only = matches!(
         std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref(),
-        Ok("video-only" | "final-mp4")
+        Ok("video-only" | "final-mp4" | "captioned-mp4")
     );
     eprintln!("mlt-e2e-stage: semantic-mlt-start");
     let evidence = if video_only {
@@ -416,10 +487,15 @@ async fn assemble(
                 },
             )
             .await?;
+        let expected_master_scope = if captioned_mode {
+            "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved"
+        } else {
+            "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+        };
         if evidence.frame_count != 33
             || evidence.measured_voice.audio_pcm_frames != 52_800
-            || evidence.evidence_scope
-                != "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+            || evidence.measured_voice.caption_cue_count != captioned_mode.then_some(2)
+            || evidence.evidence_scope != expected_master_scope
         {
             return Err(
                 "Actual native MP4 did not certify the source cut and measured audio".into(),
@@ -502,6 +578,9 @@ async fn assemble(
             "master_decoded_audio_sha256":av_master.as_ref()
                 .and_then(|e| e.master.pointer("/decoded_audio/sha256")),
             "master_evidence_scope":av_master.as_ref().map(|e| &e.evidence_scope),
+            "native_captioned_master_requested":captioned_mode,
+            "source_bound_caption_cue_count":av_master.as_ref()
+                .and_then(|e| e.measured_voice.caption_cue_count),
         }))?
     );
     Ok(())

@@ -21,6 +21,7 @@ import time
 import tomllib
 from pathlib import Path
 from native_av_failure_guard import run_sanitized_json
+from native_mlt_caption_pixels import prove_native_captioned_master
 
 from mlt_failure_diagnostic import safe_observation_diagnostic
 
@@ -34,10 +35,11 @@ RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
 MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
-if MODE not in {"pcm", "video-only", "final-mp4"}:
+if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4"}:
     raise SystemExit("Only closed native MLT smoke modes are accepted")
-VIDEO_ONLY = MODE in {"video-only", "final-mp4"}
-FINAL_MASTER = MODE == "final-mp4"
+VIDEO_ONLY = MODE in {"video-only", "final-mp4", "captioned-mp4"}
+FINAL_MASTER = MODE in {"final-mp4", "captioned-mp4"}
+CAPTIONED_MASTER = MODE == "captioned-mp4"
 PROFILE = "lossless-video-only" if VIDEO_ONLY else "lossless"
 EXPECTED_SCOPE = (
     "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
@@ -656,10 +658,19 @@ def main() -> None:
                 av_receipt = json.loads(
                     (EVIDENCE / "native-multisegment-av-master-evidence.json").read_text()
                 )
+                master_scope = (
+                    "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved"
+                    if CAPTIONED_MASTER else
+                    "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
+                )
                 if (av_receipt["frame_count"] != 33
                     or av_receipt["measured_voice"]["audio_pcm_frames"] != 52_800
-                    or av_receipt["evidence_scope"]
-                       != "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"):
+                    or av_receipt["measured_voice"].get("caption_cue_count")
+                       != (2 if CAPTIONED_MASTER else None)
+                    or result.get("native_captioned_master_requested") is not CAPTIONED_MASTER
+                    or result.get("source_bound_caption_cue_count")
+                       != (2 if CAPTIONED_MASTER else None)
+                    or av_receipt["evidence_scope"] != master_scope):
                     raise AssertionError("Native final AV master source/voice provenance differs")
                 relative = result.get("master_artifact_path")
                 if not isinstance(relative, str) or not relative.endswith(".mp4"):
@@ -716,6 +727,36 @@ def main() -> None:
                     "final_evidence_scope":av_receipt["evidence_scope"],
                     **decoded_content,
                 }
+                if CAPTIONED_MASTER:
+                    # Independent FFmpeg readback of native FFV1 and actual
+                    # lossy H264. This comparison neither adds a glyph nor
+                    # synthesizes a new render or MLT composition.
+                    proof = prove_native_captioned_master(
+                        video_path, master, ffmpeg,
+                        source_sha=GITHUB_SHA,
+                        semwright_sha=PIN,
+                        selected_cues=av_receipt["measured_voice"]["caption_cue_count"],
+                    )
+                    if (proof["original_ffv1_sha256"] != digest(video_path)
+                        or proof["actual_master_mp4_sha256"] != digest(master)
+                        or proof["captioned_master_decoded_pixels"] != "PASS"
+                        or proof["native_cue_count"] != 2
+                        or proof["commercial_release_authorized"] is not False):
+                        raise AssertionError(
+                            "Original native caption glyphs did not survive the actual lossy MLT master"
+                        )
+                    write_private_json(
+                        EVIDENCE / "captioned-master-pixel-evidence.json", proof,
+                    )
+                    master_check.update({
+                        "captioned_master_decoded_pixels": "PASS",
+                        "captioned_source_cue_count": 2,
+                        "native_caption_mask_pixels": {
+                            key: value["native_caption_mask_pixels"]
+                            for key, value in proof["active_caption_frames"].items()
+                        },
+                        "native_captioned_human_legibility": "NOT_RUN",
+                    })
             write_private_json(
                 EVIDENCE / "result.json",
                 {

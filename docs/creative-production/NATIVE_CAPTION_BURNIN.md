@@ -1,6 +1,6 @@
 # Motionwright v0.5 — authored transcript to native burned-in caption preview
 
-**Status: bounded implementation; native end-to-end pixel approval pending.**
+**Status: bounded native Film implementation, exact-source original PNG pixel CI PASS.**
 This does not claim accessible typography, automated speech recognition, proven
 caption/audio synchrony or a releasable H.264/AAC master.
 
@@ -38,8 +38,10 @@ for caption comprehension. They do not prove shaping, bidirectional text,
 contrast, occlusion, font coverage or safe viewing on physical devices.
 Native output should be sampled at both cue boundaries and the corresponding
 PNG/text readback independently compared before enabling final delivery.
-The pinned MLT AV master intentionally **continues to refuse**
-burn_in_captions; this work does not remove that safeguard.
+A separately gated native MLT multi-segment H.264/AAC captioned-source
+candidate is tracked in NATIVE_CAPTIONED_MLT_MASTER.md. The final lossy
+master is NOT admitted by Film-only pixel proof; separate media decoding,
+original measured audio and human caption review remain required.
 
 ## Compatibility and test evidence
 
@@ -83,9 +85,10 @@ Public artifacts contain only exact-SHA technical outcomes and bounded
 changed-pixel counts; raw source audio, private Broker/Driver receipts,
 original PNGs and transcripts remain in the disposable runner.
 All source checks and Rust tests are distinct from actual native pixel
-evidence. Until the exact head run passes, the pixel conclusion is
-**NOT_VERIFIED**. Even a PASS is not an end-to-end captioned MP4/AAC
-master, authenticated speech or a human legibility approval.
+evidence. Motionwright PR #233 merged after its exact-head native PNG CI
+PASS, checking frames 0, 22, 42 and 59 from the original Semwright driver.
+That PASS is not an end-to-end captioned MP4/AAC master, authenticated
+speech or a human legibility approval.
 
 ### Native text layout isolation
 
