@@ -226,6 +226,16 @@ pub fn preflight_multisegment_original_sfx_clock(
     })
 }
 
+/// A typed owner-only source gate request. The caller passes actual verified
+/// native in-process source evidence; never deserializes browser file paths.
+pub struct MltMultisegmentSfxSourceRequest<'a> {
+    pub deliverable_id: Uuid,
+    pub options: &'a crate::film::FilmBuildOptions,
+    pub rendered: &'a super::MotionCanvasRenderEvidence,
+    pub visual: &'a super::MltVerifiedLosslessTimeline,
+    pub audio: &'a MltAudioArtifact,
+}
+
 impl super::ProductionCoordinator {
     /// Source-only, read-only native admissibility boundary for a separately
     /// verified 2+ segment FFV1 cut. This DOES NOT run av.mux, claim a
@@ -238,12 +248,15 @@ impl super::ProductionCoordinator {
         &self,
         project_id: Uuid,
         expected: &motionwright_domain::RevisionStamp,
-        deliverable_id: Uuid,
-        options: &crate::film::FilmBuildOptions,
-        rendered: &super::MotionCanvasRenderEvidence,
-        visual: &super::MltVerifiedLosslessTimeline,
-        audio: &MltAudioArtifact,
+        request: MltMultisegmentSfxSourceRequest<'_>,
     ) -> NativeResult<MltMultisegmentOriginalSfxReadiness> {
+        let MltMultisegmentSfxSourceRequest {
+            deliverable_id,
+            options,
+            rendered,
+            visual,
+            audio,
+        } = request;
         use crate::{
             assembly::preflight_multi_segment_mlt, mlt_edit_plan::mlt_native_video_recipe,
         };

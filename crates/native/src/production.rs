@@ -39,7 +39,8 @@ mod semantic_sfx_av;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_multisegment_sfx::{
-    MltMultisegmentOriginalSfxReadiness, preflight_multisegment_original_sfx_clock,
+    MltMultisegmentOriginalSfxReadiness, MltMultisegmentSfxSourceRequest,
+    preflight_multisegment_original_sfx_clock,
 };
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
