@@ -39,6 +39,12 @@ export default function NativeOriginalMixReview({project,desktopMode}:{
     serial.current++;
     setAuditionUrl(null);setError(null);
   };
+  const changeSource=()=>{
+    clearAudition();
+    // Owner use is attested for a specific selection of source assets and
+    // locale. Changing one must never silently carry its previous consent.
+    setSelfAttested(false);
+  };
   const eligible=desktopMode&&!working&&!!selectedVoice&&!!music&&!!sfx&&!!profile&&
     music!==sfx&&music!==selectedVoice.asset_id&&sfx!==selectedVoice.asset_id&&selfAttested;
   const preview=async()=>{
@@ -72,14 +78,14 @@ export default function NativeOriginalMixReview({project,desktopMode}:{
     {sourceAudio.length<3&&<p className="production-help">Import original WAV assets through the existing asset importer. Three distinct stereo 48-kHz source files are required (measured voice, music and SFX).</p>}
     <label className="production-field"><span>Delivery language / profile</span>
       <select value={profile} disabled={!desktopMode||working}
-        onChange={event=>{setProfile(event.target.value);clearAudition();}}>
+        onChange={event=>{setProfile(event.target.value);changeSource();}}>
         <option value="">Select an existing 48-kHz profile</option>
         {profiles.map(item=><option key={item.id} value={item.id}>{item.name} · {item.language}</option>)}
       </select>
     </label>
     <label className="production-field"><span>Original music asset</span>
       <select value={music} disabled={!desktopMode||working}
-        onChange={event=>{setMusic(event.target.value);clearAudition();}}>
+        onChange={event=>{setMusic(event.target.value);changeSource();}}>
         <option value="">Select imported WAV music</option>
         {sourceAudio.filter(item=>item.id!==selectedVoice?.asset_id).map(item=>
           <option key={item.id} value={item.id}>{item.name} · sha256:{item.content_sha256?.slice(0,10)}</option>)}
@@ -87,7 +93,7 @@ export default function NativeOriginalMixReview({project,desktopMode}:{
     </label>
     <label className="production-field"><span>Original SFX asset</span>
       <select value={sfx} disabled={!desktopMode||working}
-        onChange={event=>{setSfx(event.target.value);clearAudition();}}>
+        onChange={event=>{setSfx(event.target.value);changeSource();}}>
         <option value="">Select imported WAV effects</option>
         {sourceAudio.filter(item=>item.id!==selectedVoice?.asset_id).map(item=>
           <option key={item.id} value={item.id}>{item.name} · sha256:{item.content_sha256?.slice(0,10)}</option>)}

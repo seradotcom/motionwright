@@ -96,4 +96,8 @@ test("explicit desktop audition reads only owned voice/music/SFX, leaves project
   }).__MIX_TEST_CALLS__);
   expect(calls.filter(call=>call.name==="native_original_mix_audition")).toHaveLength(1);
   expect(calls.some(call=>/apply_change|provider|render|payment|release/.test(call.name))).toBe(false);
+  await desk.getByLabel("Original music asset").selectOption("");
+  await expect(desk.getByLabel(/I confirm I have permission to use these exact original sources/)).not.toBeChecked();
+  await expect(desk.locator("audio")).toHaveCount(0);
+  await expect(request).toBeDisabled();
 });
