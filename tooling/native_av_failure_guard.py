@@ -18,6 +18,34 @@ CODES = frozenset((
     "StaleReference", "ResourceExhausted", "NotFound", "Cancelled",
     "InvalidArguments", "Internal", "PermissionDenied", "Unknown",
 ))
+# Optional, narrow native-caption CI diagnostics. These fields convey only
+# trusted static categories, never a provider error message or filesystem data.
+CAPTION_STAGES = frozenset((
+    "film_projection", "composition_plan", "composition_apply",
+    "render_terminal", "render_readback", "native_verification", "unclassified",
+))
+CAPTION_NATIVE_CLASSES = frozenset((
+    "arguments", "font_evidence", "project_stage", "vite_build", "frame_export",
+    "browser_launch", "page_load", "render_wait", "render_wait_timeout",
+    "renderer_state_frame_clock", "renderer_state_authoring_protocol",
+    "renderer_log_authoring_protocol", "renderer_state_playback_protocol",
+    "renderer_log_playback_protocol", "renderer_log_exporter_missing",
+    "renderer_log_async_property", "renderer_state_webgl_unavailable",
+    "renderer_log_webgl_unavailable", "renderer_state_model_invariant",
+    "renderer_log_model_invariant", "renderer_state_authoring_model",
+    "renderer_log_authoring_model", "renderer_state_invalid_scene",
+    "renderer_log_invalid_scene", "renderer_state_range_error",
+    "renderer_log_range_error", "renderer_state_type_error",
+    "renderer_log_type_error", "renderer_state_semwright_native",
+    "renderer_state_semwright_exporter", "renderer_state_motion_core",
+    "renderer_state_motion_2d", "renderer_state_before_first_frame",
+    "renderer_state_after_first_frame", "renderer_state_error",
+    "renderer_log_error", "render_result_aborted", "render_result_error",
+    "render_result_unknown", "render_nonzero", "runtime_module_load",
+    "runtime_syntax", "runtime_permission", "runtime_oom", "runtime_killed",
+    "runtime_cpu_limit", "runtime_file_size_limit", "runtime_signal",
+    "observation", "finalize", "startup", "unclassified",
+))
 
 
 def _safe_cli_termination(
@@ -184,6 +212,19 @@ def classify_native_command_failure(
     error = parsed["error"]
     code = _known_code(error.get("code"))
     report["reported_error_code"] = code
+    if parsed.get("caption_native_pixels") == "NOT_VERIFIED":
+        # Optional diagnostic only, never evidence for a render PASS.
+        # No untrusted source text, paths or arbitrary strings survive.
+        stage = parsed.get("caption_stage")
+        native_class = parsed.get("caption_native_class")
+        report["reported_caption_stage"] = (
+            stage if isinstance(stage, str) and stage in CAPTION_STAGES
+            else "unclassified"
+        )
+        report["reported_caption_native_class"] = (
+            native_class if isinstance(native_class, str)
+            and native_class in CAPTION_NATIVE_CLASSES else "unclassified"
+        )
     if error.get("outcome_known") is False:
         report["source_outcome"] = "UNKNOWN"
     elif error.get("outcome_known") is True:

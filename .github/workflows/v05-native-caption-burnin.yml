@@ -76,6 +76,7 @@ jobs:
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
           python3 tooling/source_policy.py
           python3 -m unittest discover -s tooling/tests -p 'test_native_caption_pixels.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_native_caption_failure_classification.py' -v
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:

@@ -96,3 +96,14 @@ Group wrapper, rather than a flattened rendered overlay or a top-level
 flow participant. This keeps the original producer's object geometry
 stable while permitting native DOM font shaping on the nested text.
 The pixel comparison rejects any unintended baseline-frame difference.
+
+### Evidence when native validation fails
+
+A failed second caption render is preserved as NOT_VERIFIED and is never
+automatically retried. CI diagnostics disclose only the stage and
+failure class from a closed list derived from the pinned Semwright
+renderer contract, plus whether the original job result was confirmed.
+Unknown or unrecognized provider messages remain "unclassified";
+no raw errors, source audio, private file paths, Broker receipts or
+opaque provider references are printed or placed in public artifacts.
+A known CLI exit code alone never establishes verified caption pixels.

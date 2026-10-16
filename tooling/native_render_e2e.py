@@ -794,7 +794,9 @@ def main() -> None:
                             "reason", "reported_error_code", "source_outcome",
                             "cli_exit_category", "provider_generation_inactive_observed",
                             "original_render_start_receipts_observed",
+                            "reported_caption_stage", "reported_caption_native_class",
                         )
+                        if key in failure.diagnostic
                     }
                     write_private_json(EVIDENCE / "caption-native-failure-summary.json", {
                         "schema": "motionwright-native-caption-failure/1",

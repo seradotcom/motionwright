@@ -432,6 +432,98 @@ fn export_direct_parity_film(
     Ok(())
 }
 
+/// The native production coordinator already restricts renderer failure
+/// classes to a closed static allowlist. Map only these known static labels,
+/// never echo a driver-supplied message or an opaque job reference to CI.
+fn caption_native_closed_diagnostic(message: &str) -> (&'static str, &'static str) {
+    const KNOWN: &[&str] = &[
+        "arguments",
+        "font_evidence",
+        "project_stage",
+        "vite_build",
+        "frame_export",
+        "browser_launch",
+        "page_load",
+        "render_wait",
+        "render_wait_timeout",
+        "renderer_state_frame_clock",
+        "renderer_state_authoring_protocol",
+        "renderer_log_authoring_protocol",
+        "renderer_state_playback_protocol",
+        "renderer_log_playback_protocol",
+        "renderer_log_exporter_missing",
+        "renderer_log_async_property",
+        "renderer_state_webgl_unavailable",
+        "renderer_log_webgl_unavailable",
+        "renderer_state_model_invariant",
+        "renderer_log_model_invariant",
+        "renderer_state_authoring_model",
+        "renderer_log_authoring_model",
+        "renderer_state_invalid_scene",
+        "renderer_log_invalid_scene",
+        "renderer_state_range_error",
+        "renderer_log_range_error",
+        "renderer_state_type_error",
+        "renderer_log_type_error",
+        "renderer_state_semwright_native",
+        "renderer_state_semwright_exporter",
+        "renderer_state_motion_core",
+        "renderer_state_motion_2d",
+        "renderer_state_before_first_frame",
+        "renderer_state_after_first_frame",
+        "renderer_state_error",
+        "renderer_log_error",
+        "render_result_aborted",
+        "render_result_error",
+        "render_result_unknown",
+        "render_nonzero",
+        "runtime_module_load",
+        "runtime_syntax",
+        "runtime_permission",
+        "runtime_oom",
+        "runtime_killed",
+        "runtime_cpu_limit",
+        "runtime_file_size_limit",
+        "runtime_signal",
+        "observation",
+        "finalize",
+        "startup",
+    ];
+    if message.starts_with("Motion Canvas segment ")
+        && message.contains(" render failed (category: ")
+    {
+        for &label in KNOWN {
+            if message.ends_with(&format!(" render failed (category: {label})")) {
+                return ("render_terminal", label);
+            }
+        }
+        return ("render_terminal", "unclassified");
+    }
+    if message.contains("native verification")
+        || message.contains("composition verification")
+        || message.contains("verification findings")
+        || message.contains("verification checks")
+    {
+        return ("native_verification", "unclassified");
+    }
+    if message.contains("render started but its terminal result is unconfirmed")
+        || message.contains("render status")
+        || message.contains("render result")
+    {
+        return ("render_readback", "unclassified");
+    }
+    if message.contains("composition.apply") || message.contains("composition apply") {
+        return ("composition_apply", "unclassified");
+    }
+    if message.contains("composition.plan") || message.contains("composition plan") {
+        return ("composition_plan", "unclassified");
+    }
+    if message.contains("Film realization") || message.contains("Film projection") {
+        return ("film_projection", "unclassified");
+    }
+    ("unclassified", "unclassified")
+}
+
 /// A deliberately NEW authorized project revision, not a render retry.
 /// The single CI-generated stereo tone stands for measured PCM provenance;
 /// captions are explicitly written by this fixture, not ASR or a person.
@@ -680,6 +772,8 @@ async fn render(
                 // A strict, typed, closed-field CI diagnostic is the ONLY
                 // CLI payload for failed caption effects. It cannot disclose
                 // job refs, original transcripts or raw provider messages.
+                let (caption_stage, caption_native_class) =
+                    caption_native_closed_diagnostic(&error.message);
                 println!(
                     "{}",
                     serde_json::to_string(&json!({
@@ -688,6 +782,8 @@ async fn render(
                             "outcome_known": error.outcome_known,
                         },
                         "caption_native_pixels": "NOT_VERIFIED",
+                        "caption_stage": caption_stage,
+                        "caption_native_class": caption_native_class,
                         "retry_authorized": false,
                     }))?
                 );
