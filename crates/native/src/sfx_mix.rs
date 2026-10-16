@@ -36,7 +36,7 @@ fn u16at(b: &[u8], i: usize) -> u16 {
 fn u32at(b: &[u8], i: usize) -> u32 {
     u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
 }
-fn verify_source(bytes: &[u8], frames: usize) -> NativeResult<()> {
+pub(crate) fn verify_source(bytes: &[u8], frames: usize) -> NativeResult<()> {
     let size = frames
         .checked_mul(4)
         .ok_or_else(|| invalid("SFX source frame size overflow"))?;

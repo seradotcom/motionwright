@@ -5,6 +5,7 @@ mod generation_journal;
 mod media_integrity;
 mod runtime_setup;
 mod sfx_av_master;
+mod sfx_waveform;
 
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
@@ -2477,6 +2478,7 @@ fn main() {
             preflight_multi_segment_mlt_readiness,
             assemble_av_master,
             sfx_av_master::assemble_semantic_sfx_av_master,
+            sfx_waveform::original_sfx_waveform,
             assemble_multisegment_av_master,
             export_native_av_master,
             verify_local_media_integrity,

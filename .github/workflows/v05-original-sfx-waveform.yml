@@ -1,0 +1,64 @@
+name: V05 Original SFX measured waveform
+
+on:
+  pull_request:
+    paths:
+      - 'crates/native/src/sfx_waveform.rs'
+      - 'crates/native/src/sfx_mix.rs'
+      - 'crates/native/src/lib.rs'
+      - 'crates/native/tests/semantic_sfx_waveform.rs'
+      - 'apps/desktop/src-tauri/src/sfx_waveform.rs'
+      - 'apps/desktop/src-tauri/src/main.rs'
+      - 'apps/studio/src/originalSfxWaveform.ts'
+      - 'apps/studio/src/originalSfxWaveform.test.ts'
+      - 'apps/studio/src/OriginalSfxWaveformPanel.tsx'
+      - 'apps/studio/src/SemanticSfxWorkbench.tsx'
+      - 'docs/creative-production/ORIGINAL_SFX_WAVEFORM.md'
+      - '.github/workflows/v05-original-sfx-waveform.yml'
+  push:
+    branches: ['main', 'feat/**']
+    paths:
+      - 'crates/native/src/sfx_waveform.rs'
+      - 'crates/native/tests/semantic_sfx_waveform.rs'
+      - 'apps/desktop/src-tauri/src/sfx_waveform.rs'
+      - '.github/workflows/v05-original-sfx-waveform.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  owner-cas-sfx-waveform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: Swatinem/rust-cache@v2
+      - name: Preserve original Semwright pin and source-bound review scope
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+          cargo fmt --all -- --check
+      - name: Read actual owner SQLite/CAS original WAV stereo samples
+        run: cargo test -p motionwright-native --test semantic_sfx_waveform -- --nocapture
+      - name: Preserve existing original SFX mixer and immutable CAS validation
+        run: cargo test -p motionwright-native --test semantic_sfx_mix
+      - name: Native source waveform Clippy
+        run: cargo clippy -p motionwright-native --test semantic_sfx_waveform -- -D warnings
+      - name: Confirm source observation never implies verified render
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('crates/native/src/sfx_waveform.rs').read_text()
+          assert 'inspect_owner_semantic_sfx_waveform' in source
+          assert 'verify_source(' in source
+          assert 'NOT-listening-or-master' in source
+          assert 'driver.mlt-video.av.mux' not in source
+          print('ORIGINAL_SOURCE_WAVEFORM=SOURCE_CAS_VERIFIED; NATIVE_MUX=NOT_VERIFIED; HUMAN_LISTENING=REQUIRED')
+          PY

@@ -15,6 +15,7 @@ import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry 
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
+import type { OriginalSfxWaveform } from "./originalSfxWaveform";
 import { fixtureBootstrap } from "./fixture";
 import type {
   AssetIntegrityPage,
@@ -366,6 +367,27 @@ export async function importVoiceFile(
       name: null,
       media_type: null,
       label: label ?? null,
+    },
+  });
+}
+
+/** Read ONLY exact owner-imported 48k stereo SFX peaks via desktop CAS.
+ * Browser demos never synthesize an original waveform or send file paths.
+ */
+export async function originalSfxWaveform(
+  project:Project,
+  cueId:string,
+):Promise<OriginalSfxWaveform|null> {
+  if(!isTauri())return null;
+  if(!project.audio.sfx_cues?.some(cue=>cue.id===cueId)) {
+    throw new Error("Original source waveform requires a saved semantic SFX cue.");
+  }
+  return invoke<OriginalSfxWaveform>("original_sfx_waveform",{
+    request:{
+      project_id:project.id,
+      generation:project.generation,
+      revision:project.revision,
+      cue_id:cueId,
     },
   });
 }

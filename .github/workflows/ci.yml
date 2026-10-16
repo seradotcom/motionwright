@@ -144,3 +144,6 @@ jobs:
         run: |
           cargo test -p motionwright-desktop --bin motionwright-desktop native_preview::tests::semantic_sfx_master_requires_same_registered_owner_root_and_original_film_options
           cargo test -p motionwright-desktop --bin motionwright-desktop sfx_av_master::tests
+      - name: Verify exact owner-CAS original SFX waveform desktop IPC
+        run: |
+          cargo test -p motionwright-desktop --bin motionwright-desktop sfx_waveform::tests
