@@ -1,0 +1,82 @@
+name: v0.1 glib 0.18 Backport Conformance (not adopted)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tooling/v01_glib_backport_integrity.py"
+      - "tooling/tests/test_v01_glib_backport_integrity.py"
+      - "tooling/v01-glib-backport-probe/**"
+      - "docs/security/v01-glib-backport-lab.md"
+      - ".github/workflows/v01-glib-backport-conformance.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  source-exact-backport-and-native-ffi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Download and verify exact original registry glib bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence vendor
+          curl --fail --location --silent --show-error --retry 3 \
+            https://static.crates.io/crates/glib/glib-0.18.5.crate \
+            --output "$RUNNER_TEMP/glib-0.18.5.crate"
+      - name: Generate disposable candidate; reject any change beyond FFI fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tooling/v01_glib_backport_integrity.py \
+            --upstream-crate "$RUNNER_TEMP/glib-0.18.5.crate" \
+            --vendor-root vendor/glib-0.18.5 \
+            --create-candidate \
+            --report ci-evidence/glib-backport-candidate.json
+          python3 -m json.tool ci-evidence/glib-backport-candidate.json >/dev/null
+          python3 -m unittest discover -s tooling/tests \
+            -p test_v01_glib_backport_integrity.py -v
+      - name: Original product Cargo.lock is NOT patched by this lab
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, tomllib
+          lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text())
+          glib = [p for p in lock["package"] if p["name"] == "glib"]
+          assert len(glib) == 1
+          assert glib[0]["version"] == "0.18.5"
+          assert glib[0]["source"] == "registry+https://github.com/rust-lang/crates.io-index"
+          assert glib[0]["checksum"] == "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
+          assert "[patch.crates-io]" not in pathlib.Path("Cargo.toml").read_text()
+          print("glib-v01-original-product-graph=UNCHANGED advisory=OPEN")
+          PY
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.98.1
+      - name: Install GLib native development headers for FFI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglib2.0-dev pkg-config
+      - name: Compile and test original glib 0.18.5 with isolated FFI fix
+        run: |
+          cargo test \
+            --manifest-path tooling/v01-glib-backport-probe/Cargo.toml \
+            --all-targets -- --nocapture
+      - name: Preserve explicit non-release scope
+        run: |
+          echo "v01-glib-candidate=REAL_FFI_TEST_ONLY"
+          echo "application_uses_patched_crate=NOT_VERIFIED"
+          echo "rustsec_alert_closed=NO installed_linux_gui=NOT_RUN release=BLOCKED"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: v01-glib-0.18-backport-source-evidence
+          path: ci-evidence/glib-backport-candidate.json
+          if-no-files-found: error
