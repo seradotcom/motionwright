@@ -2,7 +2,8 @@ import { describe,expect,it } from "vitest";
 import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import {
-  previewSemanticSfxEdit,validateSemanticSfx,validateSfxProject,SFX_CUE_SCHEMA,
+  previewSemanticSfxEdit,sourceChangeRightsDeclaration,
+  validateSemanticSfx,validateSfxProject,SFX_CUE_SCHEMA,
 } from "./semanticSfx";
 import type { SemanticSfxCue } from "./semanticSfx";
 import type { Project } from "./types";
@@ -94,6 +95,17 @@ describe("source-bound semantic SFX choreography at 30 fps / 48 kHz",()=>{
     expect(p).toEqual(original);
     p.audio.sfx_cues!.push(p.audio.sfx_cues![0]);
     expect(()=>validateSfxProject(p)).toThrow(/Duplicate/);
+  });
+  it("never reuses an original WAV's rights declaration for a substituted source",()=>{
+    const selected=cue().source_asset_id;
+    const other="00000000-0000-4000-8000-0000000000ae";
+    const attestation=cue().original_source_attestation;
+    expect(sourceChangeRightsDeclaration(selected,selected,attestation))
+      .toBe(attestation);
+    expect(sourceChangeRightsDeclaration(selected,other,attestation)).toBe("");
+    expect(sourceChangeRightsDeclaration(other,selected,attestation)).toBe("");
+    // A fresh unsaved draft cannot silently reuse a prior source's declaration.
+    expect(sourceChangeRightsDeclaration("",other,attestation)).toBe("");
   });
   it("updates an original SFX in place, preserving identity, source and review anchors",async()=>{
     let p=ready();

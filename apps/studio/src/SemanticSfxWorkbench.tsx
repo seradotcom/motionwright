@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { AudioLines, Plus, Trash2 } from "lucide-react";
 import type { Change, Project } from "./types";
-import { SFX_CUE_SCHEMA, previewSemanticSfxEdit, validateSemanticSfx } from "./semanticSfx";
+import {
+  SFX_CUE_SCHEMA, previewSemanticSfxEdit, sourceChangeRightsDeclaration,
+  validateSemanticSfx,
+} from "./semanticSfx";
 import type { SemanticSfxCue, SfxEvent } from "./semanticSfx";
 import { openOriginalSfxReviewHandoffs } from "./sfxReviewHandoff";
 
@@ -43,6 +46,9 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
   },[project.generation]);
   const scene=project.scenes.find(s=>s.id===sceneId);
   const source=assets.find(a=>a.id===sourceId);
+  const editingCue=editingId===null?null:cues.find(c=>c.id===editingId)??null;
+  const sourceChangedDuringEdit=editingCue!==null
+    && editingCue.source_asset_id!==sourceId;
   const cue:SemanticSfxCue={
     schema:SFX_CUE_SCHEMA,id:editingId??"00000000-0000-4000-8000-000000000005",
     scene_id:sceneId,event,
@@ -199,7 +205,13 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
       </label>
       <label>Imported WAV
         <select aria-label="SFX imported WAV" value={sourceId}
-          onChange={e=>setSourceId(e.target.value)}>
+          onChange={e=>{
+            const nextId=e.target.value;
+            setAttestation(previous=>sourceChangeRightsDeclaration(
+              sourceId,nextId,previous,
+            ));
+            setSourceId(nextId);
+          }}>
           <option value="">Select immutable original WAV</option>
           {assets.map(a=><option key={a.id} value={a.id}>
             {a.name} / {a.content_sha256?.slice(0,12)}</option>)}
@@ -218,6 +230,14 @@ export default function SemanticSfxWorkbench({project,commit,onSeek}:Props) {
           value={value} onChange={e=>update(Number(e.target.value))}/>
       </label>)}
     </div>
+    {sourceChangedDuringEdit && (
+      <p className="audio-truth-line" role="status">
+        Original WAV source changed. The previous declaration does not
+        transfer to a different asset. Enter a new source-specific authorship
+        statement before saving. This remains an owner declaration, not
+        independent copyright or distribution rights verification.
+      </p>
+    )}
     <label>Original source authorship declaration
       <textarea aria-label="SFX source rights attestation" maxLength={160} rows={2}
         value={attestation} onChange={e=>setAttestation(e.target.value)}

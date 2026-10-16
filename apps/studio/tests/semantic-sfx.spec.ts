@@ -33,9 +33,14 @@ test("native SFX editor changes an existing cue in place without recreating sour
   p.locks=[];
   const cueId="30000000-0000-4000-8000-0000000000f1";
   const assetId="30000000-0000-4000-8000-0000000000f2";
-  const sha="a".repeat(64);
-  p.assets.push({id:assetId,name:"Owner original focus.wav",
-    media_type:"audio/wav",content_sha256:sha,source_revision:"owner"});
+  const alternateAssetId="30000000-0000-4000-8000-0000000000f4";
+  const sha="a".repeat(64),alternateSha="d".repeat(64);
+  p.assets.push(
+    {id:assetId,name:"Owner original focus.wav",
+      media_type:"audio/wav",content_sha256:sha,source_revision:"owner"},
+    {id:alternateAssetId,name:"Alternate owner original.wav",
+      media_type:"audio/wav",content_sha256:alternateSha,source_revision:"owner"},
+  );
   p.audio.sfx_cues=[{
     schema:"motionwright.semantic-sfx/1",id:cueId,
     scene_id:p.scenes[0].id,event:"ui_focus",
@@ -135,5 +140,24 @@ test("native SFX editor changes an existing cue in place without recreating sour
     type:"upsert_semantic_sfx",
     cue:{id:cueId,scene_id:p.scenes[0].id,source_asset_id:assetId,
       source_sha256:sha,offset_frames:9,gain_milli_db:-18000},
+  });
+  // Replacing an original WAV MUST force a new manual declaration. The old
+  // source-specific attestation cannot silently be copied to the new asset.
+  await editor.getByRole("button",{name:"Edit original SFX "+cueId}).click();
+  await editor.getByLabel("SFX imported WAV").selectOption(alternateAssetId);
+  await expect(editor.getByLabel("SFX source rights attestation")).toHaveValue("");
+  await expect(editor).toContainText("The previous declaration does not");
+  await expect(editor.getByRole("button",{name:"Save original SFX changes"})).toBeDisabled();
+  await editor.getByLabel("SFX source rights attestation")
+    .fill("This alternative recording was also created and owned by the author.");
+  await editor.getByRole("button",{name:"Save original SFX changes"}).click();
+  const changes=await page.evaluate(()=>(window as unknown as {
+    __SFX_EDIT__:{changes:Array<Record<string,unknown>>};
+  }).__SFX_EDIT__.changes);
+  expect(changes).toHaveLength(2);
+  expect(changes[1]).toMatchObject({
+    type:"upsert_semantic_sfx",
+    cue:{id:cueId,source_asset_id:alternateAssetId,source_sha256:alternateSha,
+      original_source_attestation:"This alternative recording was also created and owned by the author."},
   });
 });

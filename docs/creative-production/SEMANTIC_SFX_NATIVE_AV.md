@@ -417,3 +417,21 @@ operator must reproduce/review the corrected native master and separately
 resolve the original open creative review through History. Unit, model,
 browser, editor lock and owner CAS regression tests keep this a manual,
 revisioned correction workflow rather than an auto-critic or automated patch.
+
+
+## Rights attestation follows the actual original source selection
+
+An original-sound edit must never silently copy the previous WAV's authored
+rights declaration when an editor substitutes another imported WAV. Studio
+clears the attestation on **every** original asset selection change,
+including a new unsaved cue, an existing cue, and switching back to a
+previously selected source. Full source/schedule admission then remains
+blocked until the owner explicitly types a fresh declaration.
+
+This is solely a source-specific user declaration; it is **not** an
+independent licensing audit, a copyright-cleared distribution permit or a
+creative/safety PASS. The existing StudioService CAS and actual WAV byte
+checks remain the source of admission authority. The original cue ID and
+existing open human review remain unchanged until an explicit Save.
+Unit and synthetic browser regressions cover silent rights reuse,
+re-attestation, same-ID upsert and complete 30-fps source integrity.

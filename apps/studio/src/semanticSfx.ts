@@ -109,6 +109,20 @@ export function validateSfxProject(project:Project):ScheduledSfx[]{
   }
   return scheduled;
 }
+/** Replacing an imported original WAV never copies its former author/rights
+ * declaration into the new source. The new declaration must be entered by
+ * the user after EACH source switch (new draft or existing cue);
+ * this remains an attestation, not a
+ * copyright-cleared/independently-licensed evidence claim.
+ */
+export function sourceChangeRightsDeclaration(
+  selectedAssetId:string,
+  nextAssetId:string,
+  currentDeclaration:string,
+):string {
+  return selectedAssetId!==nextAssetId ? "" : currentDeclaration;
+}
+
 /** Read-only original-source SFX editor preview: adding a new cue and
  * replacing a persisted cue MUST share the same full schedule validator.
  * In-place editing never moves a stable cue ID between scenes.
