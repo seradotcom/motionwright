@@ -8,6 +8,7 @@ use crate::{
     mlt_av_audio::{MultiSegmentAudioReadiness, preflight_multi_segment_audio},
     mlt_edit_plan::mlt_native_video_recipe,
 };
+use motionwright_domain::Project;
 
 /// Caller-owned, typed and non-deserializable; never accept a filesystem
 /// path or codec selector directly from a browser or an LLM.
