@@ -1,0 +1,63 @@
+name: V05 Original SFX multisegment source preflight
+
+on:
+  pull_request:
+    paths:
+      - 'crates/native/src/production/mlt_multisegment_sfx.rs'
+      - 'crates/native/src/production/mlt_multisegment_av.rs'
+      - 'crates/native/src/production.rs'
+      - 'crates/native/tests/semantic_sfx_multisegment_clock.rs'
+      - 'docs/creative-production/SEMANTIC_SFX_MLT_MULTISEGMENT_PREFLIGHT.md'
+      - '.github/workflows/v05-multisegment-sfx-source.yml'
+  push:
+    branches: ['main', 'feat/**']
+    paths:
+      - 'crates/native/src/production/mlt_multisegment_sfx.rs'
+      - 'crates/native/src/production/mlt_multisegment_av.rs'
+      - 'crates/native/src/production.rs'
+      - 'crates/native/tests/semantic_sfx_multisegment_clock.rs'
+      - '.github/workflows/v05-multisegment-sfx-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-only-sfx-mlt-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify pinned source and release status
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+          cargo fmt --all -- --check
+      - name: Admit owner WAVs and refuse altered MLT frames
+        run: |
+          cargo test -p motionwright-native --test semantic_sfx_multisegment_clock -- --nocapture
+      - name: Preserve measured-voice isolation and source CAS regression
+        run: |
+          cargo test -p motionwright-native --lib production::mlt_multisegment_av::tests -- --nocapture
+          cargo test -p motionwright-native --test semantic_sfx_av_source -- --nocapture
+      - name: Check source-only preflight contracts
+        run: |
+          cargo clippy -p motionwright-native --test semantic_sfx_multisegment_clock -- -D warnings
+      - name: Never promote preflight to verified MP4
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          content=Path('crates/native/src/production/mlt_multisegment_sfx.rs').read_text()
+          assert 'preflight_multisegment_original_sfx_clock' in content
+          assert 'verify_semantic_sfx_av_source' in content
+          assert 'NOT-native-mux' in content
+          assert 'driver.mlt-video.av.mux' not in content
+          print('SOURCE_ONLY_SFX_PREFLIGHT=PASS; NATIVE_MUX=NOT_VERIFIED; HUMAN_ACCEPTANCE=REQUIRED')
+          PY

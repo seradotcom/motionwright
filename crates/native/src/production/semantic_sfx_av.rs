@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io::Write, path::Path};
 use uuid::Uuid;
 
-const MAX_SFX_AUDIO_MASTER_BYTES: u64 = 6 * 1024 * 1024;
+pub(super) const MAX_SFX_AUDIO_MASTER_BYTES: u64 = 6 * 1024 * 1024;
 
 fn stale(reason: &str) -> Error {
     Error::new(ErrorCode::StaleReference, reason)
