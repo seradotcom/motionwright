@@ -34,6 +34,10 @@ A source-digest-bound rollout applies a permitted existing palette accent/requir
 
 The original measured narration can now be recorded/released through the existing project CAS and Semwright Native SDK, and later revisions can be compared read-only to expose conservative caption, cut and B-roll dependencies. No voice provider, automatic recut, signed approval or audio master is created. [Recorded narration documentation](V05_NARRATION_SOURCE_REVIEW.md).
 
+## Physical original three-bus audio audition (E08-04 partial)
+
+Audio now provides an explicit read-only source-owned voice/music/SFX mix audition with imported WAV custody, exact pinned-revision PCM, deterministic ducking and clipping refusal. Disposable CI independently decodes actual synthetic WAVs with FFmpeg and meters loudness and intersample peak, but this is not a finished mix master or human listening approval. [Physical 3-bus audition](V05_ORIGINAL_NATIVE_PCM_MIX.md).
+
 ## Start a design session
 
 Only use desktop candidates built by an exact-source successful Candidate Packages workflow for the revision under review; do not mistake a pushed branch or pending CI for a verified installer. Keep production data backed up. Native rendering still requires the exact owner-provisioned Semwright runtime described in `../production.md` and `../native-sdk.md`; no paid account is needed for this slice.

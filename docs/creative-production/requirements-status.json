@@ -703,10 +703,24 @@
     },
     {
       "id": "MW05-E08-04",
-      "implementation": "not_implemented",
-      "implemented_scope": "Silent AV test audio is not sound production",
-      "remaining_scope": "Automation, ducking, loudness and intelligibility acceptance remain open",
-      "source_paths": [],
+      "implementation": "partial",
+      "implemented_scope": "Original voice/music/SFX stereo PCM bus mixer ported from prior isolated draft into the existing motionwright-native pinned Semwright SDK consumer; measured source-bound 48-kHz 16-bit PCM with sample-accurate ducking/attack/release, exact current-project delivery profile and 1?15 second SHA-256-bound immutable audio stems. Canonical StudioService verifies original content-addressed WAV blob custody and decoded PCM digests; owner-invoked Tauri read-only local WAV audition with no project mutation or asserted release authority. Disposable CI independently FFmpeg-decodes three synthetic en/es/de WAV mixes and measures EBU R128 LUFS and true peak; this test is technical-only, not a master.",
+      "remaining_scope": "Actual licensed/consented human speech and music, authenticated original rights, verified installed-desktop audio drivers, full timeline automation and SFX scheduling across arbitrary durations, independently verified physical Semwright/MLT H.264/AAC mix-master injection and lip/caption sync, human intelligibility and music licensing review, reliable multichannel source capture and resampling with owner rights, and 60 independent creative acceptance sessions remain NOT_RUN. Synthesized non-speech proxy cannot approve output.",
+      "source_paths": [
+        "crates/native/src/original_mix.rs",
+        "crates/native/tests/original_mix.rs",
+        "crates/native/examples/native_mix_fixture.rs",
+        "crates/service/src/audio.rs",
+        "crates/service/tests/original_mix_custody.rs",
+        "apps/desktop/src-tauri/src/original_mix_native.rs",
+        "apps/studio/src/NativeOriginalMixReview.tsx",
+        "apps/studio/src/nativeMixTypes.ts",
+        "apps/studio/src/nativeOriginalMixBrowser.test.ts",
+        "apps/studio/tests/native-original-mix.spec.ts",
+        "tooling/native-original-mix/original_mix_e2e.py",
+        ".github/workflows/v05-original-native-mix.yml",
+        "docs/creative-production/V05_ORIGINAL_NATIVE_PCM_MIX.md"
+      ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
     {
