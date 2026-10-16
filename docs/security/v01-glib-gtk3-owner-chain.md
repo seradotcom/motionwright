@@ -1,14 +1,18 @@
 # Motionwright v0.1 — glib 0.18.5 owner-chain review
 
 **Scope:** Harden the existing release-blocking RustSec-2024-0429
-warning policy. The known glib advisory is OPEN and this change does not
-patch, suppress or downgrade it.
+warning policy. The known glib advisory remains OPEN. The source-exact
+backport corrects the reviewed local FFI file but does not suppress,
+ignore or downgrade the advisory, nor prove an installed product fix.
 
 ## Why the original source policy was incomplete
 
-The root Cargo.lock continues to pin glib 0.18.5. The advisory identifies
+The root Cargo.lock continues to pin glib 0.18.5, but the current v0.1
+integration candidate selects the exact-source local FFI backport rather
+than the unpatched crates.io implementation. The upstream advisory identifies
 unsound Iterator implementations in the VariantStrIter API and lists
-glib >=0.20.0 as patched. The reviewed Tauri 2.12.1 / GTK3 0.18.2 /
+glib >=0.20.0 as patched. Source-level patch custody alone is not proof of
+a patched installed executable, nor is it an advisory waiver. The reviewed Tauri 2.12.1 / GTK3 0.18.2 /
 WebKitGTK 2.0.2 Linux dependency stack still resolves glib 0.18.5 and
 cannot independently force a semver-incompatible glib 0.20 upgrade.
 
@@ -37,9 +41,12 @@ It fails closed on duplicate/missing/ambiguous identities and requires:
   Tauri 2.12.1, Wry 0.57.0, GTK3 0.18.2 and WebKitGTK 2.0.2.
 - A single first-party owner, motionwright-desktop 0.1.0, and no
   additional unrelated root or non-desktop first-party crate.
-- Registry source identity and present SHA-256 checksum fields for all
-  reviewed transitive crate identities. It validates checksum format;
-  it does not independently re-download crates or attest signatures.
+- Registry source identity and SHA-256 checksum for all reviewed transitive
+  ancestors except glib itself. For glib alone, it requires the local path
+  override, no registry source/checksum in Cargo.lock, the SHA-256 pinned
+  upstream original archive and an exact 121-file comparison allowing only
+  the two audited FFI out-parameter changes. All other source substitutions
+  continue to fail closed.
 - The status remains OPEN_UPSTREAM_BLOCKED and the old warning-set
   check still refuses any *new vulnerability*.
 
@@ -64,8 +71,10 @@ nor that a vulnerable glib iterator is invoked or unreachable. The
 existing first-party string check reduces obvious direct use but is not
 a whole-program call-graph proof. This guard does not create an exception,
 turn cargo-audit warnings into PASS, or declare the upstream vulnerability
-resolved. A coordinated patched Linux stack with real installed package
-and regression tests is still required to close issue #89.
+resolved. The source-exact backport is not enough to close issue #89: an independently
+verified compiled Linux desktop using that implementation, installed GUI
+relaunch, native production and cross-platform packaging evidence remain
+mandatory before any release-security decision.
 
 Separate blockers #49 (native provider loss), #91 (foreground MLT cleanup)
 and #126 (independent acceptance and signing) also remain OPEN. No one

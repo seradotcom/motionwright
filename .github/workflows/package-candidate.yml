@@ -8,6 +8,9 @@ on:
       - "apps/studio/**"
       - "crates/**"
       - "tooling/package_receipt.py"
+      - "tooling/v01_glib_product_admission.py"
+      - "tooling/upstream-crates/**"
+      - "vendor/glib-0.18.5/**"
       - "tooling/release_manifest.py"
       - "tooling/tests/test_package_receipt.py"
       - "tooling/tests/test_candidate_receipt_source.py"
@@ -34,6 +37,9 @@ on:
       - "apps/studio/**"
       - "crates/**"
       - "tooling/package_receipt.py"
+      - "tooling/v01_glib_product_admission.py"
+      - "tooling/upstream-crates/**"
+      - "vendor/glib-0.18.5/**"
       - "tooling/release_manifest.py"
       - "tooling/tests/test_package_receipt.py"
       - "tooling/tests/test_candidate_receipt_source.py"
@@ -102,6 +108,16 @@ jobs:
         run: |
           cd apps/desktop
           npm --prefix ../studio exec -- tauri build --bundles deb,appimage
+      - name: Verify actual Linux candidate compiled the reviewed local glib source
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          python3 tooling/v01_glib_product_admission.py --output ci-evidence/glib-patched-source.json
+          cargo tree --locked -p motionwright-desktop --target x86_64-unknown-linux-gnu -i glib > ci-evidence/glib-compiled-owner-tree.txt
+          grep -F 'vendor/glib-0.18.5' ci-evidence/glib-compiled-owner-tree.txt >/dev/null
+          count="$(find target/release/deps -maxdepth 1 -type f -name 'libglib-*.rlib' | wc -l)"
+          test "$count" -ge 1
+          echo 'v01-glib-product-candidate=LOCAL_BACKPORT_COMPILED linux_installed_gui=NOT_YET_VERIFIED'
       - name: Record exact Linux candidate artifacts
         run: |
           appimage_count="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | wc -l)"

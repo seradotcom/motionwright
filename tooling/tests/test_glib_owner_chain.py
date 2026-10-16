@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tomllib
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -40,12 +41,29 @@ class GlibOwnerChainTests(unittest.TestCase):
         self.assertEqual(result["observed_first_party_owners"], ["motionwright-desktop"])
         self.assertEqual(result["terminal_source_owner"], "motionwright-desktop@0.1.0")
         self.assertFalse(result["glib_vulnerability_fixed"])
+        self.assertTrue(result["reviewed_backport_source_verified"])
+        self.assertFalse(result["actual_compiled_linux_glib_verified"])
         self.assertFalse(result["release_authorized"])
         forbidden = self.policy["forbidden_first_party_tokens"]
         self.assertIn("VariantStrIter", forbidden)
         self.assertIn("array_iter_str", forbidden)
         self.assertFalse(result["linux_target_reachability_proven"])
         self.assertFalse(result["affected_iterator_api_unreachable_proven"])
+
+    def test_missing_local_backport_review_is_refused(self):
+        self.policy.pop("reviewed_local_backport", None)
+        self.assert_rejected("glib_reviewed_backport_policy_invalid")
+
+    def test_original_cratesio_glib_cannot_undo_reviewed_patch(self):
+        pkg = self.package("glib")
+        pkg["source"] = "registry+https://github.com/rust-lang/crates.io-index"
+        pkg["checksum"] = "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
+        self.assert_rejected("glib_ancestor_source_changed")
+
+    def test_vendored_patch_admission_failure_is_never_waived(self):
+        with patch("glib_owner_chain.admit_patched_glib",
+                   side_effect=ValueError("tampered physical source")):
+            self.assert_rejected("glib_backport_custody_unverified")
 
     def test_new_direct_rust_glib_client_is_refused(self):
         self.lock["package"].append({

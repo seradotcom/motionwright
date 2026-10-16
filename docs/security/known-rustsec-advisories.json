@@ -13,6 +13,11 @@
       "package": "glib",
       "locked_version": "0.18.5",
       "status": "OPEN_UPSTREAM_BLOCKED",
+      "reviewed_local_backport": {
+        "mode": "local-path-exact-two-line-upstream-backport",
+        "vendor_path": "vendor/glib-0.18.5",
+        "upstream_archive_sha256": "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
+      },
       "first_patched_version": "0.20.0",
       "severity": "medium",
       "direct_dependency": false,

@@ -15,6 +15,15 @@ cargo = (ROOT / "Cargo.toml").read_text()
 if f'rev = "{REV}"' not in cargo:
     errors.append("Cargo.toml does not use SOURCE_LOCK Semwright revision")
 
+# The Linux glib FFI backport is a source substitution. Independently
+# rehash the exact original crate and EVERY vendored source file, not just
+# the Cargo.toml path or glib semantic version. No warning is waived.
+try:
+    from v01_glib_product_admission import admit_patched_glib
+    admit_patched_glib(ROOT)
+except (ImportError, OSError, ValueError) as error:
+    errors.append("glib 0.18.5 patched source custody is unverified")
+
 desktop = (ROOT / "apps/desktop/src-tauri/src/main.rs").read_text()
 if REV not in desktop:
     errors.append("desktop Native SDK receipt does not match SOURCE_LOCK")
