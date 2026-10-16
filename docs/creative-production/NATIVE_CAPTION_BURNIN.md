@@ -59,3 +59,30 @@ GitHub Actions builds against the exact pinned Semwright revision and
 runs these Rust tests. This source-level test is not a real burned-in
 frame or independent pixel/aesthetic acceptance. The original 60
 owner-creative acceptance cases remain NOT_RUN; release remains false.
+
+## Real native pixel regression — strict, source-pinned and isolated
+
+A separate GitHub Actions workflow, V05 source-bound native caption pixels,
+provisions the exact SOURCE_LOCK Semwright daemon, Driver Host and Motion
+Canvas runtime on a disposable Linux runner. It performs the existing
+60-frame *original* project render (including independently decoded
+direct-vs-mediated native pixel parity), then CAS-imports a real measured
+synthetic WAV and manually authored caption times into a **new revision**
+of the same project. The second render has its own request identity and
+is never a retry of the first request.
+
+The independent FFmpeg PNG decoder checks that original pixel contents
+outside the allowed caption region remain identical, the non-caption
+frames 0 and 59 are entirely unchanged, and the two active caption frames
+22 and 42 exhibit bounded nonzero RGB changes in the expected lower
+area. Every inspected PNG is rehashed and checked against the exact
+native artifact manifest. A missing caption, uncontrolled UI layout
+change, incorrect cue timing or tampered byte stream fails the job.
+
+Public artifacts contain only exact-SHA technical outcomes and bounded
+changed-pixel counts; raw source audio, private Broker/Driver receipts,
+original PNGs and transcripts remain in the disposable runner.
+All source checks and Rust tests are distinct from actual native pixel
+evidence. Until the exact head run passes, the pixel conclusion is
+**NOT_VERIFIED**. Even a PASS is not an end-to-end captioned MP4/AAC
+master, authenticated speech or a human legibility approval.

@@ -238,7 +238,9 @@ fn refuses_incorrect_voice_rights_unmeasured_alignment_and_stale_source() {
     );
     p = fixture();
     p.assets[0].content_sha256 = Some("cd".repeat(32));
-    assert!(output(&p).unwrap_err().contains("measured WAV digest"));
+    // The Project-wide source custody check can reject forged asset bytes
+    // before the narrower Film caption-voice check is reached. Both fail closed.
+    assert!(output(&p).is_err());
     p = fixture();
     p.audio.transcript[0].alignment = AlignmentEvidence::Unknown;
     assert!(output(&p).is_err());

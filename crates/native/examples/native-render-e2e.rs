@@ -1,6 +1,6 @@
 use motionwright_domain::{
-    BlendMode, CanvasKeyframe, CanvasNode, Change, CoordinateSpace, MotionInterpolation,
-    MotionProperty, NodeStyle, RationalTime, RevisionStamp,
+    AlignmentEvidence, BlendMode, CanvasKeyframe, CanvasNode, Change, CoordinateSpace,
+    MotionInterpolation, MotionProperty, NodeStyle, RationalTime, RevisionStamp, TranscriptSegment,
 };
 use motionwright_native::{
     film::{FilmBuildOptions, SceneFilmIntent, build_motion_canvas_segments},
@@ -9,7 +9,7 @@ use motionwright_native::{
         ProductionCoordinator,
     },
 };
-use motionwright_service::StudioService;
+use motionwright_service::{StudioService, VoiceImportMetadata};
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
 use serde_json::json;
@@ -432,6 +432,162 @@ fn export_direct_parity_film(
     Ok(())
 }
 
+/// A deliberately NEW authorized project revision, not a render retry.
+/// The single CI-generated stereo tone stands for measured PCM provenance;
+/// captions are explicitly written by this fixture, not ASR or a person.
+fn prepare_caption_source(
+    database: &Path,
+    wav_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Err(
+            "real caption source fixture is restricted to disposable GitHub runners".into(),
+        );
+    }
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("caption fixture requires exactly one original project".into());
+    }
+    let original = &projects[0];
+    if original.scenes.len() != 1
+        || original.scenes[0].duration != RationalTime::new(2, 1)?
+        || original.deliverables[0].burn_in_captions
+        || !original.audio.voice_tracks.is_empty()
+        || !original.audio.transcript.is_empty()
+    {
+        return Err(
+            "caption fixture cannot alter a project with prior voice or caption state".into(),
+        );
+    }
+    let sample_count = 96_000u32;
+    let mut stream = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(wav_path)?;
+    let data_len = sample_count.checked_mul(4).ok_or("CI WAV size overflow")?;
+    stream.write_all(b"RIFF")?;
+    stream.write_all(&(data_len + 36).to_le_bytes())?;
+    stream.write_all(b"WAVEfmt ")?;
+    stream.write_all(&16_u32.to_le_bytes())?;
+    stream.write_all(&1_u16.to_le_bytes())?;
+    stream.write_all(&2_u16.to_le_bytes())?;
+    stream.write_all(&48_000_u32.to_le_bytes())?;
+    stream.write_all(&192_000_u32.to_le_bytes())?;
+    stream.write_all(&4_u16.to_le_bytes())?;
+    stream.write_all(&16_u16.to_le_bytes())?;
+    stream.write_all(b"data")?;
+    stream.write_all(&data_len.to_le_bytes())?;
+    for i in 0..sample_count {
+        let left = ((i % 120) as i16 - 60) * 220;
+        let right = ((i % 80) as i16 - 40) * 230;
+        stream.write_all(&left.to_le_bytes())?;
+        stream.write_all(&right.to_le_bytes())?;
+    }
+    stream.sync_all()?;
+    drop(stream);
+
+    let mut changed = service
+        .import_voice_file(
+            original.id,
+            &RevisionStamp::from(original),
+            "caption-measured-ci-source-v1",
+            wav_path,
+            VoiceImportMetadata {
+                name: "synthetic-ci-tone.wav".into(),
+                media_type: "audio/wav".into(),
+                label: "Synthetic non-speech tone; not a narrator".into(),
+            },
+        )?
+        .project;
+    let track = changed
+        .audio
+        .voice_tracks
+        .last()
+        .ok_or("caption fixture source import did not produce a track")?
+        .clone();
+    if track.sample_rate_hz != 48_000
+        || track.channels != 2
+        || track.measured_duration != RationalTime::new(2, 1)?
+    {
+        return Err("actual PCM voice import did not match measured 48k stereo".into());
+    }
+    let mut profile = changed.deliverables[0].clone();
+    profile.captions = true;
+    profile.burn_in_captions = true;
+    profile.voice_track_id = Some(track.id);
+    changed = service
+        .apply(
+            changed.id,
+            &RevisionStamp::from(&changed),
+            "caption-activate-saved-profile",
+            &Change::UpsertDeliverable { profile },
+        )?
+        .project;
+    for (index, (start, end, text)) in [
+        (
+            RationalTime::new(1, 2)?,
+            RationalTime::new(1, 1)?,
+            "REAL NATIVE CAPTION PROOF",
+        ),
+        (
+            RationalTime::new(6, 5)?,
+            RationalTime::new(8, 5)?,
+            "SECOND SOURCE-BOUND CUE",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        changed = service
+            .apply(
+                changed.id,
+                &RevisionStamp::from(&changed),
+                &format!("caption-source-interval-{index}"),
+                &Change::AddTranscriptSegment {
+                    segment: TranscriptSegment {
+                        id: Uuid::now_v7(),
+                        voice_track_id: track.id,
+                        start,
+                        end,
+                        text: text.into(),
+                        speaker: None,
+                        alignment: AlignmentEvidence::Manual,
+                    },
+                },
+            )?
+            .project;
+    }
+    let options = fixture_film_options(changed.scenes[0].id, 60)?;
+    let projected = build_motion_canvas_segments(&changed, changed.deliverables[0].id, &options)?;
+    if projected.len() != 1
+        || projected[0].frame_count != 60
+        || projected[0].film.cues.cues.len() != 2
+        || projected[0].film.assets.len() != 0
+    {
+        return Err("caption Film did not preserve the original source/frames".into());
+    }
+    let native = projected[0].film.cues.resolve()?;
+    if native.len() != 2 {
+        return Err("two exact Semwright native cues were not resolved".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "caption_source": "PASS",
+            "project_id": changed.id,
+            "generation": changed.generation,
+            "revision": changed.revision,
+            "voice_sha256": track.source_sha256,
+            "native_cue_count": native.len(),
+            "render_count": projected[0].frame_count,
+            "first_caption_text": "REAL NATIVE CAPTION PROOF",
+            "source": "measured_synthetic_non_speech_voice_CAS"
+        }))?
+    );
+    Ok(())
+}
+
 async fn render(
     database: &Path,
     connection_path: &Path,
@@ -484,7 +640,11 @@ async fn render(
         .render_motion_canvas_segments(
             project.id,
             &RevisionStamp::from(&project),
-            "native-render-real-driver-host",
+            if deliverable.burn_in_captions {
+                "native-caption-first-authorized-render"
+            } else {
+                "native-render-real-driver-host"
+            },
             deliverable.id,
             &options,
         )
@@ -777,6 +937,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             seed(&database)
+        }
+        "caption-prepare" => {
+            let database = path_arg(&mut args);
+            let wav = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            prepare_caption_source(&database, &wav)
         }
         "film" => {
             let database = path_arg(&mut args);
