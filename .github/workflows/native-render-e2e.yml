@@ -34,6 +34,8 @@ on:
       - 'tooling/tests/test_native_direct_mediated_parity.py'
       - 'tooling/native_provider_lifecycle.py'
       - 'tooling/tests/test_native_provider_lifecycle.py'
+      - 'tooling/native_provider_live_watch.py'
+      - 'tooling/tests/test_native_provider_live_watch.py'
       - '.github/workflows/native-render-e2e.yml'
 
 permissions:
@@ -157,7 +159,9 @@ jobs:
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_render_stage_cost.py' -v
 
       - name: Verify bounded provider lifecycle diagnostics
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
+        run: |
+          python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_native_provider_live_watch.py' -v
 
       - name: Reject fabricated independent-run reliability evidence
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_repeat.py' -v
@@ -165,6 +169,7 @@ jobs:
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
         run: |
           python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/run.log
@@ -178,6 +183,7 @@ jobs:
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-middle.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-last.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-lifecycle.json"
+          test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-direct-parity-film.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-direct-mediated-parity.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-render-stage-cost.json"
@@ -258,6 +264,29 @@ jobs:
           assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
           assert health["sample_count"] >= 1
           assert health["daemon_exit_before_owner_cleanup"] is None
+          live = json.loads((root / "native-provider-live-broker-events.json").read_text())
+          assert live["schema"] == "motionwright-ci-native-provider-broker-events/1"
+          assert live["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
+          assert live["semwright_source_pin"] == result["semwright_sha"]
+          assert live["capture_mode"] == "bounded-read-only-owner-session-live-watch"
+          assert type(live["started_before_render"]) is bool
+          assert live["history_exhaustive"] is False
+          assert live["native_provider_causation_proven"] is False
+          assert live["terminal_native_result_verified"] is False
+          assert live["original_render_retry_permitted"] is False
+          assert live["public_owner_payloads_copied"] is False
+          assert live["installed_owner_recovery"] == "NOT_RUN"
+          assert live["trusted_lifecycle_event_count"] == len(live["events"])
+          allowed = {
+              "provider.connected", "provider.disconnected",
+              "provider.capabilities.changed", "provider.generation.invalidated",
+              "provider.removed",
+          }
+          assert all(
+              set(event) == {"kind", "generation", "revision"}
+              and event["kind"] in allowed
+              for event in live["events"]
+          )
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
@@ -265,6 +294,7 @@ jobs:
         env:
           MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
         run: |
           set -euo pipefail
