@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 from hashlib import sha256
 import json
 import os
@@ -52,6 +53,7 @@ def outside_public_checkout(path: Path, *, purpose: str) -> Path:
     resolved = path.resolve(strict=True)
     if resolved.is_relative_to(ROOT.resolve()):
         raise IntakeError(f"Private acceptance {purpose} must reside outside the public checkout")
+    _refuse_other_motionwright_worktrees(resolved)
     return resolved
 
 
@@ -88,6 +90,44 @@ def _reject_private_path_chain(path: Path, *, kind: str) -> None:
             raise IntakeError(f"{kind} paths must not contain parent components")
         current = current / part
         _reject_indirect_path_component(current, kind=kind)
+
+
+@lru_cache(maxsize=1)
+def _motionwright_worktree_roots() -> tuple[Path, ...]:
+    """Discover only worktrees attached to this Motionwright Git repository.
+
+    Do not treat unrelated parent/user-home Git repositories as Motionwright
+    worktrees: owner Downloads may legitimately be below such a repo.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+            capture_output=True, check=True, timeout=10,
+        )
+        roots = []
+        # Git 2.34 on owner Windows does not support worktree list -z.
+        # Porcelain paths occupy the remainder of a single "worktree " line.
+        for field in result.stdout.splitlines():
+            if not field.startswith(b"worktree "):
+                continue
+            raw = field[len(b"worktree "):]
+            if not raw or len(raw) > 4096:
+                raise IntakeError("Motionwright worktree paths are malformed")
+            path = Path(os.fsdecode(raw))
+            if not path.is_absolute():
+                raise IntakeError("Motionwright worktree path is not absolute")
+            roots.append(path.resolve(strict=False))
+        if not roots or not any(ROOT.resolve().is_relative_to(root) for root in roots):
+            raise IntakeError("Motionwright worktree authority could not be verified")
+        return tuple(roots)
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise IntakeError("Motionwright worktree authority is unavailable") from exc
+
+
+def _refuse_other_motionwright_worktrees(resolved: Path) -> None:
+    """Do not create private receipts under ANY worktree of this repository."""
+    if any(resolved.is_relative_to(root) for root in _motionwright_worktree_roots()):
+        raise IntakeError("Private acceptance must be outside all Motionwright worktrees")
 
 
 def _private_manifest_snapshot(path: Path) -> tuple[object, tuple[tuple[int, int, int, int, int], str]]:
