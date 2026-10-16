@@ -105,6 +105,39 @@ def curate(source: Path, output: Path, sha: str, success: bool) -> dict:
                 assert decoded["absolute_first_onset_error_samples"]<=1024
                 assert decoded["stereo_channel_identity"]=="confirmed_scene_linked_440_660_and_740_980_hz"
             assert decoded["human_creative_approval"]=="REQUIRED"
+            if composition:
+                # Both original PNG frames AND frames independently decoded
+                # from this exact finished H264 MP4 must preserve editable
+                # Stage, procedural, and measured source semantics.
+                visual_path=source/"composition-native-inspection.json"
+                visual=read_json(visual_path)
+                original_parity=read_json(source/"sfx-visual-preflight.json")
+                assert visual["schema"]=="motionwright.composition-native-evidence/1"
+                assert visual["technical_sampling"]=="PASS"
+                assert visual["creative_approval"]=="required"
+                assert visual["source_sha"]==sha
+                assert visual["source_generation"]==prep["generation"]
+                assert visual["source_revision"]==run["visual_source_revision_before_original_sfx"]
+                assert visual["scene_order"]==prep["scene_ids"]
+                assert visual["frame_indices"]==[140,270,480]
+                assert visual["decoded_master"]["technical_sampling"]=="PASS"
+                assert visual["decoded_master"]["mp4_sha256"]==run["master_sha256"]
+                assert visual["decoded_master"]["frame_indices"]==[140,270,480]
+                assert original_parity["schema"]=="motionwright.sfx-visual-film-parity/1"
+                assert original_parity["frame_count"]==540
+                assert original_parity["scene_count"]==3
+                assert original_parity["sfx_cue_count"]==2
+                assert original_parity["native_render_dispatched"] is False
+                assert original_parity["visual_film_unchanged"] is True
+                assert original_parity["film_sha256"]==run["visual_film_sha256_after_original_sfx"]
+                assert original_parity["project_id"]==prep["project_id"]
+                assert original_parity["revision"]==prep["revision"]
+                assert original_parity["generation"]==prep["generation"]
+                assert digest(visual_path)==run["joint_native_pixel_evidence_sha256"]
+                assert digest(source/"editable-project.json")==visual["source_project_sha256"]
+                result["visual_original_native_png_and_decoded_h264"]="PASS"
+                result["visual_source_inspection_sha256"]=digest(visual_path)
+                result["visual_film_after_sfx_sha256"]=original_parity["film_sha256"]
             for name,max_bytes in FILES.items():
                 if composition and name=="semantic-sfx-master.wav":
                     max_bytes=4*1024*1024
@@ -131,6 +164,15 @@ def curate(source: Path, output: Path, sha: str, success: bool) -> dict:
             for name in FILES:
                 (output/name).unlink(missing_ok=True)
             result["files"]={}
+            # Even if an earlier visual probe had valid hashes, a later
+            # truncated source or failed AV acceptance MUST revoke every
+            # positive public claim for the entire job.
+            for name in (
+                "visual_original_native_png_and_decoded_h264",
+                "visual_source_inspection_sha256",
+                "visual_film_after_sfx_sha256",
+            ):
+                result.pop(name,None)
     (output/"public-evidence.json").write_text(
         json.dumps(result,sort_keys=True,indent=2)+"\n",encoding="utf8")
     return result

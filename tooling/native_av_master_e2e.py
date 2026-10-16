@@ -229,6 +229,10 @@ def main() -> None:
                                or len(seeded.get("scene_ids", [])) != 3):
             raise AssertionError("Native composition fixture is not an original source-bound three-scene project")
 
+        # The original visual composition's exact pre-audio project bytes
+        # remain the frame/pixel oracle, while native Film parity independently
+        # proves those visuals unchanged after SFX CAS authoring.
+        visual_seed = dict(seeded) if IS_SFX_COMPOSITION else None
         sfx_prepared = None
         if IS_SFX_AV:
             # Must be the SAME source project/revision that the native
@@ -692,9 +696,12 @@ def main() -> None:
             if IS_PROCEDURAL:
                 from procedural_native_evidence import inspect_procedural_frames
                 inspect_procedural_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
-            if IS_COMPOSITION:
+            if IS_COMPOSITION or IS_SFX_COMPOSITION:
                 from composition_native_evidence import inspect_composition_frames
-                inspect_composition_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
+                inspector_seed = visual_seed if IS_SFX_COMPOSITION else seeded
+                inspect_composition_frames(
+                    frames, EVIDENCE, inspector_seed, source_sha=GITHUB_SHA, provider_sha=PIN,
+                )
 
             if IS_SFX_AV:
                 if sfx_prepared is None:
@@ -776,9 +783,10 @@ def main() -> None:
             if IS_PROCEDURAL:
                 from procedural_native_evidence import inspect_procedural_mp4
                 inspect_procedural_mp4(master_path, EVIDENCE, seeded, ffmpeg)
-            if IS_COMPOSITION:
+            if IS_COMPOSITION or IS_SFX_COMPOSITION:
                 from composition_native_evidence import inspect_composition_mp4
-                inspect_composition_mp4(master_path, EVIDENCE, seeded, ffmpeg)
+                inspector_seed = visual_seed if IS_SFX_COMPOSITION else seeded
+                inspect_composition_mp4(master_path, EVIDENCE, inspector_seed, ffmpeg)
 
             write_private_json(
                 EVIDENCE / "result.json",
@@ -799,7 +807,7 @@ def main() -> None:
                     "artifact_manifest_sha256": manifest_digest,
                     "frame_count": len(frames),
                     "fixture": FIXTURE,
-                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or IS_COMPOSITION else "not_assessed",
+                    "creative_approval": "required" if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or COMPOSITION_SEED else "not_assessed",
                     "camera_native_pixel_evidence_sha256": (
                         digest(EVIDENCE / "camera-native-inspection.json") if IS_CAMERA else None
                     ),
@@ -814,7 +822,14 @@ def main() -> None:
                         if IS_PROCEDURAL else None
                     ),
                     "joint_native_pixel_evidence_sha256": (
-                        digest(EVIDENCE / "composition-native-inspection.json") if IS_COMPOSITION else None
+                        digest(EVIDENCE / "composition-native-inspection.json")
+                        if IS_COMPOSITION or IS_SFX_COMPOSITION else None
+                    ),
+                    "visual_source_revision_before_original_sfx": (
+                        visual_seed["revision"] if IS_SFX_COMPOSITION else None
+                    ),
+                    "visual_film_sha256_after_original_sfx": (
+                        visual["film_sha256"] if IS_SFX_COMPOSITION else None
                     ),
                     "audio_kind": (
                         "original_semantic_scene_bound_sfx_native_pcm_to_pinned_semwright_av_mux" if IS_SFX_AV

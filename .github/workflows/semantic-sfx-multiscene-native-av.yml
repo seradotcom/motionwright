@@ -115,7 +115,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             bubblewrap apparmor-profiles apparmor-utils \
-            melt ffmpeg libpipewire-0.3-dev pkg-config clang
+            melt ffmpeg python3-pil libpipewire-0.3-dev pkg-config clang
           mkdir -p verification/semantic-sfx-multiscene-native-av
           bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
             "$GITHUB_WORKSPACE/verification/semantic-sfx-multiscene-native-av/sandbox-profile.txt"
@@ -159,7 +159,7 @@ jobs:
           python3 - <<'PY'
           import hashlib,json,os
           from pathlib import Path
-          root=Path("verification/semantic-sfx-av-e2e")/os.environ["GITHUB_SHA"]
+          root=Path("verification/semantic-sfx-multiscene-av-e2e")/os.environ["GITHUB_SHA"]
           run=json.loads((root/"result.json").read_text())
           prep=json.loads((root/"sfx-prepared.json").read_text())
           proof=json.loads((root/"decoded-media-proof.json").read_text())
@@ -177,6 +177,16 @@ jobs:
           assert prep["revision"]==proof["revision"]
           assert proof["technical_h264_aac_mux"]=="PASS"
           assert proof["technical_source_pcm"]=="PASS"
+          visual=json.loads((root/"composition-native-inspection.json").read_text())
+          assert run["joint_native_pixel_evidence_sha256"]==hashlib.sha256(
+              (root/"composition-native-inspection.json").read_bytes()).hexdigest()
+          assert visual["schema"]=="motionwright.composition-native-evidence/1"
+          assert visual["decoded_master"]["mp4_sha256"]==run["master_sha256"]
+          assert visual["frame_indices"]==[140,270,480]
+          assert visual["decoded_master"]["frame_indices"]==[140,270,480]
+          assert visual["decoded_master"]["technical_sampling"]=="PASS"
+          assert visual["source_revision"]==run["visual_source_revision_before_original_sfx"]
+          assert proof["original_scene_count"]==3
           assert proof["max_absolute_onset_error_samples"]<=1024
           assert proof["expected_onset_samples"]==[9600,608000]
           assert proof["max_sample_difference_pcm16"]<=1

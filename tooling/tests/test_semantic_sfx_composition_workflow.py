@@ -48,6 +48,12 @@ class NativeSfxMultisceneContracts(unittest.TestCase):
                 self.assertIn(required,source)
         self.assertNotIn("ffmpeg -i",source)
         self.assertIn('"driver.mlt-video.av.mux"',source)
+        # The native visual source and the H264 decoded image must BOTH
+        # carry the original Stage, procedural and measured scene identities.
+        self.assertIn("inspect_composition_frames(",source)
+        self.assertIn("inspect_composition_mp4(",source)
+        self.assertIn("visual_source_revision_before_original_sfx",source)
+        self.assertIn("visual_film_sha256_after_original_sfx",source)
 
     def test_no_success_artifacts_accepted_without_true_540f_native_verification(self):
         source=MULTI.read_text(encoding="utf8")
@@ -59,8 +65,20 @@ class NativeSfxMultisceneContracts(unittest.TestCase):
             'assert proof["max_absolute_onset_error_samples"]<=1024',
             'assert proof["human_creative_approval"]=="REQUIRED"',
             'tooling/semantic_sfx_av_public_artifact.py',
+            'assert visual["decoded_master"]["mp4_sha256"]==run["master_sha256"]',
+            'assert visual["decoded_master"]["technical_sampling"]=="PASS"',
         ):
             self.assertIn(required,source)
+        # The new source and the independent check MUST use the same output
+        # namespace. A previous CI rendered a real MP4 but its verification
+        # looked for the old 60-frame evidence root and was rightly red.
+        assert_source='root=Path("verification/semantic-sfx-multiscene-av-e2e")/os.environ["GITHUB_SHA"]'
+        self.assertIn(assert_source,source)
+        self.assertNotIn('root=Path("verification/semantic-sfx-av-e2e")',source)
+        self.assertIn(
+            '--evidence-root "verification/semantic-sfx-multiscene-av-e2e/$GITHUB_SHA"',
+            source,
+        )
         self.assertNotIn("--job-status success",source)
         self.assertIn("--job-status \"$NATIVE_CI_JOB_STATUS\"",source)
         self.assertIn("if: always()",source)

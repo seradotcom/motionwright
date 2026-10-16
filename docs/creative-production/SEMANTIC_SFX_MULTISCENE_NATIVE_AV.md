@@ -44,12 +44,19 @@ AAC must show no stretched tone or residual sound in the middle scene.
 5. The same Semwright Native SDK/Broker Motion Canvas renderer produces the
    source-bound 540 native frames. The existing MLT Driver Host creates the
    original H.264/AAC MP4; no direct ffmpeg product renderer is added.
-6. CI-only independent FFprobe/FFmpeg readers verify the 540 decoded H.264
+6. The already-established editable three-scene visual inspector reads the
+   actual original 540 native PNG frames and a separate set of frames decoded
+   from the FINISHED H.264 MP4 at indices 140, 270 and 480. Both must preserve
+   the original ProductStage, procedural source geometry and measured-data
+   bar/glyph properties. The pre-SFX native Film SHA and post-SFX Film bytes
+   must match; the archived pre-SFX source is not a substitute for the
+   current owner's audio CAS generation/revision.
+7. CI-only independent FFprobe/FFmpeg readers verify the 540 decoded H.264
    frames, codec/geometry/audio clock, original 440/660 Hz and 740/980 Hz
    stereo channel identities, early silence, complete middle scene silence
    and post-cue release. Each actual AAC cue onset must be within one
    1,024-sample AAC access unit of its authored first PCM sample.
-7. Public media and a bounded exact-commit manifest are published only after
+8. Public media and a bounded exact-commit manifest are published only after
    all source/mux/decoder checks pass. Failed or uncertain native work produces
    a NOT_VERIFIED-only artifact, without private provider receipts, owner
    paths, job references or false creative approvals.
@@ -83,3 +90,32 @@ A CI PASS is a bounded technical fact for the exact source SHA, not approval
 of a creative product release. The v0.5 requirements status remains partial,
 and previous 60-frame or composition-only CI evidence must not be substituted
 for this new exact project revision.
+
+
+## First exact-SHA CI and independent video proof hardening
+
+Commit b68b74a rendered, mixed and completed its source-bound H.264/AAC
+acceptance, but the final CI assertion failed AFTER the native run: it
+looked for verification/semantic-sfx-av-e2e/<SHA>/result.json (the
+single-scene historical fixture) instead of the multiscene source output.
+This was a CI evidence-path defect, not a confirmed renderer/mixer error.
+The new exact-evidence path is regression-checked against the public
+artifact publisher's multiscene root.
+
+The improved independent gate additionally reuses the **existing**
+three-scene native visual pixel oracle, not a hand-authored replacement:
+frames 140, 270, and 480 must preserve the original first-party ProductStage,
+procedural geometry and measured label/bar, in BOTH Native SDK PNG source
+frames and frames independently decoded from the actual H.264 MP4.
+The original project bundle stays immutable at the pre-SFX revision; a
+separate byte-identical post-SFX Film parity proves that importing two
+WAVs did not alter any visual scene node or measured-data source.
+Public success requires matching stage, procedural and numeric pixel evidence,
+native Film digest, finished MP4 SHA, original stereo WAV SHA, exact PCM mix,
+48 kHz sample windows and the two decoded AAC onsets.
+
+No public media or positive visual/audio certificate may survive a later
+validation error. The existing fail-closed curator discards all artifacts and
+revokes partial visual success keys if any source/decoded-media test fails.
+These checks remain synthetic technical acceptance, not professional
+visual/audio approval.
