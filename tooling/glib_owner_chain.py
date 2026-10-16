@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Source-only dependency owner-chain guard for the open glib 0.18.5 advisory.
 
-This does not suppress, patch, ignore or mark RustSec warnings fixed.
+This admits only the exact audited FFI backport, never waives RustSec or
+claims that the compiled/installed binary has been independently verified.
 Cargo.lock includes dependencies of multiple targets, so its reverse graph
 is a conservative *structural* review boundary, not Linux reachability proof.
 """
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 import re
+from v01_glib_product_admission import ProductBackportError, admit_patched_glib
 from typing import Any
 
 SCHEMA = "motionwright.v01-glib-owner-chain/1"
@@ -117,11 +120,33 @@ def verify_glib_owner_chain(lock: dict[str, Any], glib_policy: dict) -> dict:
     _require(observed_tree == sorted(expected_tree),
              "glib_indirect_owner_chain_drifted")
 
-    # A source-substituted package with identical name/version must not
-    # silently inherit the reviewed crates.io owner graph.
+    # This exact, source-verified glib 0.18.5 backport is the only approved
+    # exception to a crates.io source within the reviewed GTK3 owner graph.
+    # This is NOT an advisory waiver: the installed product is still unproven.
+    backport = glib_policy.get("reviewed_local_backport")
+    _require(backport == {
+        "mode": "local-path-exact-two-line-upstream-backport",
+        "vendor_path": "vendor/glib-0.18.5",
+        "upstream_archive_sha256":
+            "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5",
+    }, "glib_reviewed_backport_policy_invalid")
+    try:
+        backport_receipt = admit_patched_glib(Path(__file__).resolve().parents[1])
+    except (ProductBackportError, OSError, ValueError) as exc:
+        raise OwnerChainError("glib_backport_custody_unverified") from exc
+    _require(backport_receipt["local_cargo_lock_selected"] is True
+             and backport_receipt["all_other_files_identical_to_upstream"] is True,
+             "glib_backport_source_not_verified")
+
+    # Every other reverse ancestor must retain exactly its original locked
+    # crates.io source and checksum. A hostile git/path substitution fails.
     for row in lock["package"]:
         key = _key(row)
         if key not in ancestors or key == ("motionwright-desktop", "0.1.0"):
+            continue
+        if key == source:
+            _require(row.get("source") is None and "checksum" not in row,
+                     "glib_ancestor_source_changed")
             continue
         _require(row.get("source") ==
                  "registry+https://github.com/rust-lang/crates.io-index",
@@ -164,5 +189,7 @@ def verify_glib_owner_chain(lock: dict[str, Any], glib_policy: dict) -> dict:
         "linux_target_reachability_proven": False,
         "affected_iterator_api_unreachable_proven": False,
         "glib_vulnerability_fixed": False,
+        "reviewed_backport_source_verified": True,
+        "actual_compiled_linux_glib_verified": False,
         "release_authorized": False,
     }

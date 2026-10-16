@@ -17,6 +17,9 @@ on:
       - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
       - "tooling/glib_owner_chain.py"
+      - "tooling/v01_glib_product_admission.py"
+      - "tooling/upstream-crates/**"
+      - "vendor/glib-0.18.5/**"
       - "tooling/tests/**"
       - "docs/security/**"
       - "SOURCE_LOCK.json"
@@ -43,6 +46,9 @@ on:
       - "tooling/package_receipt.py"
       - "tooling/security_advisory_policy.py"
       - "tooling/glib_owner_chain.py"
+      - "tooling/v01_glib_product_admission.py"
+      - "tooling/upstream-crates/**"
+      - "vendor/glib-0.18.5/**"
       - "tooling/tests/**"
       - "docs/security/**"
       - "SOURCE_LOCK.json"
@@ -73,6 +79,11 @@ jobs:
           python-version: "3.13"
       - name: Public source, WebView and credential policy
         run: python3 tooling/source_policy.py
+      - name: Verify exact crates.io glib two-line FFI backport chosen by Cargo
+        run: |
+          mkdir -p ci-evidence
+          python3 tooling/v01_glib_product_admission.py --output ci-evidence/v01-glib-patched-desktop-source.json
+          python3 -m json.tool ci-evidence/v01-glib-patched-desktop-source.json >/dev/null
       - name: Security policy regressions
         run: python3 -m unittest discover -s tooling/tests -p 'test_*.py'
       - name: Exact-source delivery manifest
