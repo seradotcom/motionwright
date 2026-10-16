@@ -371,3 +371,15 @@ played-media precondition, current revision, master WAV+MP4 SHA, exact cue
 identity, printable text budget, canonical AddReview persistence and stale
 native preview invalidation. This fills the handoff from listening review to
 a real actionable correction without introducing another approval ledger.
+
+
+## Full Film clock requirement before recording human SFX issues
+
+The manual listening issue path also requires the entire native Film clock to
+match the complete authored scene sequence, not merely the SFX cue's own end
+time. It reuses the existing originalSfxAvReadiness 30-fps contiguous timing
+preflight and rejects shortened AV receipts even when their SFX tails still
+fit. This prevents a partial/forged 60-frame master from creating an
+apparently valid finding about an original 180-frame production revision.
+The exact regression is nativeSfxAudition.test.ts and protects the
+AddReview handoff without introducing a second timing oracle.

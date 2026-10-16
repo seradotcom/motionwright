@@ -3,7 +3,9 @@
  */
 import type { Change, MltAvMasterEvidence, Project, RationalTime } from "./types";
 import { validateSfxProject } from "./semanticSfx";
-import { currentOriginalSfxSourceProof } from "./sfxNativeDelivery";
+import {
+  currentOriginalSfxSourceProof, originalSfxAvReadiness,
+} from "./sfxNativeDelivery";
 
 export interface NativeSfxAuditionCue {
   cueId: string;
@@ -40,6 +42,13 @@ export function nativeSfxAuditionCues(
     return [];
   if (receipt.frame_rate.num!==30 || receipt.frame_rate.den!==1
       || proof.master_frames!==receipt.frame_count) return [];
+  // A technically consistent SFX schedule is not sufficient if the AV
+  // receipt shortens the Film itself. Reuse the same complete authored 30fps
+  // scene clock as native SFX preparation; never silently drop later scenes.
+  if (!originalSfxAvReadiness(
+    project,project.deliverables.find(p=>p.id===profileId)??null,
+    receipt.frame_count,true,true,false,
+  ).ready) return [];
   try {
     const placements=validateSfxProject(project);
     const cues=new Map((project.audio.sfx_cues??[]).map(cue=>[cue.id,cue]));
