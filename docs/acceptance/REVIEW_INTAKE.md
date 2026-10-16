@@ -71,8 +71,11 @@ Windows reparse point is refused at any component *inside the evidence root*,
 including when a junction targets another case within the same evidence root.
 Windows colon streams and drive-relative syntax are not portable evidence names.
 The same conservative reparse check applies to the manifest file itself on
-Windows Python 3.11 as well as newer versions. Root directories must be real,
+Windows Python 3.11 as well as newer versions. Root directories and their ancestors must be real,
 not linked aliases; choose a direct private directory outside the public checkout.
+This applies to the private session manifest parent on `init` and `verify` as
+well as the evidence root on `fingerprint`. An upstream junction cannot be
+made safe by placing an ordinary directory beneath it.
 
 The manifest is opened through a checked file descriptor with a bounded 8 MiB
 read, not by a path-only read_bytes(). Its physical identity, modification

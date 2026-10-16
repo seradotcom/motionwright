@@ -47,7 +47,8 @@ def _strict_json_object(pairs: list[tuple[str, object]]) -> dict:
 
 
 def outside_public_checkout(path: Path, *, purpose: str) -> Path:
-    """Resolve an evidence location without admitting files inside source."""
+    """Reject linked ancestors and evidence locations within public source."""
+    _reject_private_path_chain(path, kind="Private acceptance")
     resolved = path.resolve(strict=True)
     if resolved.is_relative_to(ROOT.resolve()):
         raise IntakeError(f"Private acceptance {purpose} must reside outside the public checkout")
@@ -71,6 +72,22 @@ def _reject_indirect_path_component(path: Path, *, kind: str) -> None:
             raise IntakeError(f"{kind} path traverses a symlink or reparse point")
     except OSError as exc:
         raise IntakeError(f"{kind} path component is unavailable") from exc
+
+
+def _reject_private_path_chain(path: Path, *, kind: str) -> None:
+    """Refuse reparse ancestors even when only the final path is a real directory.
+
+    Checking just the evidence root misses C:/private/junction/real-root
+    where the middle directory is a junction pointing elsewhere.
+    Deliberately refuse dot-dot path components before resolution.
+    """
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        if part == "..":
+            raise IntakeError(f"{kind} paths must not contain parent components")
+        current = current / part
+        _reject_indirect_path_component(current, kind=kind)
 
 
 def _private_manifest_snapshot(path: Path) -> tuple[object, tuple[tuple[int, int, int, int, int], str]]:
@@ -441,9 +458,9 @@ def main() -> int:
             # public repository. Refuse replacing an existing session.
             # Resolve the *parent* to guard public-checkout paths hidden by
             # symlink aliases; the final file must not exist yet.
-            output = args.output.parent.resolve(strict=True) / args.output.name
-            if output.is_relative_to(ROOT.resolve()):
-                raise IntakeError("Review intake must be created outside the public source checkout")
+            output = outside_public_checkout(args.output.parent, purpose="manifest") / args.output.name
+            if ":" in args.output.name:
+                raise IntakeError("Private acceptance manifest name must not contain drive or stream syntax")
             data = create_session(
                 source_sha=checked_intake_source(args.source_sha),
                 executed_by=args.executed_by,

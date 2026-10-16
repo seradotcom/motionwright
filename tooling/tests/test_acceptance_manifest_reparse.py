@@ -143,6 +143,37 @@ class ManifestAndAliasTests(unittest.TestCase):
             ["cmd", "/c", "rmdir", str(alias)], capture_output=True, text=True))
         self.assertTrue(real.exists())
 
+    @unittest.skipUnless(sys.platform == "win32", "Real NTFS junction is Windows-only")
+    def test_real_junction_ancestor_of_private_root_or_manifest_is_refused(self):
+        alias = self.root.parent / (self.root.name + "-alias-parent")
+        proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(self.root)],
+                              capture_output=True, text=True)
+        if proc.returncode:
+            self.skipTest("Creating Windows directory junction is restricted")
+        self.addCleanup(lambda: subprocess.run(
+            ["cmd", "/c", "rmdir", str(alias)], capture_output=True, text=True))
+        # The final ACC-001 directory and session.json are ordinary files:
+        # the prior implementation checked those but missed their linked ancestor.
+        self.assertTrue((alias / "ACC-001" / "frame.bin").is_file())
+        with self.assertRaisesRegex(mod.IntakeError, "symlink or reparse"):
+            mod.fingerprint(alias / "ACC-001", "frame.bin")
+        with self.assertRaisesRegex(mod.IntakeError, "symlink or reparse"):
+            mod.load_private_manifest(alias / "session.json")
+        self.assertTrue(self.evidence.exists())
+
+    def test_private_root_parent_reparse_attribute_is_rejected(self):
+        parent = self.root.parent
+        actual_lstat = Path.lstat
+        def modified(path, *args, **kwargs):
+            info = actual_lstat(path, *args, **kwargs)
+            if Path(path) == parent:
+                return SimpleNamespace(st_mode=info.st_mode,
+                    st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            return info
+        with patch.object(mod.Path, "lstat", autospec=True, side_effect=modified):
+            with self.assertRaisesRegex(mod.IntakeError, "symlink or reparse"):
+                mod.fingerprint(self.root, "ACC-001/frame.bin")
+
     def test_manifest_same_bytes_inode_replacement_after_evidence_is_refused(self):
         self._realistic_pass()
         actual_fp = mod.fingerprint
