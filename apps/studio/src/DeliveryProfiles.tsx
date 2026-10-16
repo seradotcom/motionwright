@@ -319,15 +319,22 @@ export default function DeliveryProfiles({
     && verifiedWavIntent && multiVoiceAligned && multiSourceToken
     && currentMultiSource && currentMultiSource.total_frames === multiSourceFrames
     && masterProfileSupported);
-  const activeExportToken = currentMotion?.segments.length && currentMotion.segments.length > 1
+  // A captioned master may be inspected from a verified SHA-bound owner
+  // token, but its decoded production glyphs were NOT attested by the
+  // synthetic CI fixture. Never promote a review token to export authority.
+  const activeReviewToken = currentMotion?.segments.length && currentMotion.segments.length > 1
     ? currentMultiMaster?.revision === project.revision
       ? currentMultiMaster.export_token : null
     : currentAv?.revision === project.revision ? currentAv.export_token : null;
+  const activeExportToken = currentMotion?.segments.length && currentMotion.segments.length > 1
+    && (currentMultiMaster?.review_only
+      || currentMultiMaster?.evidence_scope === "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved")
+    ? null : activeReviewToken;
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
   const reviewAvailable = Boolean(desktopMode && selected && !dirty
-    && Boolean(activeExportToken));
+    && Boolean(activeReviewToken));
   const exportReady = Boolean(desktopMode && selected && !dirty
     && Boolean(activeExportToken)
     && masterDeliveryPath.trim().toLowerCase().endsWith(".mp4"));
@@ -510,9 +517,12 @@ export default function DeliveryProfiles({
         project, selected.id, selectedVoice.id, multiSourceToken,
       );
       setMultiMaster(verified);
-      setMessage("Semwright native semantic MLT produced a source-bound " + verified.frame_count
-        + "-frame H.264/AAC MP4 using a measured 48 kHz stereo voice take. "
-        + "Technical integrity is verified; human sound and creative approval remain separate.");
+      setMessage(verified.review_only
+        ? "Native source-bound H.264/AAC captioned MP4 is available for read-only owner review. "
+          + "Export is disabled: device-local decoded glyph pixels and human legibility remain unverified."
+        : "Semwright native semantic MLT produced a source-bound " + verified.frame_count
+          + "-frame H.264/AAC MP4 using a measured 48 kHz stereo voice take. "
+          + "Technical integrity is verified; human sound and creative approval remain separate.");
     });
   };
 
@@ -1097,7 +1107,8 @@ export default function DeliveryProfiles({
                     onClick={assembleMultiMaster}>
                     <Play size={14} />
                     {busy === "multi-master" ? "Assembling native MLT + AV…"
-                      : "Assemble multi-segment MP4"}
+                      : selected?.burn_in_captions ? "Assemble captioned MP4 for review"
+                        : "Assemble multi-segment MP4"}
                   </button>
                 )}
               </div>
@@ -1154,6 +1165,11 @@ export default function DeliveryProfiles({
                     {currentMultiMaster.master_sha256.slice(0, 16)}… SHA-256
                   </strong></div>
                   <div><span>Format</span><strong>H.264 · AAC · 48 kHz stereo</strong></div>
+                  <div><span>Delivery</span><strong>{
+                    currentMultiMaster.review_only
+                      ? "REVIEW ONLY · CAPTION PIXELS NOT VERIFIED LOCALLY"
+                      : "Verified source · export eligible"
+                  }</strong></div>
                   <div><span>MLT resource cleanup</span><strong>
                     {currentMultiMaster.provider_project_cleanup ===
                       "not_requested_requires_foreground_broker_consent"
@@ -1174,15 +1190,26 @@ export default function DeliveryProfiles({
                   {showNativeAvReview && reviewAvailable ? "Close native review" : "Review native MP4"}
                 </button>
               </div>
-              {showNativeAvReview && reviewAvailable && activeExportToken && (
+              {showNativeAvReview && reviewAvailable && activeReviewToken && (
                 <NativeAvReview
-                  key={project.id + ":" + project.revision + ":" + activeExportToken}
+                  key={project.id + ":" + project.revision + ":" + activeReviewToken}
                   project={project}
-                  exportToken={activeExportToken}
+                  exportToken={activeReviewToken}
+                  reviewOnly={Boolean(currentMultiMaster?.review_only)}
                 />
               )}
+              {currentMultiMaster?.review_only && currentMultiMaster.revision === project.revision && (
+                <div className="delivery-truth-note warning" role="status">
+                  <CircleDashed size={14} /> This captioned H.264/AAC master is review-only.
+                  Its native source pixels were checked, but its installed master has
+                  not passed independent decoded glyph verification. Local export
+                  remains blocked, even with a DeliverLocal grant. Small media
+                  can be reviewed under the owner SHA-256 token; this does not
+                  certify real speech or accessible reading.
+                </div>
+              )}
               <div className="delivery-truth-note">
-                <CircleDashed size={14} /> Native master playback is an explicit, SHA-256-verified local review action limited to 16 MiB. Larger MP4 files must be exported for external playback. Decoder compatibility, timeline synchronization and human mix approval remain separate.
+                <CircleDashed size={14} /> Native master playback is an explicit, SHA-256-verified local review action limited to 16 MiB. For ordinary approved masters, larger MP4 files must be exported for external playback. Decoder compatibility, timeline synchronization and human mix approval remain separate.
               </div>
             </section>
 

@@ -15,6 +15,7 @@ type PlaybackState =
 export default function NativeAvReview({
   project,
   exportToken,
+  reviewOnly = false,
   seekTimeSeconds,
   onMediaTime,
   onMediaPlay,
@@ -23,6 +24,8 @@ export default function NativeAvReview({
 }: {
   project: Project;
   exportToken: string;
+  /** Owner source SHA passed, but no installed decoded caption glyph proof. */
+  reviewOnly?: boolean;
   /** Optional exact Film output-relative time when embedded in Program. */
   seekTimeSeconds?: number;
   onMediaTime?: (seconds: number) => void;
@@ -110,7 +113,7 @@ export default function NativeAvReview({
       role="region" aria-label="Native master playback review">
       <div className="native-av-review-header">
         <strong>Native H.264/AAC review</strong>
-        <span>Verified current r{project.revision} · at most 16 MiB</span>
+        <span>{reviewOnly ? "Owner-source SHA · review only · no export" : "Verified current r" + project.revision} · at most 16 MiB</span>
       </div>
       {playback.kind === "ready" ? (
         <video
@@ -149,7 +152,9 @@ export default function NativeAvReview({
             setPlayback({
               kind: "unavailable",
               message:
-                "This WebView could not decode the verified MP4. Use Export verified MP4 to review the file in a compatible local player.",
+                reviewOnly
+                  ? "The review-only captioned MP4 cannot be decoded by this WebView. Export remains blocked until original master glyph pixels are verified on this device."
+                  : "This WebView could not decode the verified MP4. Use Export verified MP4 to review the file in a compatible local player.",
             });
           }}
         />
@@ -170,6 +175,7 @@ export default function NativeAvReview({
       )}
       <div className="native-av-review-footnote">
         {metadata ?? "Source-bound MP4; playback availability depends on this WebView decoder."}
+        {reviewOnly && <span> · Installed decoded caption glyph pixels NOT VERIFIED · publication blocked</span>}
         <span>{embedded
           ? "Native media clock follows source-scoped editorial seeks"
           : "Independent media review · not timeline-synchronized"}</span>

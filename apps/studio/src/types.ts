@@ -535,9 +535,14 @@ export interface NativeMultisegmentAvMasterEvidence {
   audio_sample_rate: 48000;
   audio_channels: 2;
   master_sha256: string;
+  /** Opaque session owner media token: read-only review if review_only=true. */
   export_token: string;
+  /** True means only a real local native master review, never deliver/publish. */
+  review_only: boolean;
   provider_project_cleanup: "not_requested_requires_foreground_broker_consent";
-  evidence_scope: "native-multisegment-av-verified-technical-output-not-human-approved";
+  evidence_scope:
+    | "native-multisegment-av-verified-technical-output-not-human-approved"
+    | "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved";
 }
 
 export interface MltAvMasterEvidence {
