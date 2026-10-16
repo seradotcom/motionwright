@@ -23,6 +23,9 @@ pub struct ProductionDesign {
     pub brand_exceptions: Vec<BrandException>,
     #[serde(default)]
     pub project_decisions: Vec<CreativeDecision>,
+    /// User-recorded source protection, not a signed identity/right claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narration_take_lock: Option<NarrationTakeLock>,
     /// Generic rights-attested original UI stages, never third-party devices.
     #[serde(default)]
     pub stages: Vec<ProductStageInstance>,
@@ -412,6 +415,9 @@ impl ProductionDesign {
         audio: &AudioState,
     ) -> Result<()> {
         crate::creative_revisions::validate_creative_patch_records(&self.patches)?;
+        if let Some(lock) = &self.narration_take_lock {
+            lock.validate(audio, assets)?;
+        }
         validate_brand_governance(
             &self.brand_profile,
             &self.brand_exceptions,

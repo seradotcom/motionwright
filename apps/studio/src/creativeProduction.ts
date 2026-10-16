@@ -49,7 +49,13 @@ export interface NativeCapsule {
   /** Absent on older capsules; empty reports serialize without changing source. */
   property_fidelity?: NativePropertyFidelity[];
 }
-export interface ProductionDesign { plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
+export interface NarrationTakeLock {
+  voice_track_id:string;voice_asset_id:string;voice_asset_sha256:string;source_content_sha256:string;
+  source_project_revision:number;recorded_reviewer:string;recorded_reason:string;
+  reviewer_identity_authenticated:false;media_bytes_independently_decoded:false;
+  artistic_quality_approved:false;publication_approved:false;
+}
+export interface ProductionDesign { narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }

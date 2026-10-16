@@ -16,6 +16,8 @@ mod integrations;
 mod measured_data;
 mod music_clock;
 mod music_conform;
+mod narration_impact;
+mod narration_lock;
 mod otio_cut_review;
 mod paid_generation;
 mod procedural;
@@ -42,6 +44,8 @@ pub use integrations::*;
 pub use measured_data::*;
 pub use music_clock::*;
 pub use music_conform::*;
+pub use narration_impact::*;
+pub use narration_lock::*;
 pub use otio_cut_review::*;
 pub use paid_generation::*;
 pub use procedural::*;
@@ -680,6 +684,16 @@ impl Project {
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+        if self
+            .production_design
+            .narration_take_lock
+            .as_ref()
+            .is_some_and(|lock| lock.source_project_revision > self.revision)
+        {
+            return Err(DomainError::Invalid(
+                "Recorded narration source references a future project revision".into(),
+            ));
+        }
         self.production_design.validate_capture_sources(self)?;
         self.production_design
             .validate_camera_reframes(&self.scenes)?;
@@ -1057,7 +1071,86 @@ impl Project {
         if self.schema_version != PROJECT_SCHEMA_VERSION {
             return Err(DomainError::Invalid("unsupported project schema".into()));
         }
+        // A complete branch checkout/merge could restore unprotected audio.
+        // No owner or agent may bypass recorded voice source by switching an
+        // older branch without first explicitly releasing the original take.
+        if self.production_design.narration_take_lock.is_some()
+            && matches!(
+                change,
+                Change::CheckoutBranch { .. }
+                    | Change::MergeBranch { .. }
+                    | Change::ImportMeasuredVoice { .. }
+                    | Change::AddVoiceTrack { .. }
+                    | Change::SetActiveVoiceTrack { .. }
+                    | Change::AddTranscriptSegment { .. }
+                    | Change::UpsertTranscriptSegment { .. }
+                    | Change::RemoveTranscriptSegment { .. }
+                    | Change::AddAudioCue { .. }
+                    | Change::UpsertAudioCue { .. }
+                    | Change::RemoveAudioCue { .. }
+            )
+        {
+            return Err(DomainError::Locked(
+                "Recorded narration source: release the exact original take before modifying voice, words, cues or checking out branches".into()
+            ));
+        }
         match change {
+            Change::RecordNarrationTake {
+                expected_source_sha256,
+                expected_project_revision,
+                reviewer,
+                reason,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                if self.production_design.narration_take_lock.is_some()
+                    || *expected_project_revision != self.revision
+                {
+                    return Err(DomainError::Invalid(
+                        "Narration source is already recorded or its project revision changed"
+                            .into(),
+                    ));
+                }
+                let lock = NarrationTakeLock::record(
+                    &self.audio,
+                    &self.assets,
+                    self.revision,
+                    expected_source_sha256,
+                    reviewer,
+                    reason,
+                )?;
+                self.production_design.narration_take_lock = Some(lock);
+            }
+            Change::ReleaseNarrationTake {
+                expected_source_sha256,
+                reviewer,
+                reason,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if !valid_narration_sha(expected_source_sha256)
+                    || reviewer.trim().is_empty()
+                    || reviewer.len() > 200
+                    || reviewer.chars().any(char::is_control)
+                    || reason.trim().is_empty()
+                    || reason.len() > 2000
+                    || reason.chars().any(|ch| ch.is_control() && ch != '\n')
+                {
+                    return Err(DomainError::Invalid(
+                        "Source release requires exact SHA-256, reviewer and recorded reason"
+                            .into(),
+                    ));
+                }
+                let saved = self
+                    .production_design
+                    .narration_take_lock
+                    .as_ref()
+                    .ok_or_else(|| DomainError::NotFound("no recorded narration source".into()))?;
+                if saved.source_content_sha256 != *expected_source_sha256 {
+                    return Err(DomainError::Invalid(
+                        "Cannot release a different narration source digest".into(),
+                    ));
+                }
+                self.production_design.narration_take_lock = None;
+            }
             Change::UndoCreativePatch { patch_id } => self.undo_creative_patch(*patch_id)?,
             Change::ApplyBrandCampaign { rollout } => self.apply_brand_campaign(rollout)?,
             Change::UpsertProductHero {
@@ -2515,6 +2608,17 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    RecordNarrationTake {
+        expected_source_sha256: String,
+        expected_project_revision: u64,
+        reviewer: String,
+        reason: String,
+    },
+    ReleaseNarrationTake {
+        expected_source_sha256: String,
+        reviewer: String,
+        reason: String,
+    },
     UndoCreativePatch {
         patch_id: Uuid,
     },

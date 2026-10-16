@@ -1,0 +1,28 @@
+/* Narration source review: concise evidence-first section in Audio, not a new editor. */
+.audio-narration-source-review {
+  border-block:1px solid var(--border-soft);margin:18px 0;padding:12px 0;
+  color:var(--text);min-width:0;
+}
+.audio-narration-source-review summary {cursor:pointer;display:flex;align-items:center;gap:9px;
+  font-weight:650;font-size:12px;line-height:1.45;}
+.audio-narration-source-review summary svg {color:var(--accent);flex-shrink:0;}
+.audio-narration-source-review p {font-size:11px;line-height:1.55;max-width:85ch;}
+.audio-narration-source-review > .audio-row-actions {display:flex;gap:8px;flex-wrap:wrap;margin:14px 0;}
+.audio-narration-source-review .audio-row-actions button {font-size:11px;}
+.audio-narration-source-evidence,.audio-narration-source-impact {
+  border-top:1px solid var(--border-soft);margin-top:13px;padding:13px 0;
+  display:grid;gap:8px;min-width:0;
+}
+.audio-narration-source-evidence p,.audio-narration-source-impact p {margin:0;}
+.audio-narration-source-evidence p.mono,.audio-narration-source-impact p.mono{
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere;}
+.audio-narration-source-evidence label.production-field {display:grid;gap:5px;max-width:600px;}
+.audio-narration-source-evidence label textarea {width:100%;resize:vertical;}
+.audio-narration-source-review .production-check {display:flex;gap:9px;align-items:flex-start;
+  font-size:11px;max-width:85ch;line-height:1.55;}
+.audio-narration-source-review .production-check input {flex-shrink:0;margin-top:3px;accent-color:var(--accent);}
+.audio-narration-source-impact ul {margin:2px 0 5px;padding:0;list-style:none;
+  font-family:var(--font-mono);font-size:10px;font-variant-numeric:tabular-nums;}
+.audio-narration-source-impact ul li {padding:5px 0;border-bottom:1px solid var(--border-soft);
+  color:var(--muted);overflow-wrap:anywhere;}
+@media(max-width:720px){.audio-narration-source-review>.audio-row-actions{display:grid;align-items:start;}}

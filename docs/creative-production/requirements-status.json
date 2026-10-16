@@ -651,12 +651,26 @@
     },
     {
       "id": "MW05-E08-02",
-      "implementation": "inherited_not_reassessed",
-      "implemented_scope": "Existing voice takes, cues and locks retained",
-      "remaining_scope": "Narration replacement impact workflow is not extended here",
+      "implementation": "partial",
+      "implemented_scope": "Port of existing PR #94/#95 source code to canonical project/SDK: recorded active measured voice and exact source SHA-256/transcript/cue content fingerprint; explicit owner-declared record/release through the existing StudioService SQLite CAS and Semwright Native SDK. Content lock refuses source word/voice/cue changes and branch checkout/merge; other mix editing remains possible. Read-only source-bound narration replacement and conservative whole-film caption/cut/B-roll dependency preview on real project revisions; no automatic media mutation.",
+      "remaining_scope": "Signatures and authenticated speaker identity/rights, verified recorded audio mastering, real ASR alignment, automated narrator replacement, timeline/caption/B-roll recomposition, sample-accurate mixed-master QC, human creative approval and 60 independent acceptance scenarios remain NOT_IMPLEMENTED/NOT_RUN. Manual source decision is not an approval to publish.",
       "source_paths": [
-        "crates/domain/src/creative.rs",
-        "apps/studio/src/AudioWorkspace.tsx"
+        "crates/domain/src/narration_lock.rs",
+        "crates/domain/src/narration_impact.rs",
+        "crates/domain/tests/narration_take_lock.rs",
+        "crates/domain/tests/narration_impact.rs",
+        "crates/service/tests/approved_narration_cas.rs",
+        "crates/native/src/narration_tests.rs",
+        "apps/desktop/src-tauri/src/narration_native.rs",
+        "apps/studio/src/NarrationTakeReview.tsx",
+        "apps/studio/src/narrationReviewApi.ts",
+        "apps/studio/src/narrationReviewTypes.ts",
+        "apps/studio/src/narration-review.css",
+        "apps/studio/src/audioNarrationProtectedMarkup.test.ts",
+        "apps/studio/src/narrationTakeApprovalBrowser.test.ts",
+        ".github/workflows/v05-narration-source.yml",
+        "docs/creative-production/V05_NARRATION_SOURCE_REVIEW.md",
+        "apps/studio/src/narrationReviewApi.test.ts"
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED"
     },
