@@ -190,6 +190,19 @@ fn verify_exact_native_mux(response: &Value, expected: &MuxExpected<'_>) -> Nati
     Ok(())
 }
 
+// The native coordinator must independently reject an SFX-bearing project
+// through the old voice-only interface, even if a future WebView accidentally
+// bypasses the desktop's source-only guard.
+fn refuse_unmixed_source_sfx(project: &Project) -> NativeResult<()> {
+    if !project.audio.sfx_cues.is_empty() {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "Native multisegment measured-voice master cannot silently omit original authored SFX",
+        ));
+    }
+    Ok(())
+}
+
 impl ProductionCoordinator {
     /// Finalize ONLY the existing verified no-audio MLT semantic cut against
     /// a project-selected measured voice WAV. This never assembles/shadows
@@ -229,6 +242,7 @@ impl ProductionCoordinator {
                 "Native multisegment AV project or Broker owner root is stale",
             ));
         }
+        refuse_unmixed_source_sfx(&project)?;
         let checked = preflight_multi_segment_mlt(
             &project,
             deliverable_id,
@@ -443,6 +457,29 @@ impl ProductionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn voice_only_native_multisegment_cannot_silently_drop_original_sfx() {
+        use motionwright_domain::{SFX_CUE_SCHEMA, SemanticSfxCue, SfxAnchor, SfxEvent};
+        let mut source = Project::new("Owned audio").unwrap();
+        assert!(refuse_unmixed_source_sfx(&source).is_ok());
+        source.audio.sfx_cues.push(SemanticSfxCue {
+            schema: SFX_CUE_SCHEMA.into(),
+            id: Uuid::new_v4(),
+            scene_id: Uuid::new_v4(),
+            event: SfxEvent::UiFocus,
+            anchor: SfxAnchor::SceneStart,
+            offset_frames: 0,
+            source_asset_id: Uuid::new_v4(),
+            source_sha256: "a".repeat(64),
+            source_frames: 24,
+            gain_milli_db: -12_000,
+            attack_frames: 3,
+            release_frames: 6,
+            original_source_attestation: "Original owner WAV".into(),
+        });
+        assert!(refuse_unmixed_source_sfx(&source).is_err());
+    }
+
     #[test]
     fn closed_mux_verifier_refuses_wrong_output_audio_or_frame_count() {
         let mut r = json!({

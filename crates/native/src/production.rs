@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
+mod mlt_multisegment_sfx;
 mod mlt_timeline;
 #[cfg(test)]
 mod path_boundary_tests;
@@ -37,6 +38,9 @@ mod recovery;
 mod semantic_sfx_av;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
+pub use mlt_multisegment_sfx::{
+    MltMultisegmentOriginalSfxReadiness, preflight_multisegment_original_sfx_clock,
+};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
 pub use semantic_sfx_av::{
