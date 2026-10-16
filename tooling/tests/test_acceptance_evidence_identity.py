@@ -93,9 +93,16 @@ class EvidenceIdentityTests(unittest.TestCase):
     def test_missing_file_identity_fails_closed(self):
         real_stat = Path.stat
         original = self.file.stat()
+        # validated_path returns a canonical path. Hosted Windows temp roots
+        # may be aliases, so target that canonical path instead of the fixture
+        # spelling, which is not guaranteed to be identical on a CI runner.
+        canonical = self.file.resolve(strict=True)
+        forged_calls = 0
         def forged_stat(path, *args, **kwargs):
+            nonlocal forged_calls
             actual = real_stat(path, *args, **kwargs)
-            if Path(path) == self.file:
+            if Path(path) == canonical:
+                forged_calls += 1
                 return SimpleNamespace(st_dev=actual.st_dev, st_ino=0,
                     st_size=actual.st_size, st_mtime_ns=actual.st_mtime_ns,
                     st_nlink=actual.st_nlink, st_mode=actual.st_mode)
@@ -104,6 +111,7 @@ class EvidenceIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(mod.IntakeError, "single-linked"):
                 mod.fingerprint(self.root, "ACC-001/capture.bin")
         self.assertGreater(original.st_ino, 0)
+        self.assertGreater(forged_calls, 0, "Canonical evidence stat mock must actually be exercised")
 
     def test_empty_file_not_evidence(self):
         self.file.write_bytes(b"")
@@ -146,14 +154,18 @@ class EvidenceIdentityTests(unittest.TestCase):
     def test_path_replacement_after_hash_fails_closed(self):
         actual_stat = Path.stat
         actual_fstat = os.fstat
+        canonical = self.file.resolve(strict=True)
         opened_checks = 0
+        forged_calls = 0
         def count_fstat(fd):
             nonlocal opened_checks
             opened_checks += 1
             return actual_fstat(fd)
         def forged_stat(path, *args, **kwargs):
+            nonlocal forged_calls
             st = actual_stat(path, *args, **kwargs)
-            if Path(path) == self.file and opened_checks >= 2:
+            if Path(path) == canonical and opened_checks >= 2:
+                forged_calls += 1
                 return SimpleNamespace(st_dev=st.st_dev, st_ino=st.st_ino + 1,
                     st_size=st.st_size, st_mtime_ns=st.st_mtime_ns,
                     st_nlink=st.st_nlink, st_mode=st.st_mode)
@@ -163,6 +175,7 @@ class EvidenceIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(mod.IntakeError, "changed after hashing"):
                 mod.fingerprint(self.root, "ACC-001/capture.bin")
         self.assertEqual(opened_checks, 2)
+        self.assertGreater(forged_calls, 0, "Post-read identity mock must actually run")
 
     def test_os_error_becomes_safe_intake_failure(self):
         with patch.object(mod.os, "open", side_effect=PermissionError("private path never publish")):
