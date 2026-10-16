@@ -1,7 +1,9 @@
 import { describe,expect,it } from "vitest";
 import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
-import { validateSemanticSfx,validateSfxProject,SFX_CUE_SCHEMA } from "./semanticSfx";
+import {
+  previewSemanticSfxEdit,validateSemanticSfx,validateSfxProject,SFX_CUE_SCHEMA,
+} from "./semanticSfx";
 import type { SemanticSfxCue } from "./semanticSfx";
 import type { Project } from "./types";
 
@@ -92,6 +94,45 @@ describe("source-bound semantic SFX choreography at 30 fps / 48 kHz",()=>{
     expect(p).toEqual(original);
     p.audio.sfx_cues!.push(p.audio.sfx_cues![0]);
     expect(()=>validateSfxProject(p)).toThrow(/Duplicate/);
+  });
+  it("updates an original SFX in place, preserving identity, source and review anchors",async()=>{
+    let p=ready();
+    p=await applyChange(p,{type:"upsert_semantic_sfx",cue:cue()});
+    const original=structuredClone(p);
+    const edited={...cue(),offset_frames:9,gain_milli_db:-18000,
+      attack_frames:4,release_frames:9};
+    expect(previewSemanticSfxEdit(p,edited,cueId)).toEqual({
+      cue_id:cueId,absolute_start_frame:9,absolute_end_frame:39,
+      first_sample:14400,sample_count:48000,
+    });
+    expect(p).toEqual(original);
+    const next=await applyChange(p,{type:"upsert_semantic_sfx",cue:edited});
+    expect(next.revision).toBe(p.revision+1);
+    expect(next.audio.sfx_cues).toEqual([edited]);
+    expect(next.audio.sfx_cues![0].id).toBe(cueId);
+    expect(next.scenes[0].status).toBe("draft");
+    expect(next.assets).toEqual(p.assets);
+    expect(validateSfxProject(next)[0].first_sample).toBe(14400);
+  });
+  it("fails closed for a moved, missing or duplicate original SFX editor identity",async()=>{
+    const p=await applyChange(ready(),{type:"upsert_semantic_sfx",cue:cue()});
+    const copy=structuredClone(p);
+    const badScene={...cue(),scene_id:"00000000-0000-4000-8000-0000000000ab"};
+    expect(()=>previewSemanticSfxEdit(p,badScene,cueId)).toThrow(/identity|scene/);
+    expect(()=>previewSemanticSfxEdit(p,cue(),"unknown")).toThrow(/identity/);
+    expect(()=>previewSemanticSfxEdit(p,cue(),null)).toThrow(/duplicates/);
+    expect(()=>previewSemanticSfxEdit(p,{...cue(),source_sha256:"b".repeat(64)},cueId))
+      .toThrow(/source|Asset/);
+    expect(p).toEqual(copy);
+  });
+  it("rejects an invalid authored SFX tail before attempting owner CAS save",async()=>{
+    const p=await applyChange(ready(),{type:"upsert_semantic_sfx",cue:cue()});
+    const copy=structuredClone(p);
+    expect(()=>previewSemanticSfxEdit(p,{...cue(),source_frames:200},cueId))
+      .toThrow();
+    expect(()=>previewSemanticSfxEdit(p,{...cue(),release_frames:31},cueId))
+      .toThrow();
+    expect(p).toEqual(copy);
   });
   it("loads legacy projects without a synthesized or approved SFX mix",()=>{
     const p=ready();

@@ -6186,3 +6186,48 @@ select:focus {
 }
 .sfx-audition-record .button { justify-self: start; }
 .sfx-audition-record > span { font-size: 10px; line-height: 1.5; color: var(--muted); }
+
+
+/* Existing owner creative reviews are brought back to the ORIGINAL sound
+   authoring surface; they never assert a repaired or approved render. */
+.sfx-open-listening-issues {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.sfx-open-listening-issues > header {
+  display: grid;
+  gap: 4px;
+}
+.sfx-open-listening-issues > header strong { font-size: 12px; }
+.sfx-open-listening-issues > header span {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.sfx-open-issue {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.sfx-open-issue > div:first-child { display: grid; gap: 4px; }
+.sfx-open-issue > div:first-child strong { font-size: 11px; }
+.sfx-open-issue > div:first-child span { color: var(--muted); font-size: 10px; }
+.sfx-open-issue > p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.sfx-open-issue .button { justify-self: start; }
+.sfx-open-listening-issues > .audio-truth-line {
+  font-size: 11px;
+  line-height: 1.5;
+}

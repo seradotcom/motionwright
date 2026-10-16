@@ -383,3 +383,37 @@ fit. This prevents a partial/forged 60-frame master from creating an
 apparently valid finding about an original 180-frame production revision.
 The exact regression is nativeSfxAudition.test.ts and protects the
 AddReview handoff without introducing a second timing oracle.
+
+
+## Editable original SFX and human review round trip
+
+The original semantic SFX authoring panel now supports **in-place edits of a
+persisted cue**: select a source row (or an open cue-linked listening review),
+edit its gain, original imported WAV, 30-fps offset, beat anchor and
+attack/release envelope, and explicitly save the existing cue ID through the
+normal UpsertSemanticSfx CAS command. Changing a cue's scene identity is
+prohibited. Editing never deletes and re-creates its stable ID. A source
+project revision change, original WAV removal, scene content/timing lock or
+invalid replacement schedule blocks saving before native work begins.
+
+The same full native SFX placement and overlap validator is used for
+original Add and Save; editor previews replace an existing candidate
+rather than incorrectly appending a duplicate ID. The Rust/domain
+operation marks the affected authored scene Draft and increments revision.
+All earlier native audio/MP4 proof is now stale and must be reproduced
+through the owner-authorized source-bound pipeline.
+
+The Audio panel also shows unresolved, branch-scoped, source-anchored human
+listening reviews created from the actual verified MP4. Their bounded JSON
+bodies must match the current project/branch, original scene and cue ID,
+review revision and frame anchors, saved deliverable and immutable source
+digests. Forged, resolved, non-creative or foreign branch bodies are ignored.
+If the original WAV changed since the finding, the review remains visible
+but its one-click editing action is disabled to prevent changing a
+different sound under an old observation.
+
+Editing does **not** close the review or prove audible improvement. The
+operator must reproduce/review the corrected native master and separately
+resolve the original open creative review through History. Unit, model,
+browser, editor lock and owner CAS regression tests keep this a manual,
+revisioned correction workflow rather than an auto-critic or automated patch.
