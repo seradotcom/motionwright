@@ -52,7 +52,7 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
-const SEMWRIGHT_REVISION: &str = "04142a2ae16e53a58bb6cf43135786e396a4b720";
+const SEMWRIGHT_REVISION: &str = "54d3459a051adbce4cae9f60c0dea8f60c824be6";
 const SEMWRIGHT_VERSION: &str = "1.0.0";
 
 #[derive(Clone)]

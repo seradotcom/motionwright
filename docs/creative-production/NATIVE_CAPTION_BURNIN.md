@@ -119,3 +119,22 @@ cannot reach CI logs. No change to the existing all-PASS verifier, automatic
 retry policy, audio rights, original pixel contents or master-release gate.
 Dedicated Rust and Python adversarial tests reject forged error labels and
 any private provider message or job reference.
+
+## Intentional pinned Native SDK upgrade — exact source review
+
+On 2026-10-16 the Motionwright caption branch intentionally moved its
+**entire shared** Semwright Cargo pin (Native SDK, Driver SDK, semantic
+composition, motion authoring, media/time, graph, effects and types) from
+`04142a2ae16e53a58bb6cf43135786e396a4b720` to
+`54d3459a051adbce4cae9f60c0dea8f60c824be6`, the *merged*
+Semwright PR #270 revision. SOURCE_LOCK, Cargo.toml, Cargo.lock,
+runtime/native receipts and Studio fixture pin agree.
+
+Semwright PR #269 previously merged bounded failed-frame diagnostics;
+PR #270 subsequently passed actual 60-frame native caption conformance
+using the original Broker, Driver Host and Motion Canvas, with strict
+all-PASS verification preserved. Motionwright does **not** infer its
+own E2E pass from the upstream result: the exact-head downstream
+`actual-native-caption-pixels` CI and other required checks still
+determine PR #233 admission, while MLT captioned masters and human
+legibility remain NOT_RUN.
