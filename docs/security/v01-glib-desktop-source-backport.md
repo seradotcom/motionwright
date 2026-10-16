@@ -37,9 +37,15 @@ waiver, or approval to release v0.1.
 3. Windows NSIS and macOS DMG candidates must remain source-bound and
    buildable, with signed GitHub workflow provenance (not OS code signing).
 4. Cargo-audit/RustSec and Dependabot must be reviewed as genuine issues.
-   Since the original glib semantic version remains 0.18.5, the advisory
-   may continue to appear by version even when source bytes are changed.
-   Do not silently suppress, ignore, or label it FIXED merely to pass CI.
+   The live PR #237 cargo-audit input contained only the separate
+   RUSTSEC-2024-0370 warning: locally sourced glib 0.18.5 was absent
+   because cargo-audit scans registry package identities, **not because
+   it proved the patched product is safe**. The v0.1 security policy
+   therefore keeps RUSTSEC-2024-0429 explicitly OPEN in its evidence,
+   exposes the missing registry coverage as a machine-readable field,
+   verifies the exact Cargo lock override and all upstream/backport bytes
+   independently, and refuses missing OTHER warnings or new ones.
+   Never ignore, suppress or label it FIXED merely to make CI green.
 5. Human owner-installed application validation, native provider recovery,
    foreground-authorized MLT cleanup and all 60 independent private human
    acceptance cases remain separate v0.1 release gates.

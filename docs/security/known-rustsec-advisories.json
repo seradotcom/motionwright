@@ -2,7 +2,7 @@
   "schema": "motionwright.security-known-advisories.v1",
   "policy": {
     "mode": "exact-known-warning-set",
-    "statement": "Known RustSec warnings are not treated as resolved. The CI gate accepts only this exact reviewed set while locked transitive versions remain unchanged; any vulnerability, new warning, removed warning, or dependency drift requires a new review.",
+    "statement": "Both known RustSec advisories remain OPEN. Exact-source local-path glib 0.18.5 may disappear from cargo-audit's registry warning output without proving remediation. The checked Cargo.lock override and complete backport source-custody verifier must pass; all other warnings must match exactly, and any vulnerability, new warning, missing other warning or dependency drift fails closed. No advisory is waived or marked fixed.",
     "reviewed_against_cargo_audit": "0.22.2"
   },
   "advisories": [

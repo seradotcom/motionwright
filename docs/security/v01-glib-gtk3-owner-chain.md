@@ -69,7 +69,10 @@ A Cargo.lock dependency graph includes packages for multiple platforms;
 it does **not** by itself prove Linux build reachability for each edge,
 nor that a vulnerable glib iterator is invoked or unreachable. The
 existing first-party string check reduces obvious direct use but is not
-a whole-program call-graph proof. This guard does not create an exception,
+a whole-program call-graph proof. With the local-path crate selected,
+cargo-audit no longer reports the glib registry-version warning, but the
+policy explicitly preserves its OPEN status and tracks this coverage gap
+separately. This guard does not create an exception,
 turn cargo-audit warnings into PASS, or declare the upstream vulnerability
 resolved. The source-exact backport is not enough to close issue #89: an independently
 verified compiled Linux desktop using that implementation, installed GUI
