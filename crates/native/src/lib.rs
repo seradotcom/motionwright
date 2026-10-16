@@ -4751,3 +4751,6 @@ mod brand_campaign_tests;
 
 #[cfg(test)]
 mod narration_tests;
+
+/// Original-source, bounded PCM preview only; native SDK remains host authority.
+pub mod original_mix;
