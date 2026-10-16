@@ -20,6 +20,8 @@ import tomllib
 from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
+from semantic_sfx_av_evidence import inspect_native_sfx_av
+from semantic_sfx_native_stage import safe_stage, safe_native_error_category
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
 from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
 from native_provider_broker_events import read_owner_broker_event_history
@@ -34,6 +36,7 @@ PIN = SOURCE_LOCK["dependencies"]["semwright"]["revision"]
 SEMWRIGHT = Path(os.environ.get("SEMWRIGHT_CHECKOUT", ROOT / "_semwright")).resolve()
 SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_BIN = ROOT / "target" / "debug" / "examples" / "native-render-e2e"
+MW_SFX_BIN = ROOT / "target" / "debug" / "examples" / "semantic-sfx-av-prepare"
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 FIXTURE = os.environ.get("MOTIONWRIGHT_E2E_FIXTURE", "baseline")
@@ -58,11 +61,13 @@ IS_MEASURED = FIXTURE == "measured-data"
 IS_COMPOSITION = FIXTURE == "composition-stack"
 IS_PROCEDURAL = FIXTURE in PROCEDURAL_MODES
 IS_HERO = FIXTURE in HERO_ASPECTS
-if FIXTURE not in {"baseline", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
+IS_SFX_AV = FIXTURE == "semantic-sfx-av"
+if FIXTURE not in {"baseline", "semantic-sfx-av", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
     raise SystemExit("unknown bounded E2E fixture")
 EXPECTED_FRAMES = 540 if IS_COMPOSITION else 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else 60
 EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
 EVIDENCE = ROOT / "verification" / (
+    "semantic-sfx-av-e2e" if IS_SFX_AV else
     "composition-native-e2e" if IS_COMPOSITION else
     "camera-reframe-e2e" if IS_CAMERA else
     "product-stage-e2e" if IS_STAGE else
@@ -111,6 +116,8 @@ def exact_inputs() -> None:
     ]:
         if not path.exists():
             raise SystemExit(f"missing exact acceptance input: {path}")
+    if IS_SFX_AV and not MW_SFX_BIN.is_file():
+        raise SystemExit("missing real owner-project semantic SFX AV preparation binary")
     if not shutil.which("bwrap"):
         raise SystemExit("bubblewrap is required; no unsandboxed fallback is accepted")
 
@@ -217,6 +224,56 @@ def main() -> None:
                                or seeded.get("data_truth") != "synthetic_fixture_not_real_world_metric"
                                or len(seeded.get("scene_ids", [])) != 3):
             raise AssertionError("Native composition fixture is not an original source-bound three-scene project")
+
+        sfx_prepared = None
+        if IS_SFX_AV:
+            # Must be the SAME source project/revision that the native
+            # renderer will use. No disconnected synthetic WAV substitution.
+            sfx_prepared = run_json(
+                [str(MW_SFX_BIN), str(database), str(paths["output"])],
+                env=env, timeout=90,
+            )
+            if (sfx_prepared.get("schema") != "motionwright.semantic-sfx-av-prepared/1"
+                or sfx_prepared.get("project_id") != seeded.get("project_id")
+                or sfx_prepared.get("generation") != seeded.get("generation")
+                or sfx_prepared.get("revision", -1) <= seeded.get("revision", -1)
+                or sfx_prepared.get("frames") != EXPECTED_FRAMES
+                or sfx_prepared.get("native_preparation_verified") is not True
+                or sfx_prepared.get("native_preparation_revision") != sfx_prepared.get("revision")
+                or sfx_prepared.get("original_source_count") != 2
+                or not isinstance(sfx_prepared.get("audio_relative"), str)
+                or not sfx_prepared["audio_relative"].startswith("mw-sfx-")
+                or not sfx_prepared["audio_relative"].endswith(".wav")
+                or "/" in sfx_prepared["audio_relative"]
+                or "\\" in sfx_prepared["audio_relative"]):
+                raise AssertionError("original SFX source is not this persisted render project's revision")
+            seeded["revision"] = sfx_prepared["revision"]
+            write_private_json(EVIDENCE / "sfx-prepared.json", sfx_prepared)
+
+            # No provider has been started. Establish whether original SFX
+            # authoring alters the canonical visual Film before native dispatch.
+            try:
+                visual = run_json(
+                    [str(MW_BIN), "sfx-visual-preflight", str(database)],
+                    env=env, timeout=30,
+                )
+            except NativeCommandFailure:
+                raise AssertionError(
+                    "Original SFX changed or invalidated visual Film before native render; "
+                    "no native render started"
+                ) from None
+            if (visual.get("schema") != "motionwright.sfx-visual-film-parity/1"
+                or visual.get("visual_film_unchanged") is not True
+                or visual.get("native_render_dispatched") is not False
+                or visual.get("project_id") != seeded["project_id"]
+                or visual.get("generation") != seeded["generation"]
+                or visual.get("revision") != seeded["revision"]
+                or visual.get("frame_count") != EXPECTED_FRAMES
+                or visual.get("sfx_cue_count") != 2
+                or not isinstance(visual.get("film_sha256"), str)
+                or len(visual["film_sha256"]) != 64):
+                raise AssertionError("Owner SFX visual source parity was not verified")
+            write_private_json(EVIDENCE / "sfx-visual-preflight.json", visual)
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -544,6 +601,35 @@ def main() -> None:
                             "fixture": FIXTURE,
                         },
                     )
+                if IS_SFX_AV:
+                    # The native error may be UNKNOWN. This is only an
+                    # allowlisted progress enum, never a result or job retry.
+                    stage = safe_stage(EVIDENCE / "semantic-sfx-render-stage.json")
+                    code = (error.diagnostic.get("reported_error_code", "OtherOrMissing")
+                            if isinstance(error, NativeCommandFailure) else "OtherOrMissing")
+                    outcome = (error.diagnostic.get("source_outcome", "NOT_VERIFIED")
+                               if isinstance(error, NativeCommandFailure) else "NOT_VERIFIED")
+                    typed = safe_native_error_category(
+                        EVIDENCE / "semantic-sfx-native-error-category.json"
+                    )
+                    if typed is not None:
+                        detail = (" sdk_code=" + typed["sdk_code"]
+                                  + " reason_class=" + typed["reason_class"]
+                                  + " render_failure_class=" + typed["render_failure_class"]
+                                  + " plan_ack=" + str(typed["plan_completed"])
+                                  + " apply_ack=" + str(typed["apply_completed"])
+                                  + " render_start_ack=" + str(typed["render_start_completed"])
+                                  + " render_status_seen=" + str(typed["render_status_seen"])
+                                  + " render_result_seen=" + str(typed["render_result_seen"])
+                                  + " verify_ack=" + str(typed["verify_completed"])
+                                  + " mux_seen=" + str(typed["mux_seen"]))
+                    else:
+                        detail = " sdk_code=NOT_VERIFIED reason_class=unclassified"
+                    print("semantic-sfx-ci-stage=" + stage
+                          + " native_error_code=" + code
+                          + " source_outcome=" + outcome + detail
+                          + " native_result_verified=false"
+                          + " automatic_retry=false", flush=True)
                 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA:
                     # Failed native evidence is retained as explicitly unverified
                     # diagnostic imagery, never promoted to a delivery receipt.
@@ -603,13 +689,23 @@ def main() -> None:
                 from composition_native_evidence import inspect_composition_frames
                 inspect_composition_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
 
-            audio_relative = "acceptance-audio.wav"
-            audio_path = paths["output"] / audio_relative
-            # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
-            # design. Use exact 2s baseline, 6s scene or 18s three-scene duration;
-            # independently decode and check actual samples for each closed profile.
-            write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
-            audio_path.chmod(0o600)
+            if IS_SFX_AV:
+                if sfx_prepared is None:
+                    raise AssertionError("owner CAS SFX preparation is unavailable")
+                audio_relative = sfx_prepared["audio_relative"]
+                audio_path = paths["output"] / audio_relative
+                if (not audio_path.is_file() or audio_path.is_symlink()
+                    or digest(audio_path) != sfx_prepared["audio_sha256"]):
+                    raise AssertionError("Source-bound native SFX audio missing or changed before mux")
+                for source in ("original-focus-sfx.wav", "original-confirm-sfx.wav",
+                               "semantic-sfx-master.wav"):
+                    shutil.copyfile(paths["output"] / source, EVIDENCE / source)
+            else:
+                audio_relative = "acceptance-audio.wav"
+                audio_path = paths["output"] / audio_relative
+                # Existing transport baseline remains unchanged.
+                write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
+                audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
 
             master_result = run_json(
@@ -644,10 +740,14 @@ def main() -> None:
             # decodes the exact 60-, 180- or 540-frame bounded profiles.
             # All require measured non-silent, distinct stereo channel tones
             # and native pixel movement. No decoder runs in the shipped app.
-            decoded = probe_native_mp4(
-                master_path, audio_path, ffmpeg, ffprobe,
-                expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
-                expect_movement=FIXTURE != "procedural-static",
+            decoded = (
+                inspect_native_sfx_av(
+                    master_path, paths["output"], sfx_prepared, ffmpeg, ffprobe,
+                ) if IS_SFX_AV else probe_native_mp4(
+                    master_path, audio_path, ffmpeg, ffprobe,
+                    expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
+                    expect_movement=FIXTURE != "procedural-static",
+                )
             )
             if decoded["master_sha256"] != master_sha256:
                 raise AssertionError("Decoded-media sample came from a different MP4 digest")
@@ -706,7 +806,20 @@ def main() -> None:
                     "joint_native_pixel_evidence_sha256": (
                         digest(EVIDENCE / "composition-native-inspection.json") if IS_COMPOSITION else None
                     ),
-                    "audio_kind": "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design",
+                    "audio_kind": (
+                        "original_semantic_scene_bound_sfx_native_pcm_to_pinned_semwright_av_mux" if IS_SFX_AV
+                        else "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design"
+                    ),
+                    "semantic_sfx_source_project_revision": (
+                        sfx_prepared["revision"] if IS_SFX_AV else None
+                    ),
+                    "semantic_sfx_original_sources": (
+                        [sfx_prepared["first_source_sha256"], sfx_prepared["second_source_sha256"]]
+                        if IS_SFX_AV else None
+                    ),
+                    "semantic_sfx_decoded_windows": (
+                        decoded["semantic_sfx_windows_pcm16"] if IS_SFX_AV else None
+                    ),
                     "audio_sha256": audio_sha256,
                     "master_path": master_relative,
                     "master_sha256": master_sha256,

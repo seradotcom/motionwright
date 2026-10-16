@@ -1,6 +1,11 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import NativeAvReview from "./NativeAvReview";
+import NativeSfxCueAudition from "./NativeSfxCueAudition";
+import {
+  nativeSfxAuditionCues, originalSfxListeningIssue,
+  type NativeSfxAuditionCue,
+} from "./nativeSfxAudition";
 import {
   evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
   type ScopedRuntimeObservation,
@@ -10,6 +15,7 @@ import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import {
   assembleNativeAvMaster,
+  assembleNativeSemanticSfxAvMaster,
   assembleNativeMultisegmentAvMaster,
   exportCaptionSidecar,
   exportOtio,
@@ -20,6 +26,9 @@ import {
   renderMotionCanvas,
   productionRuntimeCompatibility,
 } from "./api";
+import {
+  currentOriginalSfxSourceProof, originalSfxAvReadiness, voiceOnlyMasterMayExcludeSfx,
+} from "./sfxNativeDelivery";
 import type {
   Change,
   DeliverableProfile,
@@ -144,6 +153,15 @@ export default function DeliveryProfiles({
   const [trustedMediaSha256, setTrustedMediaSha256] = useState("");
   const [verifiedMedia, setVerifiedMedia] = useState<PortableMediaVerification | null>(null);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
+  // Session-only, not project approvals. Always scope playback seeks and
+  // observed playback to the exact owner MP4+PCM source identity.
+  const [sfxSeek, setSfxSeek] = useState<{
+    sourceKey:string; seconds:number; nonce:number;
+  } | null>(null);
+  const [sfxPlaybackObservedKey, setSfxPlaybackObservedKey] = useState<string|null>(null);
+  const [sfxMediaTime, setSfxMediaTime] = useState<{
+    sourceKey:string; seconds:number;
+  } | null>(null);
   const [multiMaster, setMultiMaster] = useState<NativeMultisegmentAvMasterEvidence | null>(null);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
@@ -151,7 +169,7 @@ export default function DeliveryProfiles({
   const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "sfx-master" | "sfx-review" | "export-master" | "verify-media" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -301,8 +319,15 @@ export default function DeliveryProfiles({
     && selected.audio_sample_rate_hz === 48000
     && selected.color_space === "rec709"
     && selected.container === "mp4");
-  const masterReady = Boolean(desktopMode && selected && !dirty
+  // Voice-only MLT omits the separate semantic SFX source. Never let a
+  // profile containing both sources appear to be a fully mastered AV mix.
+  const hasSemanticSfx = !voiceOnlyMasterMayExcludeSfx(project);
+  const masterReady = Boolean(desktopMode && selected && !dirty && !hasSemanticSfx
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
+  const sfxMaster = originalSfxAvReadiness(
+    project, selected, currentMotion?.segments[0]?.frame_count ?? null,
+    Boolean(masterPreviewToken), desktopMode, dirty,
+  );
   const currentAv = avEvidence?.generation === project.generation
     && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
   const currentMultiMaster = multiMaster?.generation === project.generation
@@ -315,7 +340,7 @@ export default function DeliveryProfiles({
   const multiVoiceAligned = Number.isFinite(voiceDurationSeconds)
     && Number.isFinite(multiVideoSeconds)
     && Math.abs(voiceDurationSeconds - multiVideoSeconds) <= 1 / 48_000;
-  const multiMasterReady = Boolean(desktopMode && selected && !dirty
+  const multiMasterReady = Boolean(desktopMode && selected && !dirty && !hasSemanticSfx
     && verifiedWavIntent && multiVoiceAligned && multiSourceToken
     && currentMultiSource && currentMultiSource.total_frames === multiSourceFrames
     && masterProfileSupported);
@@ -323,6 +348,18 @@ export default function DeliveryProfiles({
     ? currentMultiMaster?.revision === project.revision
       ? currentMultiMaster.export_token : null
     : currentAv?.revision === project.revision ? currentAv.export_token : null;
+  const sfxSourceProof = currentOriginalSfxSourceProof(
+    project, selected?.id??null, currentAv,
+  );
+  const sfxReviewSourceKey = sfxSourceProof && activeExportToken
+    ? [project.id, project.generation, project.revision, selected?.id,
+      sfxSourceProof.exact_pcm_sha256, activeExportToken].join(":")
+    : null;
+  const sfxReviewCues = sfxReviewSourceKey
+    ? nativeSfxAuditionCues(project, selected?.id??null, currentAv)
+    : [];
+  const activeSfxSeek = sfxReviewSourceKey && sfxSeek?.sourceKey===sfxReviewSourceKey
+    ? sfxSeek : null;
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
@@ -525,6 +562,20 @@ export default function DeliveryProfiles({
       onAvEvidence(result);
       setMessage("Native H.264/AAC MP4 master recorded for r" + result.revision
         + " with " + result.frame_count + " native frames. Verify output metadata before distribution.");
+    });
+  };
+
+  const assembleSfxMaster = () => {
+    if (!selected || !masterPreviewToken || !sfxMaster.ready) return;
+    void run("sfx-master", async () => {
+      const result = await assembleNativeSemanticSfxAvMaster(
+        project, selected.id, masterPreviewToken,
+      );
+      onAvEvidence(result);
+      setMessage("Native source-bound SFX-only H.264/AAC MP4 recorded for r"
+        + result.revision + " with " + result.frame_count + " frames. "
+        + "Original PCM and native media were verified; narration/music, "
+        + "loudness mastering and human creative approval are NOT included.");
     });
   };
 
@@ -1101,9 +1152,48 @@ export default function DeliveryProfiles({
                   </button>
                 )}
               </div>
+              {(project.audio.sfx_cues?.length ?? 0) > 0 && (
+                <div className="delivery-multi-source" role="region"
+                  aria-label="Original semantic SFX native master">
+                  <div>
+                    <strong>Original semantic SFX-only master</strong>
+                    <span>{sfxMaster.cueCount} scene-linked sound event
+                      {sfxMaster.cueCount === 1 ? "" : "s"}.
+                      Native 48 kHz PCM16 sources are verified from Studio CAS
+                      and mixed with no hidden clipping, voice or music stems.
+                    </span>
+                  </div>
+                  <button className="button button-primary" type="button"
+                    aria-label="Assemble original semantic SFX native MP4"
+                    disabled={!sfxMaster.ready || busy !== null}
+                    onClick={assembleSfxMaster}>
+                    <Play size={14} />
+                    {busy === "sfx-master" ? "Mastering original SFX…" :
+                      "Assemble SFX-only MP4"}
+                  </button>
+                  <div className={"delivery-truth-note" +
+                    (sfxMaster.ready ? "" : " warning")} role="status"
+                    aria-label="Native semantic SFX source readiness">
+                    {sfxMaster.ready
+                      ? "Editorial placement ready for " + sfxMaster.frames
+                        + " native frames. The desktop must reverify every original WAV byte. "
+                        + "Human sound and creative review remain required."
+                      : sfxMaster.reason}
+                  </div>
+                </div>
+              )}
               {!masterPreviewToken && !multiSourceToken && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.
+                </div>
+              )}
+              {hasSemanticSfx && selectedVoice && (
+                <div className="delivery-truth-note warning" role="status">
+                  <CircleDashed size={14} />
+                  The current project contains original semantic SFX and a measured voice.
+                  A voice-only master would omit the authored effects, so it is blocked.
+                  SFX-only delivery also refuses narration. Combined mixing requires
+                  independently admitted audio source verification and review.
                 </div>
               )}
               {!verifiedWavIntent && (
@@ -1146,6 +1236,21 @@ export default function DeliveryProfiles({
                   </strong></div>
                 </div>
               )}
+              {sfxSourceProof && (
+                <div className="portable-plan" role="status"
+                  aria-label="Original semantic SFX source verification">
+                  <div><span>Original scene cues</span>
+                    <strong>{currentAv?.semantic_sfx_cue_count ?? 0}</strong></div>
+                  <div><span>Original WAV assets</span>
+                    <strong>{sfxSourceProof.original_asset_sha256.length}</strong></div>
+                  <div><span>Mix PCM SHA-256</span>
+                    <strong className="mono">
+                      {sfxSourceProof.exact_pcm_sha256.slice(0, 16)}…</strong></div>
+                  <div><span>Sample peak</span>
+                    <strong>{sfxSourceProof.sample_peak_pcm16} / 32767 PCM16</strong></div>
+                  <div><span>Creative and sound approval</span><strong>REQUIRED</strong></div>
+                </div>
+              )}
               {currentMultiMaster && (
                 <div className="portable-plan" aria-label="Native multi-segment AV master evidence" role="status">
                   <div><span>Source</span><strong>{currentMultiMaster.video_segments} semantic MLT segments</strong></div>
@@ -1175,11 +1280,60 @@ export default function DeliveryProfiles({
                 </button>
               </div>
               {showNativeAvReview && reviewAvailable && activeExportToken && (
-                <NativeAvReview
-                  key={project.id + ":" + project.revision + ":" + activeExportToken}
-                  project={project}
-                  exportToken={activeExportToken}
-                />
+                <>
+                  <NativeAvReview
+                    key={project.id + ":" + project.revision + ":" + activeExportToken}
+                    project={project}
+                    exportToken={activeExportToken}
+                    seekTimeSeconds={activeSfxSeek?.seconds}
+                    seekSignal={activeSfxSeek?.nonce}
+                    onMediaPlay={() => {
+                      if (sfxReviewSourceKey) setSfxPlaybackObservedKey(sfxReviewSourceKey);
+                    }}
+                    onMediaTime={(seconds) => {
+                      if (sfxReviewSourceKey) setSfxMediaTime({
+                        sourceKey:sfxReviewSourceKey,seconds,
+                      });
+                    }}
+                  />
+                  {sfxReviewSourceKey && sfxSourceProof && sfxReviewCues.length>0 && (
+                    <NativeSfxCueAudition
+                      key={sfxReviewSourceKey}
+                      cues={sfxReviewCues}
+                      masterFrames={sfxSourceProof.master_frames}
+                      mediaSeconds={
+                        sfxMediaTime?.sourceKey===sfxReviewSourceKey
+                          ? sfxMediaTime.seconds : null
+                      }
+                      playbackObserved={sfxPlaybackObservedKey===sfxReviewSourceKey}
+                      issueBusy={busy!==null}
+                      onRecordIssue={(cue:NativeSfxAuditionCue,observation:string)=>{
+                        return run("sfx-review",async()=>{
+                          if(!selected || !currentAv || !sfxReviewSourceKey) {
+                            throw new Error("Original native SFX review source expired.");
+                          }
+                          const change=originalSfxListeningIssue(
+                            project,selected.id,currentAv,cue,observation,
+                            sfxPlaybackObservedKey===sfxReviewSourceKey,
+                          );
+                          await commit(change);
+                          setShowNativeAvReview(false);
+                          setSfxSeek(null);
+                          setSfxPlaybackObservedKey(null);
+                          setSfxMediaTime(null);
+                          setMessage("Open source-anchored SFX creative review recorded at source r"
+                            + project.revision + ". The previous MP4 preview is now historical. "
+                            + "No sound was changed or approved automatically.");
+                        });
+                      }}
+                      onSeek={(seconds) => setSfxSeek(previous => ({
+                        sourceKey:sfxReviewSourceKey,
+                        seconds,
+                        nonce:(previous?.nonce??0)+1,
+                      }))}
+                    />
+                  )}
+                </>
               )}
               <div className="delivery-truth-note">
                 <CircleDashed size={14} /> Native master playback is an explicit, SHA-256-verified local review action limited to 16 MiB. Larger MP4 files must be exported for external playback. Decoder compatibility, timeline synchronization and human mix approval remain separate.

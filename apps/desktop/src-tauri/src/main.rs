@@ -6,6 +6,7 @@ mod media_integrity;
 mod narration_native;
 mod original_mix_native;
 mod runtime_setup;
+mod sfx_av_master;
 
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
@@ -1479,6 +1480,7 @@ async fn assemble_av_master(
     if project.generation != request.generation || project.revision != request.revision {
         return Err("AV master input was invalidated by a project revision.".into());
     }
+    sfx_av_master::reject_unmixed_semantic_sfx(&project)?;
     let profile = project
         .deliverables
         .iter()
@@ -1598,6 +1600,7 @@ async fn assemble_multisegment_av_master(
     if project.generation != request.generation || project.revision != request.revision {
         return Err("Multisegment master input was invalidated by a creative revision.".into());
     }
+    sfx_av_master::reject_unmixed_semantic_sfx(&project)?;
     let profile = project
         .deliverables
         .iter()
@@ -2475,6 +2478,7 @@ fn main() {
             render_motion_canvas,
             preflight_multi_segment_mlt_readiness,
             assemble_av_master,
+            sfx_av_master::assemble_semantic_sfx_av_master,
             assemble_multisegment_av_master,
             export_native_av_master,
             verify_local_media_integrity,

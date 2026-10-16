@@ -1,0 +1,191 @@
+name: Source-bound semantic SFX native AV master
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'SOURCE_LOCK.json'
+      - 'Cargo.lock'
+      - 'crates/native/examples/semantic-sfx-av-prepare.rs'
+      - 'crates/native/src/sfx_mix.rs'
+      - 'crates/native/src/production.rs'
+      - 'crates/native/src/production/semantic_sfx_av.rs'
+      - 'crates/native/tests/semantic_sfx_av_source.rs'
+      - 'apps/desktop/src-tauri/src/sfx_av_master.rs'
+      - 'apps/desktop/src-tauri/src/native_preview.rs'
+      - 'apps/studio/src/sfxNativeDelivery.ts'
+      - 'apps/studio/src/sfxNativeDelivery.test.ts'
+      - 'apps/studio/tests/semantic-sfx-native-master.spec.ts'
+      - 'tooling/native_av_master_e2e.py'
+      - 'tooling/semantic_sfx_av_evidence.py'
+      - 'tooling/semantic_sfx_native_stage.py'
+      - 'tooling/tests/test_semantic_sfx_native_stage.py'
+      - 'tooling/tests/test_semantic_sfx_browser_mount.py'
+      - 'tooling/semantic_sfx_av_public_artifact.py'
+      - 'tooling/tests/test_semantic_sfx_av_evidence.py'
+      - '.github/workflows/semantic-sfx-native-av.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'crates/native/examples/semantic-sfx-av-prepare.rs'
+      - 'tooling/semantic_sfx_av_evidence.py'
+      - '.github/workflows/semantic-sfx-native-av.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: original-semantic-sfx-av-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  # Keep Playwright Firefox inside the exact pinned Motion Canvas runtime.
+  # The driver rejects an executable from the runner's external cache before
+  # project staging, reporting its closed font_evidence failure category.
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+
+jobs:
+  source-bound-native-sfx-av:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Resolve pinned Semwright Native SDK SHA
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-sfx-av-original-1.98.1
+          cache-on-failure: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+      - name: Verify exact source, format and adversarial sample contracts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+          python3 tooling/creative_status_policy.py
+          cargo fmt --all -- --check
+          python3 -m py_compile \
+            tooling/native_av_master_e2e.py tooling/semantic_sfx_av_evidence.py \
+            tooling/semantic_sfx_av_public_artifact.py tooling/semantic_sfx_native_stage.py
+          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_av_*.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_native_stage.py' -v
+          python3 -m unittest discover -s tooling/tests -p 'test_semantic_sfx_browser_mount.py' -v
+      - name: Install pinned native media runtime and sandbox
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            melt ffmpeg libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/semantic-sfx-native-av
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/semantic-sfx-native-av/sandbox-profile.txt"
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: _semwright/integrations/motion-canvas/runtime
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+      - name: Build exact Semwright Broker, MLT and Motion Canvas
+        working-directory: _semwright
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+      - name: Compile original SFX, Native SDK and MLT acceptance
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native \
+            --example native-render-e2e --example semantic-sfx-av-prepare
+          cargo test --locked -p motionwright-native --test semantic_sfx_mix
+          cargo test --locked -p motionwright-native --test semantic_sfx_av_source
+          cargo clippy --locked -p motionwright-native \
+            --example semantic-sfx-av-prepare -- -D warnings
+      - name: Render, mix and mux original semantic SFX via Native SDK
+        env:
+          MOTIONWRIGHT_E2E_FIXTURE: semantic-sfx-av
+        run: |
+          set -euo pipefail
+          python3 tooling/native_av_master_e2e.py \
+            | tee verification/semantic-sfx-native-av/run.log
+      - name: Independently validate decoded AAC and original source WAVs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path("verification/semantic-sfx-av-e2e")/os.environ["GITHUB_SHA"]
+          run=json.loads((root/"result.json").read_text())
+          prep=json.loads((root/"sfx-prepared.json").read_text())
+          proof=json.loads((root/"decoded-media-proof.json").read_text())
+          assert run["motionwright_sha"]==os.environ["GITHUB_SHA"]
+          assert run["native_av_master_e2e"]=="PASS"
+          assert run["fixture"]=="semantic-sfx-av"
+          assert run["frame_count"]==proof["video_frames_decoded"]==60
+          assert run["master_sha256"]==proof["master_sha256"]
+          assert prep["audio_sha256"]==proof["source_wav_sha256"]
+          assert prep["project_id"]==proof["project_id"]
+          assert prep["generation"]==proof["generation"]
+          assert prep["revision"]==proof["revision"]
+          assert proof["technical_h264_aac_mux"]=="PASS"
+          assert proof["technical_source_pcm"]=="PASS"
+          assert proof["absolute_first_onset_error_samples"]<=1024
+          assert proof["stereo_channel_identity"]=="confirmed_scene_linked_440_660_and_740_980_hz"
+          assert proof["human_creative_approval"]=="REQUIRED"
+          assert proof["rights_certification"]=="NOT_PERFORMED"
+          for name in ("original-focus-sfx.wav","original-confirm-sfx.wav",
+                       "semantic-sfx-master.wav","motionwright-master.mp4"):
+              p=root/name
+              assert p.is_file() and p.stat().st_size>44 and not p.is_symlink()
+          assert hashlib.sha256((root/"semantic-sfx-master.wav").read_bytes()).hexdigest()==prep["audio_sha256"]
+          print("PASS: actual same-project WAV -> native Semwright MLT mux -> decoded H264/AAC")
+          PY
+      - name: Curate media without private owner receipts
+        if: always()
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tooling/semantic_sfx_av_public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root "verification/semantic-sfx-av-e2e/$GITHUB_SHA" \
+            --output-root "verification/semantic-sfx-native-public" \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/semantic-sfx-native-public/public-evidence.json >/dev/null
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: semantic-sfx-native-av-${{ github.sha }}
+          path: verification/semantic-sfx-native-public
+          if-no-files-found: error
+          retention-days: 14

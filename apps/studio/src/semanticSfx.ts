@@ -109,6 +109,44 @@ export function validateSfxProject(project:Project):ScheduledSfx[]{
   }
   return scheduled;
 }
+/** Replacing an imported original WAV never copies its former author/rights
+ * declaration into the new source. The new declaration must be entered by
+ * the user after EACH source switch (new draft or existing cue);
+ * this remains an attestation, not a
+ * copyright-cleared/independently-licensed evidence claim.
+ */
+export function sourceChangeRightsDeclaration(
+  selectedAssetId:string,
+  nextAssetId:string,
+  currentDeclaration:string,
+):string {
+  return selectedAssetId!==nextAssetId ? "" : currentDeclaration;
+}
+
+/** Read-only original-source SFX editor preview: adding a new cue and
+ * replacing a persisted cue MUST share the same full schedule validator.
+ * In-place editing never moves a stable cue ID between scenes.
+ */
+export function previewSemanticSfxEdit(
+  project:Project,candidate:SemanticSfxCue,editingId:string|null,
+):ScheduledSfx {
+  if(editingId!==null){
+    const prior=(project.audio.sfx_cues??[]).find(c=>c.id===editingId);
+    if(!prior || prior.scene_id!==candidate.scene_id || candidate.id!==editingId)
+      invalid("Original SFX edit identity or source scene changed.");
+  }else if((project.audio.sfx_cues??[]).some(c=>c.id===candidate.id)){
+    invalid("New SFX editor draft duplicates an existing cue ID.");
+  }
+  const scheduled=validateSemanticSfx(project,candidate);
+  const proposed=structuredClone(project);
+  const old=proposed.audio.sfx_cues??[];
+  proposed.audio.sfx_cues=editingId===null
+    ? [...old,structuredClone(candidate)]
+    : old.map(c=>c.id===editingId?structuredClone(candidate):c);
+  validateSfxProject(proposed);
+  return scheduled;
+}
+
 export function upsertSfxCue(project:Project,cue:SemanticSfxCue):void{
   const old=project.audio.sfx_cues??[];
   const idx=old.findIndex(c=>c.id===cue.id);

@@ -13,6 +13,7 @@ use motionwright_service::StudioService;
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
@@ -340,6 +341,72 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// CI-only source parity: original semantic SFX must not contaminate
+/// visual Film assets or change a single authored shot/timing node.
+fn preflight_original_sfx_visual_film(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+    {
+        return Err("SFX visual parity is allowed only on the disposable CI fixture".into());
+    }
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("SFX visual parity requires exactly one existing owner project".into());
+    }
+    let project = &projects[0];
+    project.validate()?;
+    if project.scenes.len() != 1
+        || project.audio.sfx_cues.len() != 2
+        || project.assets.len() != 2
+        || project
+            .assets
+            .iter()
+            .any(|asset| asset.media_type != "audio/wav")
+        || project.scenes[0].duration != RationalTime::new(2, 1)?
+    {
+        return Err("SFX visual parity needs exactly the original 60-frame source".into());
+    }
+    let deliverable_id = project
+        .deliverables
+        .first()
+        .ok_or("SFX visual parity master deliverable missing")?
+        .id;
+    let options = fixture_film_options(project.scenes[0].id, 60)?;
+    let original = build_motion_canvas_segments(project, deliverable_id, &options)?;
+    let mut visual_only = project.clone();
+    visual_only.audio.sfx_cues.clear();
+    visual_only.assets.clear();
+    let pristine = build_motion_canvas_segments(&visual_only, deliverable_id, &options)?;
+    if original.len() != 1
+        || pristine.len() != 1
+        || original[0].frame_count != 60
+        || !original[0].film.assets.is_empty()
+    {
+        return Err("SFX fixture has an unexpected Motion Canvas Film shape".into());
+    }
+    let actual = serde_json::to_vec(&original[0].film)?;
+    let control = serde_json::to_vec(&pristine[0].film)?;
+    if actual != control {
+        return Err("A scene-bound SFX changed original visual Film bytes".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "schema": "motionwright.sfx-visual-film-parity/1",
+            "visual_film_unchanged": true,
+            "frame_count": 60,
+            "film_sha256": hex::encode(Sha256::digest(&actual)),
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "sfx_cue_count": 2,
+            "native_render_dispatched": false
+        }))?
+    );
+    Ok(())
+}
+
 fn fixture_film_options(
     scene_id: Uuid,
     expected_frames: u64,
@@ -432,17 +499,273 @@ fn export_direct_parity_film(
     Ok(())
 }
 
+/// Restricted CI-only progress markers, never a native result or a durable
+/// acknowledgement. Deliberately no owner path, revision, job ref, stdout or
+/// private error content is serialized, even if the provider disappears.
+fn note_semantic_sfx_render_stage(evidence_path: &Path, stage: &'static str) {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+        || !matches!(
+            stage,
+            "entered"
+                | "owner_project_loaded"
+                | "fixture_checked"
+                | "owner_connection_ready"
+                | "native_request_entered"
+                | "native_request_returned"
+                | "native_request_error"
+                | "native_master_error"
+                | "native_result_checked"
+                | "motion_evidence_written"
+        )
+        || !evidence_path.parent().is_some_and(Path::is_dir)
+    {
+        return;
+    }
+    let marker = evidence_path.with_file_name("semantic-sfx-render-stage.json");
+    if let Ok(contents) = serde_json::to_vec(&json!({
+        "schema": "motionwright.sfx-ci-native-stage/1",
+        "stage": stage,
+        "final_av_master_verified": false,
+        "native_job_outcome_established": false,
+        "automatically_retried": false
+    })) {
+        let _ = fs::write(marker, contents);
+    }
+}
+
+/// A failed SFX native operation emits only a CLOSED error code and
+/// allowlisted operation stages into the CI command result. The original
+/// full SDK error, broker receipts and job refs remain owner-private.
+fn emit_sfx_bounded_native_error(
+    evidence_path: &Path,
+    phase: &'static str,
+    error: &semwright_native_sdk::Error,
+    receipts: &[motionwright_storage::ProductionReceipt],
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_E2E_FIXTURE").as_deref() != Ok("semantic-sfx-av")
+    {
+        return Ok(false);
+    }
+    if !matches!(phase, "native_request_error" | "native_master_error") {
+        return Err("unrecognized closed SFX error phase".into());
+    }
+    note_semantic_sfx_render_stage(evidence_path, phase);
+    let code = format!("{:?}", error.code);
+    let safe_code = match code.as_str() {
+        "Unavailable" => "Unavailable",
+        "Timeout" => "Timeout",
+        "ConsentRequired" => "ConsentRequired",
+        "Conflict" => "Conflict",
+        "StaleReference" => "StaleReference",
+        "ResourceExhausted" => "ResourceExhausted",
+        "NotFound" => "NotFound",
+        "Cancelled" => "Cancelled",
+        "InvalidArguments" => "InvalidArguments",
+        "Internal" => "Internal",
+        "PermissionDenied" => "PermissionDenied",
+        "Unknown" => "Unknown",
+        _ => "OtherOrMissing",
+    };
+    let safe_receipts = receipts
+        .iter()
+        .filter_map(|receipt| {
+            let command = match receipt.command.as_str() {
+                "driver.motion-canvas.composition.inspect" => {
+                    "driver.motion-canvas.composition.inspect"
+                }
+                "driver.motion-canvas.composition.plan" => "driver.motion-canvas.composition.plan",
+                "driver.motion-canvas.composition.apply" => {
+                    "driver.motion-canvas.composition.apply"
+                }
+                "driver.motion-canvas.composition.verify" => {
+                    "driver.motion-canvas.composition.verify"
+                }
+                "driver.motion-canvas.render.start" => "driver.motion-canvas.render.start",
+                "driver.motion-canvas.render.status" => "driver.motion-canvas.render.status",
+                "driver.motion-canvas.render.result" => "driver.motion-canvas.render.result",
+                "driver.mlt-video.frames.encode" => "driver.mlt-video.frames.encode",
+                "driver.mlt-video.av.mux" => "driver.mlt-video.av.mux",
+                _ => return None,
+            };
+            let stage = match receipt.stage.as_str() {
+                "dispatching" => "dispatching",
+                "completed" => "completed",
+                "failed" => "failed",
+                "outcome_unknown" => "outcome_unknown",
+                _ => "unrecognized",
+            };
+            Some(json!({"command": command, "stage": stage, "payload": {}}))
+        })
+        .collect::<Vec<_>>();
+    // Categorize only source-defined errors. A provider may include sensitive
+    // data in its message; never reproduce or truncate that message into CI.
+    let sdk_code = match code.as_str() {
+        "BackendFailed" => "BackendFailed",
+        "InvalidArgument" => "InvalidArgument",
+        "Unsupported" => "Unsupported",
+        "StaleReference" => "StaleReference",
+        "Unavailable" => "Unavailable",
+        "Timeout" => "Timeout",
+        "PermissionDenied" => "PermissionDenied",
+        "Conflict" => "Conflict",
+        "Cancelled" => "Cancelled",
+        "Internal" => "Internal",
+        "ResourceExhausted" => "ResourceExhausted",
+        _ => "OtherOrMissing",
+    };
+    let message = error.message.as_str();
+    let reason_class = if message.contains("Provider capability generation is inactive") {
+        "provider_generation"
+    } else if message.contains("Motionwright project changed") {
+        "revision_mismatch"
+    } else if message.contains("Canonical Film") || message.contains("Film realization") {
+        "film_contract"
+    } else if message.contains("composition plan") || message.contains("composition.plan") {
+        "composition_plan"
+    } else if message.contains("composition apply") || message.contains("composition.apply") {
+        "composition_apply"
+    } else if message.contains("render did not return a job reference") {
+        "render_start"
+    } else if message.contains("render failed") {
+        "render_failed"
+    } else if message.contains("render status") {
+        "render_status"
+    } else if message.contains("render result") {
+        "render_result"
+    } else if message.contains("verification") || message.contains("composition.verify") {
+        "verification"
+    } else if message.contains("MLT audiovisual") || message.contains("av.mux") {
+        "native_mux"
+    } else {
+        "unclassified"
+    };
+    // Only the stable RenderFailureClass values from the pinned SDK path may
+    // escape. Never emit or truncate the provider's arbitrary message.
+    const RENDER_FAILURES: &[&str] = &[
+        "arguments",
+        "font_evidence",
+        "project_stage",
+        "vite_build",
+        "frame_export",
+        "browser_launch",
+        "page_load",
+        "render_wait",
+        "render_wait_timeout",
+        "renderer_state_frame_clock",
+        "renderer_state_authoring_protocol",
+        "renderer_log_authoring_protocol",
+        "renderer_state_playback_protocol",
+        "renderer_log_playback_protocol",
+        "renderer_log_exporter_missing",
+        "renderer_log_async_property",
+        "renderer_state_webgl_unavailable",
+        "renderer_log_webgl_unavailable",
+        "renderer_state_model_invariant",
+        "renderer_log_model_invariant",
+        "renderer_state_authoring_model",
+        "renderer_log_authoring_model",
+        "renderer_state_invalid_scene",
+        "renderer_log_invalid_scene",
+        "renderer_state_range_error",
+        "renderer_log_range_error",
+        "renderer_state_type_error",
+        "renderer_log_type_error",
+        "renderer_state_semwright_native",
+        "renderer_state_semwright_exporter",
+        "renderer_state_motion_core",
+        "renderer_state_motion_2d",
+        "renderer_state_before_first_frame",
+        "renderer_state_after_first_frame",
+        "renderer_state_error",
+        "renderer_log_error",
+        "render_result_aborted",
+        "render_result_error",
+        "render_result_unknown",
+        "render_nonzero",
+        "runtime_module_load",
+        "runtime_syntax",
+        "runtime_permission",
+        "runtime_oom",
+        "runtime_killed",
+        "runtime_cpu_limit",
+        "runtime_file_size_limit",
+        "runtime_signal",
+        "observation",
+        "finalize",
+        "startup",
+    ];
+    let render_failure_class = if reason_class == "render_failed" {
+        RENDER_FAILURES
+            .iter()
+            .copied()
+            .find(|candidate| message.contains(&format!("render failed (category: {candidate})")))
+            .unwrap_or("unclassified")
+    } else {
+        "not_applicable"
+    };
+    let count = |command: &str, stage: Option<&str>| -> usize {
+        receipts
+            .iter()
+            .filter(|receipt| {
+                receipt.command == command && stage.is_none_or(|expected| receipt.stage == expected)
+            })
+            .count()
+            .min(128)
+    };
+    let category = json!({
+        "schema": "motionwright.sfx-ci-native-error-category/1",
+        "phase": phase,
+        "sdk_code": sdk_code,
+        "reason_class": reason_class,
+        "render_failure_class": render_failure_class,
+        "sdk_outcome_known": error.outcome_known,
+        "plan_completed": count("driver.motion-canvas.composition.plan", Some("completed")),
+        "apply_completed": count("driver.motion-canvas.composition.apply", Some("completed")),
+        "render_start_completed": count("driver.motion-canvas.render.start", Some("completed")),
+        "render_start_dispatching": count("driver.motion-canvas.render.start", Some("dispatching")),
+        "render_status_seen": count("driver.motion-canvas.render.status", None),
+        "render_result_seen": count("driver.motion-canvas.render.result", None),
+        "verify_completed": count("driver.motion-canvas.composition.verify", Some("completed")),
+        "mux_seen": count("driver.mlt-video.av.mux", None),
+        "native_media_verified": false,
+        "automatically_retried": false,
+    });
+    if let Ok(body) = serde_json::to_vec(&category) {
+        let _ = fs::write(
+            evidence_path.with_file_name("semantic-sfx-native-error-category.json"),
+            body,
+        );
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "error": {
+                "code": safe_code,
+                "outcome_known": error.outcome_known
+            },
+            "receipts": safe_receipts,
+            "native_media_verified": false,
+            "automatic_mutating_retry": false
+        }))?
+    );
+    Ok(true)
+}
+
 async fn render(
     database: &Path,
     connection_path: &Path,
     evidence_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    note_semantic_sfx_render_stage(evidence_path, "entered");
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
     if projects.len() != 1 {
         return Err("native-render-e2e expected exactly one seeded project".into());
     }
     let project = projects.into_iter().next().expect("length checked");
+    note_semantic_sfx_render_stage(evidence_path, "owner_project_loaded");
     let scene = project
         .scenes
         .first()
@@ -453,6 +776,7 @@ async fn render(
         .ok_or("seeded project has no deliverable")?;
 
     let expected_frames = expected_fixture_frames(&project)?;
+    note_semantic_sfx_render_stage(evidence_path, "fixture_checked");
     if expected_frames == 60 && (deliverable.width, deliverable.height) != (1920, 1080) {
         return Err("native-render-e2e expected the canonical 1920x1080 master".into());
     }
@@ -462,6 +786,7 @@ async fn render(
         return Err("owner-provisioned connection is not bound to the seeded project".into());
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
+    note_semantic_sfx_render_stage(evidence_path, "owner_connection_ready");
     let options = if expected_frames == 540 {
         FilmBuildOptions {
             frame_rate: Rate::new(30, 1)?,
@@ -480,6 +805,7 @@ async fn render(
     } else {
         fixture_film_options(scene.id, expected_frames)?
     };
+    note_semantic_sfx_render_stage(evidence_path, "native_request_entered");
     let result = match coordinator
         .render_motion_canvas_segments(
             project.id,
@@ -506,7 +832,7 @@ async fn render(
                     "outcome_known": error.outcome_known,
                     "candidates": &error.candidates,
                 },
-                "receipts": receipts,
+                "receipts": &receipts,
             });
             let body = serde_json::to_vec_pretty(&diagnostic)?;
             let mut file = OpenOptions::new()
@@ -516,11 +842,19 @@ async fn render(
             file.write_all(&body)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            if !emit_sfx_bounded_native_error(
+                evidence_path,
+                "native_request_error",
+                &error,
+                &receipts,
+            )? {
+                eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            }
             return Err(error.into());
         }
     };
 
+    note_semantic_sfx_render_stage(evidence_path, "native_request_returned");
     if result.generation != project.generation
         || result.revision != project.revision
         || result.segments.len() != 1
@@ -549,6 +883,7 @@ async fn render(
         return Err("native Motion Canvas verification support level was not native".into());
     }
 
+    note_semantic_sfx_render_stage(evidence_path, "native_result_checked");
     let parent = evidence_path
         .parent()
         .ok_or("evidence destination has no parent")?;
@@ -563,6 +898,7 @@ async fn render(
     file.write_all(&body)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
+    note_semantic_sfx_render_stage(evidence_path, "motion_evidence_written");
 
     println!(
         "{}",
@@ -618,20 +954,29 @@ async fn master(
         channels: 2,
     };
 
-    let result = match coordinator
-        .assemble_mlt_av_master(
-            project.id,
-            &RevisionStamp::from(&project),
-            MltAvMasterRequest {
-                request_id: "native-av-master-real-driver-host",
-                deliverable_id: deliverable.id,
-                motion: &motion,
-                audio: &audio,
-                sync: None,
-            },
-        )
-        .await
-    {
+    let request = MltAvMasterRequest {
+        request_id: "native-av-master-real-driver-host",
+        deliverable_id: deliverable.id,
+        motion: &motion,
+        audio: &audio,
+        sync: None,
+    };
+    let outcome = if project.audio.sfx_cues.is_empty() {
+        coordinator
+            .assemble_mlt_av_master(project.id, &RevisionStamp::from(&project), request)
+            .await
+    } else {
+        // Real semantic SFX claims demand a second source-admission gate
+        // that checks imported owner WAVs and every produced PCM byte.
+        coordinator
+            .assemble_native_semantic_sfx_av_master(
+                project.id,
+                &RevisionStamp::from(&project),
+                request,
+            )
+            .await
+    };
+    let result = match outcome {
         Ok(result) => result,
         Err(error) => {
             let diagnostic_path =
@@ -648,7 +993,7 @@ async fn master(
                     "outcome_known": error.outcome_known,
                     "candidates": &error.candidates,
                 },
-                "receipts": receipts,
+                "receipts": &receipts,
             });
             let body = serde_json::to_vec_pretty(&diagnostic)?;
             let mut file = OpenOptions::new()
@@ -658,7 +1003,14 @@ async fn master(
             file.write_all(&body)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            if !emit_sfx_bounded_native_error(
+                evidence_path,
+                "native_master_error",
+                &error,
+                &receipts,
+            )? {
+                eprintln!("{}", serde_json::to_string(&diagnostic)?);
+            }
             return Err(error.into());
         }
     };
@@ -785,6 +1137,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             export_direct_parity_film(&database, &evidence)
+        }
+        "sfx-visual-preflight" => {
+            let database = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            preflight_original_sfx_visual_film(&database)
         }
         "render" => {
             let database = path_arg(&mut args);

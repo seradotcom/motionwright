@@ -34,10 +34,15 @@ mod mlt_timeline;
 #[cfg(test)]
 mod path_boundary_tests;
 mod recovery;
+mod semantic_sfx_av;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
+pub use semantic_sfx_av::{
+    PreparedSemanticSfxWav, SemanticSfxAvSourceProof, prepare_semantic_sfx_av_audio,
+    verify_semantic_sfx_av_source,
+};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;

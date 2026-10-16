@@ -140,3 +140,7 @@ jobs:
         run: cargo check -p motionwright-desktop
       - name: Exercise read-only native portable MP4 verifier
         run: cargo test -p motionwright-desktop --bin motionwright-desktop media_integrity::tests -- --nocapture
+      - name: Verify original SFX owner preview and desktop IPC command
+        run: |
+          cargo test -p motionwright-desktop --bin motionwright-desktop native_preview::tests::semantic_sfx_master_requires_same_registered_owner_root_and_original_film_options
+          cargo test -p motionwright-desktop --bin motionwright-desktop sfx_av_master::tests

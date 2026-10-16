@@ -304,6 +304,38 @@ impl NativePreviewRegistry {
         Ok(entry.source_evidence)
     }
 
+    /// An SFX-only master cannot substitute a new Semwright connection after
+    /// the owner issued the original native visual preview. This additional
+    /// bound is intentionally additive; existing voice and source preview
+    /// commands keep their established contracts.
+    pub fn require_semantic_sfx_source_root(
+        &self,
+        project: &Project,
+        token: Uuid,
+        deliverable_id: Uuid,
+        owner_root: &Path,
+    ) -> Result<(), String> {
+        self.master_source(project, token, deliverable_id)?;
+        let registered = self
+            .inner
+            .grants
+            .lock()
+            .map_err(|_| "Original native preview registry is unavailable.".to_owned())?;
+        let source = registered
+            .iter()
+            .find(|record| record.token == token)
+            .ok_or_else(|| "Original native preview session expired.".to_owned())?;
+        if source.output_root != owner_root
+            || source.source_options.is_none()
+            || source.project_id != project.id
+            || source.generation != project.generation
+            || source.revision != project.revision
+        {
+            return Err("SFX mastering requires the same authenticated owner output root and original native Film intent.".into());
+        }
+        Ok(())
+    }
+
     /// All source/intent/paths are taken from the owner-issued registry entry.
     /// WebView only provides an opaque token and expected project/profile.
     pub fn multi_segment_source(
@@ -546,6 +578,62 @@ mod tests {
         assert!(
             trusted
                 .multi_segment_source(&project, issued[0].token, Uuid::now_v7())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn semantic_sfx_master_requires_same_registered_owner_root_and_original_film_options() {
+        let root = tempfile::tempdir().unwrap();
+        let wrong = tempfile::tempdir().unwrap();
+        let project = project();
+        let (_, evidence) = sample(root.path(), &project);
+        let id = project.deliverables[0].id;
+        let unsigned = NativePreviewRegistry::default();
+        let legacy = unsigned.register(root.path(), &project.resource_key(), &evidence);
+        assert!(
+            unsigned
+                .require_semantic_sfx_source_root(&project, legacy[0].token, id, root.path())
+                .is_err()
+        );
+        let intent: FilmBuildOptions = serde_json::from_value(json!({
+            "frame_rate": {"num":30,"den":1},
+            "font_family": "Instrument Sans Variable",
+            "mono_font_family": "IBM Plex Mono",
+            "scene_intents": [{
+                "scene_id": project.scenes[0].id,
+                "role":"mechanism", "archetype":"statement"
+            }]
+        }))
+        .unwrap();
+        let original = NativePreviewRegistry::default();
+        let issued = original.register_with_options(
+            root.path(),
+            &project.resource_key(),
+            &evidence,
+            &intent,
+        );
+        assert_eq!(issued.len(), 1);
+        assert!(
+            original
+                .require_semantic_sfx_source_root(&project, issued[0].token, id, root.path())
+                .is_ok()
+        );
+        assert!(
+            original
+                .require_semantic_sfx_source_root(&project, issued[0].token, id, wrong.path())
+                .is_err()
+        );
+        assert!(
+            original
+                .require_semantic_sfx_source_root(&project, Uuid::new_v4(), id, root.path())
+                .is_err()
+        );
+        let mut stale = project.clone();
+        stale.revision += 1;
+        assert!(
+            original
+                .require_semantic_sfx_source_root(&stale, issued[0].token, id, root.path())
                 .is_err()
         );
     }

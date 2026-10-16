@@ -788,6 +788,37 @@ export async function assembleNativeAvMaster(
   });
 }
 
+/** v0.5: Assemble an SFX-ONLY source-bound H.264/AAC MP4 from one
+ * owner-registered Motion Canvas preview, never from WebView file paths.
+ * The installed backend reopens all original PCM assets through CAS and
+ * requires the same one-time local render permission as voice mastering.
+ */
+export async function assembleNativeSemanticSfxAvMaster(
+  project: Project,
+  deliverableId: string,
+  previewToken: string,
+): Promise<MltAvMasterEvidence> {
+  if (!isTauri()) {
+    throw new Error("Original semantic SFX mastering requires the installed desktop runtime.");
+  }
+  if (!previewToken || !deliverableId) {
+    throw new Error("A real registered native preview and saved profile are required.");
+  }
+  const requestId = crypto.randomUUID();
+  const grant = await issueEffectGrant("render_local", project, requestId);
+  return invoke<MltAvMasterEvidence>("assemble_semantic_sfx_av_master", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+      request_id: requestId,
+      effect_grant: grant.token,
+      deliverable_id: deliverableId,
+      preview_token: previewToken,
+    },
+  });
+}
+
 /** Assemble a measured-voice MP4 from an already previewed *multi-segment*
  * source. Only an unguessable preview token and the saved voice/profile enter
  * IPC; all film options, actual media paths, and hashes stay owner-side.
