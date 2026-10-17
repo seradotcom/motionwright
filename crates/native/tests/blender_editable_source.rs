@@ -864,39 +864,85 @@ fn stored_custody_rejects_missing_rows_even_with_a_supplied_completed_receipt() 
 
 #[test]
 fn stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch() {
-    let fixture = stored_source_fixture(true);
-    let mut unknown = source_observation_input(&fixture, "outcome_unknown");
-    unknown.payload = json!({"scope":"synthetic-uncertain-observation", "outcome_known":false});
-    fixture.service.append_production_receipt(unknown).unwrap();
-    append_unrelated_receipts(&fixture, 0, 300);
-    let before = fixture
-        .service
-        .production_receipt_watermark(fixture.project.id)
-        .unwrap();
-    assert!(
-        verify_blender_editable_stored_evidence_custody(&fixture.service, &fixture.evidence)
-            .is_err()
-    );
-    assert_eq!(
-        fixture
+    // The same assertions cover a missing completion and an older UNKNOWN
+    // hidden behind complete newer pairs plus an extra known observation.
+    for newer_pairs_before_unknown in [false, true] {
+        let mut fixture = stored_source_fixture(!newer_pairs_before_unknown);
+        let mut unknown = source_observation_input(&fixture, "outcome_unknown");
+        if newer_pairs_before_unknown {
+            let proof = fixture.evidence.stages.last().unwrap();
+            unknown.request_id = proof.request_id.clone();
+            unknown.request_sha256 = proof.request_sha256.clone();
+            unknown.command = proof.command.clone();
+        }
+        unknown.payload = json!({"scope":"synthetic-uncertain-observation", "outcome_known":false});
+        let original_unknown = fixture.service.append_production_receipt(unknown).unwrap();
+        append_unrelated_receipts(&fixture, 0, 300);
+        if newer_pairs_before_unknown {
+            // Append trusted-store rows, not caller JSON authority. These
+            // duplicates must never justify accepting or replaying the job.
+            let rows = stored_journal_rows(&fixture);
+            for proof in &mut fixture.evidence.stages {
+                for stage in ["dispatching", "completed"] {
+                    let original = rows
+                        .iter()
+                        .find(|row| row["request_id"] == proof.request_id && row["stage"] == stage)
+                        .unwrap();
+                    let input = motionwright_storage::ProductionReceiptInput {
+                        project_id: fixture.project.id,
+                        generation: fixture.project.generation,
+                        revision: fixture.project.revision,
+                        request_id: proof.request_id.clone(),
+                        request_sha256: proof.request_sha256.clone(),
+                        command: proof.command.clone(),
+                        stage: stage.into(),
+                        payload: original["payload"].clone(),
+                    };
+                    let receipt = fixture.service.append_production_receipt(input).unwrap();
+                    if stage == "completed" {
+                        proof.response["receipt"] = serde_json::to_value(receipt).unwrap();
+                    }
+                }
+            }
+            fixture
+                .service
+                .append_production_receipt(source_observation_input(&fixture, "completed"))
+                .unwrap();
+        }
+        let before = fixture
             .service
             .production_receipt_watermark(fixture.project.id)
-            .unwrap(),
-        before
-    );
-    assert_eq!(
-        fixture
-            .service
-            .latest_production_receipt(fixture.project.id, &fixture.evidence.stages[0].request_id)
-            .unwrap()
-            .unwrap()
-            .stage,
-        "outcome_unknown"
-    );
-    assert_eq!(
-        serde_json::to_value(fixture.service.project(fixture.project.id).unwrap()).unwrap(),
-        serde_json::to_value(&fixture.project).unwrap()
-    );
+            .unwrap();
+        let before_rows = stored_journal_rows(&fixture);
+        assert!(before_rows.len() > 256);
+        let error =
+            verify_blender_editable_stored_evidence_custody(&fixture.service, &fixture.evidence)
+                .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(
+            !error.outcome_known,
+            "an original UNKNOWN must retain its uncertainty"
+        );
+        assert_eq!(
+            fixture
+                .service
+                .production_receipt_watermark(fixture.project.id)
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            stored_journal_rows(&fixture),
+            before_rows,
+            "classification must neither append repair/dispatch rows nor rewrite the original journal"
+        );
+        assert!(before_rows.iter().any(
+            |row| row["id"] == json!(original_unknown.id) && row["stage"] == "outcome_unknown"
+        ));
+        assert_eq!(
+            serde_json::to_value(fixture.service.project(fixture.project.id).unwrap()).unwrap(),
+            serde_json::to_value(&fixture.project).unwrap()
+        );
+    }
 }
 
 #[test]
@@ -977,4 +1023,73 @@ fn snapshot_page_rejects_journal_growth_even_when_project_revision_is_unchanged(
         serde_json::to_value(fixture.service.project(fixture.project.id).unwrap()).unwrap(),
         serde_json::to_value(&fixture.project).unwrap()
     );
+}
+
+fn stored_journal_rows(fixture: &StoredSourceFixture) -> Vec<Value> {
+    let watermark = fixture
+        .service
+        .production_receipt_watermark(fixture.project.id)
+        .unwrap();
+    let mut before = None;
+    let mut rows = Vec::new();
+    while rows.len() < usize::try_from(watermark.count).unwrap() {
+        let page = fixture
+            .service
+            .production_receipts_snapshot_page(fixture.project.id, &watermark, before, 256)
+            .unwrap();
+        assert!(!page.is_empty());
+        before = page.last().map(|row| row.id);
+        rows.extend(
+            page.into_iter()
+                .map(|row| serde_json::to_value(row).unwrap()),
+        );
+    }
+    assert_eq!(rows.len(), usize::try_from(watermark.count).unwrap());
+    assert_eq!(
+        fixture
+            .service
+            .production_receipt_watermark(fixture.project.id)
+            .unwrap(),
+        watermark
+    );
+    rows
+}
+
+#[test]
+fn data_only_custody_classifies_every_selected_unknown_before_pair_errors() {
+    let (evidence, mut journal) = synthetic_full_chain();
+    // The first request is already invalid before the later request is reached.
+    journal.push(evidence.stages[0].response["receipt"].clone());
+    let last = evidence.stages.last().unwrap();
+    let mut unknown = last.response["receipt"].clone();
+    unknown["stage"] = json!("outcome_unknown");
+    unknown["payload"] = json!({"outcome_known":false});
+    journal.push(unknown);
+    let before = journal.clone();
+    for error in [
+        verify_blender_editable_evidence_custody(&evidence, &journal).unwrap_err(),
+        verify_blender_editable_stage_custody(&evidence.source, last, &journal).unwrap_err(),
+    ] {
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(!error.outcome_known);
+    }
+    assert_eq!(journal, before);
+}
+
+#[test]
+fn stored_custody_does_not_reclassify_known_denial_as_unknown() {
+    let fixture = stored_source_fixture(true);
+    let mut denied = source_observation_input(&fixture, "failed_known");
+    denied.payload = json!({"error":{"code":"policy_denied", "outcome_known":true}});
+    fixture.service.append_production_receipt(denied).unwrap();
+    let before = stored_journal_rows(&fixture);
+    let error =
+        verify_blender_editable_stored_evidence_custody(&fixture.service, &fixture.evidence)
+            .unwrap_err();
+    assert_eq!(error.code, ErrorCode::BackendFailed);
+    assert!(
+        error.outcome_known,
+        "known denial is a failed proof, not an uncertain native mutation"
+    );
+    assert_eq!(stored_journal_rows(&fixture), before);
 }
