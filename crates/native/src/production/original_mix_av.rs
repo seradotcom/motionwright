@@ -470,13 +470,10 @@ fn original_mix_stage_disposition<'a>(
             .and_then(Value::as_str)
             .is_none_or(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
         || execution.dry_run
-        || provenance.untrusted_metadata
+        || !provenance.untrusted_metadata
         || provenance.provider != "driver:mlt-video"
         || provenance.source != semwright_native_sdk::types::SourceKind::Driver
-        || provenance
-            .execution_provider
-            .as_deref()
-            .is_some_and(|provider| provider != "driver:mlt-video")
+        || provenance.execution_provider.as_deref() != Some("driver:mlt-video")
         || !super::is_sha256(&provenance.descriptor_sha256)
         || provider_generation.is_some_and(|prior| prior != generation)
     {
@@ -572,6 +569,7 @@ fn classify_mix_attempt_rows(
     let mut provider_generation = None;
     let mut descriptors = BTreeMap::new();
     let mut original_job: Option<String> = None;
+    let mut render_succeeded = false;
     for (index, stage) in stages.iter().enumerate() {
         let Some(rows) = journal.rows.get(&stage.request_id) else {
             return uncertain(Reason::IncompleteOriginalStage);
@@ -643,6 +641,15 @@ fn classify_mix_attempt_rows(
         if job_observation && native_state == Some("unknown") {
             return uncertain(Reason::OriginalUnknown);
         }
+        // The producer stops polling at the first success and requests the
+        // result only after that observation. A result cannot fill a missing
+        // poll or close a queued/starting/running original on its own.
+        if stage.command == "driver.mlt-video.render.status" && render_succeeded {
+            return uncertain(Reason::AmbiguousOriginalStage);
+        }
+        if stage.command == "driver.mlt-video.render.result" && !render_succeeded {
+            return uncertain(Reason::IncompleteOriginalStage);
+        }
         let known_job_failure =
             job_observation && matches!(native_state, Some("failed" | "cancelled"));
         if disposition.known_failed || known_job_failure {
@@ -658,7 +665,18 @@ fn classify_mix_attempt_rows(
                 Some(disposition.terminal.id),
             );
         }
-        if stage.command == "driver.mlt-video.render.result" && native_state != Some("succeeded") {
+        if matches!(
+            stage.command,
+            "driver.mlt-video.render.start" | "driver.mlt-video.render.status"
+        ) {
+            match native_state {
+                Some("succeeded") => render_succeeded = true,
+                Some("queued" | "starting" | "running") => {}
+                _ => return uncertain(Reason::IncompleteOriginalStage),
+            }
+        } else if stage.command == "driver.mlt-video.render.result"
+            && native_state != Some("succeeded")
+        {
             return uncertain(Reason::IncompleteOriginalStage);
         }
     }
@@ -929,14 +947,13 @@ fn original_motion_stage<'a>(
     let generation = provenance
         .provider_generation
         .ok_or_else(motion_source_mismatch)?;
+    // SDK54 classifies Driver descriptions as untrusted metadata. Their
+    // invocation must still come from the exact expected provider worker.
     if execution.dry_run
-        || provenance.untrusted_metadata
+        || !provenance.untrusted_metadata
         || provenance.provider != "driver:motion-canvas"
         || provenance.source != semwright_native_sdk::types::SourceKind::Driver
-        || provenance
-            .execution_provider
-            .as_deref()
-            .is_some_and(|provider| provider != "driver:motion-canvas")
+        || provenance.execution_provider.as_deref() != Some("driver:motion-canvas")
         || !super::is_sha256(&provenance.descriptor_sha256)
         || authority
             .connection_identity

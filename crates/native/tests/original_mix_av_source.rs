@@ -1665,7 +1665,7 @@ mod canonical_film_source_custody {
                 provider_version: "fixture/1".into(),
                 capability_version: "1".into(),
                 descriptor_sha256: sha256(command.as_bytes()),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(42),
@@ -2105,13 +2105,18 @@ mod canonical_film_source_custody {
     }
 
     #[test]
-    fn canonical_film_source_rejects_foreign_stage_authority_and_explicit_false_omissions() {
+    fn canonical_film_source_rejects_foreign_stage_authority_and_metadata_omissions() {
         for variant in [
             "connection",
             "generation",
             "provider",
+            "source",
+            "missing_generation",
+            "invalid_descriptor",
+            "missing_execution_provider",
+            "foreign_execution_provider",
             "dry_run",
-            "untrusted",
+            "driver_claimed_builtin_metadata",
             "missing_dry_run",
             "missing_untrusted",
             "unchecked",
@@ -2128,10 +2133,30 @@ mod canonical_film_source_custody {
                     source.rows[3].payload["result"]["execution"]["provenance"]["provider"] =
                         json!("driver:blender")
                 }
+                "source" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["source"] =
+                        serde_json::to_value(SourceKind::Builtin).unwrap()
+                }
+                "missing_generation" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["provider_generation"] =
+                        Value::Null
+                }
+                "invalid_descriptor" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["descriptor_sha256"] =
+                        json!("not-a-sha256")
+                }
+                "missing_execution_provider" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["execution_provider"] =
+                        Value::Null
+                }
+                "foreign_execution_provider" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["execution_provider"] =
+                        json!("driver:blender")
+                }
                 "dry_run" => source.rows[3].payload["result"]["execution"]["dry_run"] = json!(true),
-                "untrusted" => {
+                "driver_claimed_builtin_metadata" => {
                     source.rows[3].payload["result"]["execution"]["provenance"]["untrusted_metadata"] =
-                        json!(true)
+                        json!(false)
                 }
                 "missing_dry_run" => {
                     source.rows[3].payload["result"]["execution"]
@@ -2824,6 +2849,247 @@ mod canonical_film_source_custody {
                     "scope": "synthetic-original-disposition-not-native-media-verification",
                 })));
             rows
+        }
+
+        fn completed_attempt_fixture() -> (
+            Fixture,
+            SyntheticMotionSource,
+            String,
+            Vec<ProductionReceiptInput>,
+        ) {
+            let (f, source) = source_fixture();
+            append_rows(&f, &source.rows);
+            let original = observe(&f, &source);
+            // A source/provenance failure must not mask the MLT condition.
+            assert_eq!(original["state"], "not_started");
+            let identity = original["native_request_id"].as_str().unwrap().to_owned();
+            let rows = completed_mlt_rows(&f, &source, &identity);
+            (f, source, identity, rows)
+        }
+
+        fn observe_original_rows(
+            f: &Fixture,
+            source: &SyntheticMotionSource,
+            rows: &[ProductionReceiptInput],
+        ) -> Value {
+            let ids = append_rows(f, rows);
+            let observed = observe(f, source);
+            let retained = observed["original_receipts"].as_array().unwrap();
+            for (row, id) in rows.iter().zip(&ids) {
+                let original = retained
+                    .iter()
+                    .find(|item| item["id"] == json!(id))
+                    .unwrap();
+                assert_eq!(original["request_id"], row.request_id);
+                assert_eq!(original["request_sha256"], row.request_sha256);
+                assert_eq!(original["payload"], row.payload);
+            }
+            observed
+        }
+
+        fn rewrite_mlt_execution(
+            rows: &mut [ProductionReceiptInput],
+            mut rewrite: impl FnMut(&mut InvocationProvenance),
+        ) {
+            // Alter every selected MLT terminal coherently, then persist the
+            // exact SDK-typed payloads as original Store rows. This is not a
+            // caller-side report that disagrees with another retained copy.
+            for row in rows.iter_mut().filter(|row| row.stage == "completed") {
+                assert!(row.command.starts_with("driver.mlt-video."));
+                let mut execution: Execution =
+                    serde_json::from_value(row.payload["result"]["execution"].clone()).unwrap();
+                rewrite(execution.provenance.as_mut().unwrap());
+                row.payload["result"]["execution"] = serde_json::to_value(execution).unwrap();
+            }
+        }
+
+        fn replace_original_polls(
+            f: &Fixture,
+            identity: &str,
+            rows: &mut Vec<ProductionReceiptInput>,
+            states: &[&str],
+        ) {
+            let job = rows
+                .iter()
+                .find(|row| {
+                    row.command == "driver.mlt-video.render.start" && row.stage == "completed"
+                })
+                .unwrap()
+                .payload["result"]["data"]["job"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            rows.retain(|row| row.command != "driver.mlt-video.render.status");
+            let result_index = rows
+                .iter()
+                .position(|row| {
+                    row.command == "driver.mlt-video.render.result" && row.stage == "dispatching"
+                })
+                .unwrap();
+            let mut polls = Vec::new();
+            for (index, state) in states.iter().enumerate() {
+                polls.extend(mlt_pair(
+                    f,
+                    &format!("{identity}-visual:mlt:status:{}", index + 1),
+                    "driver.mlt-video.render.status",
+                    false,
+                    json!({"job": &job}),
+                    json!({"job": &job, "state": state}),
+                ));
+            }
+            drop(rows.splice(result_index..result_index, polls));
+        }
+
+        #[test]
+        fn original_mix_attempt_sdk_driver_provenance_completes_original_chain() {
+            let (f, source, _, rows) = completed_attempt_fixture();
+            for row in rows.iter().filter(|row| row.stage == "completed") {
+                let execution: Execution =
+                    serde_json::from_value(row.payload["result"]["execution"].clone()).unwrap();
+                let provenance = execution.provenance.unwrap();
+                assert!(!execution.dry_run);
+                assert_eq!(provenance.source, SourceKind::Driver);
+                assert!(provenance.untrusted_metadata);
+                assert_eq!(provenance.provider, "driver:mlt-video");
+                assert_eq!(
+                    provenance.execution_provider.as_deref(),
+                    Some("driver:mlt-video")
+                );
+            }
+            let observed = observe_original_rows(&f, &source, &rows);
+            assert_eq!(observed["state"], "completed");
+            assert_eq!(observed["reason"], "original_mux_completed");
+            assert_eq!(observed["outcome_known"], true);
+            assert!(observed.get("decoded_pcm_pass").is_none());
+        }
+
+        #[test]
+        fn original_mix_attempt_coherent_driver_metadata_false_is_not_authority() {
+            let (f, source, _, mut rows) = completed_attempt_fixture();
+            rewrite_mlt_execution(&mut rows, |provenance| {
+                provenance.untrusted_metadata = false
+            });
+            let observed = observe_original_rows(&f, &source, &rows);
+            assert_eq!(observed["state"], "uncertain");
+            assert_eq!(observed["reason"], "foreign_original_stage");
+            assert_eq!(observed["outcome_known"], false);
+        }
+
+        #[test]
+        fn original_mix_attempt_coherent_missing_execution_provider_is_not_authority() {
+            for explicit_null in [false, true] {
+                let (f, source, _, mut rows) = completed_attempt_fixture();
+                rewrite_mlt_execution(&mut rows, |provenance| provenance.execution_provider = None);
+                for row in rows.iter_mut().filter(|row| row.stage == "completed") {
+                    let provenance = row.payload["result"]["execution"]["provenance"]
+                        .as_object_mut()
+                        .unwrap();
+                    if explicit_null {
+                        provenance.insert("execution_provider".into(), Value::Null);
+                    } else {
+                        provenance.remove("execution_provider");
+                    }
+                }
+                let observed = observe_original_rows(&f, &source, &rows);
+                assert_eq!(
+                    observed["state"], "uncertain",
+                    "explicit_null={explicit_null}"
+                );
+                assert_eq!(observed["reason"], "foreign_original_stage");
+                assert_eq!(observed["outcome_known"], false);
+            }
+        }
+
+        #[test]
+        fn original_mix_attempt_coherent_foreign_execution_provider_is_not_authority() {
+            let (f, source, _, mut rows) = completed_attempt_fixture();
+            rewrite_mlt_execution(&mut rows, |provenance| {
+                provenance.execution_provider = Some("driver:blender".into());
+            });
+            let observed = observe_original_rows(&f, &source, &rows);
+            assert_eq!(observed["state"], "uncertain");
+            assert_eq!(observed["reason"], "foreign_original_stage");
+            assert_eq!(observed["outcome_known"], false);
+        }
+
+        #[test]
+        fn original_mix_attempt_queued_start_without_any_poll_stays_uncertain() {
+            let (f, source, identity, mut rows) = completed_attempt_fixture();
+            replace_original_polls(&f, &identity, &mut rows, &[]);
+            let observed = observe_original_rows(&f, &source, &rows);
+            assert_eq!(observed["state"], "uncertain");
+            assert_eq!(observed["reason"], "incomplete_original_stage");
+            assert_eq!(observed["outcome_known"], false);
+        }
+
+        #[test]
+        fn original_mix_attempt_last_pending_poll_cannot_be_closed_by_result() {
+            for state in ["queued", "starting", "running"] {
+                let (f, source, identity, mut rows) = completed_attempt_fixture();
+                replace_original_polls(&f, &identity, &mut rows, &[state]);
+                let observed = observe_original_rows(&f, &source, &rows);
+                assert_eq!(observed["state"], "uncertain", "{state}");
+                assert_eq!(observed["reason"], "incomplete_original_stage", "{state}");
+                assert_eq!(observed["outcome_known"], false, "{state}");
+            }
+        }
+
+        #[test]
+        fn original_mix_attempt_succeeded_start_without_polls_completes() {
+            let (f, source, identity, mut rows) = completed_attempt_fixture();
+            replace_original_polls(&f, &identity, &mut rows, &[]);
+            let start = rows
+                .iter_mut()
+                .find(|row| {
+                    row.command == "driver.mlt-video.render.start" && row.stage == "completed"
+                })
+                .unwrap();
+            start.payload["result"]["data"]["state"] = json!("succeeded");
+            let observed = observe_original_rows(&f, &source, &rows);
+            assert_eq!(observed["state"], "completed");
+            assert_eq!(observed["reason"], "original_mux_completed");
+            assert_eq!(observed["outcome_known"], true);
+        }
+
+        #[test]
+        fn original_mix_attempt_contiguous_pending_polls_then_success_completes() {
+            let (f, source, identity, mut rows) = completed_attempt_fixture();
+            replace_original_polls(
+                &f,
+                &identity,
+                &mut rows,
+                &["queued", "starting", "running", "succeeded"],
+            );
+            let observed = observe_original_rows(&f, &source, &rows);
+            assert_eq!(observed["state"], "completed");
+            assert_eq!(observed["reason"], "original_mux_completed");
+            assert_eq!(observed["outcome_known"], true);
+        }
+
+        #[test]
+        fn original_mix_attempt_poll_after_original_success_is_ambiguous() {
+            for success_at_start in [false, true] {
+                let (f, source, identity, mut rows) = completed_attempt_fixture();
+                if success_at_start {
+                    let start = rows
+                        .iter_mut()
+                        .find(|row| {
+                            row.command == "driver.mlt-video.render.start"
+                                && row.stage == "completed"
+                        })
+                        .unwrap();
+                    start.payload["result"]["data"]["state"] = json!("succeeded");
+                } else {
+                    replace_original_polls(&f, &identity, &mut rows, &["succeeded", "queued"]);
+                }
+                let observed = observe_original_rows(&f, &source, &rows);
+                assert_eq!(
+                    observed["state"], "uncertain",
+                    "success_at_start={success_at_start}"
+                );
+                assert_eq!(observed["reason"], "ambiguous_original_stage");
+                assert_eq!(observed["outcome_known"], false);
+            }
         }
 
         #[test]
