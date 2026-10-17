@@ -12,7 +12,7 @@ When a text input is focused, transport shortcuts are suspended. Opening from a 
 
 The layout adapts compact, familiar production controls from DaVinci Resolve Edit (https://www.blackmagicdesign.com/mx/products/davinciresolve/edit) and Adobe Premiere workspaces (https://helpx.adobe.com/premiere/desktop/get-started/tour-the-workspace/manage-workspaces.html). Frame.io review comparisons (https://help.frame.io/en/articles/9952618-comparison-viewer) informed separation between navigation and content approval. No third-party assets are copied.
 
-The project-local Impeccable skill, PRODUCT.md, and DESIGN.md provide the lasting design constraints.
+The product boundaries in [PRODUCT.md](../PRODUCT.md) and editor design rules in [DESIGN.md](../DESIGN.md) provide the lasting design constraints.
 
 ## Checks
 

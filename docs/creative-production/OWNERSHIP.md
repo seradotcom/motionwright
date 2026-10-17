@@ -16,6 +16,22 @@ The public integration surfaces include authored production plans, components, s
 
 Creative movement, camera and composition are admitted only where the target renderer can preserve their declared semantics. Existing linear position, bounded entrance motion and native media realization have distinct validation rules. Unsupported motion or missing authority must produce an explicit diagnostic instead of inventing an approximation.
 
+## Native creative operations
+
+The public application catalog includes these revision-bound operations:
+
+- `driver.motionwright.product-hero.upsert` and `driver.motionwright.product-hero.detach`.
+- `driver.motionwright.production-plan.set` and `driver.motionwright.native-capsule.upsert`.
+- `driver.motionwright.creative.patch.apply` and `driver.motionwright.creative.patch.undo`.
+
+Their observations retain explicit project references, caller authority, effect grants, idempotency and bounded receipt pages. Creative undo is an explicit domain operation checked against the current revision. The Native SDK integration declares `UndoSemantics::None`; it does not advertise the SDK's generic automatic-undo contract as implemented.
+
+## Source traceability
+
+The [migration contracts](README.md#data-and-migration-contracts) document the format-1 to format-2 boundary and the [motion and typography contracts](README.md#native-motion-and-typography-boundary) record the source reconciliation for the separate motion admissions. [Original acceptance records](../acceptance/README.md) and the [creative requirement ledger](requirements-status.json) preserve the inherited IDs and distinguish implementation scope from independent acceptance.
+
+The [source-pinned creative record](https://github.com/seradotcom/motionwright/blob/9061f58f06ce231a9b3247f8f33a23a700e7a801/docs/creative-production/requirements-status.json) retains the historical scope and open criteria. Current dependency identity comes from SOURCE_LOCK.json; a historical source reference does not certify a later package or mark an unexecuted criterion as passed.
+
 ## Verification and evidence
 
 Domain, storage, native and Studio tests exercise serialization, conflict handling, source identity and bounded render contracts. Native outputs and package artifacts require the exact source revision and independently checked bytes. Tests and examples never substitute for original-media rights, installed-device acceptance or human creative review.
