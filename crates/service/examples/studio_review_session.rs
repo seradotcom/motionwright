@@ -19,6 +19,10 @@
 #[allow(dead_code)] // This transport deliberately exposes only the tested local subset.
 mod effect_grants;
 
+#[path = "../../../apps/desktop/src-tauri/src/project_library.rs"]
+#[allow(dead_code)] // The exact desktop read/creation module, without Tauri transport.
+mod project_library;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, HeroConfig, NodeStyle,
@@ -355,6 +359,7 @@ pub struct Session {
     database: PathBuf,
     service: StudioService,
     grants: EffectGrantRegistry,
+    workspace_session: Uuid,
     desktop_invoke_fixture: bool,
 }
 
@@ -381,6 +386,7 @@ impl Session {
             database,
             service,
             grants: EffectGrantRegistry::default(),
+            workspace_session: Uuid::now_v7(),
             desktop_invoke_fixture: false,
         })
     }
@@ -404,20 +410,26 @@ impl Session {
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
             "bootstrap" => {
-                let project = self
-                    .service
-                    .projects(1)
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .next()
-                    .ok_or("No Motionwright project is available")?;
-                let hero = project.production_design.heroes.first();
-                let other = project
-                    .scenes
-                    .iter()
-                    .find(|scene| scene.name == "Independent synthetic scene");
+                let selection_request = match args.get("request") {
+                    None | Some(Value::Null) => project_library::BootstrapRequest::default(),
+                    Some(value) => {
+                        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?
+                    }
+                };
+                let (project, project_selection) =
+                    project_library::bootstrap_project(&self.service, selection_request);
+                let hero = project
+                    .as_ref()
+                    .and_then(|project| project.production_design.heroes.first());
+                let other = project.as_ref().and_then(|project| {
+                    project
+                        .scenes
+                        .iter()
+                        .find(|scene| scene.name == "Independent synthetic scene")
+                });
                 Ok(json!({
                     "project": project,
+                    "project_selection": project_selection,
                     "native_sdk": {
                         "application": "motionwright",
                         "pinned_revision": "54d3459a051adbce4cae9f60c0dea8f60c824be6",
@@ -436,10 +448,37 @@ impl Session {
                         "hero_instance_id": hero.map(|item| item.id),
                         "other_scene_id": other.map(|scene| scene.id),
                         "other_node_id": other.and_then(|scene| scene.nodes.first().map(|node| node.id)),
-                        "asset_sha256": project.assets.first().and_then(|asset| asset.content_sha256.as_deref())
+                        "asset_sha256": project.as_ref().and_then(|project| project.assets.first()).and_then(|asset| asset.content_sha256.as_deref())
                     }
                 }))
             }
+            "list_projects" => encoded(project_library::list_projects(
+                &self.service,
+                request(args)?,
+            )?),
+            "open_project" => encoded(project_library::open_project(
+                &self.service,
+                request(args)?,
+            )?),
+            "issue_project_creation_grant" => encoded(project_library::issue_creation_grant(
+                &self.grants,
+                self.workspace_session,
+                // Explicit test-transport window label; the desktop wrapper
+                // instead supplies the actual injected WebviewWindow label.
+                "service-test-window",
+                &request(args)?,
+            )?),
+            "create_project" => encoded(project_library::create_project(
+                &self.service,
+                &self.grants,
+                self.workspace_session,
+                "service-test-window",
+                request(args)?,
+            )?),
+            "recover_project_creation" => encoded(project_library::recover_project_creation(
+                &self.service,
+                &request(args)?,
+            )?),
             "issue_effect_grant" => {
                 let request: GrantRequest = request(args)?;
                 if !matches!(

@@ -14,7 +14,7 @@ import { createInterface } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
 import type {
-  Bootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
+  StudioBootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
   PortableBundlePlan, Project, ProjectEvent, WaveformPage,
 } from "../../src/types";
 
@@ -31,7 +31,7 @@ export type ServiceRpcResponse<T = unknown> =
   | { id: RpcId; ok: true; result: T }
   | { id: RpcId; ok: false; error: string };
 
-export interface ServiceBootstrap extends Bootstrap {
+export interface ServiceStartup extends StudioBootstrap {
   test_transport: "service-test-jsonl";
   evidence_scope: string;
   /** Explicit browser fixture routing, never a claim of installed Tauri. */
@@ -46,6 +46,8 @@ export interface ServiceBootstrap extends Bootstrap {
     asset_sha256: string | null;
   };
 }
+
+export interface ServiceBootstrap extends ServiceStartup { project: Project }
 
 export interface ScopedChangeServiceOptions {
   /** Existing or new absolute test SQLite path; never deleted by this helper. */
@@ -205,8 +207,8 @@ export class ScopedChangeService {
     try {
       await service.start();
       // A real response confirms both successful process startup and the
-      // fixture/database contract before the browser attaches.
-      await service.bootstrap();
+      // transport/database contract, without implicitly selecting a project.
+      await service.bootstrap(null);
       return service;
     } catch (error) {
       const [closed] = await Promise.allSettled([service.close()]);
@@ -377,8 +379,8 @@ export class ScopedChangeService {
     return response.result;
   }
 
-  async bootstrap(): Promise<ServiceBootstrap> {
-    const response = await this.invoke<ServiceBootstrap>("bootstrap");
+  async bootstrap(projectId: string | null): Promise<ServiceStartup> {
+    const response = await this.invoke<ServiceStartup>("bootstrap", { request: { project_id: projectId } });
     if (response.test_transport !== "service-test-jsonl" || response.fixture?.label !== "synthetic_test_fixture") {
       this.taint("transport_failure", "The executable did not identify the required real-service test transport");
       throw new Error("The executable did not identify the real-service synthetic test transport");
@@ -388,6 +390,24 @@ export class ScopedChangeService {
       throw new Error("The test executable did not enable the explicitly requested browser desktop-invoke fixture");
     }
     return response;
+  }
+
+  /** Explicit test arrangement only: ambiguity is an error, never latest-wins. */
+  async fixtureBootstrap(projectId?: string): Promise<ServiceBootstrap> {
+    if (!projectId) {
+      const page = await this.invoke<{ items: { id: string }[]; truncated: boolean }>(
+        "list_projects", { request: { cursor: null, limit: 2 } });
+      if (page.truncated || page.items.length !== 1) {
+        throw new Error("Choose the explicit fixture project identity; the real index is empty or ambiguous");
+      }
+      projectId = page.items[0].id;
+    }
+    const response = await this.bootstrap(projectId);
+    if (!response.project || response.project.id !== projectId ||
+        response.project_selection.status !== "selected" || response.project_selection.project_id !== projectId) {
+      throw new Error("The explicitly chosen fixture project could not be opened");
+    }
+    return response as ServiceBootstrap;
   }
 
   project(projectId: string): Promise<Project> {
@@ -486,10 +506,21 @@ export class ScopedChangeService {
   }
 
   /** Install before page.goto; every invoke crosses into the real process. */
-  async attachPage(page: Page): Promise<void> {
+  async attachPage(page: Page, projectId: string | null): Promise<void> {
     const binding = `__motionwright_service_rpc_${randomUUID().replaceAll("-", "")}`;
     await page.exposeBinding(binding, async (_source, command: string, args?: InvokeArgs) => this.invoke(command, args));
-    await page.addInitScript(({ name }) => {
+    await page.addInitScript(({ name, selected }) => {
+      // One explicit setup per page attachment. A reload must observe the
+      // user's changed/removed/corrupt preference, not reinstall the fixture.
+      const setupKey = "motionwright.test.fixture-selection:" + name;
+      if (selected !== null && sessionStorage.getItem(setupKey) !== "arranged") {
+        if (localStorage.getItem("motionwright.project-library.selection.v1") === null) {
+          localStorage.setItem("motionwright.project-library.selection.v1", JSON.stringify({
+            schema: "motionwright.project-selection/1", project_id: selected,
+          }));
+        }
+        sessionStorage.setItem(setupKey, "arranged");
+      }
       const runtime = window as unknown as Record<string, unknown>;
       runtime.__MOTIONWRIGHT_SERVICE_TEST_TRANSPORT__ = {
         kind: "service-test-jsonl", fixture: "synthetic_test_fixture",
@@ -501,7 +532,13 @@ export class ScopedChangeService {
           return binding(command, args);
         },
       };
-    }, { name: binding });
+    }, { name: binding, selected: projectId });
+  }
+
+  /** Opt-in fixture arrangement; new/empty-library tests call attachPage(null). */
+  async attachFixturePage(page: Page, projectId?: string): Promise<void> {
+    const fixture = await this.fixtureBootstrap(projectId);
+    await this.attachPage(page, fixture.project.id);
   }
 
   /** Stop the complete process while retaining SQLite/CAS for start()/evidence. */

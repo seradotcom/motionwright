@@ -808,6 +808,16 @@ export interface Bootstrap {
   };
 }
 
+/** Nullable startup wire. Bootstrap above describes an already opened editor view. */
+export interface StudioBootstrap {
+  project: Project | null;
+  project_selection:
+    | { status: "unselected" }
+    | { status: "selected"; project_id: string }
+    | { status: "unavailable"; project_id: string; message: string };
+  native_sdk: Bootstrap["native_sdk"];
+}
+
 export interface PortableBundlePlan {
   project_id: string;
   title: string;

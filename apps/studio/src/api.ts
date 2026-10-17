@@ -20,7 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fixtureBootstrap } from "./fixture";
 import type {
   AssetIntegrityPage,
-  Bootstrap,
+  StudioBootstrap,
   BranchState,
   CanvasKeyframe,
   CaptionExportResult,
@@ -173,9 +173,34 @@ function mergeBranchState(base: BranchState, target: BranchState, source: Branch
   return result;
 }
 
-export async function bootstrap(): Promise<Bootstrap> {
-  if (isTauri()) return invoke<Bootstrap>("bootstrap");
-  return structuredClone(browserState);
+/** Read a specific saved identity or request an unselected library shell. */
+export async function bootstrap(projectId: string | null = null): Promise<StudioBootstrap> {
+  if (!isTauri()) {
+    const demo = structuredClone(browserState);
+    return { ...demo, project_selection: { status: "selected", project_id: demo.project.id } };
+  }
+  const value = await invoke<StudioBootstrap>("bootstrap", { request: { project_id: projectId } });
+  const selection = value?.project_selection;
+  if (!value?.native_sdk || !["tauri", "browser-demo"].includes(value.native_sdk.mode)
+      || typeof value.native_sdk.application !== "string"
+      || typeof value.native_sdk.pinned_revision !== "string" || typeof value.native_sdk.version !== "string"
+      || !selection) throw new Error("The desktop returned an invalid project startup response.");
+  if (projectId === null) {
+    if (selection.status !== "unselected" || value.project !== null) {
+      throw new Error("The desktop selected a project without an explicit identity. No fallback was accepted.");
+    }
+  } else if (selection.status === "unavailable") {
+    if (selection.project_id !== projectId || value.project !== null || typeof selection.message !== "string") {
+      throw new Error("The desktop returned an invalid unavailable-project response.");
+    }
+  } else if (selection.status !== "selected" || selection.project_id !== projectId
+      || !value.project || value.project.id !== projectId
+      || typeof value.project.generation !== "string" || !value.project.generation
+      || !Number.isSafeInteger(value.project.revision) || value.project.revision < 0
+      || !Array.isArray(value.project.scenes) || !Array.isArray(value.project.deliverables)) {
+    throw new Error("The desktop did not return the explicitly requested project.");
+  }
+  return value;
 }
 
 function browserModelDisclosure(
