@@ -76,11 +76,12 @@ jobs:
           "$motionwright_ffprobe" -version
           sha256sum -- "$motionwright_ffmpeg" "$motionwright_ffprobe"
           python3 -c 'import opentimelineio as o; print("OTIO_READER", o.__version__); assert o.__version__ == "0.18.1", "Unexpected OpenTimelineIO reader version"'
-      - name: Run complete OTIO Python discovery with required native tests and no skips
+      - name: Run complete OTIO discovery with explicit platform-specific cases
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json
+          import sys
           import unittest
 
           loader = unittest.TestLoader()
@@ -102,21 +103,35 @@ jobs:
                   "test_faststart_truncation_is_refused_with_intact_stream_metadata",
                   "test_corrupt_source_is_refused_before_export_destination_exists",
                   "test_hash_matched_legacy_corrupt_bundle_is_refused_on_import",
+                  "test_bound_native_cut_reads_real_source_and_preserves_every_raw_and_capsule_byte",
+                  "test_cli_same_byte_relink_and_missing_clip_return_explicit_distinct_statuses",
+                  "test_foreign_or_truncated_relink_bytes_cannot_use_the_original_media_name",
+              )
+          }
+          required_windows = {
+              "test_native_media.WindowsReparsePathTests." + name
+              for name in (
+                  "test_authorized_root_junction_is_rejected",
+                  "test_authorized_root_ancestor_junction_is_rejected",
+                  "test_candidate_junction_cannot_escape_plain_authorized_root",
               )
           }
           if (
-              len(discovered) < 41
+              not sys.platform.startswith("linux")
+              or len(discovered) < 76
               or len(discovered) != len(set(discovered))
               or not required_native.issubset(discovered)
+              or not required_windows.issubset(discovered)
           ):
-              raise SystemExit("Incomplete OTIO discovery: require all existing tests and the four native media admission tests")
+              raise SystemExit("Incomplete OTIO discovery: require existing tests, seven real media cases and three Windows junction cases")
 
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           print(json.dumps({
               "otio_python_discovery": len(discovered),
               "tests_run": result.testsRun,
               "required_native_tests": sorted(required_native),
-              "skipped": len(result.skipped),
+              "skipped": [{"id": test.id(), "reason": reason} for test, reason in result.skipped],
+              "required_windows_tests": sorted(required_windows),
               "failures": len(result.failures),
               "errors": len(result.errors),
               "expected_failures": len(result.expectedFailures),
@@ -125,8 +140,11 @@ jobs:
           complete = (
               result.wasSuccessful()
               and result.testsRun == len(discovered)
-              and not result.skipped
+              and len(result.skipped) == len(required_windows)
+              and {(test.id(), reason) for test, reason in result.skipped}
+                  == {(name, "Real junction admission requires Windows") for name in required_windows}
               and not result.expectedFailures
+              and not result.unexpectedSuccesses
           )
           raise SystemExit(0 if complete else 1)
           PY
@@ -152,5 +170,141 @@ jobs:
         with:
           name: v05-otio-synthetic-public-${{ github.sha }}
           path: verification/otio-public/
+          if-no-files-found: error
+          retention-days: 7
+
+  verified-windows-junction-admission:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify three real Windows junction refusals without skips
+        shell: pwsh
+        run: |
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import sys
+          import traceback
+          import unittest
+
+          root = Path("verification/otio-windows-reparse")
+          root.mkdir(parents=True, exist_ok=False)
+          receipt = {
+              "schema": "motionwright.otio.windows-reparse-ci/1",
+              "status": "NOT_VERIFIED",
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "platform": sys.platform,
+              "python": sys.version,
+              "native_media_execution": False,
+              "nle_receiver_acceptance": "NOT_VERIFIED",
+              "human_acceptance": False,
+          }
+          source_paths = [
+              ".github/workflows/v05-otio-real-media.yml",
+              "tooling/otio-media/bridge.py",
+              "tooling/otio-media/test_bridge.py",
+              "tooling/otio-media/test_native_media.py",
+          ]
+          required = {
+              "test_native_media.WindowsReparsePathTests.test_authorized_root_junction_is_rejected",
+              "test_native_media.WindowsReparsePathTests.test_authorized_root_ancestor_junction_is_rejected",
+              "test_native_media.WindowsReparsePathTests.test_candidate_junction_cannot_escape_plain_authorized_root",
+          }
+
+          def source():
+              def git(*args):
+                  return subprocess.run(
+                      ["git", *args], check=True, capture_output=True, timeout=20,
+                  ).stdout.decode("utf-8").strip()
+              files = {}
+              for rel in source_paths:
+                  path = Path(rel)
+                  info = path.lstat()
+                  if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024 * 1024 or path.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+                      raise RuntimeError("invalid_source_file")
+                  with path.open("rb") as stream:
+                      data = stream.read(16 * 1024 * 1024 + 1)
+                  if len(data) != info.st_size:
+                      raise RuntimeError("source_size_changed")
+                  files[rel] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+              return {
+                  "checkout": git("rev-parse", "HEAD"),
+                  "tree": git("rev-parse", "HEAD^{tree}"),
+                  "tracked_diff": git("diff", "--name-only", "HEAD"),
+                  "files": files,
+              }
+
+          def ids(node):
+              if isinstance(node, unittest.TestSuite):
+                  for child in node:
+                      yield from ids(child)
+              else:
+                  yield node.id()
+
+          before = None
+          try:
+              if os.name != "nt":
+                  raise RuntimeError("requires_actual_windows")
+              before = source()
+              receipt["source_before"] = before
+              if not re.fullmatch(r"[0-9a-f]{40}", os.environ["GITHUB_SHA"]) or before["checkout"] != os.environ["GITHUB_SHA"] or before["tracked_diff"]:
+                  raise RuntimeError("source_identity_differs")
+              sys.path.insert(0, str(Path("tooling/otio-media").resolve(strict=True)))
+              import test_native_media
+              suite = unittest.TestLoader().loadTestsFromTestCase(test_native_media.WindowsReparsePathTests)
+              discovered = list(ids(suite))
+              receipt["discovered_ids"] = discovered
+              if len(discovered) != 3 or set(discovered) != required:
+                  raise RuntimeError("incomplete_windows_reparse_roster")
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              receipt["test_result"] = {
+                  "tests_run": result.testsRun,
+                  "skipped": [{"id": test.id(), "reason": reason} for test, reason in result.skipped],
+                  "failures": [test.id() for test, _ in result.failures],
+                  "errors": [test.id() for test, _ in result.errors],
+                  "expected_failures": [test.id() for test, _ in result.expectedFailures],
+                  "unexpected_successes": [test.id() for test in result.unexpectedSuccesses],
+              }
+              if not result.wasSuccessful() or result.testsRun != 3 or result.skipped or result.expectedFailures or result.unexpectedSuccesses:
+                  raise RuntimeError("windows_reparse_tests_failed")
+              receipt["status"] = "PASS_PATH_ADMISSION_ONLY"
+          except Exception as error:
+              receipt["failure"] = type(error).__name__ + ":" + str(error)
+              (root / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
+          finally:
+              try:
+                  after = source()
+                  receipt["source_after"] = after
+                  if before is None or after != before:
+                      receipt["status"] = "NOT_VERIFIED"
+                      receipt["source_failure"] = "source_changed_or_unobserved"
+              except Exception as error:
+                  receipt["status"] = "NOT_VERIFIED"
+                  receipt["source_failure"] = type(error).__name__ + ":" + str(error)
+              (root / "receipt.json").write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+              )
+              print(json.dumps({"otio_windows_reparse": receipt["status"], "failure": receipt.get("failure")}), flush=True)
+          raise SystemExit(0 if receipt["status"] == "PASS_PATH_ADMISSION_ONLY" else 1)
+          '@ | python -B -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain exact Windows path admission evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: otio-windows-path-admission-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/otio-windows-reparse/
           if-no-files-found: error
           retention-days: 7
