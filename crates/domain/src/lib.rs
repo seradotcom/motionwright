@@ -8,6 +8,7 @@ mod creative;
 mod creative_evaluator;
 mod creative_revisions;
 mod delivery;
+mod delivery_recipe;
 mod extensions;
 mod hero;
 mod history;
@@ -36,6 +37,7 @@ pub use creative::*;
 pub use creative_evaluator::*;
 pub use creative_revisions::*;
 pub use delivery::*;
+pub use delivery_recipe::*;
 pub use extensions::*;
 pub use hero::*;
 pub use history::*;
@@ -684,6 +686,11 @@ impl Project {
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
+        self.production_design.validate_delivery_recipes(
+            &self.scenes,
+            &self.assets,
+            &self.deliverables,
+        )?;
         if self
             .production_design
             .narration_take_lock
@@ -1058,6 +1065,23 @@ impl Project {
     }
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
+        if matches!(
+            change,
+            Change::SetDeliveryRecipe { .. }
+                | Change::RemoveAsset { .. }
+                | Change::RemoveDeliverable { .. }
+        ) {
+            // A failed recipe or deletion must not leave the caller with a
+            // partially changed document, even outside Store's transaction.
+            let mut candidate = self.clone();
+            candidate.apply_change_in_place(change)?;
+            *self = candidate;
+            return Ok(());
+        }
+        self.apply_change_in_place(change)
+    }
+
+    fn apply_change_in_place(&mut self, change: &Change) -> Result<()> {
         // Read schema 1 without changing its authority or revision. The first
         // successful write upgrades its format inside the same transaction.
         if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
@@ -1195,6 +1219,31 @@ impl Project {
                     plan.validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
                 }
                 self.production_design.plan = plan.clone();
+            }
+            Change::SetDeliveryRecipe {
+                deliverable_profile_id,
+                recipe,
+            } => {
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if !self
+                    .deliverables
+                    .iter()
+                    .any(|profile| profile.id == *deliverable_profile_id)
+                {
+                    return Err(DomainError::NotFound(format!(
+                        "deliverable:{deliverable_profile_id}"
+                    )));
+                }
+                if let Some(recipe) = recipe {
+                    recipe.validate(&self.scenes, &self.assets)?;
+                    self.production_design
+                        .delivery_recipes
+                        .insert(*deliverable_profile_id, recipe.clone());
+                } else {
+                    self.production_design
+                        .delivery_recipes
+                        .remove(deliverable_profile_id);
+                }
             }
             Change::UpsertMeasuredTable { table } => self.upsert_measured_table(table)?,
             Change::UpsertMeasuredBinding {
@@ -2156,6 +2205,24 @@ impl Project {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if self
                     .production_design
+                    .delivery_recipe_references_asset(*asset_id)
+                    || self.branch_workspaces.iter().any(|workspace| {
+                        workspace
+                            .base_state
+                            .production_design
+                            .delivery_recipe_references_asset(*asset_id)
+                            || workspace
+                                .current_state
+                                .production_design
+                                .delivery_recipe_references_asset(*asset_id)
+                    })
+                {
+                    return Err(DomainError::Invalid(
+                        "asset remains referenced by a delivery recipe in the project or a retained branch; clear or migrate references before deletion".into(),
+                    ));
+                }
+                if self
+                    .production_design
                     .identity_origins
                     .iter()
                     .any(|record| {
@@ -2237,6 +2304,16 @@ impl Project {
             }
             Change::RemoveDeliverable { profile_id } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                if self
+                    .production_design
+                    .delivery_recipes
+                    .contains_key(profile_id)
+                {
+                    return Err(DomainError::Invalid(
+                        "deliverable profile has an authored delivery recipe; clear it before deletion"
+                            .into(),
+                    ));
+                }
                 if self.deliverables.len() <= 1 {
                     return Err(DomainError::Invalid(
                         "a project must keep at least one deliverable profile".into(),
@@ -2663,6 +2740,10 @@ pub enum Change {
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,
+    },
+    SetDeliveryRecipe {
+        deliverable_profile_id: Uuid,
+        recipe: Option<DeliveryRecipe>,
     },
     UpsertMeasuredTable {
         table: MeasuredTable,
