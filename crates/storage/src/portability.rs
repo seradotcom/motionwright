@@ -753,4 +753,188 @@ mod tests {
             assert!(!staging.exists() || fs::read_dir(staging).unwrap().next().is_none());
         }
     }
+
+    // Before/after adapters call the original product helpers on the baseline.
+    fn reviewed_hash_source(path: &Path, _limit: u64) -> Result<BlobDescriptor> {
+        hash_file(path)
+    }
+
+    fn reviewed_text_source(path: &Path, _limit: u64) -> Result<()> {
+        ensure_secret_free_file(path, "portable text-like asset")
+    }
+
+    fn reviewed_copy_source(source: &Path, target: &Path, _limit: u64) -> Result<()> {
+        fs::copy(source, target)?;
+        Ok(())
+    }
+
+    fn corrupt_journal_export_case(corruption: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut source = Store::open(directory.path().join("source/state.sqlite3")).unwrap();
+        let target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let mut project = source.create_named_project("Journal integrity").unwrap();
+        for index in 0..2 {
+            project = source
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    &format!("rename-{index}"),
+                    &Change::RenameProject {
+                        title: format!("Journal revision {}", index + 1),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        let valid = source
+            .export_project_at(project.id, &project.stamp())
+            .unwrap();
+        target.inspect_import(&valid).unwrap();
+        match corruption {
+            "missing" => {
+                source
+                    .conn
+                    .execute("DELETE FROM events WHERE revision=1", [])
+                    .unwrap();
+            }
+            "gap" => {
+                source
+                    .conn
+                    .execute("UPDATE events SET revision=99 WHERE revision=1", [])
+                    .unwrap();
+            }
+            "timestamp" => {
+                source
+                    .conn
+                    .execute("UPDATE events SET created_at='' WHERE revision=1", [])
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = snapshot(&source);
+        let destination = directory.path().join("stamped-bundle");
+        let legacy_destination = directory.path().join("legacy-bundle");
+        let raw = source.export_project_at(project.id, &project.stamp());
+        let legacy_raw = source.export_project(project.id);
+        let bundle = source.export_project_bundle_at(project.id, &project.stamp(), &destination);
+        let legacy_bundle = source.export_project_bundle(project.id, &legacy_destination);
+        for backup in [&raw, &legacy_raw]
+            .into_iter()
+            .filter_map(|result| result.as_ref().ok())
+        {
+            assert!(matches!(
+                target.inspect_import(backup),
+                Err(StorageError::InvalidBackup(_))
+            ));
+            eprintln!("PORTABILITY_OBSERVED_UNIMPORTABLE_BACKUP corruption={corruption}");
+        }
+        for manifest in [&bundle, &legacy_bundle]
+            .into_iter()
+            .filter_map(|result| result.as_ref().ok())
+        {
+            assert!(matches!(
+                target.inspect_import(&manifest.backup),
+                Err(StorageError::InvalidBackup(_))
+            ));
+            eprintln!("PORTABILITY_OBSERVED_UNIMPORTABLE_BUNDLE corruption={corruption}");
+        }
+        assert_eq!(snapshot(&source), before);
+        assert!(target.list_projects(10).unwrap().is_empty());
+        assert!(
+            matches!(raw, Err(StorageError::InvalidBackup(_)))
+                && matches!(legacy_raw, Err(StorageError::InvalidBackup(_)))
+                && matches!(bundle, Err(StorageError::InvalidBackup(_)))
+                && matches!(legacy_bundle, Err(StorageError::InvalidBackup(_))),
+            "exports must reject a journal that their own import validator rejects: {corruption}"
+        );
+        assert!(!destination.exists() && !legacy_destination.exists());
+    }
+
+    #[test]
+    fn export_rejects_missing_journal_entry() {
+        corrupt_journal_export_case("missing");
+    }
+
+    #[test]
+    fn export_rejects_noncontiguous_journal() {
+        corrupt_journal_export_case("gap");
+    }
+
+    #[test]
+    fn export_rejects_untimestamped_journal() {
+        corrupt_journal_export_case("timestamp");
+    }
+
+    fn append_after_size_review(path: &Path) -> u64 {
+        fs::write(path, b"ordinary portable source").unwrap();
+        let reviewed_size = fs::metadata(path).unwrap().len();
+        let mut writer = OpenOptions::new().append(true).open(path).unwrap();
+        writer
+            .write_all(b" bytes appended after size review")
+            .unwrap();
+        writer.sync_all().unwrap();
+        reviewed_size
+    }
+
+    #[test]
+    fn portable_hash_rejects_source_growth_past_reviewed_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.bin");
+        fs::write(&source, b"control").unwrap();
+        let control = reviewed_hash_source(&source, 7).unwrap();
+        assert_eq!(control.size_bytes, 7);
+        assert_eq!(control.sha256, hex::encode(Sha256::digest(b"control")));
+        let limit = append_after_size_review(&source);
+        let result = reviewed_hash_source(&source, limit);
+        if let Ok(observed) = &result {
+            eprintln!(
+                "PORTABILITY_OBSERVED_UNBOUNDED_HASH reviewed={limit} read={}",
+                observed.size_bytes
+            );
+            assert!(observed.size_bytes > limit);
+        }
+        assert!(
+            matches!(result, Err(StorageError::BlobTooLarge { limit: actual, .. }) if actual == limit)
+        );
+    }
+
+    #[test]
+    fn portable_text_scan_rejects_source_growth_past_reviewed_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.txt");
+        fs::write(&source, b"control").unwrap();
+        reviewed_text_source(&source, 7).unwrap();
+        let limit = append_after_size_review(&source);
+        let result = reviewed_text_source(&source, limit);
+        if result.is_ok() {
+            eprintln!(
+                "PORTABILITY_OBSERVED_UNBOUNDED_TEXT_SCAN reviewed={limit} accepted={}",
+                fs::metadata(&source).unwrap().len()
+            );
+        }
+        assert!(
+            matches!(result, Err(StorageError::BlobTooLarge { limit: actual, .. }) if actual == limit)
+        );
+    }
+
+    #[test]
+    fn portable_copy_rejects_source_growth_past_reviewed_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.bin");
+        let control = directory.path().join("control.bin");
+        fs::write(&source, b"control").unwrap();
+        reviewed_copy_source(&source, &control, 7).unwrap();
+        assert_eq!(fs::read(control).unwrap(), b"control");
+        let limit = append_after_size_review(&source);
+        let target = directory.path().join("rejected.bin");
+        let result = reviewed_copy_source(&source, &target, limit);
+        if result.is_ok() {
+            let copied = fs::metadata(&target).unwrap().len();
+            eprintln!("PORTABILITY_OBSERVED_UNBOUNDED_COPY reviewed={limit} copied={copied}");
+            assert!(copied > limit);
+        }
+        assert!(
+            matches!(result, Err(StorageError::BlobTooLarge { limit: actual, .. }) if actual == limit)
+        );
+    }
 }
