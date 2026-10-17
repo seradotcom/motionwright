@@ -17,6 +17,7 @@ mod derived_cache;
 mod file_import;
 mod identity_evidence;
 mod integrity;
+mod portability;
 mod production;
 mod project_creation;
 mod render_window_cache;
@@ -25,6 +26,7 @@ pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
+pub use portability::{BundleFingerprint, InspectedProjectBundle};
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
 pub use render_window_cache::{
@@ -179,17 +181,6 @@ fn project_blob_requires_secret_scan(project: &Project, digest: &str) -> bool {
         asset.content_sha256.as_deref() == Some(digest)
             && media_type_requires_secret_scan(&asset.media_type)
     })
-}
-
-fn ensure_secret_free_file(path: &Path, context: &str) -> Result<()> {
-    let size = ensure_regular_file(path, context)?.len();
-    if size > MAX_SECRET_SCAN_BYTES {
-        return Err(StorageError::BlobTooLarge {
-            size,
-            limit: MAX_SECRET_SCAN_BYTES,
-        });
-    }
-    ensure_secret_free_bytes(&fs::read(path)?, context)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -592,73 +583,7 @@ impl Store {
             return Err(StorageError::DestinationExists);
         }
         let backup = self.export_project(id)?;
-        ensure_backup_secret_free(&backup)?;
-        let mut digests = BTreeSet::new();
-        for asset in &backup.project.assets {
-            let digest = asset.content_sha256.as_deref().ok_or_else(|| {
-                StorageError::InvalidBackup(format!("asset {} has no content digest", asset.id))
-            })?;
-            validate_digest(digest)?;
-            digests.insert(digest.to_owned());
-        }
-
-        let mut blobs = Vec::with_capacity(digests.len());
-        for digest in digests {
-            let source = self.checked_existing_blob_path(&digest)?;
-            if project_blob_requires_secret_scan(&backup.project, &digest) {
-                ensure_secret_free_file(&source, "portable text-like asset")?;
-            }
-            let descriptor = hash_file(&source)?;
-            if descriptor.sha256 != digest {
-                return Err(StorageError::InvalidBackup(
-                    "stored blob digest differs from its content-addressed path".into(),
-                ));
-            }
-            blobs.push(PortableBlob {
-                relative_path: blob_relative_path(&digest)?,
-                sha256: digest,
-                size_bytes: descriptor.size_bytes,
-            });
-        }
-
-        let manifest = ProjectBundleManifest {
-            format_version: PROJECT_BUNDLE_FORMAT_VERSION,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            backup,
-            blobs,
-        };
-
-        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-        let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
-        fs::create_dir(&staging)?;
-
-        for blob in &manifest.blobs {
-            let source = self.checked_existing_blob_path(&blob.sha256)?;
-            let target = staging.join(&blob.relative_path);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(&source, &target)?;
-            let copied = hash_file(&target)?;
-            if copied.sha256 != blob.sha256 || copied.size_bytes != blob.size_bytes {
-                return Err(StorageError::InvalidBackup(
-                    "exported blob failed readback verification".into(),
-                ));
-            }
-        }
-
-        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
-        let manifest_path = staging.join("manifest.json");
-        let mut manifest_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&manifest_path)?;
-        manifest_file.write_all(&manifest_bytes)?;
-        manifest_file.flush()?;
-        manifest_file.sync_all()?;
-        fs::rename(&staging, destination)?;
-        Ok(manifest)
+        self.export_captured_bundle(backup, destination)
     }
 
     pub fn inspect_project_bundle(&self, source: impl AsRef<Path>) -> Result<BundleImportPlan> {
@@ -667,20 +592,7 @@ impl Store {
     }
 
     pub fn import_project_bundle(&mut self, source: impl AsRef<Path>) -> Result<Project> {
-        let source = source.as_ref();
-        let manifest = load_bundle_manifest(source)?;
-        self.validate_bundle(source, &manifest)?;
-
-        for blob in &manifest.blobs {
-            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let descriptor = self.ingest_blob_file(&path)?;
-            if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
-                return Err(StorageError::InvalidBackup(
-                    "imported blob differs from bundle manifest".into(),
-                ));
-            }
-        }
-        self.import_project(&manifest.backup)
+        self.import_bundle_capture(source.as_ref(), None)
     }
 
     fn validate_bundle(
@@ -737,9 +649,13 @@ impl Store {
                 });
             }
             if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                ensure_secret_free_file(&path, "portable text-like asset")?;
+                portability::ensure_secret_free_portable_file(
+                    &path,
+                    "portable text-like asset",
+                    blob.size_bytes,
+                )?;
             }
-            let descriptor = hash_file(&path)?;
+            let descriptor = portability::hash_portable_file(&path, blob.size_bytes)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
@@ -926,63 +842,7 @@ impl Store {
     }
 
     pub fn export_project(&mut self, id: Uuid) -> Result<ProjectBackup> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
-
-        let events = {
-            let mut stmt = tx.prepare(
-                "SELECT revision,payload_json,created_at FROM events
-                 WHERE project_id=?1
-                 ORDER BY revision ASC",
-            )?;
-            let mapped = stmt.query_map([id.to_string()], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            let mut events = Vec::new();
-            for row in mapped {
-                let (revision, payload, created_at) = row?;
-                events.push(ProjectEvent {
-                    revision: u64::try_from(revision).map_err(|_| {
-                        StorageError::InvalidBackup("event revision is negative".into())
-                    })?,
-                    change: serde_json::from_str(&payload)?,
-                    created_at,
-                });
-            }
-            events
-        };
-
-        let payload_sha256 = backup_digest(
-            PROJECT_BACKUP_FORMAT_VERSION,
-            STORAGE_SCHEMA_VERSION,
-            &project,
-            &events,
-        )?;
-        let backup = ProjectBackup {
-            format_version: PROJECT_BACKUP_FORMAT_VERSION,
-            source_storage_schema: STORAGE_SCHEMA_VERSION,
-            exported_at: chrono::Utc::now().to_rfc3339(),
-            project,
-            events,
-            payload_sha256,
-        };
-        tx.commit()?;
-        Ok(backup)
+        self.export_project_snapshot(id, None)
     }
 
     pub fn inspect_import(&self, backup: &ProjectBackup) -> Result<ImportPlan> {
@@ -1539,15 +1399,7 @@ fn hash_file(path: &Path) -> Result<BlobDescriptor> {
 }
 
 fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
-    let path = bundle_member_path(source, "manifest.json", "portable bundle manifest")?;
-    let size = ensure_regular_file(&path, "portable bundle manifest")?.len();
-    if size > MAX_BUNDLE_MANIFEST_BYTES {
-        return Err(StorageError::BlobTooLarge {
-            size,
-            limit: MAX_BUNDLE_MANIFEST_BYTES,
-        });
-    }
-    let bytes = fs::read(path)?;
+    let bytes = portability::read_bundle_manifest_bytes(source)?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 
