@@ -729,6 +729,10 @@ mwown_exit:
   ${EndIf}
   ; A failed pre-disposition cleanup must not retain a content-mismatch reason:
   ; callers may compare an admitted predecessor only after a clean CHECK.
+  ; Both CNG handles are released and set to 0 before entering the
+  ; publication branch. Their cleanup failures below therefore happen
+  ; only before any FileRenameInfo attempt and cannot downgrade a
+  ; PUBLISHED/UNCERTAIN publication state.
   ${If} $MWOWN_Hash != 0
     StrCpy $0 "call_failed"
     System::Call '"$SYSDIR\bcrypt.dll"::BCryptDestroyHash(p $MWOWN_Hash) i.r0'
@@ -759,7 +763,8 @@ mwown_exit:
       ${ElseIf} $MWOWN_Result = ${MWOWN_PUBLISHED}
         StrCpy $MWOWN_Result ${MWOWN_PUBLISH_UNCERTAIN}
         StrCpy $MWOWN_LastReason "close_after_publish_failed"
-      ${Else}
+      ${ElseIf} $MWOWN_Result != ${MWOWN_PUBLISH_UNCERTAIN}
+      ${AndIf} $MWOWN_Result != ${MWOWN_DELETE_UNCERTAIN}
         StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
         StrCpy $MWOWN_LastReason "file_close_failed"
       ${EndIf}
@@ -772,11 +777,13 @@ mwown_exit:
       ${If} $MWOWN_Result = ${MWOWN_DELETE_MARKED}
         StrCpy $MWOWN_Result ${MWOWN_DELETE_UNCERTAIN}
         StrCpy $MWOWN_LastReason "root_close_after_delete_failed"
-      ${Else}
-        ${If} $MWOWN_Result != ${MWOWN_DELETE_UNCERTAIN}
-          StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
-          StrCpy $MWOWN_LastReason "root_close_failed"
-        ${EndIf}
+      ${ElseIf} $MWOWN_Result = ${MWOWN_PUBLISHED}
+        StrCpy $MWOWN_Result ${MWOWN_PUBLISH_UNCERTAIN}
+        StrCpy $MWOWN_LastReason "root_close_after_publish_failed"
+      ${ElseIf} $MWOWN_Result != ${MWOWN_DELETE_UNCERTAIN}
+      ${AndIf} $MWOWN_Result != ${MWOWN_PUBLISH_UNCERTAIN}
+        StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
+        StrCpy $MWOWN_LastReason "root_close_failed"
       ${EndIf}
     ${EndIf}
   ${EndIf}
