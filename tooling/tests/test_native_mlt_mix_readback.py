@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -384,6 +385,118 @@ class TimestampAndDecoderTests(unittest.TestCase):
             path.write_bytes(path.read_bytes()[:-4])
             with self.assertRaisesRegex(ReadbackError, "physically_truncated"):
                 read_reference_wav(path, 2048)
+
+
+class _GrowingHashReader(io.BytesIO):
+    """A never-EOF stream with a finite guard independent of the production loop."""
+
+    def __init__(self):
+        super().__init__()
+        self.read_requests = []
+        self.bytes_returned = 0
+        self.iteration_guard_triggered = False
+
+    def read(self, size=-1):
+        self.read_requests.append(size)
+        if len(self.read_requests) > 16:
+            self.iteration_guard_triggered = True
+            raise AssertionError(
+                "growing-reader iteration guard reached after "
+                f"{self.bytes_returned} returned bytes; hashing did not stop"
+            )
+        if size <= 0:
+            raise AssertionError("a positive read size is required")
+        chunk = b"x" * min(size, 3)
+        self.bytes_returned += len(chunk)
+        return chunk
+
+
+class CheckedFileHashTests(unittest.TestCase):
+    @staticmethod
+    def _path_with_stream(stream, initial_size):
+        path = mock.Mock(spec=Path)
+        path.is_file.return_value = True
+        path.is_symlink.return_value = False
+        path.stat.return_value = mock.Mock(
+            st_dev=1, st_ino=2, st_size=initial_size, st_mtime_ns=3,
+        )
+        path.open.return_value = stream
+        return path
+
+    def test_growing_file_rejected_after_initial_size_plus_one_bytes(self):
+        initial_size = 7
+        stream = _GrowingHashReader()
+        path = self._path_with_stream(stream, initial_size)
+        with self.assertRaisesRegex(ReadbackError, "^media_changed_during_hash$"):
+            reader._checked_file(path, "0" * 64)
+        self.assertEqual(stream.bytes_returned, initial_size + 1)
+        self.assertFalse(stream.iteration_guard_triggered)
+        self.assertTrue(stream.closed)
+        self.assertEqual(path.stat.call_count, 1)
+
+    def test_eof_must_match_initial_size_even_when_shorter_bytes_match_digest(self):
+        data = b"short"
+        stream = io.BytesIO(data)
+        path = self._path_with_stream(stream, len(data) + 1)
+        with self.assertRaisesRegex(ReadbackError, "^media_changed_during_hash$"):
+            reader._checked_file(path, hashlib.sha256(data).hexdigest())
+        self.assertTrue(stream.closed)
+        self.assertEqual(path.stat.call_count, 1)
+
+    def test_nonempty_short_reads_can_reach_the_exact_initial_size(self):
+        class PartialReader(io.BytesIO):
+            def read(self, size=-1):
+                return super().read(min(size, 3))
+
+        data = b"stable fragmented input"
+        stream = PartialReader(data)
+        path = self._path_with_stream(stream, len(data))
+        expected = hashlib.sha256(data).hexdigest()
+        self.assertEqual(reader._checked_file(path, expected),
+                         (expected, (1, 2, len(data), 3)))
+        self.assertTrue(stream.closed)
+
+    def test_stable_physical_files_retain_their_digest_and_identity(self):
+        with tempfile.TemporaryDirectory(prefix="native-reader-hash-") as directory:
+            path = Path(directory) / "media.bin"
+            for size in (1, 1024 * 1024, 1024 * 1024 + 7):
+                with self.subTest(size=size):
+                    data = b"x" * size
+                    path.write_bytes(data)
+                    observed = path.stat()
+                    expected = hashlib.sha256(data).hexdigest()
+                    self.assertEqual(reader._checked_file(path, expected), (
+                        expected, (observed.st_dev, observed.st_ino,
+                                   observed.st_size, observed.st_mtime_ns),
+                    ))
+
+    def test_stable_physical_file_with_wrong_digest_still_fails(self):
+        with tempfile.TemporaryDirectory(prefix="native-reader-hash-") as directory:
+            path = Path(directory) / "media.bin"
+            path.write_bytes(b"stable source")
+            with self.assertRaisesRegex(ReadbackError, "^source_or_master_digest_mismatch$"):
+                reader._checked_file(path, "0" * 64)
+
+    def test_initial_size_cap_is_checked_before_open(self):
+        for size in (0, reader.MAX_MEDIA_BYTES + 1):
+            with self.subTest(size=size):
+                path = self._path_with_stream(io.BytesIO(b"x"), size)
+                with self.assertRaisesRegex(ReadbackError, "^media_byte_budget$"):
+                    reader._checked_file(path, "0" * 64)
+                path.open.assert_not_called()
+                path.open.return_value.close()
+
+    def test_all_final_identity_fields_are_still_checked(self):
+        data = b"stable source"
+        fields = {"st_dev": 1, "st_ino": 2, "st_size": len(data), "st_mtime_ns": 3}
+        for changed_field in fields:
+            with self.subTest(field=changed_field):
+                path = self._path_with_stream(io.BytesIO(data), len(data))
+                after = dict(fields)
+                after[changed_field] += 1
+                path.stat.side_effect = [path.stat.return_value, mock.Mock(**after)]
+                with self.assertRaisesRegex(ReadbackError, "^media_changed_during_hash$"):
+                    reader._checked_file(path, hashlib.sha256(data).hexdigest())
 
 
 def pid_running(pid: int) -> bool:
