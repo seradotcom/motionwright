@@ -6,6 +6,7 @@ on:
     paths:
       - "tooling/runtime_first_use_audit.py"
       - "tooling/tests/test_runtime_first_use_audit.py"
+      - "tooling/tests/test_runtime_first_use_reparse.py"
       - "tooling/owner_candidate_provenance.py"
       - "tooling/tests/test_owner_candidate_provenance.py"
       - "apps/desktop/src-tauri/src/runtime_setup.rs"
@@ -17,6 +18,7 @@ on:
     paths:
       - "tooling/runtime_first_use_audit.py"
       - "tooling/tests/test_runtime_first_use_audit.py"
+      - "tooling/tests/test_runtime_first_use_reparse.py"
       - "tooling/owner_candidate_provenance.py"
       - "tooling/tests/test_owner_candidate_provenance.py"
       - "apps/desktop/src-tauri/src/runtime_setup.rs"
@@ -25,18 +27,32 @@ on:
       - ".github/workflows/runtime-first-use.yml"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full lowercase source commit SHA; empty uses the event checkout
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  MW_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+  MW_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  MW_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
 concurrency:
-  group: first-use-${{ github.workflow }}-${{ github.ref }}
+  group: first-use-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
   cancel-in-progress: true
 
 jobs:
   portable-preflight:
     name: First-use preflight (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -45,9 +61,46 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.MW_SOURCE_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Verify and record actual source checkout
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          requested = os.environ["MW_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", requested):
+              raise SystemExit("source_sha must be a full lowercase commit SHA")
+          actual = git("rev-parse", "HEAD")
+          if actual != requested:
+              raise SystemExit(f"checkout mismatch: requested={requested} actual={actual}")
+          print(json.dumps({
+              "kind": "runtime-registry-source",
+              "requested_source_sha": requested,
+              "checkout_sha": actual,
+              "tree_sha": git("rev-parse", "HEAD^{tree}"),
+              "event_sha": os.environ.get("GITHUB_SHA", ""),
+              "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF", ""),
+              "pr_head_sha": os.environ.get("MW_PR_HEAD_SHA", ""),
+              "pr_base_sha": os.environ.get("MW_PR_BASE_SHA", ""),
+              "runtime_setup_sha256": hashlib.sha256(
+                  Path("apps/desktop/src-tauri/src/runtime_setup.rs").read_bytes()
+              ).hexdigest(),
+              "cargo_lock_sha256": hashlib.sha256(
+                  Path("Cargo.lock").read_bytes()
+              ).hexdigest(),
+          }, sort_keys=True), flush=True)
       - name: Unprivileged, synthetic-only first-use adversarial cases
         run: |
           python -m unittest discover -s tooling/tests -p test_runtime_first_use_audit.py -v
@@ -57,11 +110,62 @@ jobs:
         run: python tooling/source_policy.py
 
   windows-reference-preservation:
-    name: Windows saved reference crash-safety
+    name: ${{ matrix.check_name }}
     needs: portable-preflight
-    runs-on: windows-2025
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            check_name: Windows saved reference crash-safety
+          - os: ubuntu-24.04
+            check_name: Linux saved reference confinement
+          - os: macos-15
+            check_name: macOS saved reference confinement
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.MW_SOURCE_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify and record actual source checkout
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          requested = os.environ["MW_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", requested):
+              raise SystemExit("source_sha must be a full lowercase commit SHA")
+          actual = git("rev-parse", "HEAD")
+          if actual != requested:
+              raise SystemExit(f"checkout mismatch: requested={requested} actual={actual}")
+          print(json.dumps({
+              "kind": "runtime-registry-source",
+              "requested_source_sha": requested,
+              "checkout_sha": actual,
+              "tree_sha": git("rev-parse", "HEAD^{tree}"),
+              "event_sha": os.environ.get("GITHUB_SHA", ""),
+              "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF", ""),
+              "pr_head_sha": os.environ.get("MW_PR_HEAD_SHA", ""),
+              "pr_base_sha": os.environ.get("MW_PR_BASE_SHA", ""),
+              "runtime_setup_sha256": hashlib.sha256(
+                  Path("apps/desktop/src-tauri/src/runtime_setup.rs").read_bytes()
+              ).hexdigest(),
+              "cargo_lock_sha256": hashlib.sha256(
+                  Path("Cargo.lock").read_bytes()
+              ).hexdigest(),
+          }, sort_keys=True), flush=True)
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
@@ -74,11 +178,160 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
+      - name: Tauri Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - name: Verify macOS compiler and SDK
+        if: runner.os == 'macOS'
+        run: |
+          xcode-select -p
+          xcrun --find clang
+          xcrun --show-sdk-path
       - name: Format native registry
         run: cargo fmt --all -- --check
       - name: Build trusted desktop frontend for Tauri build script
         run: |
           npm --prefix apps/studio ci --no-audit --no-fund
           npm --prefix apps/studio run build
-      - name: Preserve previous owner reference on denied Windows rename
-        run: cargo test -p motionwright-desktop --bin motionwright-desktop runtime_setup::tests -- --nocapture
+      - name: Prepare isolated real NTFS junction fixtures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixtureRoot = Join-Path $env:RUNNER_TEMP "mw-registry-junctions-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $fixtureRoot) {
+            throw "Registry junction fixture path already exists"
+          }
+          $volumeRoot = [System.IO.Path]::GetPathRoot($fixtureRoot)
+          $fileSystem = ([System.IO.DriveInfo]::new($volumeRoot)).DriveFormat
+          if ($fileSystem -ne 'NTFS') {
+            throw "Registry junction gate requires NTFS; observed $fileSystem"
+          }
+          New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+          $cases = @(
+            'root-read', 'root-write', 'root-clear',
+            'ancestor-read', 'ancestor-write', 'ancestor-clear',
+            'alias-initial', 'alias-retarget'
+          )
+          foreach ($case in $cases) {
+            $caseRoot = Join-Path $fixtureRoot $case
+            $originalApp = Join-Path $caseRoot 'original\app-data'
+            $decoyApp = Join-Path $caseRoot 'decoy\app-data'
+            $originalRegistry = Join-Path $originalApp 'owner-native-connections'
+            $decoyRegistry = Join-Path $decoyApp 'owner-native-connections'
+            New-Item -ItemType Directory -Path $originalRegistry, $decoyRegistry -Force | Out-Null
+            if ($case.StartsWith('root-')) {
+              $target = $decoyRegistry
+            } elseif ($case.StartsWith('ancestor-')) {
+              $target = Join-Path $caseRoot 'decoy'
+            } else {
+              $target = $originalApp
+            }
+            $links = @(@{ name = 'prepared-junction'; target = $target })
+            if ($case -eq 'alias-retarget') {
+              $links += @{ name = 'replacement-junction'; target = $decoyApp }
+            }
+            foreach ($link in $links) {
+              $path = Join-Path $caseRoot $link.name
+              New-Item -ItemType Junction -Path $path -Target $link.target | Out-Null
+              $entry = Get-Item -LiteralPath $path -Force
+              if ($entry.LinkType -ne 'Junction' -or
+                  ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+                throw "Expected an actual junction at $path"
+              }
+              [pscustomobject]@{
+                kind = 'runtime-registry-ntfs-fixture'
+                case = $case
+                path = $path
+                target = $link.target
+                filesystem = $fileSystem
+                attributes = $entry.Attributes.ToString()
+              } | ConvertTo-Json -Compress
+            }
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value "MW_REGISTRY_JUNCTION_FIXTURE=$fixtureRoot"
+      - name: Exercise registry confinement and preserve existing controls
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          prefix = "runtime_setup::tests::"
+          required = {
+              prefix + "saved_reference_is_project_and_generation_scoped_and_survives_reopen",
+              prefix + "verified_replacement_is_persistent_and_no_runtime_secrets_are_copied",
+              prefix + "forged_scope_and_corrupted_records_are_rejected",
+              prefix + "missing_registry_root_rejects_all_operations",
+          }
+          if sys.platform == "win32":
+              if not os.environ.get("MW_REGISTRY_JUNCTION_FIXTURE"):
+                  raise SystemExit("The real NTFS fixture was not prepared")
+              required.add(prefix + "failed_windows_replace_preserves_last_verified_reference")
+              area = prefix + "junction_integrity::"
+          else:
+              required.add(prefix + "saved_reference_symlink_and_world_readable_files_fail_closed")
+              area = prefix + "root_integrity::"
+              required.update(
+                  area + operation + "_rejects_non_private_root"
+                  for operation in ("read", "write", "clear")
+              )
+          required.update(
+              area + operation + "_rejects_" + boundary + "_substitution"
+              for operation in ("read", "write", "clear")
+              for boundary in ("root", "ancestor")
+          )
+          required.update({
+              area + "initial_app_data_alias_supports_normal_round_trip",
+              area + "retargeted_initial_alias_keeps_original_physical_registry",
+          })
+          command = [
+              "cargo", "test", "--locked",
+              "-p", "motionwright-desktop",
+              "--bin", "motionwright-desktop",
+              "runtime_setup::tests",
+              "--", "--nocapture", "--include-ignored", "--test-threads=1",
+          ]
+          print(json.dumps({"kind": "runtime-registry-command", "argv": command}), flush=True)
+          process = subprocess.Popen(
+              command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+              text=True, encoding="utf-8", errors="replace",
+          )
+          output = []
+          for line in process.stdout:
+              print(line, end="", flush=True)
+              output.append(line)
+          returncode = process.wait()
+          if returncode:
+              raise SystemExit(returncode)
+          text = re.sub(r"\x1b\[[0-9;]*m", "", "".join(output))
+          summaries = re.findall(
+              r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;",
+              text,
+          )
+          if len(summaries) != 1:
+              raise SystemExit("Expected exactly one Rust registry test summary")
+          state, passed, failed, ignored = summaries[0]
+          passed, failed, ignored = map(int, (passed, failed, ignored))
+          missing = sorted(
+              name for name in required
+              if not re.search(r"(?m)^test " + re.escape(name) + r" \.\.\.", text)
+          )
+          if state != "ok" or failed or ignored or passed < len(required) or missing:
+              raise SystemExit(
+                  f"Registry coverage incomplete: passed={passed} failed={failed} "
+                  f"ignored={ignored} missing={missing}"
+              )
+          print(json.dumps({
+              "kind": "runtime-registry-complete",
+              "platform": sys.platform,
+              "required_test_count": len(required),
+              "passed": passed,
+              "failed": failed,
+              "ignored": ignored,
+              "required_test_ids": sorted(required),
+          }, sort_keys=True), flush=True)
