@@ -615,6 +615,7 @@ jobs:
           scope = receipt["scope"]
           requested = receipt["requested_source_revision"]
           PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
+          TEST_BINARY_MAX_BYTES = 512 * 1024 * 1024
           BLENDER_IDS = ["project_admission_rejects_controls_that_a_collection_cannot_preserve","complete_logical_ids_survive_the_native_alias_budget","effective_alpha_is_an_explicit_material_parameter","bounded_source_rejects_identity_name_channel_and_transform_errors","source_roundtrip_rejects_added_controls_or_a_tampered_projection","snapshot_rejects_missing_wrong_or_uneditable_native_state","shader_socket_mutations_fail_when_datablock_metadata_is_unchanged","reopen_requires_a_different_session_and_exact_preserved_source","sdk_serde_preserves_explicit_false_execution_and_provenance_flags","custody_rejects_dry_run_untrusted_or_missing_flags_even_in_matching_rows","genuine_receipt_pairs_do_not_authenticate_a_forged_wrapped_result","custody_rejects_unknown_duplicate_cross_generation_and_missing_journal_rows","full_chain_rejects_detached_artifact_snapshot_or_coverage_claims","typed_report_gate_rejects_wrong_native_method_base_or_unobservable_effects","stored_custody_survives_more_than_256_unrelated_original_receipts","stored_custody_rejects_missing_rows_even_with_a_supplied_completed_receipt","stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch","stored_custody_rejects_a_buried_duplicate_completed_observation","stored_custody_rejects_a_real_receipt_from_another_project","snapshot_page_rejects_journal_growth_even_when_project_revision_is_unchanged","data_only_custody_classifies_every_selected_unknown_before_pair_errors","stored_custody_does_not_reclassify_known_denial_as_unknown"]
           BLENDER_AUTHORITY_IDS = [
               "custody_rejects_dry_run_misclassified_driver_or_missing_flags_even_in_matching_rows"
@@ -695,7 +696,12 @@ jobs:
           def record(path, limit=256 * 1024 * 1024):
               path = Path(path)
               before = path.stat()
-              require(path.is_file() and not path.is_symlink() and 0 <= before.st_size <= limit, "record_not_bounded_regular")
+              regular, symlink = path.is_file(), path.is_symlink()
+              if not (regular and not symlink and 0 <= before.st_size <= limit):
+                  receipt.setdefault("record_rejections", []).append({
+                      "bytes": before.st_size, "limit": limit, "regular": regular, "symlink": symlink,
+                  })
+                  raise RuntimeError("record_not_bounded_regular")
               h = hashlib.sha256()
               remaining = before.st_size + 1
               count = 0
@@ -804,7 +810,7 @@ jobs:
                       require(target_key in cargo_targets[package], "compiled_target_not_in_selected_manifest")
                       path = Path(value["executable"]).resolve()
                       require(path.is_relative_to(source / "target"), "test_binary_outside_target")
-                      result[path.relative_to(source).as_posix()] = record(path)
+                      result[path.relative_to(source).as_posix()] = record(path, TEST_BINARY_MAX_BYTES)
               require(result, "no_compiled_test_artifacts")
               return result
 
@@ -837,7 +843,7 @@ jobs:
               ignored = [name for name, status in observed if status.startswith("ignored")]
               observation.update(exit_code=row["exit_code"], actual_ids=names, passed_ids=passed,
                                  failed_ids=failed, ignored_ids=ignored, summaries=summaries)
-              observation["binary_after"] = {path: record(source / path) for path in binaries}
+              observation["binary_after"] = {path: record(source / path, TEST_BINARY_MAX_BYTES) for path in binaries}
               observation["actual_compiler_artifacts"] = test_artifacts(output, package)
               save()
               require(len(names) == len(set(names)) and set(names) == set(ids) and summaries, label + "_actual_roster_differs")
