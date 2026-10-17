@@ -56,11 +56,10 @@ jobs:
           cargo test --locked -p motionwright-domain otio_export_is_linear_and_carries_an_explicit_loss_report
           cargo clippy --locked -p motionwright-domain --example otio_real_media_fixture -- -D warnings
           cargo build --locked -p motionwright-domain --example otio_real_media_fixture
-          python3 -m unittest discover -s tooling/otio-media -p 'test_*.py' -v
           python3 -m py_compile tooling/otio-media/*.py
           python3 tooling/source_policy.py
           python3 tooling/creative_status_policy.py
-      - name: Install independent OpenTimelineIO receiver and native probe on disposable CI
+      - name: Install and identify OpenTimelineIO, FFmpeg and FFprobe on disposable CI
         run: |
           set -euo pipefail
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
@@ -68,7 +67,69 @@ jobs:
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
           python3 -m pip install --no-deps --only-binary=:all: 'opentimelineio==0.18.1'
-          python3 -c 'import opentimelineio as o; print("OTIO_READER",o.__version__)'
+          motionwright_ffmpeg="$(command -v ffmpeg)"
+          motionwright_ffprobe="$(command -v ffprobe)"
+          test -x "$motionwright_ffmpeg"
+          test -x "$motionwright_ffprobe"
+          git log -1 --format='OTIO_TEST_CHECKOUT %H TREE %T'
+          "$motionwright_ffmpeg" -version
+          "$motionwright_ffprobe" -version
+          sha256sum -- "$motionwright_ffmpeg" "$motionwright_ffprobe"
+          python3 -c 'import opentimelineio as o; print("OTIO_READER", o.__version__); assert o.__version__ == "0.18.1", "Unexpected OpenTimelineIO reader version"'
+      - name: Run complete OTIO Python discovery with required native tests and no skips
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import unittest
+
+          loader = unittest.TestLoader()
+          suite = loader.discover("tooling/otio-media", pattern="test_*.py")
+
+          def test_ids(node):
+              if isinstance(node, unittest.TestSuite):
+                  for child in node:
+                      yield from test_ids(child)
+              else:
+                  yield node.id()
+
+          discovered = list(test_ids(suite))
+          native_prefix = "test_native_media.NativeMediaAdmissionTests."
+          required_native = {
+              native_prefix + name
+              for name in (
+                  "test_complete_original_video_exports_and_imports_without_changing_bytes",
+                  "test_faststart_truncation_is_refused_with_intact_stream_metadata",
+                  "test_corrupt_source_is_refused_before_export_destination_exists",
+                  "test_hash_matched_legacy_corrupt_bundle_is_refused_on_import",
+              )
+          }
+          if (
+              len(discovered) < 41
+              or len(discovered) != len(set(discovered))
+              or not required_native.issubset(discovered)
+          ):
+              raise SystemExit("Incomplete OTIO discovery: require all existing tests and the four native media admission tests")
+
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          print(json.dumps({
+              "otio_python_discovery": len(discovered),
+              "tests_run": result.testsRun,
+              "required_native_tests": sorted(required_native),
+              "skipped": len(result.skipped),
+              "failures": len(result.failures),
+              "errors": len(result.errors),
+              "expected_failures": len(result.expectedFailures),
+              "unexpected_successes": len(result.unexpectedSuccesses),
+          }, sort_keys=True), flush=True)
+          complete = (
+              result.wasSuccessful()
+              and result.testsRun == len(discovered)
+              and not result.skipped
+              and not result.expectedFailures
+          )
+          raise SystemExit(0 if complete else 1)
+          PY
       - name: Decode actual original MP4 and verify source-bound OTIO import/export
         run: |
           set -euo pipefail
