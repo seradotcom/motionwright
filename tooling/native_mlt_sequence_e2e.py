@@ -22,6 +22,10 @@ import tomllib
 from pathlib import Path
 from native_av_failure_guard import run_sanitized_json
 from native_mlt_caption_pixels import prove_native_captioned_master
+from native_mlt_public_artifact import (
+    PublicationError, SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
+    verify_source_unchanged, verify_staged_source_receipt,
+)
 
 from mlt_failure_diagnostic import safe_observation_diagnostic
 
@@ -37,6 +41,7 @@ EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
 MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
 if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4"}:
     raise SystemExit("Only closed native MLT smoke modes are accepted")
+CONTRACT = mode_contract(MODE)
 VIDEO_ONLY = MODE in {"video-only", "final-mp4", "captioned-mp4"}
 FINAL_MASTER = MODE in {"final-mp4", "captioned-mp4"}
 CAPTIONED_MASTER = MODE == "captioned-mp4"
@@ -48,17 +53,20 @@ EXPECTED_SCOPE = (
 VIDEO_FILE = "native-two-segment-video-only.mkv" if VIDEO_ONLY else "native-two-segment-lossless.mkv"
 
 
-def inspect_decoded_ci_stereo(pcm: bytes) -> dict:
+def inspect_decoded_ci_stereo(pcm: bytes, *, mode: str = "final-mp4") -> dict:
     """Independent decoded-content evidence for the actual 33-frame CI
     source. The 48 kHz stereo WAV authored by the Rust E2E contains distinct
     400 Hz left and 600 Hz right sawtooth fundamentals. AAC stream headers,
     MP4 byte hashes or a nonempty decoded WAV alone do NOT prove the actual
     speaker content was retained and not swapped, duplicated or muted.
     """
+    if mode not in {"final-mp4", "captioned-mp4"}:
+        raise AssertionError("Legacy stereo oracle admits only its measured-voice fixture")
+    contract = mode_contract(mode)
     if len(pcm) % 4:
         raise AssertionError("Decoded H.264/AAC master has partial stereo PCM sample")
     frames = len(pcm) // 4
-    if not 52_800 <= frames <= 53_824:
+    if not contract.pcm_frames <= frames <= contract.pcm_frames + 1024:
         raise AssertionError("Decoded AAC samples exceed one bounded access unit")
     start = 4_800
     end = min(48_000, frames - 2_048)
@@ -92,11 +100,15 @@ def inspect_decoded_ci_stereo(pcm: bytes) -> dict:
     }
 
 
-def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict) -> dict:
+def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
+                                          *, mode: str = "final-mp4") -> dict:
     """Decode the real signed-off owner MP4 using fixed CI ffmpeg arguments;
     no application runtime, local backend or user-controlled filters.
     Temp disk output ensures even a hostile decoder cannot grow Python RAM.
     """
+    if mode not in {"final-mp4", "captioned-mp4"}:
+        raise AssertionError("Legacy stereo decoder admits only its measured-voice fixture")
+    contract = mode_contract(mode)
     with tempfile.TemporaryFile() as output:
         decoded = subprocess.run(
             [str(ffmpeg), "-nostdin", "-v", "error", "-i", str(master),
@@ -109,13 +121,13 @@ def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict)
             raise AssertionError("Independent bounded CI AAC-to-PCM decoder failed")
         output.seek(0, 2)
         size = output.tell()
-        if not (52_800 * 4 <= size <= 53_824 * 4):
+        if not (contract.pcm_frames * 4 <= size <= (contract.pcm_frames + 1024) * 4):
             raise AssertionError("Decoded source speaker PCM exceeded the AV clock budget")
         output.seek(0)
-        pcm = output.read(53_824 * 4 + 1)
+        pcm = output.read((contract.pcm_frames + 1024) * 4 + 1)
         if len(pcm) != size:
             raise AssertionError("Decoded AV speaker bytes changed during bounded read")
-        return inspect_decoded_ci_stereo(pcm)
+        return inspect_decoded_ci_stereo(pcm, mode=mode)
 
 
 def digest(path: Path) -> str:
@@ -129,6 +141,40 @@ def digest(path: Path) -> str:
 def write_private_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     path.chmod(0o600)
+
+
+def retain_native_master_source(output_root: Path, evidence_root: Path,
+                                receipt: dict, mode: str) -> dict:
+    """Retain the admitted staged bytes; never regenerate or replace a source."""
+    try:
+        if (not output_root.is_dir() or output_root.is_symlink()
+            or not evidence_root.is_dir() or evidence_root.is_symlink()):
+            raise PublicationError("native_mlt_source_wav_root_invalid")
+        native_root = output_root.resolve()
+        retained_root = evidence_root.resolve()
+        if (native_root == retained_root
+            or native_root in retained_root.parents
+            or retained_root in native_root.parents):
+            raise PublicationError("native_mlt_source_wav_roots_overlap")
+        # This admits the closed CI basename and source identity before any
+        # source file is opened. The private native receipt is never copied.
+        relative = verify_staged_source_receipt(receipt, mode)
+        source = native_root / relative
+        data, proof, token = read_synthetic_source_wav(source, mode)
+        destination = retained_root / SOURCE_WAV_NAME
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_BINARY", 0))
+        with os.fdopen(os.open(destination, flags, 0o600), "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        copied, copied_proof, _ = read_synthetic_source_wav(destination, mode)
+        if copied != data or copied_proof != proof:
+            raise PublicationError("native_mlt_source_wav_copy_mismatch")
+        verify_source_unchanged(source, token)
+        return proof
+    except (PublicationError, OSError):
+        raise AssertionError("native_master_source_retention_refused") from None
 
 
 def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 30) -> dict:
@@ -215,10 +261,10 @@ def main() -> None:
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
         seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if ((seeded["width"], seeded["height"]) != (1280, 720)
-            or (seeded["fps_num"], seeded["fps_den"]) != (30, 1)
-            or seeded["scene_count"] != 33
-            or seeded["deliverable_count"] != 3):
+        if ((seeded["width"], seeded["height"]) != (CONTRACT.width, CONTRACT.height)
+            or (seeded["fps_num"], seeded["fps_den"]) != (CONTRACT.fps_num, CONTRACT.fps_den)
+            or seeded["scene_count"] != CONTRACT.scene_count
+            or seeded["deliverable_count"] != CONTRACT.deliverable_count):
             raise AssertionError(f"unexpected real default profiles or source scenes: {seeded}")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
@@ -591,7 +637,8 @@ def main() -> None:
                 ))
             ):
                 raise AssertionError("Real MLT project creation provenance/lifetime is unconfirmed")
-            if result.get("frame_count") != 33 or result.get("segment_count") != 2:
+            if (result.get("frame_count") != CONTRACT.video_frames
+                or result.get("segment_count") != len(CONTRACT.source_segment_frames)):
                 raise AssertionError("Native timeline lost the 32+1 source partition")
             if result.get("evidence_scope") != EXPECTED_SCOPE or result.get("native_render_profile") != PROFILE:
                 raise AssertionError("MLT result falsely claimed final H.264/AAC master")
@@ -605,14 +652,18 @@ def main() -> None:
                 raise AssertionError("MLT output identity and exact closed profile diverged")
             if evidence.get("transport_pcm_audio") is VIDEO_ONLY:
                 raise AssertionError("Native MLT claimed wrong audio presence")
-            if VIDEO_ONLY and evidence.get("native_frame_count_observed") != 33:
+            if VIDEO_ONLY and evidence.get("native_frame_count_observed") != CONTRACT.video_frames:
                 raise AssertionError("New native video-only profile lacks actual decoded frame count")
-            if evidence.get("source", {}).get("total_frames") != 33:
+            if evidence.get("source", {}).get("total_frames") != CONTRACT.video_frames:
                 raise AssertionError("Real FFV1 intermediate frame total was altered")
             records = evidence.get("source", {}).get("verified_video_segments", [])
-            if len(records) != 2 or [item["frame_count"] for item in records] != [32, 1]:
+            if (len(records) != len(CONTRACT.source_segment_frames)
+                or [item["frame_count"] for item in records] != list(CONTRACT.source_segment_frames)):
                 raise AssertionError("Real native source FFV1s are not the exact two source segments")
-            if [item["output_start_frame"] for item in records] != [0, 32]:
+            if [item["output_start_frame"] for item in records] != [
+                sum(CONTRACT.source_segment_frames[:index])
+                for index in range(len(CONTRACT.source_segment_frames))
+            ]:
                 raise AssertionError("Native output clip start frames were not preserved")
             for record in records:
                 artifact = paths["output"] / record["artifact_path"]
@@ -643,13 +694,13 @@ def main() -> None:
                 raise AssertionError("Native MLT PCM transport audio differs")
             if result.get("transport_pcm_audio") is VIDEO_ONLY:
                 raise AssertionError("MLT result contradicted source-bound profile")
-            if evidence.get("native_frame_count_observed") not in (None, 33):
+            if evidence.get("native_frame_count_observed") not in (None, CONTRACT.video_frames):
                 raise AssertionError("MLT native frame count observation contradicted source")
             video = videos[0]
             if (video.get("codec_name") != "ffv1"
-                or (video.get("width"), video.get("height")) != (1280, 720)
-                or video.get("r_frame_rate") != "30/1"
-                or video.get("nb_read_frames") != "33"):
+                or (video.get("width"), video.get("height")) != (CONTRACT.width, CONTRACT.height)
+                or video.get("r_frame_rate") != f"{CONTRACT.fps_num}/{CONTRACT.fps_den}"
+                or video.get("nb_read_frames") != str(CONTRACT.video_frames)):
                 raise AssertionError("Native actual MLT video codec/frame provenance failed: " + repr(video))
 
             shutil.copyfile(video_path, EVIDENCE / VIDEO_FILE)
@@ -663,8 +714,8 @@ def main() -> None:
                     if CAPTIONED_MASTER else
                     "actual-native-source-bound-multisegment-h264-aac-measured-voice-not-human-approved"
                 )
-                if (av_receipt["frame_count"] != 33
-                    or av_receipt["measured_voice"]["audio_pcm_frames"] != 52_800
+                if (av_receipt["frame_count"] != CONTRACT.video_frames
+                    or av_receipt["measured_voice"]["audio_pcm_frames"] != CONTRACT.pcm_frames
                     or av_receipt["measured_voice"].get("caption_cue_count")
                        != (2 if CAPTIONED_MASTER else None)
                     or result.get("native_captioned_master_requested") is not CAPTIONED_MASTER
@@ -698,12 +749,12 @@ def main() -> None:
                 v = [stream for stream in av_streams if stream.get("codec_type") == "video"]
                 a = [stream for stream in av_streams if stream.get("codec_type") == "audio"]
                 if (len(v) != 1 or len(a) != 1 or v[0].get("codec_name") != "h264"
-                    or v[0].get("nb_read_frames") != "33"
-                    or (v[0].get("width"),v[0].get("height")) != (1280,720)
-                    or v[0].get("r_frame_rate") != "30/1"
+                    or v[0].get("nb_read_frames") != str(CONTRACT.video_frames)
+                    or (v[0].get("width"),v[0].get("height")) != (CONTRACT.width, CONTRACT.height)
+                    or v[0].get("r_frame_rate") != f"{CONTRACT.fps_num}/{CONTRACT.fps_den}"
                     or a[0].get("codec_name") != "aac"
-                    or a[0].get("sample_rate") != "48000"
-                    or a[0].get("channels") != 2):
+                    or a[0].get("sample_rate") != str(CONTRACT.sample_rate)
+                    or a[0].get("channels") != CONTRACT.channels):
                     raise AssertionError("Independent MP4 decoder did not verify exact AV output")
                 decoded = av_receipt["decoded_audio"]
                 wav_path = paths["output"] / decoded["path"]
@@ -711,18 +762,22 @@ def main() -> None:
                     raise AssertionError("MLT native decoded PCM audit is missing or changed")
                 # The actual MP4, not the receipt or source WAV, must retain
                 # the authored, distinct 400/600 Hz left/right test signals.
-                decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env)
+                decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE)
                 write_private_json(EVIDENCE / "decoded-stereo-content-proof.json", decoded_content)
+                retained_source = retain_native_master_source(
+                    paths["output"], EVIDENCE, av_receipt, MODE,
+                )
                 shutil.copyfile(master, EVIDENCE / "native-multisegment-master.mp4")
                 master_check = {
-                    "final_master_frames":33,
+                    "retained_source_audio": retained_source,
+                    "final_master_frames":CONTRACT.video_frames,
                     "final_master_video_codec":"h264",
                     "final_master_audio_codec":"aac",
-                    "final_master_audio_rate":48000,
-                    "final_master_audio_channels":2,
+                    "final_master_audio_rate":CONTRACT.sample_rate,
+                    "final_master_audio_channels":CONTRACT.channels,
                     "final_master_sha256":digest(master),
                     "final_master_bytes":master.stat().st_size,
-                    "measured_voice_pcm_frames":52_800,
+                    "measured_voice_pcm_frames":CONTRACT.pcm_frames,
                     "decoded_audio_sha256":decoded["sha256"],
                     "final_evidence_scope":av_receipt["evidence_scope"],
                     **decoded_content,
@@ -770,8 +825,9 @@ def main() -> None:
                     "mlt_runner_sha256": digest(mlt_runner),
                     "melt_sha256": digest(melt),
                     "ffprobe_sha256": digest(ffprobe),
-                    "rendered_source_frames": [32, 1],
-                    "assembled_video_frames": 33,
+                    "ffmpeg_sha256": digest(ffmpeg),
+                    "rendered_source_frames": list(CONTRACT.source_segment_frames),
+                    "assembled_video_frames": CONTRACT.video_frames,
                     "mode": MODE,
                     "evidence_scope": EXPECTED_SCOPE,
                     "native_render_profile": PROFILE,
