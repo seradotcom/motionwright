@@ -1297,7 +1297,16 @@ fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> R
     if size > limit {
         return Err(StorageError::BlobTooLarge { size, limit });
     }
-    let bytes = fs::read(path)?;
+    #[cfg(test)]
+    bounded_blob_read_tests::observe(bounded_blob_read_tests::Phase::BeforeRead, &path, size, 0);
+    let bytes = fs::read(&path)?;
+    #[cfg(test)]
+    bounded_blob_read_tests::observe(
+        bounded_blob_read_tests::Phase::AfterRead,
+        &path,
+        size,
+        bytes.len() as u64,
+    );
     if hex::encode(Sha256::digest(&bytes)) != digest {
         return Err(StorageError::InvalidBackup(
             "content-addressed blob failed digest verification".into(),
@@ -1401,6 +1410,247 @@ fn hash_file(path: &Path) -> Result<BlobDescriptor> {
 fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
     let bytes = portability::read_bundle_manifest_bytes(source)?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod bounded_blob_read_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Phase {
+        BeforeRead,
+        AfterRead,
+    }
+
+    type Observer = Box<dyn FnMut(Phase, &Path, u64, u64)>;
+    thread_local! {
+        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn observe(phase: Phase, path: &Path, admitted: u64, captured: u64) {
+        OBSERVER.with(|slot| {
+            if let Some(observer) = slot.borrow_mut().as_mut() {
+                observer(phase, path, admitted, captured);
+            }
+        });
+    }
+
+    struct ResetObserver;
+    impl Drop for ResetObserver {
+        fn drop(&mut self) {
+            OBSERVER.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+
+    type Observations = Rc<RefCell<Vec<(Phase, u64, u64)>>>;
+
+    fn observing(mut action: impl FnMut(Phase, &Path) + 'static) -> (Observations, ResetObserver) {
+        let observations = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&observations);
+        OBSERVER.with(|slot| {
+            assert!(
+                slot.borrow_mut()
+                    .replace(Box::new(move |phase, path, admitted, captured| {
+                        action(phase, path);
+                        recorded.borrow_mut().push((phase, admitted, captured));
+                    }))
+                    .is_none()
+            );
+        });
+        (observations, ResetObserver)
+    }
+
+    fn captured(observations: &Observations, admitted: u64) -> u64 {
+        let observations = observations.borrow();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0], (Phase::BeforeRead, admitted, 0));
+        assert_eq!(observations[1].0, Phase::AfterRead);
+        assert_eq!(observations[1].1, admitted);
+        eprintln!(
+            "bounded-blob-read admitted={} captured={}",
+            admitted, observations[1].2
+        );
+        observations[1].2
+    }
+
+    struct Fixture {
+        _temporary: tempfile::TempDir,
+        root: PathBuf,
+        path: PathBuf,
+        digest: String,
+    }
+
+    impl Fixture {
+        fn new(initial_bytes: &[u8], expected_bytes: &[u8]) -> Self {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("blobs");
+            let digest = hex::encode(Sha256::digest(expected_bytes));
+            let path = root.join("sha256").join(&digest[..2]).join(&digest);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, initial_bytes).unwrap();
+            Self {
+                _temporary: temporary,
+                root,
+                path,
+                digest,
+            }
+        }
+
+        fn read(&self, limit: u64) -> Result<Vec<u8>> {
+            read_verified_blob_from_root(&self.root, &self.digest, limit)
+        }
+    }
+
+    #[test]
+    fn stable_empty_and_multichunk_files_keep_the_exact_budget() {
+        for bytes in [Vec::new(), vec![0x5a; 64 * 1024 + 17]] {
+            let fixture = Fixture::new(&bytes, &bytes);
+            let (observations, _reset) = observing(|_, _| {});
+            assert_eq!(fixture.read(bytes.len() as u64).unwrap(), bytes);
+            assert_eq!(
+                captured(&observations, bytes.len() as u64),
+                bytes.len() as u64
+            );
+            assert_eq!(fs::read(&fixture.path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn initially_oversized_file_is_rejected_before_the_capture_boundary() {
+        let fixture = Fixture::new(b"abc", b"abc");
+        let (observations, _reset) = observing(|_, _| {
+            panic!("an initially oversized source must not reach capture");
+        });
+        assert!(matches!(
+            fixture.read(2),
+            Err(StorageError::BlobTooLarge { size: 3, limit: 2 })
+        ));
+        assert!(observations.borrow().is_empty());
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn real_growth_stops_at_the_original_length_plus_one() {
+        let initial = b"abc";
+        let grown = vec![b'G'; 64 * 1024 + 19];
+        // The final bytes deliberately match the requested digest: only the
+        // admitted-size boundary distinguishes this from a valid stable source.
+        let fixture = Fixture::new(initial, &grown);
+        let changed = grown.clone();
+        let (observations, _reset) = observing(move |phase, path| {
+            if phase == Phase::BeforeRead {
+                fs::write(path, &changed).unwrap();
+            }
+        });
+        let result = fixture.read(grown.len() as u64 + 4096);
+        assert_eq!(
+            captured(&observations, initial.len() as u64),
+            initial.len() as u64 + 1
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), grown);
+    }
+
+    #[test]
+    fn real_shrink_cannot_pass_with_the_shorter_matching_digest() {
+        let initial = b"longer initial content";
+        let shorter = b"short";
+        let fixture = Fixture::new(initial, shorter);
+        let (observations, _reset) = observing(|phase, path| {
+            if phase == Phase::BeforeRead {
+                fs::write(path, b"short").unwrap();
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(
+            captured(&observations, initial.len() as u64),
+            shorter.len() as u64
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), shorter);
+    }
+
+    #[test]
+    fn admitted_empty_file_cannot_expand_to_one_valid_digest_byte() {
+        let fixture = Fixture::new(b"", b"x");
+        let (observations, _reset) = observing(|phase, path| {
+            if phase == Phase::BeforeRead {
+                fs::write(path, b"x").unwrap();
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(captured(&observations, 0), 1);
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"x");
+    }
+
+    #[test]
+    fn stable_wrong_digest_still_fails_without_mutation() {
+        let fixture = Fixture::new(b"actual bytes", b"other bytes");
+        let (observations, _reset) = observing(|_, _| {});
+        let result = fixture.read(4096);
+        assert_eq!(captured(&observations, 12), 12);
+        assert!(matches!(result, Err(StorageError::InvalidBackup(message))
+            if message == "content-addressed blob failed digest verification"));
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"actual bytes");
+    }
+
+    #[test]
+    fn replacement_with_equal_bytes_length_and_mtime_is_rejected() {
+        let bytes = b"same source bytes";
+        let fixture = Fixture::new(bytes, bytes);
+        let original_modified = fs::metadata(&fixture.path).unwrap().modified().unwrap();
+        let retained = fixture.path.with_extension("original-retained");
+        let moved = retained.clone();
+        let (observations, _reset) = observing(move |phase, path| {
+            if phase == Phase::BeforeRead {
+                // This must be a real rename and a different newly created file;
+                // an OS refusal is a failed test, never a simulated replacement.
+                fs::rename(path, &moved).unwrap();
+                fs::write(path, b"same source bytes").unwrap();
+                OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_modified(original_modified)
+                    .unwrap();
+                assert_eq!(
+                    fs::metadata(path).unwrap().modified().unwrap(),
+                    original_modified
+                );
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(
+            captured(&observations, bytes.len() as u64),
+            bytes.len() as u64
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), bytes);
+        assert_eq!(fs::read(&retained).unwrap(), bytes);
+    }
+
+    #[test]
+    fn physical_mutation_after_capture_cannot_return_pre_mutation_bytes() {
+        let initial = b"already captured";
+        let changed = b"changed source after the read";
+        let fixture = Fixture::new(initial, initial);
+        let (observations, _reset) = observing(|phase, path| {
+            if phase == Phase::AfterRead {
+                fs::write(path, b"changed source after the read").unwrap();
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(
+            captured(&observations, initial.len() as u64),
+            initial.len() as u64
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), changed);
+    }
 }
 
 #[cfg(test)]
