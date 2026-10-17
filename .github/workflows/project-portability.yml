@@ -4,6 +4,10 @@ on:
   push:
     branches: ["main", "feat/**"]
     paths:
+      - "crates/domain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "crates/storage/**"
       - "crates/service/**"
       - "docs/architecture.md"
@@ -11,6 +15,10 @@ on:
       - ".github/workflows/project-portability.yml"
   pull_request:
     paths:
+      - "crates/domain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "crates/storage/**"
       - "crates/service/**"
       - "docs/architecture.md"
@@ -43,3 +51,118 @@ jobs:
         run: cargo test -p motionwright-storage -p motionwright-service --all-targets
       - name: Storage and service clippy
         run: cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
+
+  file-import-platforms:
+    name: File import authority and CAS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify exact checkout and selective file import contracts
+        shell: python
+        run: |
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], encoding="utf-8", errors="replace").strip()
+
+          actual = git("rev-parse", "HEAD")
+          if actual != os.environ["GITHUB_SHA"] or git("status", "--porcelain", "--untracked-files=no"):
+              raise SystemExit("file-import-platform-checkout-mismatch")
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          pr = event.get("pull_request") or {}
+          root = Path("verification/file-import-platforms")
+          root.mkdir(parents=True, exist_ok=True)
+          receipt = {
+              "schema": "motionwright.file-import-platform-check/1",
+              "actual_checkout": actual, "tree": git("rev-parse", "HEAD^{tree}"),
+              "parents": [line.removeprefix("parent ") for line in
+                          git("cat-file", "-p", "HEAD").split("\n\n", 1)[0].splitlines()
+                          if line.startswith("parent ")],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "pr_head": (pr.get("head") or {}).get("sha"),
+              "pr_base": (pr.get("base") or {}).get("sha"),
+              "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_os": os.environ["RUNNER_OS"],
+              "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+              "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
+              "results": [],
+          }
+          print(json.dumps(receipt, sort_keys=True), flush=True)
+          cases = [
+              ("service", ["-p", "motionwright-service", "--test", "file_import_idempotency"], {
+                  "asset_import_replays_identical_bytes_and_metadata_after_reopen",
+                  "voice_import_replays_identical_bytes_and_metadata_after_reopen",
+                  "invalid_import_authority_takes_precedence_over_missing_source_io",
+                  "changed_file_bytes_cannot_reuse_a_committed_asset_import_key",
+                  "committed_import_keeps_real_cas_content_when_the_original_file_disappears",
+                  "historical_asset_and_voice_recovery_preserves_head_without_source_or_cas",
+                  "normal_asset_and_voice_replay_does_not_rehydrate_missing_cas",
+                  "concurrent_connections_import_identical_bytes_with_one_event_and_one_outcome",
+                  "rejected_active_svg_and_undecodable_voice_leave_no_published_blob_or_staging",
+              }),
+              ("storage", ["-p", "motionwright-storage", "--lib", "file_import::"], {
+                  "file_import::tests::original_import_remains_readable_without_sources_after_edit_and_reopen",
+                  "file_import::tests::absent_receipt_requires_current_revision_only_when_requested",
+                  "file_import::tests::corrupt_receipt_hash_event_or_result_is_never_treated_as_absent",
+                  "file_import::tests::changed_purpose_or_metadata_rejects_request_reuse_without_effects",
+                  "file_import::staging_tests::staged_import_rejects_changed_capture_without_publishing_or_leaking_stage",
+                  "file_import::staging_tests::dropping_duplicate_stages_and_rejecting_stale_import_preserve_blob",
+              }),
+          ]
+          for suite, selector, expected in cases:
+              command = ["cargo", "test", "--locked", *selector, "--", "--test-threads=1"]
+              result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              data = result.stdout
+              output = data.decode("utf-8", errors="replace")
+              print(output, end="", flush=True)
+              (root / (suite + ".log")).write_bytes(data)
+              observed = re.findall(r"^test (\S+) \.\.\. (\w+)\s*$", output, re.MULTILINE)
+              summary = re.findall(
+                  r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
+                  output, re.MULTILINE,
+              )
+              passed = (
+                  result.returncode == 0
+                  and len(observed) == len(expected)
+                  and dict(observed) == {name: "ok" for name in expected}
+                  and len(summary) == 1
+                  and summary[0][:5] == ("ok", str(len(expected)), "0", "0", "0")
+              )
+              receipt["results"].append({
+                  "suite": suite, "command": command, "returncode": result.returncode,
+                  "status": "PASS" if passed else "FAIL",
+                  "expected_tests": sorted(expected), "observed_tests": observed,
+                  "summary": summary, "log_sha256": hashlib.sha256(data).hexdigest(),
+              })
+          receipt["tracked_source_unchanged"] = (
+              git("rev-parse", "HEAD") == actual
+              and git("rev-parse", "HEAD^{tree}") == receipt["tree"]
+              and not git("status", "--porcelain", "--untracked-files=no")
+          )
+          passed = receipt["tracked_source_unchanged"] and all(item["status"] == "PASS" for item in receipt["results"])
+          receipt["status"] = "PASS" if passed else "FAIL"
+          (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          if receipt["status"] != "PASS":
+              raise SystemExit("file-import-platform-tests-not-verified")
+      - name: Retain source binding and selective test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: file-import-platform-${{ matrix.os }}-${{ github.sha }}
+          path: verification/file-import-platforms
+          if-no-files-found: error
