@@ -1,14 +1,12 @@
 # Product
 
-<!-- impeccable:product-schema 1 -->
-
 ## Platform
 
-web
+Local-first desktop application for Windows, Linux and macOS, with a React/TypeScript editor.
 
 ## Stack
 
-Delegated by the user: Rust domain/service/storage with a React + TypeScript editor inside a Tauri 2 desktop shell. Motionwright consumes Semwright Native SDK from an exact public Git revision; the application owns its model and SQLite transaction boundary. Heavy build/render/browser/native checks run in CI.
+Rust domain, service and storage with a React and TypeScript editor inside a Tauri 2 desktop shell. Motionwright consumes the Semwright Native SDK from a pinned public revision and owns its creative project model and transactional SQLite state.
 
 ## Users
 
@@ -35,7 +33,7 @@ Motionwright treats creative production as a versioned semantic project rather t
 - Scoped natural-language direction where the user sees and constrains the resources an agent may change.
 - Motion Canvas + MLT is the first required production route; Blender and Manim Community are committed additional realizations.
 - Semwright Native SDK/Driver Host/Broker/Policy/Project Graph/Effect Conformance/jobs remain the common authority where applicable.
-- GitHub Actions is the final gate authority; the local workstation is reserved for source editing and lightweight checks.
+- Builds and tests are reproducible from exact source revisions; installed-device acceptance and distribution approval remain separate.
 
 ## Capabilities and Constraints
 
@@ -51,7 +49,6 @@ Motionwright treats creative production as a versioned semantic project rather t
 - Variants include 16:9, 9:16, 1:1, captions/languages, cuts, codec/audio/brand profiles, and portable packages.
 - No automatic paid-provider activation, publication, registry release, or hidden destructive cleanup.
 - No arbitrary model-generated Python execution for renderers.
-- No master prompts, private coordination files, or secrets are published in the public repo.
 
 ## Brand Commitments
 
@@ -59,14 +56,13 @@ Name: Motionwright.
 
 Motionwright belongs to the Semwright product family and should feel like a serious creative workstation, not a generic SaaS dashboard. The editor must prioritize the work itself over decorative metrics. Brand language is direct, technical when useful, and honest about CURRENT / STALE / UNKNOWN states.
 
-## Evidence on Hand
+## Technical References
 
-- Semwright source repository at `seradotcom/semwright`.
-- Verified integration baseline for this build: `4d291de26724810017ce7b6d185326514cb79fa6` on `origin/main` when Motionwright was initialized.
-- Public Native SDK docs and Rust crate are available in that snapshot.
-- A detailed private specification pack supplied by the user defines 208 requirements and 60 acceptance scenarios; the private coordination material itself is not copied into the public repository.
-- External UI references reviewed include DaVinci Resolve, Adobe Premiere Pro, Final Cut Pro, Descript, Runway, and Impeccable design guidance.
-- No production voice, customer data, paid-provider credentials, or proprietary font files are assumed present in this repository.
+- [Architecture](docs/architecture.md) describes the project and runtime boundaries.
+- [Native SDK](docs/native-sdk.md) documents the Semwright integration; [SOURCE_LOCK.json](SOURCE_LOCK.json) records its exact source revision.
+- [Renderers](docs/renderers.md) and [Testing](docs/testing.md) explain supported integrations and the verification approach.
+- [Security](docs/security.md) and [Third-party notices](THIRD_PARTY_NOTICES.md) describe security constraints and dependency attribution.
+- [Acceptance](docs/acceptance/README.md) distinguishes implementation evidence from independent product approval.
 
 ## Product Principles
 

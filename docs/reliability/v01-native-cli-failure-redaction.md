@@ -21,7 +21,7 @@ The failure includes only constant diagnostic reason, allowlisted error code, so
 
 The separate read-only Broker startup probe also had a raw-log exception path: when `semwrightd` exited before exposing its owner socket, it inserted the complete daemon log into an AssertionError. The v0.1 `wait_for_socket` guard now emits only a stable non-identifying startup error, never reads the supplied log path to construct an exception, and never starts or retries a native operation. The default 30-second readiness limit still fails closed when the daemon remains alive without exposing its socket. Only the disposable v0.1 cross-app recovery CI harness explicitly extends this read-only observation to a bounded 90 seconds to distinguish slow startup from permanent failure. This does not provision, restart, retry a mutating render, or alter desktop owner runtime behavior. A green longer wait would not establish the underlying Driver Host lifecycle root cause. This change protects exception/CI log text; any uploaded raw daemon-log artifacts require their own independent privacy review and are **not** certified by this function.
 
-This guards the v0.1 baseline workflows; additional experimental v0.5-specific Blender/Manim wrappers remain outside this bounded PR and require a separate future review rather than silent modifications to other agents' work.
+This protects the v0.1 baseline integration. Additional renderer-specific wrappers require their own source-bound review before adoption; they are not covered by this diagnostic contract.
 
 ## Verification
 
