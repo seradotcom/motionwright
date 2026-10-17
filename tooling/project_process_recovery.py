@@ -143,8 +143,15 @@ def require_sha256(value, label):
 
 def require_time(value, numerator, denominator, label):
     value = require_object(value, label)
-    require_integer(value.get("num"), numerator, label + ".num")
-    require_integer(value.get("den"), denominator, label + ".den")
+    require(set(value) == {"num", "den"}, label + " must contain exactly num and den")
+    require(
+        type(value.get("num")) is str and value["num"] == str(numerator),
+        label + ".num must equal the canonical decimal string " + str(numerator),
+    )
+    require(
+        type(value.get("den")) is str and value["den"] == str(denominator),
+        label + ".den must equal the canonical decimal string " + str(denominator),
+    )
 
 
 def strict_json(text, label):
@@ -1030,12 +1037,12 @@ def validate_manifests(documents, process_pid, case):
             "objective": "Committed scene survives process termination",
             "duration_seconds": 4,
         },
-        {"type": "add_marker", "at": {"num": 1, "den": 1}, "label": "Main baseline"},
+        {"type": "add_marker", "at": {"num": "1", "den": "1"}, "label": "Main baseline"},
         {"type": "add_asset", "asset": original_asset},
         {"type": "create_branch", "name": "Persistence alternate"},
         {"type": "checkout_branch", "branch_id": checkpoint["alternate_branch_id"]},
         {
-            "type": "add_marker", "at": {"num": 2, "den": 1},
+            "type": "add_marker", "at": {"num": "2", "den": "1"},
             "label": "Alternate committed marker",
         },
         {"type": "checkout_branch", "branch_id": checkpoint["main_branch_id"]},
