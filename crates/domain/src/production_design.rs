@@ -5,6 +5,13 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ProductionDesign {
+    /// Per-profile authored intent; global audio gains remain in AudioState.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "crate::delivery_recipe::deserialize_delivery_recipes"
+    )]
+    pub delivery_recipes: BTreeMap<Uuid, DeliveryRecipe>,
     #[serde(default)]
     pub plan: Option<ProductionPlan>,
     #[serde(default)]

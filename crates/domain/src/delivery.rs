@@ -510,6 +510,17 @@ pub fn variant_dependency_fingerprint(
         .iter()
         .find(|candidate| candidate.id == profile_id)
         .ok_or_else(|| DomainError::NotFound(format!("deliverable:{profile_id}")))?;
+    let recipe = project.production_design.delivery_recipes.get(&profile_id);
+    let original_mix = recipe.and_then(|recipe| recipe.original_mix.as_ref());
+    if original_mix.is_some()
+        && profile.voice_track_id.is_some()
+        && profile.voice_track_id != project.audio.active_voice_track_id
+    {
+        return Err(DomainError::Invalid(
+            "original mix is unavailable: the delivery profile voice differs from the active measured voice"
+                .into(),
+        ));
+    }
 
     let scenes = if profile.included_scene_ids.is_empty() {
         project.scenes.iter().collect::<Vec<_>>()
@@ -542,7 +553,10 @@ pub fn variant_dependency_fingerprint(
         .filter(|(node_id, _)| frame_node_ids.contains(node_id))
         .map(|(node_id, text)| (*node_id, text.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let selected_voice = profile.voice_track_id.and_then(|track_id| {
+    let selected_voice_id = profile
+        .voice_track_id
+        .or(project.audio.active_voice_track_id);
+    let selected_voice = selected_voice_id.and_then(|track_id| {
         project
             .audio
             .voice_tracks
@@ -550,7 +564,7 @@ pub fn variant_dependency_fingerprint(
             .find(|track| track.id == track_id)
     });
 
-    let frame_inputs_sha256 = digest_json(serde_json::json!({
+    let mut frame_inputs = serde_json::json!({
         "width": profile.width,
         "height": profile.height,
         "frame_rate": profile.frame_rate,
@@ -566,19 +580,89 @@ pub fn variant_dependency_fingerprint(
         } else {
             serde_json::Value::Null
         }
-    }))?;
+    });
+    if let Some(recipe) = recipe {
+        let scene_ids = scenes.iter().map(|scene| scene.id).collect();
+        let intents = recipe.consumed_scene_intents(&scene_ids);
+        if !intents.is_empty() {
+            frame_inputs["delivery_scene_intents"] = serde_json::to_value(intents)
+                .map_err(|_| DomainError::Invalid("delivery recipe serialization failed".into()))?;
+        }
+    }
+    let frame_inputs_sha256 = digest_json(frame_inputs)?;
     let caption_inputs_sha256 = digest_json(serde_json::json!({
         "language": &profile.language,
         "caption_format": profile.caption_format,
         "voice_track_id": profile.voice_track_id,
         "segments": caption_segments,
     }))?;
-    let audio_inputs_sha256 = digest_json(serde_json::json!({
+    let source_asset = |asset_id: Option<Uuid>| {
+        asset_id.and_then(|id| {
+            project
+                .assets
+                .iter()
+                .find(|asset| asset.id == id)
+                .map(|asset| {
+                    serde_json::json!({
+                        "asset_id": asset.id,
+                        "content_sha256": asset.content_sha256,
+                        "media_type": asset.media_type,
+                    })
+                })
+        })
+    };
+    let mut audio_inputs = serde_json::json!({
         "audio_codec": profile.audio_codec,
         "sample_rate_hz": profile.audio_sample_rate_hz,
-        "voice_track": selected_voice,
+        "voice_track": selected_voice.map(|track| serde_json::json!({
+            "id": track.id,
+            "asset_id": track.asset_id,
+            "sample_rate_hz": track.sample_rate_hz,
+            "channels": track.channels,
+            "measured_duration": track.measured_duration,
+            "source_sha256": track.source_sha256,
+        })),
+        "voice_source": source_asset(selected_voice.map(|track| track.asset_id)),
         "mix": &project.audio.mix,
-    }))?;
+    });
+    if let Some(mix) = original_mix {
+        // Ducking consumes interval times and timing admission, not transcript
+        // wording, speakers or another profile's authored recipe.
+        let mut intervals = project
+            .audio
+            .transcript
+            .iter()
+            .filter(|segment| Some(segment.voice_track_id) == selected_voice_id)
+            .collect::<Vec<_>>();
+        intervals.sort_by(|left, right| {
+            rational_cmp(left.start, right.start).then(rational_cmp(left.end, right.end))
+        });
+        let windows = intervals
+            .into_iter()
+            .map(|segment| {
+                let reviewed = match &segment.alignment {
+                    AlignmentEvidence::Manual => true,
+                    AlignmentEvidence::Measured {
+                        confidence_millis: Some(level),
+                        ..
+                    } => *level >= 800,
+                    _ => false,
+                };
+                serde_json::json!({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "reviewed": reviewed,
+                })
+            })
+            .collect::<Vec<_>>();
+        audio_inputs["original_mix"] = serde_json::json!({
+            "intent": mix,
+            "music_source": source_asset(mix.music_asset_id),
+            "sfx_source": source_asset(mix.sfx_asset_id),
+            "voice_windows": windows,
+        });
+    }
+    let audio_inputs_sha256 = digest_json(audio_inputs)?;
     let master_inputs_sha256 = digest_json(serde_json::json!({
         "frame_inputs_sha256": &frame_inputs_sha256,
         "audio_inputs_sha256": &audio_inputs_sha256,
