@@ -242,7 +242,9 @@ fn real_owner_wav_cas_and_two_source_clips_preserve_all_360_frames() {
         assert!(window(start, end).iter().any(|byte| *byte != 0));
     }
     let peak = pcm
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs())
         .max()
         .unwrap();
@@ -250,7 +252,12 @@ fn real_owner_wav_cas_and_two_source_clips_preserve_all_360_frames() {
         peak > 0 && peak < 4096,
         "Both admitted sources use -12 dB gain"
     );
-    assert!(pcm.chunks_exact(4).any(|sample| sample[..2] != sample[2..]));
+    assert!(
+        pcm.as_chunks::<4>()
+            .0
+            .iter()
+            .any(|sample| sample[..2] != sample[2..])
+    );
     assert!(f.owner.path().join("two-scene.sqlite3").is_file());
 }
 
