@@ -1,0 +1,13 @@
+{
+  "name": "motionwright-remotion-reference",
+  "private": true,
+  "version": "0.0.0",
+  "license": "UNLICENSED",
+  "description": "Pinned independent comparator fixture. Not an implementation of Motionwright and no speed claim.",
+  "dependencies": {
+    "remotion": "4.0.536",
+    "@remotion/cli": "4.0.536",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  }
+}
