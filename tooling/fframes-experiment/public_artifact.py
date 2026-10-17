@@ -13,7 +13,8 @@ SCHEMA = "motionwright.v05-fframes-public-benchmark/1"
 PIN = "e2b552892c0373a5c8dc79de9280a3289670f27b"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
-PHASES = ("cold_release_build", "warm_release_build",
+PHASES = ("cli_startup_0", "cli_startup_1",
+          "cold_release_build", "warm_release_build",
           "cold_headless_native_preview", "warm_headless_native_preview",
           "cold_bounded_video_render")
 

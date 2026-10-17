@@ -683,6 +683,18 @@ jobs:
               "film::tests::native_film_refuses_a_tampered_historical_metric_notice",
               "film::tests::native_render_rejects_frame_rate_drift_from_profile",
           ]
+          SFX_ORIGINAL_DOMAIN_IDS = [
+              "three_scene_original_sfx_keeps_exact_global_clock_and_empty_middle_schedule",
+              "shortening_third_scene_rejects_the_original_sfx_schedule",
+          ]
+          SFX_ORIGINAL_FILM_IDS = [
+              "original_sfx_source_parity_tests::original_three_scene_sfx_preserves_current_full_visual_film_and_measured_source",
+          ]
+          SFX_ORIGINAL_PREPARE_IDS = [
+              "source_contract_tests::three_scene_fixture_uses_existing_cas_preparer_without_native_receipts",
+              "source_contract_tests::wrong_fixture_clock_rejects_before_import_or_output",
+              "source_contract_tests::physical_pcm_observation_rejects_truncation_wrong_channels_and_clock",
+          ]
           SFX_CLOCK_IDS = [
               "real_owner_wav_cas_and_two_source_clips_preserve_all_360_frames",
               "reordered_trimmed_or_shifted_video_clips_fail_before_native_mux",
@@ -735,12 +747,21 @@ jobs:
               "sfx-clock-source": [
                   ("semantic-sfx-multisegment-clock", ["cargo", "test", "--locked", "-p", "motionwright-native",
                                                       "--test", "semantic_sfx_multisegment_clock"], SFX_CLOCK_IDS),
+                  ("original-sfx-domain", ["cargo", "test", "--locked", "-p", "motionwright-domain",
+                                            "--test", "semantic_sfx", "original_sfx"], SFX_ORIGINAL_DOMAIN_IDS),
+                  ("original-sfx-film", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                          "--example", "native-render-e2e",
+                                          "original_sfx_source_parity_tests::"], SFX_ORIGINAL_FILM_IDS),
+                  ("original-sfx-preparation", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                                 "--example", "semantic-sfx-av-prepare",
+                                                 "source_contract_tests::"], SFX_ORIGINAL_PREPARE_IDS),
               ],
               "production-source": [
                   ("production", ["cargo", "test", "--locked", "-p", "motionwright-native", "production::", "--all-targets"], None),
               ],
           }
           package_manifests = {"motionwright-native": "crates/native/Cargo.toml",
+                               "motionwright-domain": "crates/domain/Cargo.toml",
                                "motionwright-manim-profile": "crates/manim-profile/Cargo.toml",
                                "motionwright-manim-community-driver": "crates/driver-manim-community/Cargo.toml"}
           selected_packages = {command[i + 1] for _, command, _ in selectors[scope]
@@ -763,7 +784,10 @@ jobs:
               "film-source": ["crates/native/src/film.rs"],
               "sfx-clock-source": ["crates/native/tests/semantic_sfx_multisegment_clock.rs",
                                    "crates/native/src/production/mlt_multisegment_sfx.rs",
-                                   "crates/native/src/production/semantic_sfx_av.rs"],
+                                   "crates/native/src/production/semantic_sfx_av.rs",
+                                   "crates/domain/tests/semantic_sfx.rs",
+                                   "crates/native/examples/native-render-e2e.rs",
+                                   "crates/native/examples/semantic-sfx-av-prepare.rs"],
               "production-source": [],
           }[scope]
           paths += [package_manifests[name] for name in sorted(selected_packages)]
