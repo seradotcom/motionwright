@@ -204,6 +204,7 @@ fn apply_observed_state(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn derive_production_jobs(
     receipts: &[ProductionReceipt],
     current_generation: Uuid,
