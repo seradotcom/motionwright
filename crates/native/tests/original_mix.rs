@@ -162,6 +162,23 @@ fn short_voice_releases_from_the_reached_gain_without_a_pcm_discontinuity() {
             render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
         let before = left_at(&mixed, start as usize - 1);
         assert_eq!(left_at(&mixed, start as usize), before);
+        if duration == 1_200 {
+            // Fixed PCM anchors for 10,000-source units, -12 dB music,
+            // and a 14 dB duck over a quarter of the 100 ms attack.
+            // Shape alone would also accept an entirely disabled duck.
+            for (frame, expected) in [
+                (start, 2_512_i32),
+                (end, 2_009),
+                (end + u64::from(release) / 2, 2_260),
+                (end + u64::from(release), 2_512),
+            ] {
+                let actual = i32::from(left_at(&mixed, frame as usize));
+                assert!(
+                    (actual - expected).abs() <= 1,
+                    "Short-voice attenuation at {frame}: {actual}, expected {expected}"
+                );
+            }
+        }
         // These constant-source profiles slew by at most one PCM16 unit
         // per sample. A switch of envelope phase must not create a click.
         for frame in start..end {
