@@ -248,3 +248,116 @@ fn sfx_anchor_wire_accepts_only_exact_variant_fields() {
         format!(r#"{{"kind":"beat_start","beat_id":"{beat_id}","beat_id":"{beat_id}"}}"#);
     assert!(serde_json::from_str::<SfxAnchor>(&duplicate_beat).is_err());
 }
+
+// Domain schedule only: this does not decode audio or prove native silence.
+#[test]
+fn three_scene_original_sfx_keeps_exact_global_clock_and_empty_middle_schedule() {
+    let (mut project, first_scene, asset) = fixture();
+    for name in ["Quiet middle scene", "Original final scene"] {
+        project
+            .apply_change(&Change::AddScene {
+                name: name.into(),
+                objective: "Original multiscene sound review".into(),
+                duration_seconds: 6,
+            })
+            .unwrap();
+    }
+    assert_eq!(project.scenes.len(), 3);
+    assert_eq!(project.scenes[0].start, RationalTime::ZERO);
+    assert_eq!(project.scenes[1].start, RationalTime::new(6, 1).unwrap());
+    assert_eq!(project.scenes[2].start, RationalTime::new(12, 1).unwrap());
+    let first = SemanticSfxCue {
+        offset_frames: 6,
+        source_frames: 24,
+        release_frames: 6,
+        ..cue(first_scene, &asset)
+    };
+    let last = SemanticSfxCue {
+        id: Uuid::new_v4(),
+        scene_id: project.scenes[2].id,
+        offset_frames: 20,
+        source_frames: 24,
+        release_frames: 6,
+        ..cue(first_scene, &asset)
+    };
+    let before = project
+        .scenes
+        .iter()
+        .map(|scene| scene.nodes.clone())
+        .collect::<Vec<_>>();
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: first })
+        .unwrap();
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: last })
+        .unwrap();
+    let schedule = project.validated_sfx_schedule().unwrap();
+    assert_eq!(schedule.len(), 2);
+    assert_eq!(
+        (
+            schedule[0].absolute_start_frame,
+            schedule[0].absolute_end_frame
+        ),
+        (6, 30)
+    );
+    assert_eq!(
+        (
+            schedule[1].absolute_start_frame,
+            schedule[1].absolute_end_frame
+        ),
+        (380, 404)
+    );
+    assert_eq!(
+        (schedule[0].first_sample, schedule[1].first_sample),
+        (9_600, 608_000)
+    );
+    assert!(schedule.iter().all(|cue| cue.absolute_end_frame <= 540));
+    assert!(
+        schedule
+            .iter()
+            .all(|cue| cue.absolute_end_frame <= 180 || cue.absolute_start_frame >= 360)
+    );
+    assert_eq!(
+        project
+            .scenes
+            .iter()
+            .map(|scene| scene.nodes.clone())
+            .collect::<Vec<_>>(),
+        before,
+        "Adding SFX must not alter the original visual source scene nodes"
+    );
+}
+
+#[test]
+fn shortening_third_scene_rejects_the_original_sfx_schedule() {
+    let (mut project, first_scene, asset) = fixture();
+    project
+        .apply_change(&Change::AddScene {
+            name: "Quiet middle".into(),
+            objective: "Silence".into(),
+            duration_seconds: 6,
+        })
+        .unwrap();
+    project
+        .apply_change(&Change::AddScene {
+            name: "Final scene".into(),
+            objective: "Original sound".into(),
+            duration_seconds: 6,
+        })
+        .unwrap();
+    let third = project.scenes[2].id;
+    let last = SemanticSfxCue {
+        scene_id: third,
+        offset_frames: 20,
+        source_frames: 24,
+        release_frames: 6,
+        ..cue(first_scene, &asset)
+    };
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: last })
+        .unwrap();
+    let mut shortened = project.clone();
+    shortened.scenes[2].duration = RationalTime::new(1, 2).unwrap();
+    assert!(shortened.validated_sfx_schedule().is_err());
+    assert_eq!(project.validated_sfx_schedule().unwrap().len(), 1);
+}
