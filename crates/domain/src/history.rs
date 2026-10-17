@@ -65,6 +65,11 @@ impl BranchState {
         self.visual_language.validate()?;
         self.production_design
             .validate(&self.scenes, assets, &self.brief, &self.audio)?;
+        self.production_design.validate_delivery_recipes(
+            &self.scenes,
+            assets,
+            &self.deliverables,
+        )?;
 
         if self.proposal_sets.len() > 512 || self.model_invocations.len() > 10_000 {
             return Err(DomainError::Invalid(
