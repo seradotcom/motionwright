@@ -2123,13 +2123,12 @@ impl ProductionCoordinator {
 
     /// Legacy bounded contribution. It retains its original v1 timing behavior;
     /// source/clock-complete production callers select the explicit v2 route.
-    async fn realize_manim_plan(
+    pub async fn realize_manim_scene(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
         request_id: &str,
         scene_id: Uuid,
-        plan: motionwright_manim_profile::ManimStartPlan,
         profile: ManimRenderProfile,
     ) -> NativeResult<Value> {
         let project = self.service.project(project_id).map_err(storage_error)?;
@@ -2139,12 +2138,13 @@ impl ProductionCoordinator {
             .await
     }
 
-    pub async fn realize_manim_scene(
+    async fn realize_manim_plan(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
         request_id: &str,
         scene_id: Uuid,
+        plan: motionwright_manim_profile::ManimStartPlan,
         profile: ManimRenderProfile,
     ) -> NativeResult<Value> {
         if request_id.trim().is_empty()
