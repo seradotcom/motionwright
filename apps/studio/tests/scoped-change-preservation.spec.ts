@@ -16,6 +16,102 @@ async function openProposal(page: Page, sceneId = scene.id) {
   await button(page, "Scoped changes").click();
 }
 
+test("an empty scene waits for a valid scoped target before accepting object inputs", async ({ page }, testInfo) => {
+  const emptyScene = fixtureBootstrap.project.scenes.find(item => item.nodes.length === 0)!;
+  await page.goto("/");
+  await openProposal(page, emptyScene.id);
+  await expect(page.getByLabel("Patch replacement text")).toBeDisabled();
+  await expect(page.getByLabel("Patch target object")).toBeDisabled();
+  await expect(page.getByLabel("Patch edit kind")).toBeDisabled();
+  await expect(button(page, "Add to proposal")).toBeDisabled();
+  await expect(button(page, "Apply as one revision")).toBeDisabled();
+  await expect(page.getByRole("region", { name: "Scoped proposal editor" })).toContainText("This scene has no objects to edit");
+  await page.screenshot({ path: testInfo.outputPath("empty-target-controls.png"), fullPage: true });
+
+  // Create a real browser-demo object through the existing Canvas UI, then
+  // return to the same scene. No source or successful edit response is injected.
+  await button(page, "Canvas").click();
+  await button(page, "text").click();
+  await expect(page.getByRole("button", { name: "Canvas object Text 1", exact: true })).toBeVisible();
+  await openProposal(page, emptyScene.id);
+  await expect(page.getByLabel("Patch target object")).toBeEnabled();
+  await expect(page.getByLabel("Patch edit kind")).toBeEnabled();
+  await expect(page.getByLabel("Patch replacement text")).toBeEnabled();
+  await page.getByLabel("Patch replacement text").fill("Input anchored to the newly created object.");
+  await page.getByLabel("Patch edit kind").selectOption("transform");
+  for (const field of ["x", "y", "width", "height", "rotation_deg", "opacity"]) {
+    await expect(page.getByLabel(`Patch ${field}`, { exact: true })).toBeEnabled();
+  }
+  const x = String(Number(await xInput(page).inputValue()) + 19);
+  await xInput(page).fill(x);
+  await button(page, "Components").click();
+  await button(page, "Scoped changes").click();
+  await expect(xInput(page)).toHaveValue(x);
+  await page.getByLabel("Patch edit kind").selectOption("text");
+  await expect(page.getByLabel("Patch replacement text")).toHaveValue("Input anchored to the newly created object.");
+  await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");
+  await expect(button(page, "Apply as one revision")).toBeDisabled();
+});
+
+for (const selectedKind of ["text", "transform"] as const) {
+  test(`a removed scoped target keeps ${selectedKind} inputs recoverable until the object returns`, async ({ page }, testInfo) => {
+    const key = DRAFT_STORAGE_PREFIX + createScopedDraft(fixtureBootstrap.project, scene).scope;
+    const replacement = "Preserve this queued line while its object is unavailable.";
+    const x = String(target.x + 31);
+    await page.goto("/");
+    await openProposal(page);
+    await page.getByLabel("Patch target object").selectOption(target.id);
+    await page.getByLabel("Patch replacement text").fill(replacement);
+    await button(page, "Add to proposal").click();
+    await page.getByLabel("Patch edit kind").selectOption("transform");
+    await xInput(page).fill(x);
+    await page.getByLabel("Patch edit kind").selectOption(selectedKind);
+    await page.getByLabel("Patch rationale").fill("Keep the queued text and the separate transform input.");
+    await expect.poll(() => page.evaluate(key => sessionStorage.getItem(key), key)).toContain("Keep the queued text and the separate transform input.");
+    const saved = await page.evaluate(key => sessionStorage.getItem(key), key);
+
+    await button(page, "Canvas").click();
+    await page.locator(".canvas-tree-row").filter({ hasText: target.name }).click();
+    await button(page, "Remove object").click();
+    await expect(page.getByRole("button", { name: "Canvas object " + target.name, exact: true })).toHaveCount(0);
+    await openProposal(page);
+    await expect(page.getByLabel("Patch edit kind")).toBeDisabled();
+    if (selectedKind === "text") {
+      await expect(page.getByLabel("Patch replacement text")).toBeDisabled();
+      await expect(page.getByLabel("Patch replacement text")).toHaveValue(replacement);
+    } else {
+      for (const field of ["x", "y", "width", "height", "rotation_deg", "opacity"]) {
+        await expect(page.getByLabel(`Patch ${field}`, { exact: true })).toBeDisabled();
+      }
+      await expect(xInput(page)).toHaveValue(x);
+    }
+    await expect(page.getByRole("region", { name: "Proposal conflicts" })).toContainText("object unavailable");
+    await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText(target.id);
+    await expect(button(page, "Review on current revision")).toBeDisabled();
+    await expect(button(page, "Apply as one revision")).toBeDisabled();
+    // Decoding canonicalizes key order; preserve the complete draft value.
+    const recovered = await page.evaluate(key => sessionStorage.getItem(key), key);
+    expect(JSON.parse(recovered!)).toStrictEqual(JSON.parse(saved!));
+    await page.screenshot({ path: testInfo.outputPath("unavailable-target-kept.png"), fullPage: true });
+
+    // The browser demo reloads its fixture project, including this same stable
+    // object identity. This checks draft recovery when the source is available
+    // again; persisted project reopen is covered by the real-service suite.
+    await page.reload();
+    await openProposal(page);
+    await expect(page.getByLabel("Patch edit kind")).toBeEnabled();
+    await page.getByLabel("Patch edit kind").selectOption("text");
+    await expect(page.getByLabel("Patch replacement text")).toBeEnabled();
+    await expect(page.getByLabel("Patch replacement text")).toHaveValue(replacement);
+    await page.getByLabel("Patch edit kind").selectOption("transform");
+    await expect(xInput(page)).toBeEnabled();
+    await expect(xInput(page)).toHaveValue(x);
+    await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText(target.name);
+    await expect(page.getByRole("region", { name: "Proposal conflicts" })).toHaveCount(0);
+    await expect(button(page, "Apply as one revision")).toBeDisabled();
+  });
+}
+
 test("uncommitted inputs survive changing fields, objects, tabs and reloading", async ({ page }, testInfo) => {
   await page.goto("/");
   await openProposal(page);

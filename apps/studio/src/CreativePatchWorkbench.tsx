@@ -70,6 +70,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const preview = activeReview?.preview ?? null;
   const node = scene?.nodes.find(item => item.id === draft.editor.nodeId);
   const lockedUi = busy || submitting;
+  const hasTargetSource = Boolean(node && draft.editor.source?.id === node.id);
+  const targetEditingDisabled = lockedUi || !hasTargetSource;
   const conflicts = scopedDraftConflicts(draft, scene);
 
   const invalidate = () => {
@@ -145,7 +147,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   }, [scene, preview]);
   const sourceUnchanged = nativeSource !== null && !draftEditorDirty(draft);
   const queue = () => {
-    if (!node || draftStale || sourceUnchanged || lockedUi || (nativeSource && node.id !== nativeSource.targetNodeId)) return;
+    if (!hasTargetSource || !node || draftStale || sourceUnchanged || lockedUi || (nativeSource && node.id !== nativeSource.targetNodeId)) return;
     try { update(queueDraftEdit(draft)); }
     catch (reason) { setError(message(reason)); }
   };
@@ -241,18 +243,25 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
       </article>)}</section>}
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">
-        <label className="production-field"><span>Target object</span><select aria-label="Patch target object" value={draft.editor.nodeId} disabled={lockedUi || draftStale || nativeSource !== null}
+        {!hasTargetSource && <p className="production-help" role="status">{!scene
+          ? "Select a working scene before editing an object."
+          : draft.editor.nodeId && !node
+            ? "This draft's object is unavailable. Its saved inputs and proposed edits are kept for conflict review."
+            : !scene.nodes.length
+              ? "This scene has no objects to edit. Add a component in Components or an object in Canvas, then return to Scoped changes."
+              : "Choose a target object before editing. If a recovered draft has no original object values, discard the proposal to start a new draft."}</p>}
+        <label className="production-field"><span>Target object</span><select aria-label="Patch target object" value={draft.editor.nodeId} disabled={lockedUi || draftStale || nativeSource !== null || !scene?.nodes.length}
           onChange={event => selectTarget(event.target.value)}>
           <option value="" disabled>Select an object</option>{!node && draft.editor.nodeId && <option value={draft.editor.nodeId}>Unavailable draft object</option>}
           {scene?.nodes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label className="production-field"><span>Edit</span><select aria-label="Patch edit kind" value={draft.editor.kind} disabled={lockedUi}
+        <label className="production-field"><span>Edit</span><select aria-label="Patch edit kind" value={draft.editor.kind} disabled={targetEditingDisabled}
           onChange={event => update({ ...draft, editor: { ...draft.editor, kind: event.target.value as "text" | "transform" } })}><option value="text">Text only</option><option value="transform">Transform only</option></select></label>
-        {draft.editor.kind === "text" ? <label className="production-field"><span>Replacement text</span><textarea aria-label="Patch replacement text" rows={4} value={draft.editor.text} disabled={lockedUi}
+        {draft.editor.kind === "text" ? <label className="production-field"><span>Replacement text</span><textarea aria-label="Patch replacement text" rows={4} value={draft.editor.text} disabled={targetEditingDisabled}
           onChange={event => update({ ...draft, editor: { ...draft.editor, text: event.target.value } })}/></label>
           : <div className="production-transform-grid">{(["x", "y", "width", "height", "rotation_deg", "opacity"] as const).map(field => <label className="production-field" key={field}><span>{field.replace("_deg", " (deg)")}</span>
-            <input aria-label={`Patch ${field}`} type="number" step={field === "opacity" ? .01 : 1} value={draft.editor.transform[field]} disabled={lockedUi}
+            <input aria-label={`Patch ${field}`} type="number" step={field === "opacity" ? .01 : 1} value={draft.editor.transform[field]} disabled={targetEditingDisabled}
               onChange={event => update({ ...draft, editor: { ...draft.editor, transform: { ...draft.editor.transform, [field]: Number(event.target.value) } } })}/></label>)}</div>}
-        <button className="secondary-button" disabled={!node || draftStale || sourceUnchanged || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
+        <button className="secondary-button" disabled={!hasTargetSource || !node || draftStale || sourceUnchanged || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
         <label className="production-field"><span>Visible reason for this change</span><textarea aria-label="Patch rationale" rows={3} placeholder="What is wrong, where is it visible, and why does this edit help?" value={draft.rationale} disabled={lockedUi}
           onChange={event => update({ ...draft, rationale: event.target.value })}/></label>
       </section>
