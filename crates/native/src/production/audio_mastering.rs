@@ -715,6 +715,45 @@ fn unique_named(value: &Value, revision: &str, name: &str) -> NativeResult<Strin
     native_reference(matches[0], "reference")
 }
 
+/// Check the semantic asset DTO emitted by SDK54 after a confined audio probe.
+/// `asset.import` takes kind=file, while `asset.list` reports the probed kind
+/// audio and service avformat. This validates an observation only: callers must
+/// obtain the current page from the original provider/journal, not imported JSON.
+pub fn validate_mastering_asset_page(
+    value: &Value,
+    revision: &str,
+    clock: &MasteringClock,
+    premix_name: &str,
+) -> NativeResult<String> {
+    clock.validate()?;
+    if !is_sha256(revision) {
+        return Err(conflict("MLT mastering revision is malformed"));
+    }
+    let rows = closed_page(value, revision)?;
+    let [asset] = rows else {
+        return Err(conflict(
+            "Mastering source requires exactly one canonical audio asset",
+        ));
+    };
+    let expected_resource = format!("media:{premix_name}");
+    if asset.get("name").and_then(Value::as_str) != Some("Canonical premix")
+        || asset.get("kind").and_then(Value::as_str) != Some("audio")
+        || asset.get("service").and_then(Value::as_str) != Some("avformat")
+        || asset.get("frames").and_then(Value::as_u64) != Some(clock.video_frames)
+        || asset.get("resource").and_then(Value::as_str) != Some(expected_resource.as_str())
+        || asset.get("resource_status").and_then(Value::as_str) != Some("scoped_unopened")
+        || asset.get("opaque").and_then(Value::as_bool) != Some(false)
+        || !asset.get("original").is_some_and(Value::is_null)
+        || !asset.get("proxy").is_some_and(Value::is_null)
+    {
+        return Err(conflict(
+            "Mastering source asset does not retain the sealed canonical audio and clock",
+        ));
+    }
+    native_reference(asset, "reference")?;
+    native_reference(asset, "id")
+}
+
 /// A lost read after acknowledged render.start leaves the original job's
 /// outcome uncertain. Preserve its typed error/candidates; never start again.
 fn unconfirmed_gain(mut error: Error) -> Error {
@@ -1022,21 +1061,8 @@ impl ProductionCoordinator {
                 json!({}),
             )
             .await?;
-        let asset_rows = closed_page(&assets, &session.revision)?;
-        if asset_rows.len() != 1
-            || asset_rows[0]["name"] != "Canonical premix"
-            || asset_rows[0]["kind"] != "file"
-            || asset_rows[0]["resource"] != format!("media:{premix_name}")
-            || asset_rows[0]["resource_status"] != "scoped_unopened"
-            || asset_rows[0]["opaque"] != false
-            || !asset_rows[0]["original"].is_null()
-            || !asset_rows[0]["proxy"].is_null()
-        {
-            return Err(conflict(
-                "Mastering source asset does not retain the sealed canonical media reference",
-            ));
-        }
-        let asset_id = native_reference(&asset_rows[0], "id")?;
+        let asset_id =
+            validate_mastering_asset_page(&assets, &session.revision, &source.clock, premix_name)?;
         let tracks = self
             .mastering_list(
                 source,

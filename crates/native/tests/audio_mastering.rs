@@ -346,3 +346,160 @@ fn final_measurement_cannot_authorize_a_premix_or_mismatched_pins() {
             .is_err()
     );
 }
+
+fn sdk54_audio_asset_page(revision: &str) -> serde_json::Value {
+    // Complete wire shape from SDK54 app.rs::asset_dto and import_asset.
+    // Authored protocol fixture only; no native probe or original receipt.
+    serde_json::json!({
+        "revision": revision,
+        "items": [{
+            "reference": "current-audio-reference",
+            "id": "asset-1",
+            "name": "Canonical premix",
+            "kind": "audio",
+            "resource": "media:canonical-premix.wav",
+            "resource_status": "scoped_unopened",
+            "frames": 60,
+            "service": "avformat",
+            "original": null,
+            "proxy": null,
+            "opaque": false
+        }],
+        "total": 1,
+        "cursor": null
+    })
+}
+
+fn observe_audio_asset(page: &serde_json::Value) -> Result<String, semwright_native_sdk::Error> {
+    validate_mastering_asset_page(
+        page,
+        &"a".repeat(64),
+        &binding().clock,
+        "canonical-premix.wav",
+    )
+}
+
+#[test]
+fn sdk54_imported_audio_dto_passes_without_the_file_input_category_alias() {
+    let page = sdk54_audio_asset_page(&"a".repeat(64));
+    let original = page.clone();
+    assert_eq!(observe_audio_asset(&page).unwrap(), "asset-1");
+    assert_eq!(page, original);
+}
+
+#[test]
+fn file_video_image_and_color_dtos_cannot_replace_the_imported_audio_kind() {
+    for kind in ["file", "video", "image", "color", ""] {
+        let mut page = sdk54_audio_asset_page(&"a".repeat(64));
+        page["items"][0]["kind"] = serde_json::json!(kind);
+        let original = page.clone();
+        let error = observe_audio_asset(&page).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict, "{kind}");
+        assert!(error.outcome_known);
+        assert_eq!(page, original);
+    }
+}
+
+#[test]
+fn imported_audio_service_clock_and_opaque_status_are_not_metadata_only() {
+    for (field, replacement) in [
+        ("service", serde_json::json!("pixbuf")),
+        ("frames", serde_json::json!(59)),
+        ("frames", serde_json::json!(61)),
+        ("frames", serde_json::json!("60")),
+        ("frames", serde_json::json!(true)),
+        ("opaque", serde_json::json!(true)),
+    ] {
+        let mut page = sdk54_audio_asset_page(&"a".repeat(64));
+        page["items"][0][field] = replacement;
+        let error = observe_audio_asset(&page).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict, "{field}");
+        assert!(error.outcome_known);
+    }
+}
+
+#[test]
+fn a_complete_audio_dto_cannot_hide_resource_drift_proxy_or_missing_fields() {
+    for (field, replacement) in [
+        ("resource", "media:different.wav"),
+        ("resource", "output:canonical-premix.wav"),
+        ("resource_status", "resolved"),
+        ("original", "media:original.wav"),
+        ("proxy", "media:proxy.wav"),
+    ] {
+        let mut page = sdk54_audio_asset_page(&"a".repeat(64));
+        page["items"][0][field] = serde_json::json!(replacement);
+        assert_eq!(
+            observe_audio_asset(&page).unwrap_err().code,
+            ErrorCode::Conflict
+        );
+    }
+    for field in [
+        "reference",
+        "id",
+        "name",
+        "kind",
+        "resource",
+        "resource_status",
+        "frames",
+        "service",
+        "original",
+        "proxy",
+        "opaque",
+    ] {
+        let mut page = sdk54_audio_asset_page(&"a".repeat(64));
+        page["items"][0].as_object_mut().unwrap().remove(field);
+        let error = observe_audio_asset(&page).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict, "{field}");
+        assert!(error.outcome_known);
+    }
+}
+
+#[test]
+fn an_audio_asset_page_must_be_unique_complete_and_at_the_current_native_revision() {
+    for change in 0..5 {
+        let mut page = sdk54_audio_asset_page(&"a".repeat(64));
+        match change {
+            0 => page["revision"] = serde_json::json!("b".repeat(64)),
+            1 => page["cursor"] = serde_json::json!("next-page"),
+            2 => page["total"] = serde_json::json!(2),
+            3 => {
+                let other = page["items"][0].clone();
+                page["items"].as_array_mut().unwrap().push(other);
+                page["total"] = serde_json::json!(2);
+            }
+            _ => {
+                page["items"] = serde_json::json!([]);
+                page["total"] = serde_json::json!(0);
+            }
+        }
+        let error = observe_audio_asset(&page).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(error.outcome_known);
+    }
+}
+
+#[test]
+fn reopened_audio_uses_the_new_current_reference_and_preserves_semantic_identity() {
+    let first_revision = "a".repeat(64);
+    let reopened_revision = "b".repeat(64);
+    let first = sdk54_audio_asset_page(&first_revision);
+    let mut reopened = sdk54_audio_asset_page(&reopened_revision);
+    reopened["items"][0]["reference"] = serde_json::json!("reopened-audio-reference");
+    let clock = binding().clock;
+    let first_id =
+        validate_mastering_asset_page(&first, &first_revision, &clock, "canonical-premix.wav")
+            .unwrap();
+    let reopened_id = validate_mastering_asset_page(
+        &reopened,
+        &reopened_revision,
+        &clock,
+        "canonical-premix.wav",
+    )
+    .unwrap();
+    assert_eq!(first_id, reopened_id);
+    assert!(
+        validate_mastering_asset_page(&reopened, &first_revision, &clock, "canonical-premix.wav")
+            .is_err()
+    );
+}
