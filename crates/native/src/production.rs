@@ -834,14 +834,20 @@ impl ProductionClient {
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
+        // A successful spawn is the last locally observed pre-dispatch boundary.
+        // An incomplete response cannot prove that the original mutation failed.
+        // Preserve that attempt for read-only reconciliation; never authorize replay.
+        let unobserved = |error: Error| {
+            if mutation { error.uncertain() } else { error }
+        };
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| backend("Semwright CLI stdout unavailable"))?;
+            .ok_or_else(|| unobserved(backend("Semwright CLI stdout unavailable")))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
+            .ok_or_else(|| unobserved(backend("Semwright CLI stderr unavailable")))?;
         let stdout_task = tokio::spawn(read_bounded(stdout));
         let stderr_task = tokio::spawn(read_bounded(stderr));
         let deadline = if command.starts_with("driver.mlt-video.")
@@ -854,7 +860,9 @@ impl ProductionClient {
         };
 
         let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
-            Ok(result) => result.map_err(|_| backend("Semwright CLI process failed"))?,
+            Ok(result) => {
+                result.map_err(|_| unobserved(backend("Semwright CLI process failed")))?
+            }
             Err(_) => {
                 let _ = child.kill().await;
                 let error =
@@ -864,49 +872,78 @@ impl ProductionClient {
         };
         let stdout = stdout_task
             .await
-            .map_err(|_| backend("Semwright CLI output task failed"))?
-            .map_err(|_| backend("Semwright CLI output could not be read"))?;
+            .map_err(|_| unobserved(backend("Semwright CLI output task failed")))?
+            .map_err(|_| unobserved(backend("Semwright CLI output could not be read")))?;
         let stderr = stderr_task
             .await
-            .map_err(|_| backend("Semwright CLI diagnostic task failed"))?
-            .map_err(|_| backend("Semwright CLI diagnostics could not be read"))?;
+            .map_err(|_| unobserved(backend("Semwright CLI diagnostic task failed")))?
+            .map_err(|_| unobserved(backend("Semwright CLI diagnostics could not be read")))?;
         if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(Error::new(
+            return Err(unobserved(Error::new(
                 ErrorCode::ResourceExhausted,
                 "Semwright CLI response exceeded the transport budget",
-            ));
+            )));
         }
 
-        let envelope: Envelope = serde_json::from_slice(&stdout)
-            .map_err(|_| backend("Semwright CLI returned an invalid response envelope"))?;
+        let envelope: Envelope = serde_json::from_slice(&stdout).map_err(|_| {
+            unobserved(backend(
+                "Semwright CLI returned an invalid response envelope",
+            ))
+        })?;
         if envelope.command != command {
-            return Err(backend(
+            return Err(unobserved(backend(
                 "Semwright CLI response command does not match the request",
-            ));
+            )));
         }
-        if !status.success() || !envelope.ok {
-            let error = envelope.error.unwrap_or_else(|| {
-                backend("Canonical production command failed without a typed error")
-            });
+        if envelope.request_id.is_empty()
+            || envelope.request_id.len() > 256
+            || envelope.request_id.chars().any(char::is_control)
+        {
+            return Err(unobserved(backend(
+                "Semwright CLI response request identity is invalid",
+            )));
+        }
+        if !envelope.ok {
+            let error = envelope.error.ok_or_else(|| {
+                unobserved(backend(
+                    "Canonical production command failed without a typed error",
+                ))
+            })?;
+            // The pinned CLI returns Error::exit_code for a complete typed
+            // denial. Its declared uncertainty is preserved verbatim. A partial
+            // envelope, contradictory exit status or unexpected dry run is only
+            // an observation loss; this client does not request a dry run.
+            if envelope.data.is_some()
+                || status.code() != Some(error.exit_code())
+                || envelope.execution.dry_run
+            {
+                return Err(unobserved(backend(
+                    "Semwright CLI failure response is inconsistent",
+                )));
+            }
             return Err(error);
         }
-        let provenance = envelope
-            .execution
-            .provenance
-            .as_ref()
-            .ok_or_else(|| backend("Canonical production response has no provenance"))?;
+        if !status.success() || envelope.error.is_some() || envelope.execution.dry_run {
+            return Err(unobserved(backend(
+                "Semwright CLI success response is inconsistent",
+            )));
+        }
+        let provenance = envelope.execution.provenance.as_ref().ok_or_else(|| {
+            unobserved(backend("Canonical production response has no provenance"))
+        })?;
         if provenance.provider != expected.provider
             || provenance.source != expected.source
             || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
+            || provenance.untrusted_metadata
         {
-            return Err(backend(
+            return Err(unobserved(backend(
                 "Canonical response provenance does not match the expected authority",
-            ));
+            )));
         }
         let value = envelope
             .data
-            .ok_or_else(|| backend("Canonical production response has no data"))?;
+            .ok_or_else(|| unobserved(backend("Canonical production response has no data")))?;
         Ok(BrokerResult {
             value: json!({
                 "data": value,
@@ -2140,6 +2177,9 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
+        // Keep durable receipts and persistence failures aligned with the
+        // existing client-side workflow classification even if a caller passes false.
+        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
             || expected.generation != project.generation
