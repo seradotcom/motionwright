@@ -38,10 +38,21 @@ export interface ProjectRead<P extends ProjectRevision, R> {
   pending?: (value: boolean) => void;
 }
 
+/** Observation of the existing local actor, never an execution grant. */
+export interface ProjectActivity {
+  serial: number;
+  busy: boolean;
+}
+
 export class ProjectMutationGate {
   private active = false;
   private reading = false;
   private readEpoch = 0;
+  private activitySerial = 0;
+
+  get activity(): ProjectActivity {
+    return { serial: this.activitySerial, busy: this.active || this.reading };
+  }
 
   /** A new document may begin from an empty library. The operation still uses
    * the same synchronous latch and source-view check as every existing edit.
@@ -59,6 +70,7 @@ export class ProjectMutationGate {
     const matches = () => base === null ? current() === null : sameProjectRevision(current(), base);
     if (!matches()) throw new Error("The active project changed before creation. Review its current state.");
     this.active = true;
+    this.activitySerial++;
     try {
       pending(true);
       const next = await operation();
@@ -93,6 +105,7 @@ export class ProjectMutationGate {
       throw new Error("The visible project changed before this request. Review its current state.");
     }
     this.active = true;
+    this.activitySerial++;
     try {
       pending(true);
       const next = await operation(source);
@@ -132,6 +145,7 @@ export class ProjectMutationGate {
     }
     const epoch = ++this.readEpoch;
     this.reading = true;
+    this.activitySerial++;
     try {
       request.pending?.(true);
       const result = await request.load();

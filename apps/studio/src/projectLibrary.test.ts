@@ -147,6 +147,26 @@ describe("retained project creation at the UI transport boundary", () => {
     },
   );
 
+  it("refuses a byte-changed but semantically identical creation copy after the grant", async () => {
+    const storage = new SelectionMemoryStorage();
+    const waiting = deferred<ReturnType<typeof grant>>();
+    const call = vi.fn<ProjectCreationInvoke>(async command => {
+      if (command === "issue_project_creation_grant") return waiting.promise;
+      throw new Error("A byte-changed original must never reach create_project");
+    });
+    const creation = createProjectWithRetainedIntent("Keep exact original bytes", call, storage);
+    const original = readProjectCreations(storage).copies[0];
+    const altered = original.raw + " ";
+    expect(JSON.parse(altered)).toEqual(JSON.parse(original.raw));
+    storage.data.set(original.key, altered);
+    const rejection = expect(creation).rejects.toThrow("retained creation changed");
+    waiting.resolve(grant());
+    await rejection;
+    expect(call.mock.calls.map(([command]) => command)).toEqual(["issue_project_creation_grant"]);
+    expect(storage.getItem(original.key)).toBe(altered);
+    expect(storage.writes).toBe(1);
+  });
+
   it("does not dispatch when its continuity write is unavailable or an earlier record is corrupt", async () => {
     const storage = new SelectionMemoryStorage(), call = vi.fn<ProjectCreationInvoke>();
     storage.failSet = true;

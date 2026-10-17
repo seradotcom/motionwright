@@ -63,6 +63,7 @@ import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
+import type { DeliveryProjectState } from "./deliveryProfileDraft";
 import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
@@ -615,6 +616,7 @@ function DeliverView({
   desktopMode,
   onImportBundle,
   onOpenAudio,
+  currentProjectState,
   renderEvidence,
   onRenderEvidence,
   avEvidence,
@@ -627,6 +629,7 @@ function DeliverView({
   desktopMode: boolean;
   onImportBundle: (path: string) => Promise<Project>;
   onOpenAudio: () => void;
+  currentProjectState: () => DeliveryProjectState;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
@@ -705,7 +708,7 @@ function DeliverView({
       </header>
 
       <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
-        onOpenAudio={onOpenAudio}
+        onOpenAudio={onOpenAudio} currentProjectState={currentProjectState}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
@@ -1815,6 +1818,10 @@ export default function App() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const bootRef = useRef<Bootstrap | null>(boot);
   const mutationGate = useRef(new ProjectMutationGate());
+  const currentProjectState = useCallback((): DeliveryProjectState => ({
+    project: bootRef.current?.project ?? null,
+    ...mutationGate.current.activity,
+  }), []);
 
   const [bootReady, setBootReady] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -2306,6 +2313,7 @@ export default function App() {
             project={project}
             commit={commitRequired}
             onOpenAudio={() => setWorkspace("Audio")}
+            currentProjectState={currentProjectState}
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}

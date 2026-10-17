@@ -336,6 +336,9 @@ export async function modelRequestPreflight(
   };
 }
 
+/** Local UI freshness check only. Backend grants and source authority remain mandatory. */
+export type NativeDeliveryDispatchCheck = () => void;
+
 async function issueEffectGrant(
   effect: EffectKind,
   project: Project | null,
@@ -764,13 +767,16 @@ export async function renderMotionCanvas(
   project: Project,
   deliverableId: string,
   options: MotionCanvasFilmOptions,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<MotionCanvasRenderEvidence> {
   if (!isTauri()) {
     throw new Error("Canonical Motion Canvas production requires the Motionwright desktop runtime.");
   }
   const savedOptions = savedFilmOptions(project, deliverableId, options);
   const requestId = crypto.randomUUID();
+  beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, requestId);
+  beforeDispatch?.();
   return invoke<MotionCanvasRenderEvidence>("render_motion_canvas", {
     request: {
       project_id: project.id,
@@ -840,12 +846,15 @@ export async function assembleNativeAvMaster(
   deliverableId: string,
   voiceTrackId: string,
   previewToken: string,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<MltAvMasterEvidence> {
   if (!isTauri()) {
     throw new Error("Native AV mastering requires the desktop Semwright runtime.");
   }
   const requestId = crypto.randomUUID();
+  beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, requestId);
+  beforeDispatch?.();
   return invoke<MltAvMasterEvidence>("assemble_av_master", {
     request: {
       project_id: project.id,
@@ -869,12 +878,15 @@ export async function assembleNativeMultisegmentAvMaster(
   deliverableId: string,
   voiceTrackId: string,
   previewToken: string,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<NativeMultisegmentAvMasterEvidence> {
   if (!isTauri()) {
     throw new Error("Native multisegment AV mastering requires the desktop runtime.");
   }
   const requestId = crypto.randomUUID();
+  beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, requestId);
+  beforeDispatch?.();
   return invoke<NativeMultisegmentAvMasterEvidence>("assemble_multisegment_av_master", {
     request: {
       project_id: project.id,
@@ -897,13 +909,16 @@ export async function exportVerifiedNativeMaster(
   exportToken: string,
   destination: string,
   includeIntegrityManifest = false,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<MasterExportReceipt> {
   if (!isTauri()) {
     throw new Error("Verified native MP4 delivery requires the desktop runtime.");
   }
   const absolutePath = destination.trim();
   if (!absolutePath) throw new Error("Choose an absolute .mp4 delivery destination.");
+  beforeDispatch?.();
   const grant = await issueEffectGrant("deliver_local", project, absolutePath);
+  beforeDispatch?.();
   return invoke<MasterExportReceipt>("export_native_av_master", {
     request: {
       project_id: project.id,
