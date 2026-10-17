@@ -28,6 +28,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+pub mod blender_editable;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
@@ -101,6 +102,12 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+    "driver.blender.composition.inspect",
+    "driver.blender.composition.plan",
+    "driver.blender.composition.apply",
+    "driver.blender.composition.verify",
+    "driver.blender.composition.persist",
+    "driver.blender.composition.reopen",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
@@ -1733,6 +1740,20 @@ impl ProductionCoordinator {
             ));
         }
         let plan = build_blender_contribution(&project, scene_id)?;
+        // The legacy material.create path does not realize the Principled
+        // Alpha input. Reject before collection.create can mutate the scene.
+        // The Collection profile has its own explicit material-opacity source
+        // contract; this guard does not claim raster transparency fidelity.
+        if plan
+            .objects
+            .iter()
+            .any(|object| object.color_rgba[3] != 1.0)
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Legacy Blender GLB production cannot preserve non-opaque material alpha",
+            ));
+        }
         let collection = self
             .execute(
                 project_id,
@@ -2681,6 +2702,25 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             assert!(authority.provider_generation_required);
         }
         assert!(expected_authority("driver.blender.python.exec").is_none());
+        for command in [
+            "driver.blender.composition.inspect",
+            "driver.blender.composition.plan",
+            "driver.blender.composition.apply",
+            "driver.blender.composition.verify",
+            "driver.blender.composition.persist",
+            "driver.blender.composition.reopen",
+        ] {
+            assert!(BLENDER_COMMANDS.contains(&command));
+        }
+        for command in [
+            "driver.blender.file.save",
+            "driver.blender.file.open",
+            "driver.blender.render.frame",
+            "driver.blender.scene.create",
+            "driver.blender.composition.delete",
+        ] {
+            assert!(expected_authority(command).is_none());
+        }
 
         let manim = expected_authority("driver.manim-community.render.start")
             .expect("bounded Manim render start must be explicitly enabled");
@@ -2689,6 +2729,118 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(manim.provider_generation_required);
         assert!(expected_authority("driver.manim-community.python.exec").is_none());
         assert!(expected_authority("driver.manim.render").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_blender_alpha_is_rejected_before_native_dispatch() {
+        let (service, initial, temp) = fixture_service();
+        let mut project = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "blender-alpha-fixture-scene",
+                &Change::AddScene {
+                    name: "Alpha contract fixture".into(),
+                    objective: "Reject unpreserved material alpha before mutation".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = project.scenes[0].id;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-fixture-renderer",
+                &Change::SetSceneRenderer {
+                    scene_id,
+                    renderer: motionwright_domain::RendererKind::Blender,
+                },
+            )
+            .unwrap()
+            .project;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-fixture-node",
+                &Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::from_u128(40),
+                        name: "Partially transparent rectangle".into(),
+                        kind: "rectangle".into(),
+                        parent_id: None,
+                        x: 240.0,
+                        y: 180.0,
+                        width: 600.0,
+                        height: 360.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: None,
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 0,
+                        style: NodeStyle {
+                            fill: Some("#E0204080".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: None,
+                            font_size: None,
+                            font_weight: None,
+                            line_height: None,
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            )
+            .unwrap()
+            .project;
+
+        let mut connection = fake_connection(&temp, project.resource_key());
+        let marker = connection.output_root.join("unexpected-native-dispatch");
+        fs::write(
+            &connection.executable,
+            "#!/bin/sh\n: > \"$(dirname \"$0\")/output/unexpected-native-dispatch\"\nexit 97\n",
+        )
+        .unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        let output_root = connection.output_root.clone();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let before = serde_json::to_value(&project).unwrap();
+        let error = coordinator
+            .realize_blender_scene(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-original-attempt",
+                scene_id,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.outcome_known);
+        assert!(error.message.contains("non-opaque material alpha"));
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
+        assert!(
+            !marker.exists(),
+            "rejecting alpha must not invoke a native process"
+        );
+        assert_eq!(fs::read_dir(output_root).unwrap().count(), 0);
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before
+        );
+
+        // Source parameter support is separate from the legacy GLB production
+        // route. Admitting its typed Alpha does not assert measured pixels.
+        let source =
+            blender_editable::prepare_blender_editable_project_source(&project, scene_id).unwrap();
+        assert_eq!(source.spec.materials[0].opacity, 128.0 / 255.0);
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
     }
 
     #[test]

@@ -67,6 +67,12 @@ fn ensure_flat_semantics(node: &CanvasNode) -> NativeResult<()> {
             node.id
         )));
     }
+    if node.style.blend_mode != motionwright_domain::BlendMode::Normal {
+        return Err(unsupported(format!(
+            "Canvas node {} uses a blend mode that this native contribution cannot preserve",
+            node.id
+        )));
+    }
     if node.opacity != 1.0 || node.style.stroke_width != 0.0 || node.style.stroke.is_some() {
         return Err(unsupported(format!(
             "Canvas node {} has opacity/stroke state that this native contribution cannot preserve",
@@ -80,7 +86,7 @@ fn hex_color(value: &str) -> NativeResult<[f64; 4]> {
     let hex = value
         .strip_prefix('#')
         .ok_or_else(|| unsupported("Blender material fill must be an explicit hex color"))?;
-    if hex.len() != 6 && hex.len() != 8 {
+    if (hex.len() != 6 && hex.len() != 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(unsupported(
             "Blender material fill must use #RRGGBB or #RRGGBBAA",
         ));
@@ -141,7 +147,8 @@ pub struct BlenderSceneContribution {
 fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
     // Blender 4.x data-block names are bounded to 63 bytes. Preserve a
     // human-readable fragment of Motionwright's semantic name while keeping a
-    // stable UUID-derived disambiguator so exact lookups survive export/readback.
+    // complete UUID so nodes with the same temporal UUID prefix still retain
+    // distinct editable identities after export/readback.
     let mut slug = String::with_capacity(label.len().min(40));
     let mut separator = false;
     for byte in label.bytes() {
@@ -166,10 +173,10 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
     }
 
     let uuid = id.simple().to_string();
-    let short = &uuid[..12];
+    let identity = uuid.as_str();
     let suffix = suffix.trim_matches('-');
     let reserved = 1
-        + short.len()
+        + identity.len()
         + if suffix.is_empty() {
             0
         } else {
@@ -181,9 +188,9 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
         slug.pop();
     }
     if suffix.is_empty() {
-        format!("{slug}-{short}")
+        format!("{slug}-{identity}")
     } else {
-        format!("{slug}-{short}-{suffix}")
+        format!("{slug}-{identity}-{suffix}")
     }
 }
 
@@ -557,12 +564,67 @@ mod tests {
             "material",
         );
         assert!(name.starts_with("Motionwright-focus-export-"));
-        assert!(material.starts_with("Motionwright-focus-export-"));
+        assert!(material.starts_with("Motionwright-focus-"));
         assert!(material.ends_with("-material"));
-        assert!(name.contains("0123456789ab"));
-        assert!(material.contains("0123456789ab"));
+        assert!(name.contains("0123456789abcdef0123456789abcdef"));
+        assert!(material.contains("0123456789abcdef0123456789abcdef"));
         assert!(name.is_ascii() && material.is_ascii());
         assert!(name.len() <= 63 && material.len() <= 63);
+    }
+
+    #[test]
+    fn blender_projection_keeps_nodes_with_the_same_uuid_prefix_distinct() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        let first = Uuid::parse_str("019a0032-9000-7000-8000-000000000001").unwrap();
+        let second = Uuid::parse_str("019a0032-9000-7000-8000-000000000002").unwrap();
+        project.scenes[0].nodes[0].id = first;
+        project.scenes[0].nodes[0].name = "Identical display label".into();
+        let mut other = project.scenes[0].nodes[0].clone();
+        other.id = second;
+        project.scenes[0].nodes.push(other);
+        let plan = build_blender_contribution(&project, project.scenes[0].id).unwrap();
+        assert_ne!(plan.objects[0].name, plan.objects[1].name);
+        assert_ne!(plan.objects[0].material_name, plan.objects[1].material_name);
+        for (object, id) in plan.objects.iter().zip([first, second]) {
+            let identity = id.simple().to_string();
+            assert!(object.name.contains(&identity));
+            assert!(object.material_name.contains(&identity));
+            assert!(object.name.len() <= 63 && object.material_name.len() <= 63);
+        }
+    }
+
+    #[test]
+    fn native_projection_rejects_unpreserved_blending_before_a_plan_exists() {
+        for mut project in [
+            project_with_renderer(RendererKind::Blender),
+            project_with_renderer(RendererKind::ManimCommunity),
+        ] {
+            project.scenes[0].nodes[0].style.blend_mode = motionwright_domain::BlendMode::Multiply;
+            let scene_id = project.scenes[0].id;
+            let error = if project.scenes[0].renderer == RendererKind::Blender {
+                build_blender_contribution(&project, scene_id)
+                    .map(|_| ())
+                    .unwrap_err()
+            } else {
+                build_manim_plan(&project, scene_id)
+                    .map(|_| ())
+                    .unwrap_err()
+            };
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+    }
+
+    #[test]
+    fn blender_color_parser_rejects_non_ascii_boundaries_without_panicking() {
+        for invalid in ["#FéFFF", "#FFFéFFF", "#GG0000", "#00000", "#123456789"] {
+            let error = hex_color(invalid).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+        assert_eq!(
+            hex_color("#FF8040").unwrap(),
+            [1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0]
+        );
+        assert_eq!(hex_color("#ff804080").unwrap()[3], 128.0 / 255.0);
     }
 
     #[test]
