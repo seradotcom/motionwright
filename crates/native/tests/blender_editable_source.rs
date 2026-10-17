@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Synthetic contract-negative tests. These do not run Blender or prove media/source files.
 use motionwright_native::{
     multi_renderer::{BlenderPrimitive, BlenderPrimitiveContribution, BlenderSceneContribution},
