@@ -922,27 +922,90 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let store = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
             let input = directory.path().join("input.bin");
-            fs::write(&input, b"original immutable bytes").unwrap();
-            let captured = store.stage_file_import(&input).unwrap();
-            let descriptor = captured.descriptor().clone();
-            let stage_path = captured.path().to_path_buf();
+            let original: &[u8] = b"original immutable bytes";
+            fs::write(&input, original).unwrap();
+
+            let first_capture = store.stage_file_import(&input).unwrap();
+            let descriptor = first_capture.descriptor().clone();
+            let first_stage_path = first_capture.path().to_path_buf();
             let destination = store.blob_path(&descriptor.sha256).unwrap();
-            let changed_path = if changed_existing {
-                store.publish_file_import(&captured).unwrap();
-                destination.clone()
+            assert_eq!(descriptor.size_bytes, original.len() as u64);
+            assert_eq!(fs::read(&first_stage_path).unwrap(), original);
+
+            let captured = if changed_existing {
+                store.publish_file_import(&first_capture).unwrap();
+                assert_eq!(fs::read(&destination).unwrap(), original);
+
+                // The first publication may hard-link staging into CAS. Capture
+                // the unchanged input independently before changing the CAS file.
+                let second_capture = store.stage_file_import(&input).unwrap();
+                assert_ne!(second_capture.path(), first_stage_path.as_path());
+                assert_eq!(&second_capture.descriptor().sha256, &descriptor.sha256);
+                assert_eq!(
+                    second_capture.descriptor().size_bytes,
+                    descriptor.size_bytes
+                );
+                assert_eq!(fs::read(second_capture.path()).unwrap(), original);
+                drop(first_capture);
+                assert!(!first_stage_path.exists());
+                second_capture
             } else {
-                stage_path.clone()
+                first_capture
             };
-            let mut changed = fs::read(&changed_path).unwrap();
+
+            let stage_path = captured.path().to_path_buf();
+            assert_ne!(stage_path, destination);
+            assert_eq!(&captured.descriptor().sha256, &descriptor.sha256);
+            assert_eq!(captured.descriptor().size_bytes, descriptor.size_bytes);
+            assert_eq!(fs::read(&stage_path).unwrap(), original);
+            assert_eq!(fs::read(&input).unwrap(), original);
+
+            let mut changed = original.to_vec();
             changed.extend_from_slice(b" appended after capture");
-            fs::write(&changed_path, &changed).unwrap();
+            let changed_path = if changed_existing {
+                &destination
+            } else {
+                &stage_path
+            };
+            fs::write(changed_path, &changed).unwrap();
+            assert_eq!(fs::read(changed_path).unwrap(), changed);
+            assert!(fs::metadata(changed_path).unwrap().len() > descriptor.size_bytes);
+            if changed_existing {
+                // Prove the next call can pass its private-capture check and
+                // reaches validation of the distinct, changed existing CAS file.
+                assert_eq!(fs::read(&stage_path).unwrap(), original);
+                assert_eq!(
+                    fs::metadata(&stage_path).unwrap().len(),
+                    descriptor.size_bytes
+                );
+            } else {
+                assert!(!destination.exists());
+            }
+
             let result = store.publish_file_import(&captured);
             assert!(matches!(
                 result,
-                Err(StorageError::BlobTooLarge { limit, .. }) if limit == descriptor.size_bytes
+                Err(StorageError::BlobTooLarge { limit, .. })
+                    if limit == descriptor.size_bytes
             ));
+            assert_eq!(&captured.descriptor().sha256, &descriptor.sha256);
+            assert_eq!(captured.descriptor().size_bytes, descriptor.size_bytes);
+            assert_eq!(fs::read(&input).unwrap(), original);
+            if changed_existing {
+                assert_eq!(fs::read(&stage_path).unwrap(), original);
+                assert_eq!(
+                    fs::metadata(&stage_path).unwrap().len(),
+                    descriptor.size_bytes
+                );
+                assert_eq!(fs::read(&destination).unwrap(), changed);
+            } else {
+                assert_eq!(fs::read(&stage_path).unwrap(), changed);
+                assert!(!destination.exists());
+            }
+
             drop(captured);
             assert!(!stage_path.exists());
+            assert!(!first_stage_path.exists());
             if changed_existing {
                 // The rejected attempt cannot remove or repair a shared object.
                 assert_eq!(fs::read(&destination).unwrap(), changed);

@@ -115,6 +115,21 @@ An additional file-backed stream case appends 4096 bytes when the actual read
 starts after a 64-byte size check. The shared transfer reads exactly 65 bytes,
 returns BlobTooLarge and never accepts an oversized output buffer.
 
+## Independent existing-CAS publication oracle
+
+The original publication test in 38003ad reused the first capture after publishing
+it. Publication may hard-link that capture into CAS, so changing the CAS pathname
+could also change staging and fail before the existing-CAS validation was reached.
+The 203 passing tests on that SHA remain historical evidence with this coverage
+qualification.
+
+The corrected test first publishes one capture, then independently captures the
+unchanged input. It changes only the existing CAS file and checks the second
+capture's original bytes and size before and after the rejected publication.
+The separate changed-staging control remains. Both cases retain the original
+size limit, descriptor identity, private cleanup and shared-CAS preservation
+assertions. This is an oracle correction; it does not change product behavior.
+
 ## Boundaries
 
 SQLite snapshot consistency does not make publication across SQLite and the
