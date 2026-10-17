@@ -4,10 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       nsis_update_fixture:
-        description: 'Compile the separate 2-resource/2-sidecar predecessor fixture; does not execute an installer'
+        description: 'Compile the separate 2-resource/2-sidecar predecessor fixture; choose any observation separately'
         type: boolean
         required: false
         default: false
+      nsis_update_probe:
+        description: 'Optional observation on a fresh Windows runner using the compiled fixture'
+        type: choice
+        required: false
+        default: compile_only
+        options:
+          - compile_only
+          - clean_update
+          - post_main_recovery
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -84,6 +93,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
+      - name: Require the compiled fixture for an explicitly selected update observation
+        if: github.event_name == 'workflow_dispatch' && inputs.nsis_update_probe != 'compile_only' && !inputs.nsis_update_fixture
+        run: |
+          echo "An NSIS update observation requires nsis_update_fixture=true."
+          exit 1
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
@@ -169,6 +183,7 @@ jobs:
           if-no-files-found: warn
 
   linux:
+    if: github.event_name != 'workflow_dispatch' || !inputs.nsis_update_fixture
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -333,6 +348,7 @@ jobs:
           if-no-files-found: error
 
   windows:
+    if: github.event_name != 'workflow_dispatch' || !inputs.nsis_update_fixture
     needs: receipt-policy
     runs-on: windows-latest
     steps:
@@ -812,7 +828,151 @@ jobs:
           cache-dependency-path: apps/studio/package-lock.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: '3.13'
+          python-version: "3.13.16"
+
+      - name: Require all sixteen NSIS helper tests on Windows without skips
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import traceback
+          import unittest
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          SOURCE = os.environ["GITHUB_SHA"]
+          sys.path.insert(0, str(ROOT / "tooling"))
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout
+
+          PATHS = (
+              "tooling/nsis_owned_files.py",
+              "tooling/tests/test_nsis_owned_files.py",
+              "apps/desktop/src-tauri/windows/installer.nsi",
+              "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
+              ".github/workflows/package-candidate.yml",
+          )
+          EXPECTED_IDS = frozenset(
+              [
+                  "test_nsis_owned_files.OwnedFilesTests.test_exact_capture_and_include_bind_the_owned_bytes",
+                  "test_nsis_owned_files.OwnedFilesTests.test_real_source_changes_or_windows_rename_block_are_observed",
+                  "test_nsis_owned_files.OwnedFilesTests.test_existing_outputs_are_never_overwritten_even_when_empty",
+                  "test_nsis_owned_files.OwnedFilesTests.test_concurrent_include_creation_is_not_replaced",
+                  "test_nsis_owned_files.OwnedFilesTests.test_path_and_symbol_injection_rejected_before_outputs",
+                  "test_nsis_owned_files.OwnedFilesTests.test_devices_ads_and_ambiguous_paths_are_rejected_before_io",
+                  "test_nsis_owned_files.OwnedFilesTests.test_real_source_and_parent_links_are_rejected",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_profile_binds_all_physical_inputs_and_emits_only_declared_ownership",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_absent_profile_produces_an_exclusive_disabled_include",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_missing_or_changed_independent_manifest_pin_never_publishes_authority",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_profile_for_another_target_cannot_authorize_this_installer",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_changed_package_receipt_or_owned_bytes_are_rejected_with_captures_retained",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_owned_aliases_role_confusion_missing_self_and_unsafe_paths_are_rejected",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_duplicate_json_keys_and_non_file_inputs_do_not_produce_an_include",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_preexisting_capture_is_not_replaced_or_reused",
+                  "test_nsis_owned_files.PredecessorProfileTests.test_real_cli_uses_the_pinned_profile_and_rejects_argument_mode_confusion"
+              ]
+          )
+
+          def source():
+              _checkout(ROOT, SOURCE)
+              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+              files = {}
+              for path in PATHS:
+                  observed, size, digest = verified_artifact(ROOT, ROOT / path)
+                  files[path] = {"bytes": size, "sha256": digest}
+              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, check=True,
+                                    capture_output=True, text=True, timeout=10).stdout.strip()
+              return {"checkout": SOURCE, "tree": tree, "files": files}
+
+          def cases(node):
+              for item in node:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from cases(item)
+                  else:
+                      yield item.id()
+
+          output = ROOT / "ci-evidence/windows-nsis-update-source-tests.json"
+          log_path = ROOT / "ci-evidence/windows-nsis-update-source-tests.log"
+          output.parent.mkdir(exist_ok=True)
+          record = {
+              "schema": "motionwright.nsis-source-tests/1",
+              "status": "NOT_VERIFIED",
+              "platform": sys.platform,
+              "python": {
+                  "implementation": sys.implementation.name,
+                  "version": sys.version,
+                  "version_info": list(sys.version_info[:3]),
+                  "executable": sys.executable,
+              },
+              "expected_test_ids": sorted(EXPECTED_IDS),
+              "source_before": None, "source_after": None,
+              "test_ids": [], "tests": None, "failures": None, "errors": None,
+              "skips": None, "expected_failures": None, "unexpected_successes": None,
+              "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
+              "human_install_acceptance": "NOT_RUN",
+          }
+          with log_path.open("x", encoding="utf-8", newline="\n") as log:
+              try:
+                  if (sys.platform != "win32" or sys.implementation.name != "cpython"
+                          or sys.version_info[:3] != (3, 13, 16)):
+                      raise RuntimeError("expected_real_cpython_3_13_16_on_windows")
+                  before = source()
+                  record["source_before"] = before
+                  runtime = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-windows-source-tests"
+                  runtime.mkdir()
+                  os.environ["MOTIONWRIGHT_TEST_ROOT"] = str(runtime)
+                  suite = unittest.defaultTestLoader.discover(
+                      str(ROOT / "tooling/tests"), pattern="test_nsis_owned_files.py")
+                  ids = list(cases(suite))
+                  record["test_ids"] = ids
+                  if len(ids) != 16 or len(set(ids)) != 16 or set(ids) != EXPECTED_IDS:
+                      raise RuntimeError("expected_exact_sixteen_nsis_source_test_ids")
+                  result = unittest.TextTestRunner(stream=log, verbosity=2).run(suite)
+                  record.update({
+                      "tests": result.testsRun,
+                      "failures": len(result.failures), "errors": len(result.errors),
+                      "skips": [{"id": case.id(), "reason": reason} for case, reason in result.skipped],
+                      "expected_failures": len(result.expectedFailures),
+                      "unexpected_successes": len(result.unexpectedSuccesses),
+                  })
+                  after = source()
+                  record["source_after"] = after
+                  ok = (before == after and result.wasSuccessful() and result.testsRun == 16
+                        and not result.skipped and not result.expectedFailures
+                        and not result.unexpectedSuccesses)
+                  record["status"] = "PASS" if ok else "FAIL"
+              except BaseException as error:
+                  record["status"] = "NOT_VERIFIED"
+                  record["verification_error_type"] = type(error).__name__
+                  traceback.print_exc(file=log)
+              finally:
+                  log.flush()
+                  os.fsync(log.fileno())
+          raw_log = log_path.read_bytes()
+          record["log"] = {
+              "path": log_path.relative_to(ROOT).as_posix(),
+              "bytes": len(raw_log), "sha256": hashlib.sha256(raw_log).hexdigest(),
+          }
+          with output.open("x", encoding="utf-8", newline="\n") as stream:
+              json.dump(record, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+              stream.flush()
+              os.fsync(stream.fileno())
+          print(raw_log.decode("utf-8"), end="", file=sys.stderr)
+          print("nsis-windows-source-tests=" + record["status"]
+                + " required=16 tests=" + str(record["tests"])
+                + " python=" + ".".join(map(str, sys.version_info[:3]))
+                + " nsis=NOT_RUN installer=NOT_RUN human=NOT_RUN")
+          raise SystemExit(0 if record["status"] == "PASS" else 1)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows NSIS source-test gate failed' }
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
@@ -1680,7 +1840,1132 @@ jobs:
             ci-evidence/windows-nsis-update-compiled.json
             ci-evidence/windows-nsis-update-compiled-inputs/*
             ci-evidence/nsis-windows-junction-test.json
+            ci-evidence/windows-nsis-update-source-tests.json
+            ci-evidence/windows-nsis-update-source-tests.log
           if-no-files-found: error
+      - name: Observe the selected real update and preserve the previous Project
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.nsis_update_probe != 'compile_only'
+        timeout-minutes: 30
+        env:
+          MW_NSIS_UPDATE_CASE: ${{ inputs.nsis_update_probe }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import ctypes
+          from ctypes import wintypes
+          import hashlib
+          import json
+          import msvcrt
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import sys
+          import time
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          SOURCE = os.environ["GITHUB_SHA"]
+          MODE = os.environ["MW_NSIS_UPDATE_CASE"]
+          WORK = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-guarded-update"
+          INPUT = WORK / "input"
+          CASE = WORK / ("observe-" + MODE)
+          EVIDENCE = ROOT / "ci-evidence"
+          CUSTODY = EVIDENCE / "windows-nsis-update-project-custody"
+          PROOF = EVIDENCE / "windows-nsis-update-observation.json"
+          DEST = CASE / "installed"
+          sys.path.insert(0, str(ROOT / "tooling"))
+          import nsis_owned_files as owned
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout
+          from candidate_smoke import verify_installer, binary_identity
+          from windows_cold_start import (
+              boot_once, known_databases, native_windows_launch_environment,
+              read_project_snapshot,
+          )
+
+          FIXED = json.loads(r'''{"run":39032220978,"source":"679cc48baf7c6f9bb4a0b803508c9b2a9891d944","tree":"4ce7c4423c73da4f3af638427088ee6e962d12d5","packageArtifact":{"id":12101032310,"bytes":7134483,"sha256":"740ff6b52b1c655755f693ab9e620b36e15d5d5b642199f38e9a122d1b28155e"},"evidenceArtifact":{"id":12101216495,"bytes":125856,"sha256":"cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"},"package":{"member":"target/release/bundle/nsis/Motionwright_0.1.0_x64-setup.exe","bytes":7149373,"sha256":"c071870c1c5f12f1728389f526471bee43b23eb7ad0bae3410147349a8da9f46"},"main":{"member":"motionwright-desktop.exe","bytes":32794112,"sha256":"4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"},"self":{"member":"unchanged-control-original-uninstaller.exe","bytes":79338,"sha256":"dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224"},"receipt":{"member":"receipt.json","bytes":17792,"sha256":"ae15f0e7f21678b9fd950ec46a0b9cfe3601290851744a3d9aea158e39c5193e"}}''')
+
+          SOURCE_PATHS = (
+              ".github/workflows/package-candidate.yml",
+              "apps/desktop/src-tauri/tauri.conf.json",
+              "apps/desktop/src-tauri/windows/installer.nsi",
+              "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
+              "tooling/nsis_owned_files.py",
+              "tooling/tests/test_nsis_owned_files.py",
+              "tooling/package_receipt.py",
+              "tooling/release_manifest.py",
+              "tooling/candidate_smoke.py",
+              "tooling/windows_cold_start.py",
+              "apps/studio/package.json",
+              "apps/studio/package-lock.json",
+              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json",
+          )
+
+          MAX_FAMILY_FILE = 64 * 1024 * 1024
+          MAX_FAMILY_TOTAL = 192 * 1024 * 1024
+          FAMILY_SUFFIXES = ("", "-wal", "-shm", "-journal")
+          FOREIGN_NAME = "motionwright-unrelated-update-sentinel.bin"
+          FOREIGN_BYTES = b"Motionwright update observation: this file is not owned by the package.\n"
+          CHILD_ENV = native_windows_launch_environment(os.environ)
+          for secret_name in ("GH_TOKEN", "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+                              "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
+              CHILD_ENV.pop(secret_name, None)
+          STATE = {
+              "schema": "motionwright-windows-nsis-update-observation/1",
+              "status": "NOT_STARTED", "source_sha": SOURCE, "mode": MODE,
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "stage": "preflight", "actions": [], "snapshots": [],
+              "source_before": None, "source_after": None, "source_binding": "PENDING",
+              "input_before": None, "input_after": None,
+              "unknown_outcome": False, "cleanup": [],
+              "project_capture_scope": "all_present_members_of_the_one_fresh_fixture_SQLite_family",
+              "linked_assets_exports_other_databases": "NOT_EXERCISED",
+              "uninstaller_execution": "NOT_RUN",
+              "interruption_during_file_extraction": "NOT_EXERCISED",
+              "rollback_of_unknown_or_truncated_files": "NOT_CLAIMED",
+              "sidecar_execution": "NOT_RUN",
+              "native_provider_connection": "UNCONFIGURED",
+              "raw_application_logs_uploaded": False,
+              "human_install_acceptance": "NOT_RUN",
+              "normal_candidate_or_attestation_equivalence": "NOT_CLAIMED",
+              "release_published": False,
+          }
+          LOCK = None
+          PINNED = {}
+          BASELINE = None
+          DATABASE = None
+
+          class GateError(RuntimeError):
+              pass
+
+          def require(ok, code):
+              if not ok:
+                  raise GateError(code)
+
+          def plain_parents(path):
+              owned._require_plain_parents(owned._validated_path(path))
+
+          def identity(path):
+              observed, size, digest = verified_artifact(ROOT, path)
+              return {"bytes": size, "sha256": digest}
+
+          def token(path):
+              plain_parents(path)
+              info = path.lstat()
+              owned._require_regular(info, "observed file")
+              return {
+                  "device": info.st_dev, "inode": info.st_ino, "bytes": info.st_size,
+                  "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns,
+                  "links": info.st_nlink,
+              }
+
+          def absent(path):
+              plain_parents(path)
+              try:
+                  path.lstat()
+              except FileNotFoundError:
+                  return True
+              return False
+
+          def write_new(path, value):
+              body = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+              require(len(body) <= 4 * 1024 * 1024, "observation_document_exceeds_bound")
+              plain_parents(path)
+              with path.open("xb") as stream:
+                  require(stream.write(body) == len(body), "observation_document_short_write")
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              result = identity(path)
+              require(result == {"bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()},
+                      "observation_document_readback_mismatch")
+              return result
+
+          def read_bound(path, maximum=4 * 1024 * 1024):
+              before = identity(path)
+              require(before["bytes"] <= maximum, "observation_input_exceeds_bound")
+              with path.open("rb") as stream:
+                  body = stream.read(maximum + 1)
+              require(len(body) == before["bytes"]
+                      and hashlib.sha256(body).hexdigest() == before["sha256"]
+                      and identity(path) == before, "observation_input_changed_during_read")
+              return json.loads(body), before
+
+          def source_observation():
+              _checkout(ROOT, SOURCE)
+              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *SOURCE_PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
+                                    check=True, capture_output=True, text=True, timeout=10).stdout.strip()
+              require(re.fullmatch(r"[0-9a-f]{40}", tree) is not None, "source_tree_invalid")
+              files = {relative: identity(ROOT / relative) for relative in SOURCE_PATHS}
+              _checkout(ROOT, SOURCE)
+              return {"checkout": SOURCE, "tree": tree, "files": files}
+
+          def inputs_observation():
+              return {name: identity(path) for name, (path, expected) in PINNED.items()}
+
+          def assert_inputs():
+              require(PINNED and inputs_observation() ==
+                      {name: expected for name, (path, expected) in PINNED.items()},
+                      "pinned_update_inputs_changed")
+
+          def file_tree(root):
+              require(root.is_absolute(), "fixture_destination_must_be_absolute")
+              plain_parents(root)
+              root_info = root.lstat()
+              require(stat.S_ISDIR(root_info.st_mode) and not owned._is_link_or_reparse(root_info),
+                      "fixture_destination_is_not_an_ordinary_directory")
+              files = {}
+              directories = []
+              total = 0
+              for parent, names, leaves in os.walk(root, topdown=True, followlinks=False):
+                  parent_path = Path(parent)
+                  for name in names:
+                      child = parent_path / name
+                      info = child.lstat()
+                      require(stat.S_ISDIR(info.st_mode) and not owned._is_link_or_reparse(info),
+                              "fixture_tree_contains_a_nonordinary_directory")
+                      directories.append(child.relative_to(root).as_posix())
+                  for name in leaves:
+                      child = parent_path / name
+                      value = identity(child)
+                      require(token(child)["links"] == 1, "fixture_tree_contains_a_shared_file")
+                      total += value["bytes"]
+                      require(len(files) < 64 and len(directories) <= 64
+                              and total <= 512 * 1024 * 1024, "fixture_tree_exceeds_bound")
+                      files[child.relative_to(root).as_posix()] = value
+              after = root.lstat()
+              require((after.st_dev, after.st_ino) == (root_info.st_dev, root_info.st_ino),
+                      "fixture_destination_identity_changed")
+              return {"files": files, "directories": sorted(directories)}
+
+          def stable_tree():
+              before = file_tree(DEST)
+              require(file_tree(DEST) == before, "fixture_tree_changed_during_inventory")
+              return before
+
+          def expected_directories(files):
+              result = set()
+              for relative in files:
+                  for parent in Path(relative).parents:
+                      if str(parent) != ".":
+                          result.add(parent.as_posix())
+              return sorted(result)
+
+          def exact_tree(expected_files):
+              tree = stable_tree()
+              require(tree == {"files": expected_files,
+                               "directories": expected_directories(expected_files)},
+                      "actual_installed_payload_inventory_differs")
+              return tree
+
+          def family_tokens(database):
+              require(database.name == "motionwright.sqlite3", "unexpected_project_database_name")
+              plain_parents(database)
+              admitted = {database.name + suffix for suffix in FAMILY_SUFFIXES}
+              for entry in database.parent.iterdir():
+                  if entry.name.casefold().startswith(database.name.casefold()):
+                      require(entry.name in admitted, "project_family_contains_an_unclassified_member")
+              observed = {}
+              total = 0
+              for suffix in FAMILY_SUFFIXES:
+                  path = database.with_name(database.name + suffix)
+                  try:
+                      info = path.lstat()
+                  except FileNotFoundError:
+                      observed[suffix] = None
+                      continue
+                  owned._require_regular(info, "project family member")
+                  require(0 <= info.st_size <= MAX_FAMILY_FILE and info.st_nlink == 1,
+                          "project_family_member_is_shared_or_exceeds_bound")
+                  total += info.st_size
+                  observed[suffix] = token(path)
+              require(observed[""] is not None and observed[""]["bytes"] > 0
+                      and total <= MAX_FAMILY_TOTAL, "project_family_is_incomplete_or_exceeds_bound")
+              return observed
+
+          def family_content(database, observed, zero_probe_label):
+              result = {}
+              zero_dir = None
+              for suffix, info in observed.items():
+                  if info is None:
+                      result[suffix] = None
+                      continue
+                  path = database.with_name(database.name + suffix)
+                  if info["bytes"] == 0:
+                      # The general artifact verifier intentionally rejects empty files.
+                      # Reuse the existing owned-input capture for an observed empty
+                      # SQLite companion, including its initial-size+1 read and checks.
+                      if zero_dir is None:
+                          zero_dir = CASE / zero_probe_label
+                          zero_dir.mkdir()
+                      digest, size, _ = owned._capture(path, zero_dir / path.name)
+                      require(size == 0, "empty_project_companion_changed")
+                      result[suffix] = {"bytes": size, "sha256": digest}
+                  else:
+                      result[suffix] = identity(path)
+                  require(result[suffix]["bytes"] == info["bytes"],
+                          "project_family_size_changed_during_hash_observation")
+              return result
+
+          def content_manifest(snapshot):
+              return {suffix: (None if item is None else
+                               {"bytes": item["bytes"], "sha256": item["sha256"]})
+                      for suffix, item in snapshot["members"].items()}
+
+          def seal_project(label, database, expected_project):
+              require(re.fullmatch(r"[a-z0-9-]+", label) is not None, "capture_label_invalid")
+              before = family_tokens(database)
+              folder = CUSTODY / label
+              folder.mkdir()
+              payload_dir = folder / "files"
+              payload_dir.mkdir()
+              intent = {
+                  "schema": "motionwright-windows-update-project-capture-intent/1",
+                  "source_sha": SOURCE, "label": label, "status": "PENDING",
+                  "source_before": before,
+                  "database_name": database.name,
+                  "scope": "DB_WAL_SHM_and_rollback_journal_present_at_this_observation",
+                  "linked_assets_exports_other_databases": "NOT_EXERCISED",
+                  "human_acceptance": "NOT_RUN",
+              }
+              write_new(folder / "capture-intent.json", intent)
+              members = {}
+              try:
+                  before_hashes = family_content(database, before, "empty-before-" + label)
+                  for suffix, observed in before.items():
+                      if observed is None:
+                          members[suffix] = None
+                          continue
+                      source = database.with_name(database.name + suffix)
+                      destination = payload_dir / source.name
+                      plain_parents(source)
+                      digest, size, captured = owned._capture(source, destination)
+                      require(size == observed["bytes"]
+                              and (captured.st_dev, captured.st_ino) !=
+                              (observed["device"], observed["inode"]),
+                              "project_capture_is_not_an_independent_complete_copy")
+                      members[suffix] = {
+                          "file": "files/" + source.name, "bytes": size, "sha256": digest,
+                          "capture_identity": token(destination),
+                      }
+                  after_hashes = family_content(database, before, "empty-after-" + label)
+                  after = family_tokens(database)
+                  copied_hashes = {
+                      suffix: (None if member is None else
+                               {"bytes": member["bytes"], "sha256": member["sha256"]})
+                      for suffix, member in members.items()
+                  }
+                  require(after == before and after_hashes == before_hashes == copied_hashes,
+                          "project_family_changed_across_complete_copy")
+                  captured_tokens = family_tokens(payload_dir / database.name)
+                  require(all(captured_tokens[suffix] ==
+                              (None if item is None else item["capture_identity"])
+                              for suffix, item in members.items()),
+                          "project_capture_family_changed_before_seal")
+                  seal = {
+                      "schema": "motionwright-windows-update-project-capture-seal/1",
+                      "source_sha": SOURCE, "label": label, "status": "SEALED_COMPLETE_FAMILY",
+                      "database_name": database.name, "source_before": before, "source_after": after,
+                      "source_hashes_before": before_hashes, "source_hashes_after": after_hashes,
+                      "members": members, "scope": intent["scope"],
+                      "independent_readback": "SEPARATE_RECEIPT",
+                      "human_acceptance": "NOT_RUN",
+                  }
+                  seal_identity = write_new(folder / "capture-seal.json", seal)
+                  # SQLite may change the SHM file even during a read-only connection.
+                  # Open a second complete copy, never a member of the sealed evidence.
+                  clone_dir = CASE / ("independent-readback-" + label)
+                  clone_dir.mkdir()
+                  clones = {}
+                  for suffix, member in members.items():
+                      if member is None:
+                          continue
+                      source = payload_dir / (database.name + suffix)
+                      destination = clone_dir / source.name
+                      digest, size, cloned = owned._capture(source, destination)
+                      require({"bytes": size, "sha256": digest} ==
+                              {"bytes": member["bytes"], "sha256": member["sha256"]}
+                              and (cloned.st_dev, cloned.st_ino) !=
+                              (member["capture_identity"]["device"], member["capture_identity"]["inode"]),
+                              "independent_reopen_copy_differs_from_sealed_member")
+                      clones[suffix] = {"bytes": size, "sha256": digest}
+                  clone_before = family_tokens(clone_dir / database.name)
+                  require(all((clone_before[suffix] is None) == (members[suffix] is None)
+                              for suffix in FAMILY_SUFFIXES), "independent_reopen_family_presence_differs")
+                  project = read_project_snapshot(clone_dir / database.name)
+                  require(project == expected_project, "captured_project_identity_or_document_differs")
+                  require(family_tokens(payload_dir / database.name) == captured_tokens
+                          and identity(folder / "capture-seal.json") == seal_identity,
+                          "sealed_capture_changed_during_independent_reopen")
+                  readback = {
+                      "schema": "motionwright-windows-update-project-readback/1",
+                      "source_sha": SOURCE, "label": label,
+                      "status": "PASS", "capture_seal": seal_identity,
+                      "copied_members": clones, "project": project,
+                      "reader": "windows_cold_start.read_project_snapshot",
+                      "connection": "mode=ro_on_a_separate_complete_copy",
+                      "sealed_members_opened_by_sqlite": False,
+                      "human_acceptance": "NOT_RUN",
+                  }
+                  readback_identity = write_new(folder / "independent-readback.json", readback)
+                  result = {
+                      "label": label, "status": "SEALED_AND_INDEPENDENTLY_REOPENED",
+                      "capture_seal": seal_identity, "readback": readback_identity,
+                      "members": members, "project": project,
+                  }
+                  STATE["snapshots"].append(result)
+                  return result
+              except BaseException as error:
+                  try:
+                      write_new(folder / "capture-failure.json", {
+                          "schema": "motionwright-windows-update-project-capture-failure/1",
+                          "source_sha": SOURCE, "label": label,
+                          "status": "NOT_VERIFIED", "completed_copies": members,
+                          "reason": str(error) if isinstance(error, GateError) else type(error).__name__,
+                          "partial_copies_preserved": True, "human_acceptance": "NOT_RUN",
+                      })
+                  except BaseException as report_error:
+                      STATE["cleanup"].append({"capture": label, "failure_record": type(report_error).__name__})
+                  raise
+
+          def installer_action(label, executable, expected_identity, expected_exit):
+              require(not STATE["unknown_outcome"], "a_prior_unknown_outcome_vetoes_another_execution")
+              require(re.fullmatch(r"[a-z0-9-]+", label) is not None, "action_label_invalid")
+              assert_inputs()
+              require(identity(executable) == expected_identity, "installer_bytes_changed_before_execution")
+              require(not any(char in str(DEST) for char in '\r\n"'),
+                      "installer_destination_command_spelling_invalid")
+              command = subprocess.list2cmdline([str(executable)]) + " /S /D=" + str(DEST)
+              record = {
+                  "label": label, "kind": "NSIS_INSTALLER", "status": "PENDING",
+                  "producer_source_sha": SOURCE, "installer": expected_identity,
+                  "installer_token_before": token(executable),
+                  "destination_scope": "this_case_new_runner_temp_installed_directory",
+                  "arguments": ["/S", "/D=<case-installed-directory>"],
+                  "command_sha256": hashlib.sha256(command.encode("utf-16-le")).hexdigest(),
+                  "expected_native_exit": expected_exit,
+                  "native_exit_code": None, "pid": None,
+                  "attempt_count": 1, "automatic_retry": False,
+              }
+              STATE["actions"].append(record)
+              action_dir = EVIDENCE / "windows-nsis-update-actions"
+              write_new(action_dir / (label + "-intent.json"), record)
+              process = None
+              outcome_error = None
+              publication_errors = []
+              started = time.monotonic_ns()
+              log_path = CASE / (label + ".native.log")
+              try:
+                  with log_path.open("xb") as log:
+                      try:
+                          process = subprocess.Popen(
+                              command, executable=str(executable), cwd=executable.parent,
+                              env=CHILD_ENV, stdin=subprocess.DEVNULL,
+                              stdout=log, stderr=subprocess.STDOUT, close_fds=True,
+                              creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                          )
+                      except BaseException as error:
+                          STATE["unknown_outcome"] = True
+                          record["status"] = "UNKNOWN_SPAWN_OUTCOME"
+                          record["exception_type"] = type(error).__name__
+                          outcome_error = "installer_spawn_outcome_unknown"
+                      if process is not None:
+                          record["pid"] = process.pid
+                          record["status"] = "STARTED"
+                          try:
+                              write_new(action_dir / (label + "-started.json"), record)
+                          except BaseException as error:
+                              publication_errors.append(type(error).__name__)
+                          try:
+                              result = process.wait(timeout=360)
+                              record["native_exit_code"] = result
+                              record["status"] = ("KNOWN_EXPECTED_EXIT" if result == expected_exit
+                                                  else "KNOWN_UNEXPECTED_EXIT")
+                              if result != expected_exit:
+                                  outcome_error = "installer_returned_an_unexpected_known_exit"
+                          except BaseException as error:
+                              STATE["unknown_outcome"] = True
+                              record["status"] = "UNKNOWN_NATIVE_OUTCOME"
+                              record["wait_exception_type"] = type(error).__name__
+                              outcome_error = "installer_native_outcome_unknown"
+                          finally:
+                              if process.poll() is None:
+                                  STATE["unknown_outcome"] = True
+                                  record["status"] = "UNKNOWN_NATIVE_OUTCOME"
+                                  cleanup = {"action": label, "own_pid": process.pid,
+                                             "operation": "kill_only_this_owned_popen",
+                                             "native_success_inferred": False}
+                                  try:
+                                      process.kill()
+                                      cleanup["observed_cleanup_exit"] = process.wait(timeout=12)
+                                  except BaseException as error:
+                                      cleanup["error_type"] = type(error).__name__
+                                  STATE["cleanup"].append(cleanup)
+                                  outcome_error = "installer_native_outcome_unknown"
+                      log.flush()
+                      os.fsync(log.fileno())
+              finally:
+                  record["elapsed_ns"] = time.monotonic_ns() - started
+                  record["outcome_publication_errors"] = publication_errors
+                  try:
+                      record["installer_after"] = identity(executable)
+                      record["installer_token_after"] = token(executable)
+                      require(record["installer_after"] == expected_identity
+                              and record["installer_token_after"] == record["installer_token_before"],
+                              "installer_source_changed_across_execution")
+                  except BaseException as error:
+                      record["source_readback_error_type"] = type(error).__name__
+                      outcome_error = outcome_error or "installer_source_not_stable_after_execution"
+                  try:
+                      write_new(action_dir / (label + "-outcome.json"), record)
+                  except BaseException as error:
+                      publication_errors.append(type(error).__name__)
+                      outcome_error = outcome_error or "installer_outcome_receipt_not_durable"
+              require(not publication_errors, "installer_action_receipt_was_not_durable")
+              require(outcome_error is None and not STATE["unknown_outcome"],
+                      outcome_error or "installer_native_outcome_unknown")
+              assert_inputs()
+              return record
+
+          def boot_project(label, executable, expected_binary, source_sha, roots, expected_db=None):
+              require(not STATE["unknown_outcome"], "a_prior_unknown_outcome_vetoes_application_launch")
+              require(identity(executable) == expected_binary, "installed_main_changed_before_launch")
+              pe = binary_identity(executable, "windows", "x86_64")
+              require(pe["binary_bytes"] == expected_binary["bytes"]
+                      and pe["binary_sha256"] == expected_binary["sha256"]
+                      and pe["binary_format"] == "PE64_x86_64",
+                      "installed_main_is_not_the_bound_pe")
+              record = {
+                  "label": label, "kind": "REAL_INSTALLED_APPLICATION",
+                  "status": "PENDING", "producer_source_sha": SOURCE,
+                  "application_source_sha": source_sha, "installed_binary": expected_binary,
+                  "reader_and_lifecycle": "windows_cold_start.boot_once",
+                  "profile": "unchanged_native_disposable_runner_account",
+                  "provider_connection": "UNCONFIGURED",
+                  "attempt_count": 1, "automatic_retry": False,
+              }
+              STATE["actions"].append(record)
+              action_dir = EVIDENCE / "windows-nsis-update-actions"
+              write_new(action_dir / (label + "-intent.json"), record)
+              log_name = "first-launch.log" if expected_db is None else "relaunch.log"
+              try:
+                  project, database, seconds = boot_once(
+                      executable, CHILD_ENV, roots, CASE / log_name,
+                      expected_db=expected_db, seconds=55,
+                  )
+              except BaseException as error:
+                  # The existing helper owns its Popen and bounded shutdown. Its exception
+                  # does not expose a successful complete lifecycle to this caller.
+                  STATE["unknown_outcome"] = True
+                  record["status"] = "NOT_VERIFIED"
+                  record["exception_type"] = type(error).__name__
+                  try:
+                      from windows_cold_start import write_sanitized_failure_record
+                      write_sanitized_failure_record(
+                          output=PROOF, scratch=CASE, expected_sha=source_sha, error=error)
+                  except BaseException as diagnostic_error:
+                      STATE["cleanup"].append({"application_diagnostic": type(diagnostic_error).__name__})
+                  write_new(action_dir / (label + "-outcome.json"), record)
+                  raise
+              record["helper_returned_with_closed_main"] = True
+              record["observation_seconds"] = seconds
+              try:
+                  require(identity(executable) == expected_binary, "installed_main_changed_during_launch")
+                  require(known_databases(roots) == [database], "application_database_set_changed")
+              except BaseException as error:
+                  record["status"] = "CLOSED_MAIN_READBACK_NOT_VERIFIED"
+                  record["exception_type"] = type(error).__name__
+                  write_new(action_dir / (label + "-outcome.json"), record)
+                  raise
+              record.update({
+                  "status": "VISIBLE_HWND_PROJECT_AND_CLOSED_MAIN",
+                  "project": project, "observation_seconds": seconds,
+                  "main_exit_zero_required_before_helper_return": True,
+                  "process_id_exposed_by_this_helper": False,
+                  "readback_after_close": "SEPARATE_SEALED_FAMILY_RECEIPT",
+              })
+              write_new(action_dir / (label + "-outcome.json"), record)
+              return project, database
+
+          KERNEL = ctypes.WinDLL("kernel32", use_last_error=True)
+          KERNEL.CreateFileW.argtypes = [
+              wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+          ]
+          KERNEL.CreateFileW.restype = wintypes.HANDLE
+          KERNEL.CloseHandle.argtypes = [wintypes.HANDLE]
+          KERNEL.CloseHandle.restype = wintypes.BOOL
+          KERNEL.GetHandleInformation.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+          KERNEL.GetHandleInformation.restype = wintypes.BOOL
+          INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+          def observe_lock():
+              require(LOCK is not None and LOCK["fd"] is not None, "owned_lock_is_not_open")
+              path = LOCK["path"]
+              fd = LOCK["fd"]
+              initial = LOCK["initial"]
+              initial_descriptor = LOCK["initial_descriptor"]
+              require(initial_descriptor is not None, "owned_lock_descriptor_baseline_missing")
+              descriptor_before = os.fstat(fd)
+              path_before = path.lstat()
+              owned._require_unchanged(descriptor_before, initial_descriptor, "owned lock descriptor")
+              owned._require_unchanged(path_before, initial, "owned lock path")
+              owned._require_path_descriptor_match(descriptor_before, path_before, "owned lock")
+              require(descriptor_before.st_nlink == 1, "owned_lock_file_became_shared")
+              os.lseek(fd, 0, os.SEEK_SET)
+              digest = hashlib.sha256()
+              seen = 0
+              remaining = initial.st_size + 1
+              while remaining:
+                  block = os.read(fd, min(1024 * 1024, remaining))
+                  if not block:
+                      break
+                  remaining -= len(block)
+                  require(seen + len(block) <= initial.st_size, "owned_lock_source_grew")
+                  digest.update(block)
+                  seen += len(block)
+              require({"bytes": seen, "sha256": digest.hexdigest()} == LOCK["expected"],
+                      "owned_lock_descriptor_does_not_read_the_pinned_self")
+              descriptor_after = os.fstat(fd)
+              path_after = path.lstat()
+              owned._require_unchanged(descriptor_after, initial_descriptor, "owned lock descriptor")
+              owned._require_unchanged(path_after, initial, "owned lock path")
+              owned._require_path_descriptor_match(descriptor_after, path_after, "owned lock")
+              require(descriptor_after.st_nlink == 1, "owned_lock_file_became_shared")
+              plain_parents(path)
+              flags = wintypes.DWORD()
+              require(bool(KERNEL.GetHandleInformation(LOCK["handle"], ctypes.byref(flags)))
+                      and not (flags.value & 1), "owned_lock_handle_missing_or_inheritable")
+              return {
+                  "owner_pid": os.getpid(), "handle": LOCK["handle"], "descriptor": fd,
+                  "handle_flags": flags.value, "file": LOCK["expected"], "file_token": token(path),
+                  "desired_access": 0x80000000, "share_mode": 1,
+                  "creation_disposition": 3, "flags_and_attributes": 0x08200000,
+                  "read_allowed_delete_not_shared": True,
+                  "ctime_comparison": "WITHIN_EACH_API_DOMAIN_ONLY",
+                  "stat_domains": {
+                      name: {field: getattr(info, field, None) for field in (
+                          "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns",
+                          "st_birthtime_ns", "st_birthtime",
+                      )}
+                      for name, info in (
+                          ("path_initial", initial), ("descriptor_initial", initial_descriptor),
+                          ("path_before_read", path_before), ("descriptor_before_read", descriptor_before),
+                          ("path_after_read", path_after), ("descriptor_after_read", descriptor_after),
+                      )
+                  },
+              }
+
+          def acquire_previous_self_lock(path, expected):
+              global LOCK
+              require(LOCK is None and identity(path) == expected,
+                      "previous_self_lock_precondition_failed")
+              initial = path.lstat()
+              owned._require_regular(initial, "previous self")
+              require(initial.st_nlink == 1, "previous_self_is_shared")
+              plain_parents(path)
+              ctypes.set_last_error(0)
+              handle = KERNEL.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x08200000, None)
+              require(handle not in (None, 0, INVALID_HANDLE), "owned_previous_self_lock_open_failed")
+              try:
+                  fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY
+                                            | getattr(os, "O_NOINHERIT", 0))
+              except BaseException:
+                  closed = bool(KERNEL.CloseHandle(handle))
+                  STATE["cleanup"].append({"raw_owned_lock_close_succeeded": closed})
+                  raise
+              # Record ownership before fstat: a failed observation still leaves exactly
+              # this descriptor available to the existing finalization path.
+              LOCK = {"fd": fd, "handle": handle, "path": path,
+                      "initial": initial, "initial_descriptor": None, "expected": expected}
+              LOCK["initial_descriptor"] = os.fstat(fd)
+              owned._require_path_descriptor_match(LOCK["initial_descriptor"], initial, "owned lock")
+              observation = observe_lock()
+              STATE["owned_lock_before"] = observation
+              write_new(EVIDENCE / "windows-nsis-update-actions/previous-self-lock-open.json",
+                        {"status": "OWNED_HANDLE_OPEN", "source_sha": SOURCE, **observation})
+
+          def close_owned_lock():
+              global LOCK
+              require(LOCK is not None and LOCK["fd"] is not None, "owned_lock_already_closed_or_unknown")
+              before = observe_lock()
+              fd = LOCK["fd"]
+              handle = LOCK["handle"]
+              # open_osfhandle transferred ownership to this descriptor. Closing it once
+              # closes exactly that handle; never also call CloseHandle on the same owner.
+              LOCK["fd"] = None
+              try:
+                  os.close(fd)
+              except BaseException:
+                  STATE["unknown_outcome"] = True
+                  raise
+              flags = wintypes.DWORD()
+              ctypes.set_last_error(0)
+              still_valid = bool(KERNEL.GetHandleInformation(handle, ctypes.byref(flags)))
+              error = ctypes.get_last_error()
+              if still_valid or error != 6:
+                  STATE["unknown_outcome"] = True
+                  raise GateError("owned_lock_close_not_observed_as_invalid_handle")
+              observation = {
+                  "status": "OWNED_HANDLE_CLOSED", "source_sha": SOURCE, "before": before,
+                  "GetHandleInformation_succeeded": still_valid, "GetLastError": error,
+                  "native_installer_outcome_inferred_from_close": False,
+              }
+              STATE["owned_lock_closed"] = observation
+              write_new(EVIDENCE / "windows-nsis-update-actions/previous-self-lock-closed.json", observation)
+              return observation
+
+          PREVIOUS_REGISTRY_IDENTITY = {
+              "product_name": "Motionwright",
+              "identifier": "com.seradotcom.motionwright",
+              "publisher_in_config": "ABSENT",
+              "manufacturer": "seradotcom",
+              "manufacturer_derivation": "publisher absent; identifier.split('.')[1] in the pinned bundler",
+              "config_source_sha": "679cc48baf7c6f9bb4a0b803508c9b2a9891d944",
+              "config_git_blob": "d26c1bf0eb680c7cf3cd0b93ba91138af7b9a263",
+              "config_git_bytes": 1447,
+              "config_git_sha256": "e33235d37d0900258bf3784dabc7df8d1f3c002111f2d142c155d2e9d59566ee",
+              "upstream_nsis_template_sha256": "dabed59013b1d78b879a1a85bc7f2eed2993b33a9a90cdabe5946de3d3950597",
+              "upstream_manufacturer_derivation_lines": [267, 268, 269, 270, 293],
+              "upstream_nsis_bundler_sha256": "9f6b0cbb7feddd8e2a591df804293af2d3eee47376f9905fddb47937eb5e6d7e",
+              "per_user_install_mode": "currentUser",
+              "allow_downgrades": False,
+          }
+
+          def previous_registry_absence():
+              import winreg
+              uninstall_root = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+              fixed = (
+                  uninstall_root + r"\Motionwright",
+                  r"Software\seradotcom\Motionwright",
+              )
+              results = []
+              started = time.monotonic()
+              for hive_name, hive in (("HKCU", winreg.HKEY_CURRENT_USER), ("HKLM", winreg.HKEY_LOCAL_MACHINE)):
+                  for view_name, view in (("32", winreg.KEY_WOW64_32KEY), ("64", winreg.KEY_WOW64_64KEY)):
+                      absent_keys = []
+                      for key_path in fixed:
+                          try:
+                              key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | view)
+                          except FileNotFoundError:
+                              absent_keys.append(key_path)
+                          else:
+                              key.Close()
+                              raise GateError("stock_predecessor_found_a_preexisting_registration")
+                      count = 0
+                      try:
+                          parent = winreg.OpenKey(hive, uninstall_root, 0, winreg.KEY_READ | view)
+                      except FileNotFoundError:
+                          parent = None
+                      if parent is not None:
+                          with parent:
+                              subkeys, _, _ = winreg.QueryInfoKey(parent)
+                              require(subkeys <= 4096, "stock_predecessor_registry_inventory_exceeds_bound")
+                              for index in range(subkeys):
+                                  require(time.monotonic() - started <= 40,
+                                          "stock_predecessor_registry_inspection_exceeded_deadline")
+                                  name = winreg.EnumKey(parent, index)
+                                  # Never retain other installed products' names or commands.
+                                  with winreg.OpenKey(parent, name, 0, winreg.KEY_READ | view) as key:
+                                      values = []
+                                      for field in ("DisplayName", "Publisher"):
+                                          try:
+                                              value, kind = winreg.QueryValueEx(key, field)
+                                          except FileNotFoundError:
+                                              value = ""
+                                              kind = winreg.REG_SZ
+                                          require(kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ)
+                                                  and isinstance(value, str) and len(value) <= 65536,
+                                                  "stock_predecessor_registry_selector_not_inspectable")
+                                          values.append(value)
+                                      display_name, publisher = values
+                                      require(display_name.casefold() != "motionwright"
+                                              and (display_name + publisher).casefold() !=
+                                              ("Motionwright" + "seradotcom").casefold(),
+                                              "stock_predecessor_found_a_wix_or_nsis_reinstall_selector")
+                                  count += 1
+                              final_subkeys, _, _ = winreg.QueryInfoKey(parent)
+                              require(final_subkeys == subkeys,
+                                      "stock_predecessor_registry_inventory_changed")
+                      results.append({
+                          "hive": hive_name, "view": view_name,
+                          "fixed_keys_absent": absent_keys,
+                          "uninstall_subkeys_inspected": count,
+                          "matching_product_or_concatenated_product_publisher": 0,
+                      })
+              return {
+                  "status": "ABSENT_AT_PREFLIGHT", "identity": PREVIOUS_REGISTRY_IDENTITY,
+                  "views": results, "registry_writes": False,
+                  "uninstall_commands_read_or_executed": False,
+                  "atomic_registry_lock_across_installer_dispatch": False,
+              }
+
+          def run_observation():
+              global PINNED, BASELINE, DATABASE
+              require(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
+                      "update_observation_requires_a_disposable_windows_actions_runner")
+              require(MODE in ("clean_update", "post_main_recovery"), "update_observation_mode_invalid")
+              require(re.fullmatch(r"[0-9a-f]{40}", SOURCE) is not None,
+                      "update_observation_source_invalid")
+              for path in (ROOT, WORK, INPUT, EVIDENCE):
+                  require(path.is_absolute(), "update_observation_path_must_be_absolute")
+                  plain_parents(path / "not-created")
+              CASE.mkdir()
+              CUSTODY.mkdir()
+              (EVIDENCE / "windows-nsis-update-actions").mkdir()
+              require(absent(DEST), "update_destination_already_exists")
+              source_before = source_observation()
+              STATE["source_before"] = source_before
+              inputs, inputs_identity = read_bound(EVIDENCE / "windows-nsis-update-inputs.json")
+              compiled, compiled_identity = read_bound(EVIDENCE / "windows-nsis-update-compiled.json")
+              candidate, candidate_identity = read_bound(EVIDENCE / "windows-nsis-update-candidate.json")
+              require(inputs["schema"] == "motionwright-windows-nsis-update-inputs/1"
+                      and compiled["schema"] == "motionwright-windows-nsis-compiled-fixture/1"
+                      and compiled["status"] == "COMPILED_SOURCE_BOUND"
+                      and inputs["source_sha"] == compiled["source_sha"] == SOURCE
+                      and inputs["source_before"] == inputs["source_after"] == source_before
+                      and compiled["source_before"] == compiled["source_after"] == source_before
+                      and compiled["inputs_receipt"] == inputs_identity
+                      and compiled["candidate_receipt"] == candidate_identity,
+                      "update_observation_has_no_exact_source_compiled_fixture")
+              require(set(source_before["files"]) == set(SOURCE_PATHS),
+                      "update_observation_source_pathset_mismatch")
+              setups = sorted((ROOT / "target/release/bundle/nsis").glob("*-setup.exe"))
+              require(len(setups) == 1, "update_observation_setup_count_invalid")
+              current_setup = setups[0]
+              require(identity(current_setup) == compiled["setup"],
+                      "compiled_setup_changed_before_observation")
+              current_verified = verify_installer(candidate, "nsis", current_setup)
+              require(current_verified["candidate"]["source_revision"] == SOURCE
+                      and current_verified["candidate"]["arch"] == "x86_64",
+                      "update_candidate_identity_invalid")
+              current_config = current_verified["desktop"]
+              require(current_config["productName"] == "Motionwright"
+                      and current_config["identifier"] == "com.seradotcom.motionwright"
+                      and current_config["version"] == "0.1.0"
+                      and current_config["bundle"].get("publisher") is None
+                      and current_config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser",
+                      "this_fixture_application_or_per_user_mode_changed")
+
+              original, original_identity = read_bound(INPUT / "previous-capture-receipt.json")
+              require(original_identity == {"bytes": FIXED["receipt"]["bytes"],
+                                            "sha256": FIXED["receipt"]["sha256"]}
+                      and original["candidate"] == original["candidate_after"],
+                      "predecessor_receipt_changed_or_is_not_the_original")
+              old_candidate = original["candidate"]
+              require(old_candidate["candidate"]["source_revision"] == FIXED["source"]
+                      and old_candidate["candidate"]["arch"] == "x86_64"
+                      and old_candidate["candidate"]["version"] == "0.1.0",
+                      "predecessor_candidate_identity_changed")
+              # The imported profile uses a stable private alias. Preserve the actual
+              # artifact basename when reusing the existing candidate receipt verifier.
+              previous_bundle = CASE / "previous-bundle"
+              previous_bundle.mkdir()
+              previous_setup = previous_bundle / Path(FIXED["package"]["member"]).name
+              expected_previous_setup = {"bytes": FIXED["package"]["bytes"],
+                                         "sha256": FIXED["package"]["sha256"]}
+              require(identity(INPUT / "previous-setup.exe") == expected_previous_setup,
+                      "predecessor_setup_changed_before_capture")
+              digest, size, _ = owned._capture(INPUT / "previous-setup.exe", previous_setup)
+              require({"bytes": size, "sha256": digest} == expected_previous_setup,
+                      "predecessor_execution_copy_changed")
+              previous_verified = verify_installer(old_candidate, "nsis", previous_setup)
+              require(previous_verified["digest"] == FIXED["package"]["sha256"],
+                      "predecessor_receipt_does_not_bind_the_execution_copy")
+              profile, profile_identity = read_bound(INPUT / "predecessor.json")
+              require(profile == inputs["profile"]
+                      and profile_identity["sha256"] == inputs["profile_sha256"]
+                      and compiled["profile_sha256"] == inputs["profile_sha256"],
+                      "predecessor_profile_changed_before_observation")
+              previous_main = {"bytes": FIXED["main"]["bytes"], "sha256": FIXED["main"]["sha256"]}
+              previous_self = {"bytes": FIXED["self"]["bytes"], "sha256": FIXED["self"]["sha256"]}
+              require(identity(INPUT / "previous-main.exe") == previous_main
+                      and identity(INPUT / "previous-uninstall.exe") == previous_self,
+                      "predecessor_owned_sources_changed")
+              current_payloads = {}
+              for name, item in compiled["current_payloads"].items():
+                  require(owned._relative(name, "compiled payload") == name
+                          and name not in ("uninstall.exe", FOREIGN_NAME)
+                          and type(item["bytes"]) is int and item["bytes"] > 0
+                          and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is not None,
+                          "compiled_payload_not_admissible_for_the_fixture")
+                  current_payloads[name] = {"bytes": item["bytes"], "sha256": item["sha256"]}
+              require("motionwright-desktop.exe" in current_payloads
+                      and compiled["resources"] >= 2 and compiled["sidecars"] >= 2
+                      and current_payloads["motionwright-desktop.exe"] == inputs["new_main_before_bundle"]
+                      and current_payloads["motionwright-desktop.exe"] != previous_main,
+                      "actual_update_does_not_have_a_distinct_bound_main_and_two_by_two_fixture")
+              require(len(current_payloads) == 5, "this_update_fixture_requires_exactly_five_current_payloads")
+              for name, expected in inputs["expected_fixture_payloads"].items():
+                  require(current_payloads[name] == {"bytes": expected["bytes"], "sha256": expected["sha256"]},
+                          "render_fixture_payload_binding_changed")
+              # This is the value actually emitted by the new build, separate from the
+              # historical manufacturer's source-derived fallback above.
+              rendered_path = EVIDENCE / "windows-nsis-update-compiled-inputs/installer.nsi"
+              rendered_identity = identity(rendered_path)
+              require(rendered_identity == compiled["rendered_installer"]
+                      and rendered_identity["bytes"] <= 4 * 1024 * 1024,
+                      "retained_rendered_template_changed")
+              with rendered_path.open("rb") as stream:
+                  rendered_bytes = stream.read(4 * 1024 * 1024 + 1)
+              require(len(rendered_bytes) == rendered_identity["bytes"]
+                      and hashlib.sha256(rendered_bytes).hexdigest() == rendered_identity["sha256"]
+                      and identity(rendered_path) == rendered_identity,
+                      "retained_rendered_template_changed_during_read")
+              manufacturers = re.findall(r'^!define MANUFACTURER "([^"\r\n]+)"$',
+                                         rendered_bytes.decode("utf-8-sig"), re.MULTILINE)
+              require(manufacturers == ["seradotcom"], "new_compiled_manufacturer_does_not_match_this_fixture")
+              STATE["new_emitted_manufacturer"] = {
+                  "value": manufacturers[0], "actual_rendered_template": rendered_identity,
+                  "historical_render_observation": "NOT_CLAIMED",
+              }
+              PINNED = {
+                  "inputs_receipt": (EVIDENCE / "windows-nsis-update-inputs.json", inputs_identity),
+                  "compiled_receipt": (EVIDENCE / "windows-nsis-update-compiled.json", compiled_identity),
+                  "current_candidate_receipt": (EVIDENCE / "windows-nsis-update-candidate.json", candidate_identity),
+                  "profile": (INPUT / "predecessor.json", profile_identity),
+                  "original_predecessor_receipt": (INPUT / "previous-capture-receipt.json", original_identity),
+                  "previous_setup_input": (INPUT / "previous-setup.exe", expected_previous_setup),
+                  "previous_setup_execution_copy": (previous_setup, expected_previous_setup),
+                  "previous_main": (INPUT / "previous-main.exe", previous_main),
+                  "previous_self": (INPUT / "previous-uninstall.exe", previous_self),
+                  "current_setup": (current_setup, compiled["setup"]),
+                  "current_main_build_input": (ROOT / "target/release/motionwright-desktop.exe",
+                                               current_payloads["motionwright-desktop.exe"]),
+                  "actual_rendered_template": (rendered_path, rendered_identity),
+              }
+              assert_inputs()
+              STATE["input_before"] = inputs_observation()
+              STATE["predecessor"] = {
+                  "source_sha": FIXED["source"], "source_tree": FIXED["tree"],
+                  "package": expected_previous_setup, "capture_receipt": original_identity,
+                  "main": previous_main, "self": previous_self,
+                  "source_configuration": PREVIOUS_REGISTRY_IDENTITY,
+                  "historical_modified_owned_failure": "PRESERVED_NOT_PROMOTED",
+              }
+              STATE["current"] = {
+                  "source_sha": SOURCE, "source_tree": source_before["tree"],
+                  "compiled_receipt": compiled_identity, "candidate_receipt": candidate_identity,
+                  "setup": compiled["setup"], "current_payloads": current_payloads,
+                  "same_package_version_source_to_source_update": True,
+                  "normal_candidate_equivalence": "NOT_CLAIMED",
+              }
+              require("APPDATA" in CHILD_ENV and "LOCALAPPDATA" in CHILD_ENV,
+                      "native_runner_appdata_roots_missing")
+              roots = list(dict.fromkeys([Path(CHILD_ENV["APPDATA"]), Path(CHILD_ENV["LOCALAPPDATA"])]))
+              for root in roots:
+                  require(root.is_absolute(), "native_runner_appdata_root_not_absolute")
+                  plain_parents(root / "not-created")
+              require(not known_databases(roots), "runner_contains_a_previous_project_before_this_case")
+              STATE["initial_known_project_databases"] = 0
+              STATE["stage"] = "previous_registry_preflight"
+              registry = previous_registry_absence()
+              STATE["previous_registry_preflight"] = registry
+              write_new(EVIDENCE / "windows-nsis-update-actions/previous-registry-preflight.json", registry)
+
+              STATE["stage"] = "install_exact_predecessor"
+              installer_action("install-predecessor", previous_setup, expected_previous_setup, 0)
+              STATE["predecessor_installed_tree"] = exact_tree({
+                  "motionwright-desktop.exe": previous_main, "uninstall.exe": previous_self,
+              })
+              require(not known_databases(roots), "installer_unexpectedly_created_a_project_before_app_launch")
+              foreign_path = DEST / FOREIGN_NAME
+              with foreign_path.open("xb") as stream:
+                  require(stream.write(FOREIGN_BYTES) == len(FOREIGN_BYTES), "foreign_fixture_short_write")
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              foreign = identity(foreign_path)
+              require(foreign == {"bytes": len(FOREIGN_BYTES),
+                                 "sha256": hashlib.sha256(FOREIGN_BYTES).hexdigest()},
+                      "foreign_fixture_readback_mismatch")
+              STATE["foreign_before"] = foreign
+              STATE["stage"] = "create_project_with_the_previous_real_application"
+              project, DATABASE = boot_project(
+                  "previous-real-project", DEST / "motionwright-desktop.exe",
+                  previous_main, FIXED["source"], roots,
+              )
+              require(any(DATABASE == root / "com.seradotcom.motionwright/motionwright.sqlite3"
+                          or DATABASE == root / "motionwright.sqlite3" for root in roots),
+                      "previous_application_project_is_outside_the_declared_native_scope")
+              BASELINE = seal_project("before-update", DATABASE, project)
+              STATE["before_update_tree"] = exact_tree({
+                  "motionwright-desktop.exe": previous_main, "uninstall.exe": previous_self,
+                  FOREIGN_NAME: foreign,
+              })
+
+              if MODE == "post_main_recovery":
+                  STATE["stage"] = "owned_previous_self_lock"
+                  acquire_previous_self_lock(DEST / "uninstall.exe", previous_self)
+                  STATE["stage"] = "one_update_attempt_with_the_owned_lock"
+                  installer_action("update-with-owned-lock", current_setup, compiled["setup"], 2)
+                  STATE["owned_lock_after_first_exit"] = observe_lock()
+                  partial_files = {**current_payloads, "uninstall.exe": previous_self, FOREIGN_NAME: foreign}
+                  STATE["known_partial_tree"] = exact_tree(partial_files)
+                  partial = seal_project("after-known-refusal", DATABASE, project)
+                  require(content_manifest(partial) == content_manifest(BASELINE),
+                          "closed_project_family_changed_during_the_known_refusal")
+                  STATE["stage"] = "close_only_the_owned_lock"
+                  close_owned_lock()
+                  require(STATE["actions"][-1]["label"] == "update-with-owned-lock"
+                          and STATE["actions"][-1]["status"] == "KNOWN_EXPECTED_EXIT"
+                          and STATE["actions"][-1]["native_exit_code"] == 2
+                          and STATE["owned_lock_closed"]["status"] == "OWNED_HANDLE_CLOSED"
+                          and not STATE["unknown_outcome"],
+                          "known_refusal_and_lock_close_are_required_before_recovery")
+                  require(exact_tree(partial_files) == STATE["known_partial_tree"],
+                          "partial_state_changed_before_explicit_recovery")
+                  STATE["stage"] = "one_explicit_recovery_after_the_known_exit"
+                  installer_action("reconcile-known-partial-state", current_setup, compiled["setup"], 0)
+              else:
+                  STATE["stage"] = "one_clean_update"
+                  installer_action("clean-update", current_setup, compiled["setup"], 0)
+
+              current_self = identity(DEST / "uninstall.exe")
+              require(128 <= current_self["bytes"] <= 4 * 1024 * 1024
+                      and current_self != previous_self,
+                      "completed_update_did_not_publish_a_distinct_observed_self")
+              completed_files = {**current_payloads, "uninstall.exe": current_self, FOREIGN_NAME: foreign}
+              STATE["completed_installed_tree"] = exact_tree(completed_files)
+              completed = seal_project("after-complete-update", DATABASE, project)
+              require(content_manifest(completed) == content_manifest(BASELINE),
+                      "closed_project_family_changed_across_update")
+              STATE["stage"] = "reopen_previous_project_with_the_current_real_application"
+              reopened, reopened_path = boot_project(
+                  "current-real-project", DEST / "motionwright-desktop.exe",
+                  current_payloads["motionwright-desktop.exe"], SOURCE, roots, expected_db=DATABASE,
+              )
+              require(reopened_path == DATABASE and reopened == project,
+                      "updated_application_replaced_the_original_project")
+              reopened_snapshot = seal_project("after-current-reopen", DATABASE, project)
+              require(exact_tree(completed_files) == STATE["completed_installed_tree"],
+                      "installed_payloads_changed_during_project_reopen")
+              STATE["stage"] = "repeat_current_setup_after_a_known_complete_update_and_closed_app"
+              require(not STATE["unknown_outcome"], "unknown_outcome_vetoes_the_explicit_repeat")
+              installer_action("repeat-current-setup", current_setup, compiled["setup"], 0)
+              STATE["repeated_installed_tree"] = exact_tree(completed_files)
+              repeated_snapshot = seal_project("after-current-repeat", DATABASE, project)
+              require(content_manifest(repeated_snapshot) == content_manifest(reopened_snapshot),
+                      "closed_project_family_changed_during_current_setup_repeat")
+              retained_self = EVIDENCE / "windows-nsis-update-installed-self.exe"
+              self_before = token(DEST / "uninstall.exe")
+              digest, size, _ = owned._capture(DEST / "uninstall.exe", retained_self)
+              require({"bytes": size, "sha256": digest} == current_self
+                      and identity(retained_self) == current_self
+                      and token(DEST / "uninstall.exe") == self_before,
+                      "current_self_custody_changed")
+              STATE["installed_self_custody"] = {
+                  "artifact": retained_self.name, **current_self,
+                  "capture_phase": "after_known_complete_update_and_successful_explicit_repeat",
+                  "execution": "NOT_RUN", "staged_self_hash_readback_from_runtime_guard": "NOT_EXPOSED",
+              }
+              assert_inputs()
+              STATE["case_results"] = {
+                  "clean_update_without_injected_lock": "PASS" if MODE == "clean_update" else "NOT_RUN",
+                  "known_exit_two_with_current_payloads_and_original_self":
+                      "PASS" if MODE == "post_main_recovery" else "NOT_RUN",
+                  "explicit_recovery_after_known_exit_and_owned_handle_close":
+                      "PASS" if MODE == "post_main_recovery" else "NOT_RUN",
+                  "whole_closed_SQLite_family_byte_preservation_across_installer_actions": "PASS",
+                  "old_project_generation_revision_and_document_reopened_by_new_application": "PASS",
+                  "explicit_current_setup_repeat_after_known_complete_state": "PASS",
+                  "unrelated_fixture_file_preservation": "PASS",
+                  "per_user_target_with_no_elevation_request_from_this_gate": "OBSERVED",
+                  "standard_nonadministrator_token_installation": "NOT_EXERCISED",
+                  "version_number_upgrade": "NOT_EXERCISED_SAME_VERSION_DIFFERENT_SOURCES",
+                  "mid_File_interruption_or_unknown_outcome_recovery": "NOT_EXERCISED",
+                  "human_acceptance": "NOT_RUN",
+              }
+              STATE["stage"] = "source_and_input_finalization"
+              STATE["status"] = "PASS"
+
+          exit_status = 0
+          try:
+              run_observation()
+          except BaseException as error:
+              exit_status = 1
+              STATE["status"] = "NOT_VERIFIED" if STATE["unknown_outcome"] else "FAIL"
+              STATE["primary_failure"] = {
+                  "stage": STATE["stage"],
+                  "reason": str(error) if isinstance(error, GateError) else type(error).__name__,
+              }
+          finally:
+              # Cleanup is restricted to the handle owned by this Python invocation.
+              # It never retries an installer, closes another process's handle, removes
+              # destination files, rolls back registry, or erases a partial capture.
+              if LOCK is not None and LOCK["fd"] is not None:
+                  fd = LOCK["fd"]
+                  handle = LOCK["handle"]
+                  LOCK["fd"] = None
+                  cleanup = {"operation": "close_only_own_remaining_lock_descriptor",
+                             "owner_pid": os.getpid(), "handle": handle,
+                             "native_success_inferred": False}
+                  try:
+                      os.close(fd)
+                      flags = wintypes.DWORD()
+                      ctypes.set_last_error(0)
+                      valid = bool(KERNEL.GetHandleInformation(handle, ctypes.byref(flags)))
+                      last_error = ctypes.get_last_error()
+                      cleanup.update({"handle_still_valid": valid, "GetLastError": last_error})
+                      require(not valid and last_error == 6, "cleanup_lock_close_not_verified")
+                  except BaseException as error:
+                      cleanup["error_type"] = type(error).__name__
+                      STATE["unknown_outcome"] = True
+                      exit_status = 1
+                  STATE["cleanup"].append(cleanup)
+              if exit_status and DATABASE is not None and BASELINE is not None and not STATE["unknown_outcome"]:
+                  try:
+                      seal_project("known-failure-final", DATABASE, BASELINE["project"])
+                  except BaseException as error:
+                      STATE["cleanup"].append({"final_project_capture_error": type(error).__name__})
+              try:
+                  if STATE["source_before"] is not None:
+                      STATE["source_after"] = source_observation()
+                      require(STATE["source_after"] == STATE["source_before"],
+                              "source_changed_across_update_observation")
+                      STATE["source_binding"] = "VERIFIED"
+                  if PINNED:
+                      STATE["input_after"] = inputs_observation()
+                      assert_inputs()
+                      require(STATE["input_after"] == STATE["input_before"],
+                              "input_changed_across_update_observation")
+              except BaseException as error:
+                  STATE["source_binding"] = "NOT_VERIFIED"
+                  STATE["finalization_failure"] = (
+                      str(error) if isinstance(error, GateError) else type(error).__name__)
+                  exit_status = 1
+              if exit_status:
+                  STATE["status"] = "NOT_VERIFIED" if STATE["unknown_outcome"] else "FAIL"
+              try:
+                  write_new(PROOF, STATE)
+              except BaseException as error:
+                  exit_status = 1
+                  print("nsis-update-observation=NOT_VERIFIED receipt=" + type(error).__name__
+                        + " human=NOT_RUN", file=sys.stderr)
+          if exit_status:
+              print("nsis-update-observation=" + STATE["status"] + " stage=" + STATE["stage"]
+                    + " automatic_retry=false human=NOT_RUN", file=sys.stderr)
+              raise SystemExit(1)
+          print("nsis-update-observation=PASS mode=" + MODE
+                + " source=" + SOURCE + " closed_project_custody=REOPENED"
+                + " uninstaller_execution=NOT_RUN human=NOT_RUN")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The actual NSIS update observation did not pass' }
+      - name: Retain complete or partial Project custody and bounded update observations
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.nsis_update_probe != 'compile_only'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-nsis-update-${{ inputs.nsis_update_probe }}
+          path: |
+            ci-evidence/windows-nsis-update-observation.json
+            ci-evidence/windows-nsis-update-actions/*.json
+            ci-evidence/windows-nsis-update-project-custody/**
+            ci-evidence/windows-nsis-update-installed-self.exe
+            ci-evidence/windows-nsis-cold-relaunch-diagnostic.json
+          if-no-files-found: warn
       - name: Retain available compiler gate receipts after failure or cancellation
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1689,9 +2974,11 @@ jobs:
           path: |
             ci-evidence/windows-nsis-update-*.json
             ci-evidence/nsis-windows-junction-test.json
+            ci-evidence/windows-nsis-update-source-tests.log
           if-no-files-found: warn
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || !inputs.nsis_update_fixture
     needs: receipt-policy
     runs-on: macos-latest
     steps:

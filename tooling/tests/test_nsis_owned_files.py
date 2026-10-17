@@ -36,31 +36,65 @@ class OwnedFilesTests(unittest.TestCase):
         return root / "source.bin", root / "capture.bin", root / "capture.nsh"
 
     def test_exact_capture_and_include_bind_the_owned_bytes(self):
-        with self.temporary() as directory:
-            root = Path(directory)
-            source = root / "source.bin"
-            capture = root / "café-${UNTRUSTED}.capture"
-            include = root / "capture.nsh"
-            data = bytes(range(256)) * 8193 + b"\x00end"
-            source.write_bytes(data)
-            result = owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
-            self.assertEqual(capture.read_bytes(), data)
-            self.assertEqual(result["size"], len(data))
-            self.assertEqual(result["sha256"], hashlib.sha256(data).hexdigest())
-            encoded = include.read_bytes()
-            self.assertTrue(encoded.startswith(codecs.BOM_UTF8))
-            text = encoded.decode("utf-8-sig")
-            self.assertIn(
-                '!define MW_RUNTIME_SOURCE "'
-                + str(capture).replace("$", "$$") + '"\n', text
-            )
-            self.assertIn(f'!define MW_RUNTIME_SHA256 "{result["sha256"]}"\n', text)
-            self.assertIn(f'!define MW_RUNTIME_SIZE {len(data)}\n', text)
-            self.assertNotIn(str(source), text)
-            self.assertFalse(list(root.glob(".mw-nsis-include-*.pending")))
+        for modified_before_capture in (False, True):
+            with self.subTest(modified_before_capture=modified_before_capture), self.temporary() as directory:
+                root = Path(directory)
+                source = root / "source.bin"
+                capture = root / "café-${UNTRUSTED}.capture"
+                include = root / "capture.nsh"
+                data = bytes(range(256)) * 8193 + b"\x00end"
+                source.write_bytes(data)
+                if modified_before_capture:
+                    before_write = source.lstat()
+                    with source.open("r+b") as writer:
+                        writer.seek(len(data) - 1)
+                        writer.write(b"Z")
+                        writer.flush()
+                        os.fsync(writer.fileno())
+                    data = data[:-1] + b"Z"
+                    os.utime(source, ns=(
+                        before_write.st_atime_ns, before_write.st_mtime_ns + 2_000_000_000
+                    ))
+                path_before = source.lstat()
+                with source.open("rb", buffering=0) as reader:
+                    descriptor_before = os.fstat(reader.fileno())
+                result = owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+                self.assertEqual(source.read_bytes(), data)
+                self.assertEqual(capture.read_bytes(), data)
+                self.assertEqual(result["size"], len(data))
+                self.assertEqual(result["sha256"], hashlib.sha256(data).hexdigest())
+                path_after = source.lstat()
+                with source.open("rb", buffering=0) as reader:
+                    descriptor_after = os.fstat(reader.fileno())
+                for before, after in (
+                    (path_before, path_after), (descriptor_before, descriptor_after)
+                ):
+                    for field in (
+                        "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns",
+                        "st_birthtime_ns", "st_birthtime",
+                    ):
+                        self.assertEqual(getattr(before, field, None),
+                                         getattr(after, field, None), field)
+                for field in (
+                    "st_dev", "st_ino", "st_size", "st_mtime_ns",
+                    "st_birthtime_ns", "st_birthtime",
+                ):
+                    self.assertEqual(getattr(path_before, field, None),
+                                     getattr(descriptor_before, field, None), field)
+                encoded = include.read_bytes()
+                self.assertTrue(encoded.startswith(codecs.BOM_UTF8))
+                text = encoded.decode("utf-8-sig")
+                self.assertIn(
+                    '!define MW_RUNTIME_SOURCE "'
+                    + str(capture).replace("$", "$$") + '"\n', text
+                )
+                self.assertIn(f'!define MW_RUNTIME_SHA256 "{result["sha256"]}"\n', text)
+                self.assertIn(f'!define MW_RUNTIME_SIZE {len(data)}\n', text)
+                self.assertNotIn(str(source), text)
+                self.assertFalse(list(root.glob(".mw-nsis-include-*.pending")))
 
     def test_real_source_changes_or_windows_rename_block_are_observed(self):
-        for mode in ("same_size", "grow", "short", "replace"):
+        for mode in ("same_size", "same_size_restored_mtime", "grow", "short", "replace"):
             with self.subTest(mode=mode), self.temporary() as directory:
                 root = Path(directory)
                 source, capture, include = self.paths(root)
@@ -73,14 +107,17 @@ class OwnedFilesTests(unittest.TestCase):
                 attempted = False
                 modified = False
                 rename_blocked = None
+                restored_observations = None
 
                 def read_and_change(fd, size):
                     nonlocal returned_bytes, attempted, modified, rename_blocked
+                    nonlocal restored_observations
                     block = real_read(fd, size)
                     returned_bytes += len(block)
                     if not block or attempted:
                         return block
                     attempted = True
+                    descriptor_before_change = os.fstat(fd)
                     if mode == "replace":
                         try:
                             source.rename(retained)
@@ -95,7 +132,7 @@ class OwnedFilesTests(unittest.TestCase):
                         modified = True
                     else:
                         with source.open("r+b") as writer:
-                            if mode == "same_size":
+                            if mode in ("same_size", "same_size_restored_mtime"):
                                 writer.seek(len(data) - 1)
                                 writer.write(b"B")
                             elif mode == "grow":
@@ -107,8 +144,14 @@ class OwnedFilesTests(unittest.TestCase):
                             os.fsync(writer.fileno())
                         modified = True
                     os.utime(source, ns=(
-                        initial.st_atime_ns, initial.st_mtime_ns + 2_000_000_000
+                        initial.st_atime_ns, initial.st_mtime_ns
+                        if mode == "same_size_restored_mtime"
+                        else initial.st_mtime_ns + 2_000_000_000
                     ))
+                    if mode == "same_size_restored_mtime":
+                        restored_observations = (
+                            descriptor_before_change, os.fstat(fd), source.lstat()
+                        )
                     return block
 
                 result = None
@@ -122,6 +165,16 @@ class OwnedFilesTests(unittest.TestCase):
                         failure = error
 
                 self.assertTrue(attempted)
+                if mode == "same_size_restored_mtime":
+                    self.assertIsNotNone(restored_observations)
+                    fd_before, fd_after, path_after = restored_observations
+                    for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns"):
+                        self.assertEqual(getattr(fd_before, field), getattr(fd_after, field), field)
+                    self.assertEqual(path_after.st_mtime_ns, initial.st_mtime_ns)
+                    self.assertNotEqual(
+                        fd_before.st_ctime_ns, fd_after.st_ctime_ns,
+                        "this regression requires an observed descriptor change time",
+                    )
                 self.assertLessEqual(returned_bytes, initial.st_size + 1)
                 self.assertTrue(capture.is_file())
                 self.assertLessEqual(capture.stat().st_size, initial.st_size)

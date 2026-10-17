@@ -117,6 +117,18 @@ def _require_unchanged(observed, original, label: str) -> None:
         raise CaptureError(f"{label} changed during capture")
 
 
+def _require_path_descriptor_match(descriptor, path_info, label: str) -> None:
+    # Win32 path and descriptor ctime may name different timestamps. Keep each
+    # domain's full signature; join the observations only by comparable fields.
+    _require_regular(path_info, label)
+    _require_same_object(descriptor, path_info, label)
+    for field in ("st_mtime_ns", "st_birthtime_ns", "st_birthtime"):
+        if getattr(descriptor, field, None) != getattr(path_info, field, None):
+            raise CaptureError(f"{label} path and descriptor timestamps differ")
+    if os.name != "nt":
+        _require_unchanged(descriptor, path_info, label)
+
+
 def _require_absent(path: Path) -> None:
     try:
         path.lstat()
@@ -150,7 +162,8 @@ def _capture(source: Path, capture: Path):
     remaining = initial.st_size + 1
     source_fd = os.open(source, _read_flags())
     with os.fdopen(source_fd, "rb", buffering=0) as source_file:
-        _require_unchanged(os.fstat(source_file.fileno()), initial, "source")
+        opened_source = os.fstat(source_file.fileno())
+        _require_path_descriptor_match(opened_source, initial, "source")
         _require_unchanged(source.lstat(), initial, "source")
         _require_plain_parents(capture)
         capture_fd = os.open(capture, _create_flags(), 0o600)
@@ -172,7 +185,7 @@ def _capture(source: Path, capture: Path):
             output.flush()
             os.fsync(output.fileno())
             _require_plain_parents(source)
-            _require_unchanged(os.fstat(source_file.fileno()), initial, "source")
+            _require_unchanged(os.fstat(source_file.fileno()), opened_source, "source")
             _require_unchanged(source.lstat(), initial, "source")
             open_capture = os.fstat(output.fileno())
             _require_regular(open_capture, "capture")
@@ -183,7 +196,7 @@ def _capture(source: Path, capture: Path):
         # Preserve identity/size across close, then snapshot the final times.
         captured = capture.lstat()
         _require_same_object(captured, open_capture, "capture")
-        _require_unchanged(os.fstat(source_file.fileno()), initial, "source")
+        _require_unchanged(os.fstat(source_file.fileno()), opened_source, "source")
         _require_unchanged(source.lstat(), initial, "source")
     _require_plain_parents(capture)
     _require_unchanged(capture.lstat(), captured, "capture")
