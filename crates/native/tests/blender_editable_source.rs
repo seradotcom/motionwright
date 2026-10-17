@@ -865,11 +865,11 @@ fn stored_custody_rejects_missing_rows_even_with_a_supplied_completed_receipt() 
 #[test]
 fn stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch() {
     // The same assertions cover a missing completion and an older UNKNOWN
-    // hidden behind complete newer pairs plus an extra known observation.
-    for newer_pairs_before_unknown in [false, true] {
-        let mut fixture = stored_source_fixture(!newer_pairs_before_unknown);
+    // hidden behind enough newer completed rows to exceed the retention cap.
+    for newer_completions_before_unknown in [false, true] {
+        let mut fixture = stored_source_fixture(!newer_completions_before_unknown);
         let mut unknown = source_observation_input(&fixture, "outcome_unknown");
-        if newer_pairs_before_unknown {
+        if newer_completions_before_unknown {
             let proof = fixture.evidence.stages.last().unwrap();
             unknown.request_id = proof.request_id.clone();
             unknown.request_sha256 = proof.request_sha256.clone();
@@ -878,16 +878,20 @@ fn stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch() {
         unknown.payload = json!({"scope":"synthetic-uncertain-observation", "outcome_known":false});
         let original_unknown = fixture.service.append_production_receipt(unknown).unwrap();
         append_unrelated_receipts(&fixture, 0, 300);
-        if newer_pairs_before_unknown {
-            // Append trusted-store rows, not caller JSON authority. These
-            // duplicates must never justify accepting or replaying the job.
+        if newer_completions_before_unknown {
+            // Store forbids reusing dispatching. Repeated completed rows are
+            // deliberately hostile observations that the real journal permits.
+            // Three per selected request exceed the complete-pair retention cap
+            // before the reader reaches the older UNKNOWN and original rows.
             let rows = stored_journal_rows(&fixture);
             for proof in &mut fixture.evidence.stages {
-                for stage in ["dispatching", "completed"] {
-                    let original = rows
-                        .iter()
-                        .find(|row| row["request_id"] == proof.request_id && row["stage"] == stage)
-                        .unwrap();
+                let original = rows
+                    .iter()
+                    .find(|row| {
+                        row["request_id"] == proof.request_id && row["stage"] == "completed"
+                    })
+                    .unwrap();
+                for _ in 0..3 {
                     let input = motionwright_storage::ProductionReceiptInput {
                         project_id: fixture.project.id,
                         generation: fixture.project.generation,
@@ -895,19 +899,13 @@ fn stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch() {
                         request_id: proof.request_id.clone(),
                         request_sha256: proof.request_sha256.clone(),
                         command: proof.command.clone(),
-                        stage: stage.into(),
+                        stage: "completed".into(),
                         payload: original["payload"].clone(),
                     };
                     let receipt = fixture.service.append_production_receipt(input).unwrap();
-                    if stage == "completed" {
-                        proof.response["receipt"] = serde_json::to_value(receipt).unwrap();
-                    }
+                    proof.response["receipt"] = serde_json::to_value(receipt).unwrap();
                 }
             }
-            fixture
-                .service
-                .append_production_receipt(source_observation_input(&fixture, "completed"))
-                .unwrap();
         }
         let before = fixture
             .service
