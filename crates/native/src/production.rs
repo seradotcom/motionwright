@@ -1041,16 +1041,130 @@ fn motion_failure_class(data: &Value) -> &'static str {
 /// and native diagnostic, but keep the *render operation* outcome UNKNOWN.
 /// Never interpret an Unavailable provider generation as a known render fail
 /// or generate a replacement render.start with a fresh mutation identity.
-fn unconfirmed_started_motion_render(mut error: Error) -> Error {
+fn unconfirmed_started_motion_render(error: Error) -> Error {
+    unconfirmed_started_native_render(error, "Motion Canvas", "driver.motion-canvas.render.start")
+}
+
+/// Retain an acknowledged native render when a later observation is lost.
+/// The renderer label and start command are app-owned static values.
+fn unconfirmed_started_native_render(
+    mut error: Error,
+    renderer: &'static str,
+    start_command: &'static str,
+) -> Error {
     error.message = format!(
-        "Motion Canvas render started but its terminal result is unconfirmed ({:?}). \
+        "{renderer} render started but its terminal result is unconfirmed ({:?}). \
          Reconcile the original job/request receipt with canonical Broker/Driver Host evidence; \
          do not redispatch a render automatically.",
         error.code
     );
-    error
-        .uncertain()
-        .recipe_progress(1, "driver.motion-canvas.render.start")
+    error.uncertain().recipe_progress(1, start_command)
+}
+
+fn unconfirmed_started_manim_render(error: Error) -> Error {
+    unconfirmed_started_native_render(
+        error,
+        "Manim Community",
+        "driver.manim-community.render.start",
+    )
+}
+
+fn retryable_manim_status_error(error: &Error) -> bool {
+    // A new read may observe an already-started job after an ordinary timeout.
+    // An uncertain response or any other observation failure needs reconciliation.
+    error.code == ErrorCode::Timeout && error.outcome_known
+}
+
+/// Only the existing validated Broker client can supply production views here.
+/// These bindings never create a grant, native receipt, or replacement job.
+#[derive(Debug)]
+struct AcknowledgedManimRender {
+    job_ref: String,
+    provider_generation: u64,
+    plan_sha256: String,
+    profile: Value,
+}
+
+impl AcknowledgedManimRender {
+    fn from_start(started: &Value, plan_sha256: &str, profile: Value) -> NativeResult<Self> {
+        let data = response_data(started).map_err(unconfirmed_started_manim_render)?;
+        let job_ref = required_string(
+            data,
+            "/job_ref",
+            "Manim render did not return a job reference",
+        )
+        .map_err(unconfirmed_started_manim_render)?;
+        if !job_ref.strip_prefix("manim-").is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim render start returned an invalid job reference",
+            )));
+        }
+        let provider_generation = Self::generation(started)?;
+        let binding = Self {
+            job_ref,
+            provider_generation,
+            plan_sha256: plan_sha256.to_owned(),
+            profile,
+        };
+        let data = binding.observe(started, "start")?;
+        if data.get("state").and_then(Value::as_str) != Some("rendering") {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim render start returned an unsupported initial state",
+            )));
+        }
+        Ok(binding)
+    }
+
+    fn generation(response: &Value) -> NativeResult<u64> {
+        response
+            .pointer("/result/execution/provenance/provider_generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                unconfirmed_started_manim_render(backend(
+                    "Manim observation has no canonical provider generation",
+                ))
+            })
+    }
+
+    fn observe<'a>(
+        &self,
+        response: &'a Value,
+        observation: &'static str,
+    ) -> NativeResult<&'a Value> {
+        if Self::generation(response)? != self.provider_generation {
+            return Err(unconfirmed_started_manim_render(Error::new(
+                ErrorCode::StaleReference,
+                "Manim observation belongs to a different provider generation",
+            )));
+        }
+        let data = response_data(response).map_err(unconfirmed_started_manim_render)?;
+        if !matches!(
+            data.get("state").and_then(Value::as_str),
+            Some("rendering" | "cancelling" | "succeeded" | "failed" | "cancelled")
+        ) {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim observation returned no supported canonical state",
+            )));
+        }
+        if data.get("job_ref").and_then(Value::as_str) != Some(self.job_ref.as_str()) {
+            return Err(unconfirmed_started_manim_render(backend(format!(
+                "Manim {observation} does not identify the acknowledged native render job"
+            ))));
+        }
+        if data.get("plan_sha256").and_then(Value::as_str) != Some(self.plan_sha256.as_str())
+            || data.get("profile") != Some(&self.profile)
+        {
+            return Err(unconfirmed_started_manim_render(backend(format!(
+                "Manim {observation} does not preserve the acknowledged plan and profile"
+            ))));
+        }
+        Ok(data)
+    }
 }
 
 /// A provider status/result is evidence only for the *same* render job
@@ -2037,21 +2151,17 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let job_ref = required_string(
-            response_data(&started)?,
-            "/job_ref",
-            "Manim render did not return a job reference",
-        )?;
+        let binding = AcknowledgedManimRender::from_start(&started, &plan_sha256, json!(profile))?;
+        let job_ref = &binding.job_ref;
 
         let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
         let mut poll = 0_u32;
         loop {
             if Instant::now() >= deadline {
-                return Err(Error::new(
+                return Err(unconfirmed_started_manim_render(Error::new(
                     ErrorCode::Timeout,
                     "Manim render did not reach a terminal state before the bounded deadline",
-                )
-                .uncertain());
+                )));
             }
             let status = match self
                 .execute(
@@ -2065,16 +2175,19 @@ impl ProductionCoordinator {
                 .await
             {
                 Ok(status) => status,
-                Err(error) if error.code == ErrorCode::Timeout => {
-                    poll = poll
-                        .checked_add(1)
-                        .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+                Err(error) if retryable_manim_status_error(&error) => {
+                    poll = poll.checked_add(1).ok_or_else(|| {
+                        unconfirmed_started_manim_render(backend(
+                            "Manim render poll counter overflowed",
+                        ))
+                    })?;
                     sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(unconfirmed_started_manim_render(error)),
             };
-            match response_data(&status)?.get("state").and_then(Value::as_str) {
+            let data = binding.observe(&status, "status")?;
+            match data.get("state").and_then(Value::as_str) {
                 Some("succeeded") => break,
                 Some("failed") => {
                     return Err(backend("Manim Community render reported failure"));
@@ -2087,15 +2200,19 @@ impl ProductionCoordinator {
                 }
                 Some("rendering") | Some("cancelling") => {}
                 Some(_) => {
-                    return Err(backend("Manim Community returned an unsupported job state"));
+                    return Err(unconfirmed_started_manim_render(backend(
+                        "Manim Community returned an unsupported job state",
+                    )));
                 }
                 None => {
-                    return Err(backend("Manim Community render status returned no state"));
+                    return Err(unconfirmed_started_manim_render(backend(
+                        "Manim Community render status returned no state",
+                    )));
                 }
             }
-            poll = poll
-                .checked_add(1)
-                .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+            poll = poll.checked_add(1).ok_or_else(|| {
+                unconfirmed_started_manim_render(backend("Manim render poll counter overflowed"))
+            })?;
             sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
         }
 
@@ -2108,27 +2225,31 @@ impl ProductionCoordinator {
                 json!({"job_ref": job_ref}),
                 false,
             )
-            .await?;
-        let result_data = response_data(&result)?;
+            .await
+            .map_err(unconfirmed_started_manim_render)?;
+        let result_data = binding.observe(&result, "result")?;
         if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
-            return Err(backend(
+            return Err(unconfirmed_started_manim_render(backend(
                 "Manim render result is not a successful terminal artifact",
-            ));
+            )));
         }
-        let artifact = result_data
-            .get("artifact")
-            .cloned()
-            .ok_or_else(|| backend("Manim render result has no artifact"))?;
+        let artifact = result_data.get("artifact").cloned().ok_or_else(|| {
+            unconfirmed_started_manim_render(backend("Manim render result has no artifact"))
+        })?;
         let relative_path = required_string(
             &artifact,
             "/relative_path",
             "Manim render artifact has no relative path",
-        )?;
-        let sha256 = required_string(&artifact, "/sha256", "Manim render artifact has no digest")?;
+        )
+        .map_err(unconfirmed_started_manim_render)?;
+        let sha256 = required_string(&artifact, "/sha256", "Manim render artifact has no digest")
+            .map_err(unconfirmed_started_manim_render)?;
         let bytes = artifact
             .get("bytes")
             .and_then(Value::as_u64)
-            .ok_or_else(|| backend("Manim render artifact has no size"))?;
+            .ok_or_else(|| {
+                unconfirmed_started_manim_render(backend("Manim render artifact has no size"))
+            })?;
         if artifact.get("media_type").and_then(Value::as_str) != Some("video/mp4")
             || artifact.get("width").and_then(Value::as_u64) != Some(u64::from(profile.width))
             || artifact.get("height").and_then(Value::as_u64) != Some(u64::from(profile.height))
@@ -2138,9 +2259,9 @@ impl ProductionCoordinator {
             || bytes == 0
             || bytes > MANIM_VIDEO_MAX_BYTES
         {
-            return Err(backend(
+            return Err(unconfirmed_started_manim_render(backend(
                 "Manim render artifact does not match the bounded Motionwright scene plan",
-            ));
+            )));
         }
         let verified_path = verify_output_artifact(
             &self.client.connection().output_root,
@@ -3460,6 +3581,187 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         let timed_out = unconfirmed_started_motion_render(timeout);
         assert_eq!(timed_out.code, ErrorCode::Timeout);
         assert!(!timed_out.outcome_known);
+    }
+
+    // These are pure view-validation inputs. They are not Broker envelopes,
+    // native execution receipts, persisted project state, or production proof.
+    fn manim_lifecycle_view(state: &str) -> Value {
+        json!({
+            "result": {
+                "data": {
+                    "job_ref": "manim-0123456789abcdef0123456789abcdef",
+                    "state": state,
+                    "plan_sha256": "a".repeat(64),
+                    "profile": {"width": 640, "height": 360, "frame_rate": 12},
+                },
+                "execution": {
+                    "provenance": {"provider_generation": 7},
+                },
+            },
+        })
+    }
+
+    fn manim_lifecycle_binding() -> AcknowledgedManimRender {
+        AcknowledgedManimRender::from_start(
+            &manim_lifecycle_view("rendering"),
+            &"a".repeat(64),
+            json!({"width": 640, "height": 360, "frame_rate": 12}),
+        )
+        .expect("pure start-view fixture matches its explicit binding")
+    }
+
+    #[test]
+    fn manim_observations_require_the_original_job_generation_plan_and_profile() {
+        let binding = manim_lifecycle_binding();
+        assert!(
+            binding
+                .observe(&manim_lifecycle_view("rendering"), "status")
+                .is_ok()
+        );
+        assert!(
+            binding
+                .observe(&manim_lifecycle_view("succeeded"), "result")
+                .is_ok()
+        );
+
+        let cases = [
+            (
+                "/result/data/job_ref",
+                json!("manim-ffffffffffffffffffffffffffffffff"),
+            ),
+            ("/result/data/job_ref", Value::Null),
+            ("/result/data/state", Value::Null),
+            ("/result/data/state", json!("unsupported-state")),
+            ("/result/execution/provenance/provider_generation", json!(8)),
+            (
+                "/result/execution/provenance/provider_generation",
+                Value::Null,
+            ),
+            (
+                "/result/execution/provenance/provider_generation",
+                json!(-1),
+            ),
+            ("/result/data/plan_sha256", json!("b".repeat(64))),
+            ("/result/data/plan_sha256", Value::Null),
+            ("/result/data/profile/frame_rate", json!(30)),
+            ("/result/data/profile", Value::Null),
+            ("/result/data", Value::Null),
+        ];
+        for (pointer, replacement) in cases {
+            let mut view = manim_lifecycle_view("succeeded");
+            *view.pointer_mut(pointer).expect("fixture pointer exists") = replacement;
+            for observation in ["status", "result"] {
+                let error = binding.observe(&view, observation).unwrap_err();
+                assert!(
+                    !error.outcome_known,
+                    "foreign observation at {pointer} became known"
+                );
+                assert_eq!(
+                    error
+                        .progress
+                        .expect("acknowledged start must remain visible")
+                        .failed_step,
+                    "driver.manim-community.render.start",
+                );
+                assert!(!error.message.contains("ffffffffffffffff"));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_manim_start_acknowledgements_cannot_authorize_a_replacement_job() {
+        for (pointer, replacement) in [
+            ("/result/data/job_ref", json!("unbound-job")),
+            ("/result/data/job_ref", Value::Null),
+            ("/result/data/state", json!("succeeded")),
+            ("/result/data/plan_sha256", json!("b".repeat(64))),
+            ("/result/data/profile/frame_rate", json!(30)),
+            (
+                "/result/execution/provenance/provider_generation",
+                Value::Null,
+            ),
+        ] {
+            let mut view = manim_lifecycle_view("rendering");
+            *view.pointer_mut(pointer).expect("fixture pointer exists") = replacement;
+            let error = AcknowledgedManimRender::from_start(
+                &view,
+                &"a".repeat(64),
+                json!({"width": 640, "height": 360, "frame_rate": 12}),
+            )
+            .unwrap_err();
+            assert!(!error.outcome_known);
+            assert!(error.message.contains("do not redispatch"));
+            assert!(!error.message.contains("unbound-job"));
+        }
+    }
+
+    #[test]
+    fn manim_post_start_observation_errors_preserve_unknown_and_the_original_code() {
+        for (error, code) in [
+            (
+                Error::new(ErrorCode::Unavailable, "private provider detail"),
+                ErrorCode::Unavailable,
+            ),
+            (
+                Error::new(ErrorCode::NotFound, "private job detail"),
+                ErrorCode::NotFound,
+            ),
+            (
+                Error::new(ErrorCode::StaleReference, "private revision detail"),
+                ErrorCode::StaleReference,
+            ),
+            (
+                Error::new(ErrorCode::BackendFailed, "private protocol detail"),
+                ErrorCode::BackendFailed,
+            ),
+            (
+                Error::new(ErrorCode::Cancelled, "private transport detail"),
+                ErrorCode::Cancelled,
+            ),
+            (
+                Error::new(ErrorCode::Timeout, "private deadline detail"),
+                ErrorCode::Timeout,
+            ),
+        ] {
+            let retained = unconfirmed_started_manim_render(error);
+            assert_eq!(retained.code, code);
+            assert!(!retained.outcome_known);
+            assert!(retained.message.contains("Manim Community render started"));
+            assert!(
+                retained
+                    .message
+                    .contains("Reconcile the original job/request receipt")
+            );
+            assert!(!retained.message.contains("private"));
+            assert_eq!(
+                retained
+                    .progress
+                    .expect("render start is acknowledged")
+                    .failed_step,
+                "driver.manim-community.render.start",
+            );
+        }
+    }
+
+    #[test]
+    fn manim_status_retry_is_limited_to_an_ordinary_known_read_timeout() {
+        assert!(retryable_manim_status_error(&Error::new(
+            ErrorCode::Timeout,
+            "read timeout"
+        )));
+        assert!(!retryable_manim_status_error(
+            &Error::new(ErrorCode::Timeout, "uncertain observation").uncertain(),
+        ));
+        for code in [
+            ErrorCode::Unavailable,
+            ErrorCode::StaleReference,
+            ErrorCode::BackendFailed,
+        ] {
+            assert!(!retryable_manim_status_error(&Error::new(
+                code,
+                "read failed"
+            )));
+        }
     }
 
     #[test]
