@@ -1,6 +1,7 @@
 """Adversarial tests for v0.1 native Blender and Manim public scene evidence."""
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -241,6 +242,73 @@ class ManimSourceCustodyTests(unittest.TestCase):
                 "binaries": {name: {"bytes": 1, "sha256": "a" * 64} for name in pub.SOURCE_TOOLS},
                 "runtime": {"files": 1, "bytes": 1, "inventory_sha256": "a" * 64}}
 
+    @contextmanager
+    def source_identity_inputs(self):
+        """Physical synthetic inputs; only Git metadata and version are stubbed."""
+        root = self.private / "identity-repo"
+        sdk = self.private / "identity-sdk"
+        runtime = self.private / "identity-runtime"
+        for name in self.wrapper.SOURCE_CODE:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SYNTHETIC SOURCE IDENTITY INPUT\n")
+        sdk_bins = sdk / "bin"
+        tools = {
+            "MW_EXAMPLE": root / "bin" / "example",
+            "MW_DRIVER": root / "bin" / "driver",
+            "MW_RUNNER": root / "bin" / "runner",
+            "PYTHON": root / "bin" / "python",
+            "FFMPEG": root / "bin" / "ffmpeg",
+            "FFPROBE": root / "bin" / "ffprobe",
+        }
+        binaries = list(tools.values()) + [
+            sdk_bins / name for name in ("semwright", "semwrightd", "semwright-sandbox")]
+        for path in binaries:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SYNTHETIC NONEXECUTABLE BINARY IDENTITY INPUT\n")
+        runtime_files = {
+            "site-packages/fixture_package/__init__.py": b"# synthetic package\n",
+            "site-packages/fixture_package/module.py": b"VALUE = 7\n",
+        }
+        for name, content in runtime_files.items():
+            path = runtime / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        commands = []
+        answers = {
+            (str(root), ("rev-parse", "HEAD")): SHA,
+            (str(root), ("rev-parse", "HEAD^{tree}")): "c" * 40,
+            (str(root), ("status", "--porcelain", "--untracked-files=no")): "",
+            (str(sdk), ("rev-parse", "HEAD")): PIN,
+        }
+
+        def metadata_only(argv, **kwargs):
+            self.assertEqual(argv[:2], ["git", "-C"])
+            self.assertEqual(kwargs, {"capture_output": True, "check": True, "timeout": 15})
+            key = (argv[2], tuple(argv[3:]))
+            self.assertIn(key, answers)
+            commands.append(list(argv))
+            return self.wrapper.subprocess.CompletedProcess(
+                argv, 0, (answers[key] + "\n").encode("ascii"), b"")
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.multiple(
+                self.wrapper, ROOT=root, SEMWRIGHT=sdk, SW_BINS=sdk_bins,
+                MANIM_RUNTIME=runtime, GITHUB_SHA=SHA, PIN=PIN,
+                SOURCE_PATHS=None, SOURCE_BEFORE=None, **tools))
+            stack.enter_context(patch.object(self.wrapper.subprocess, "run", side_effect=metadata_only))
+            stack.enter_context(patch.object(self.wrapper, "semwright_version", return_value="1.0.0"))
+            invoke = stack.enter_context(patch.object(
+                self.wrapper, "run_json", side_effect=AssertionError("native invocation forbidden")))
+            launch = stack.enter_context(patch.object(
+                self.wrapper.subprocess, "Popen", side_effect=AssertionError("process launch forbidden")))
+            try:
+                yield {"root": root, "runtime": runtime, "runtime_files": runtime_files,
+                       "binaries": binaries, "commands": commands}
+            finally:
+                invoke.assert_not_called()
+                launch.assert_not_called()
+
     def roots(self):
         result = {}
         for name in ("data", "bundles", "work", "output"):
@@ -452,6 +520,172 @@ class ManimSourceCustodyTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.wrapper.phase_record_file(self.private, "native.mp4", b"REPLACEMENT")
         self.assertEqual(draft.read_bytes(), b"EXISTING")
+
+    def test_runtime_inventory_accepts_empty_regular_files_and_retains_exact_identity(self):
+        with self.source_identity_inputs() as inputs:
+            empty_name = "site-packages/fixture_package/__init__.py"
+            (inputs["runtime"] / empty_name).write_bytes(b"")
+            inputs["runtime_files"][empty_name] = b""
+            expected_rows = [
+                {"path": name, "bytes": len(content), "sha256": hash_bytes(content)}
+                for name, content in sorted(inputs["runtime_files"].items())
+            ]
+            expected_runtime = {
+                "files": 2,
+                "bytes": sum(row["bytes"] for row in expected_rows),
+                "inventory_sha256": hash_bytes(json.dumps(
+                    expected_rows, sort_keys=True, separators=(",", ":")).encode()),
+            }
+            output = io.StringIO()
+            with patch.object(self.wrapper.sys, "stderr", output):
+                before = self.wrapper.source_identity()
+                after = self.wrapper.source_identity()
+            self.assertEqual(before, after)
+            self.assertEqual(before["runtime"], expected_runtime)
+            self.assertEqual(pub.source_identity_shape(before, SHA, PIN), before)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(len(inputs["commands"]), 8)
+            altered = json.loads(json.dumps(before))
+            altered["runtime"]["bytes"] = 0
+            with self.assertRaisesRegex(pub.PublicationError, "source_runtime_bytes"):
+                pub.source_identity_shape(altered, SHA, PIN)
+
+    def test_source_identity_keeps_empty_code_binary_and_evidence_rejected(self):
+        empty = self.private / "empty-evidence"
+        empty.write_bytes(b"")
+        with self.assertRaisesRegex(pub.PublicationError, "source_case_file_not_bounded"):
+            pub.source_file_record(self.private, empty.name)
+        with self.source_identity_inputs() as inputs:
+            self.wrapper.source_identity()
+            targets = (inputs["root"] / self.wrapper.SOURCE_CODE[0], inputs["binaries"][0])
+            for path in targets:
+                original = path.read_bytes()
+                with self.subTest(path=path.name):
+                    path.write_bytes(b"")
+                    try:
+                        with self.assertRaisesRegex(pub.PublicationError, "source_case_file_not_bounded"):
+                            self.wrapper.source_identity()
+                    finally:
+                        path.write_bytes(original)
+            self.wrapper.source_identity()
+
+    def test_runtime_oversize_is_rejected_before_open_with_relative_diagnostic(self):
+        with self.source_identity_inputs() as inputs:
+            name = "site-packages/oversized.bin"
+            path = inputs["runtime"] / name
+            with path.open("wb") as stream:
+                stream.truncate(128 * 1024 * 1024 + 1)
+            original_open = Path.open
+
+            def no_large_read(target, *args, **kwargs):
+                if target == path and args and args[0] == "rb":
+                    self.fail("oversized runtime input was opened for reading")
+                return original_open(target, *args, **kwargs)
+
+            output = io.StringIO()
+            with patch.object(Path, "open", no_large_read), \
+                    patch.object(self.wrapper.sys, "stderr", output), \
+                    self.assertRaisesRegex(pub.PublicationError, "source_case_file_not_bounded"):
+                self.wrapper.source_identity()
+            lines = output.getvalue().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertTrue(lines[0].startswith("manim-runtime-input-rejected="))
+            self.assertEqual(json.loads(lines[0].split("=", 1)[1]),
+                             {"path": name, "bytes": 128 * 1024 * 1024 + 1, "class": "regular"})
+            self.assertNotIn(str(self.base), output.getvalue())
+            closed_sink = io.StringIO()
+            closed_sink.close()
+            with patch.object(self.wrapper.sys, "stderr", closed_sink), \
+                    self.assertRaisesRegex(pub.PublicationError, "source_case_file_not_bounded"):
+                self.wrapper.source_identity()
+            self.assertIsNone(self.wrapper.SOURCE_ATTEMPT)
+
+    def test_empty_runtime_growth_still_fails_the_existing_physical_read_guard(self):
+        with self.source_identity_inputs() as inputs:
+            name = "site-packages/fixture_package/__init__.py"
+            path = inputs["runtime"] / name
+            path.write_bytes(b"")
+            original_open = Path.open
+            requests = []
+
+            class GrowingRead:
+                def __init__(self, stream):
+                    self.stream = stream
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    self.stream.close()
+                def fileno(self):
+                    return self.stream.fileno()
+                def read(self, count):
+                    requests.append(count)
+                    with original_open(path, "ab") as writer:
+                        writer.write(b"x")
+                    return self.stream.read(count)
+
+            def changed_open(target, *args, **kwargs):
+                result = original_open(target, *args, **kwargs)
+                return GrowingRead(result) if target == path and args and args[0] == "rb" else result
+
+            output = io.StringIO()
+            with patch.object(Path, "open", changed_open), \
+                    patch.object(self.wrapper.sys, "stderr", output), \
+                    self.assertRaisesRegex(pub.PublicationError, "source_case_file_changed"):
+                self.wrapper.source_identity()
+            self.assertEqual(requests, [1])
+            self.assertEqual(path.read_bytes(), b"x")
+            line = output.getvalue().strip()
+            self.assertTrue(line.startswith("manim-runtime-input-rejected="))
+            self.assertEqual(json.loads(line.split("=", 1)[1]),
+                             {"path": name, "bytes": 0, "class": "regular"})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real runtime symlink")
+    def test_runtime_inventory_rejects_a_real_symlink_without_disclosing_its_target(self):
+        with self.source_identity_inputs() as inputs:
+            target = self.private / SECRET
+            target.write_bytes(SECRET.encode())
+            name = "site-packages/linked-input"
+            link = inputs["runtime"] / name
+            link.symlink_to(target)
+            output = io.StringIO()
+            with patch.object(self.wrapper.sys, "stderr", output), \
+                    self.assertRaisesRegex(AssertionError, "linked_manim_runtime_input"):
+                self.wrapper.source_identity()
+            descriptor = json.loads(output.getvalue().strip().split("=", 1)[1])
+            self.assertEqual(descriptor, {"path": name, "bytes": link.lstat().st_size,
+                                          "class": "symlink"})
+            self.assertNotIn(SECRET, output.getvalue())
+            self.assertNotIn(str(self.base), output.getvalue())
+
+    def test_runtime_rejection_diagnostic_has_closed_bounded_fields_and_omits_unsafe_names(self):
+        path = self.private / "diagnostic-input"
+        path.write_bytes(b"x")
+        metadata = path.lstat()
+        names = (
+            "site-packages/" + "/".join(["a" * 250] * 4),
+            "site-packages/line\nbreak",
+            "site-packages/../outside",
+            "site-packages/back\\slash",
+            "site-packages/drive:part",
+            "/absolute/input",
+            "site-packages/" + "a" * 1025,
+            "site-packages/nonascii-\u00e9",
+        )
+        for index, name in enumerate(names):
+            with self.subTest(index=index):
+                output = io.StringIO()
+                with patch.object(self.wrapper.sys, "stderr", output):
+                    self.wrapper.runtime_input_rejection(name, metadata)
+                lines = output.getvalue().splitlines()
+                self.assertEqual(len(lines), 1)
+                self.assertLessEqual(len(lines[0]), 2304)
+                self.assertTrue(lines[0].isascii())
+                descriptor = json.loads(lines[0].split("=", 1)[1])
+                self.assertEqual(set(descriptor), {"path", "bytes", "class"})
+                self.assertEqual(descriptor, {"path": name if index == 0 else None,
+                                              "bytes": 1, "class": "regular"})
+                self.assertNotIn(str(self.base), output.getvalue())
+                self.assertNotIn(SECRET, output.getvalue())
 
     def test_read_budget_catches_a_file_that_grows_during_the_actual_read(self):
         path = self.private / "growing"

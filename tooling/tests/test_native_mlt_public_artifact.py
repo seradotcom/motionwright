@@ -108,7 +108,7 @@ def unit_original_mix_receipt(project: dict, master_sha: str, master_bytes: int,
             "audio_sha256": pub.ORIGINAL_MIX_STEMS["measured_voice"][0],
             "audio_pcm_frames": 96000, "audio_size_bytes": 384044,
             "audio_sample_rate": 48000, "audio_channels": 2, "total_frames": 60,
-            "fps_num": 30, "fps_den": 1, "caption_cue_count": None,
+            "fps_num": 30, "fps_den": 1,
         },
         "canonical_dependency": {
             "project_generation": project["generation"], "project_revision": project["revision"],
@@ -707,6 +707,8 @@ class MltPublicTests(unittest.TestCase):
     def test_original_mix_projection_is_closed_and_separate_from_source_custody(self):
         with unit_original_mix_contract():
             self.fixture("original-mix-mp4")
+            source = json.loads((self.root / pub.ORIGINAL_MIX_RECEIPT).read_text())
+            self.assertNotIn("caption_cue_count", source["measured_voice"])
             receipt = pub.publish_mlt(self.root, self.out, self.mode, MW, SW, "success")
             self.assertEqual({path.name for path in self.out.iterdir()}, {
                 "native-two-segment-video-only.mkv", "native-multisegment-master.mp4",
@@ -736,6 +738,55 @@ class MltPublicTests(unittest.TestCase):
             for field in ("listening_approval", "rights_approval",
                           "editable_source_reopen_verified", "independent_loudness_verified"):
                 self.assertIs(proof[field], False)
+
+    def test_original_mix_measured_voice_rejects_any_present_caption_count(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            path = self.root / pub.ORIGINAL_MIX_RECEIPT
+            original = json.loads(path.read_text())
+            self.assertNotIn("caption_cue_count", original["measured_voice"])
+            output = self.out
+            for index, value in enumerate((None, 0, 2, False, "0", "2")):
+                with self.subTest(type=type(value).__name__, value=value):
+                    altered = copy.deepcopy(original)
+                    altered["measured_voice"]["caption_cue_count"] = value
+                    path.write_text(json.dumps(altered))
+                    self.result["original_mix_native_receipt_sha256"] = digest(path.read_bytes())
+                    self.store()
+                    # Separate outputs keep an unexpectedly admitted negative
+                    # from making later cases fail only because output exists.
+                    self.out = output.with_name(f"caption-count-{index}")
+                    self.refused("native_mlt_original_mix_receipt_mismatch")
+
+    def test_original_mix_measured_voice_requires_every_other_field(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            path = self.root / pub.ORIGINAL_MIX_RECEIPT
+            original = json.loads(path.read_text())
+            self.assertNotIn("caption_cue_count", original["measured_voice"])
+            self.assertEqual(
+                pub.verify_original_mix_source_receipt(original, self.result["project"]),
+                original["staged_audio"]["relative_path"],
+            )
+            wrong_values = {
+                "audio_sha256": "0" * 64, "audio_size_bytes": 384045,
+                "audio_pcm_frames": 95999, "audio_sample_rate": 44100,
+                "audio_channels": 1, "total_frames": 59, "fps_num": 60, "fps_den": True,
+            }
+            output = self.out
+            for field, wrong in wrong_values.items():
+                for operation in ("missing", "corrupted"):
+                    with self.subTest(field=field, operation=operation):
+                        altered = copy.deepcopy(original)
+                        if operation == "missing":
+                            del altered["measured_voice"][field]
+                        else:
+                            altered["measured_voice"][field] = wrong
+                        path.write_text(json.dumps(altered))
+                        self.result["original_mix_native_receipt_sha256"] = digest(path.read_bytes())
+                        self.store()
+                        self.out = output.with_name(f"voice-field-{field}-{operation}")
+                        self.refused("native_mlt_original_mix_receipt_mismatch")
 
     def test_real_calibrated_identity_rejects_the_unmixed_unit_double_and_voice(self):
         self.assertNotEqual(pub.ORIGINAL_MIX_WAV_SHA256, digest(unit_unmixed_wav()))

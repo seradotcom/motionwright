@@ -437,13 +437,16 @@ def verify_original_mix_source_receipt(receipt: dict, project: dict | None) -> s
             "source_asset_sha256": wav_sha, "decoded_pcm_sha256": pcm_sha,
             "sample_frames": proof["pcm_frames"],
         }, code)
-    exact_values(receipt.get("measured_voice"), {
+    measured_voice = receipt.get("measured_voice")
+    exact_values(measured_voice, {
         "audio_sha256": ORIGINAL_MIX_STEMS["measured_voice"][0],
         "audio_size_bytes": proof["bytes"], "audio_sample_rate": 48000,
         "audio_channels": 2, "audio_pcm_frames": proof["pcm_frames"],
         "total_frames": proof["video_frames"], "fps_num": 30, "fps_den": 1,
-        "caption_cue_count": None,
     }, code)
+    # Rust omits Option::None for this uncaptioned source profile. An explicit
+    # null or count is not the canonical serialized form admitted here.
+    require("caption_cue_count" not in measured_voice, code)
     exact_values(receipt.get("canonical_dependency"), {
         "project_generation": project["generation"], "project_revision": project["revision"],
         "profile_id": project["master_profile_id"],

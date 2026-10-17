@@ -510,6 +510,34 @@ def source_native_receipts(snapshot, project, phase, *, completed):
 SOURCE_CODE = SOURCE_EVIDENCE_PATHS
 
 
+def runtime_input_rejection(name, metadata):
+    """Keep a bounded relative descriptor without replacing the original error."""
+    parts = name.split("/") if type(name) is str else []
+    safe_name = (type(name) is str and 0 < len(name) <= 1024
+                 and name.isascii() and name.isprintable()
+                 and name.startswith("site-packages/") and "\\" not in name
+                 and all(part not in {"", ".", ".."} and ":" not in part
+                         and len(part) <= 255 for part in parts))
+    mode = getattr(metadata, "st_mode", 0)
+    kind = ("unavailable" if metadata is None else
+            "symlink" if stat.S_ISLNK(mode) else
+            "regular" if stat.S_ISREG(mode) else
+            "directory" if stat.S_ISDIR(mode) else "other")
+    size = getattr(metadata, "st_size", None)
+    descriptor = {"path": name if safe_name else None,
+                  "bytes": size if type(size) is int and 0 <= size < 2**63 else None,
+                  "class": kind}
+    line = "manim-runtime-input-rejected=" + json.dumps(
+        descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    if len(line) > 2304:
+        return
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # A failed diagnostic sink must not hide the original inventory rejection.
+        pass
+
+
 def source_identity():
     def git(*args, cwd=ROOT):
         result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True,
@@ -545,17 +573,27 @@ def source_identity():
     runtime_rows, runtime_total = [], 0
     packages = MANIM_RUNTIME / "site-packages"
     for path in sorted(packages.rglob("*")):
-        metadata = path.lstat()
-        if stat.S_ISLNK(metadata.st_mode):
-            raise AssertionError("linked_manim_runtime_input")
-        if stat.S_ISREG(metadata.st_mode):
-            name = path.relative_to(MANIM_RUNTIME).as_posix()
-            runtime_rows.append(source_file_record(MANIM_RUNTIME, name, 128 * 1024 * 1024))
-            runtime_total += runtime_rows[-1]["bytes"]
-            if len(runtime_rows) > 50000 or runtime_total > 1024 * 1024 * 1024:
-                raise AssertionError("manim_runtime_inventory_budget")
-        elif not stat.S_ISDIR(metadata.st_mode):
-            raise AssertionError("nonregular_manim_runtime_input")
+        name = path.relative_to(MANIM_RUNTIME).as_posix()
+        metadata = None
+        try:
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                raise AssertionError("linked_manim_runtime_input")
+            if stat.S_ISREG(metadata.st_mode):
+                # Installed packages may contain empty regular files. Evidence and
+                # executable callers retain the existing nonempty reader default.
+                runtime_rows.append(source_file_record(
+                    MANIM_RUNTIME, name, 128 * 1024 * 1024, empty=True))
+                runtime_total += runtime_rows[-1]["bytes"]
+                if len(runtime_rows) > 50000 or runtime_total > 1024 * 1024 * 1024:
+                    raise AssertionError("manim_runtime_inventory_budget")
+            elif not stat.S_ISDIR(metadata.st_mode):
+                raise AssertionError("nonregular_manim_runtime_input")
+        except (AssertionError, OSError, PublicationError):
+            # This lstat descriptor precedes the read; do not infer a later size,
+            # dump file contents, or change the original failure classification.
+            runtime_input_rejection(name, metadata)
+            raise
     raw_runtime = json.dumps(runtime_rows, sort_keys=True, separators=(",", ":")).encode()
     return {"C": current, "T": tree, "semwright_sha": PIN,
             "semwright_version": semwright_version(), "manim_version": MANIM_VERSION,
