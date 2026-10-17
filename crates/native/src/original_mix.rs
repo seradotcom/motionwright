@@ -293,16 +293,29 @@ fn duck_gain(plan: &OriginalMixPlan, at: u64) -> f64 {
     for interval in &plan.voice_windows {
         let start = interval.start_sample;
         let end = interval.end_exclusive;
+        let attack = u64::from(plan.duck_attack_samples);
+        let release = u64::from(plan.duck_release_samples);
         let current = if at < start {
             1.0
-        } else if at < start + u64::from(plan.duck_attack_samples) {
-            let progress = (at - start) as f64 / f64::from(plan.duck_attack_samples);
-            1.0 + (low - 1.0) * progress
         } else if at < end {
-            low
-        } else if at < end + u64::from(plan.duck_release_samples) {
+            if at - start < attack {
+                let progress = (at - start) as f64 / f64::from(plan.duck_attack_samples);
+                1.0 + (low - 1.0) * progress
+            } else {
+                low
+            }
+        } else if at - end < release {
+            // A short voice interval can end before attack reaches `low`.
+            // Release from its reached gain at that exact sample boundary;
+            // continuing attack or jumping to `low` would create a click.
+            let reached = if end - start < attack {
+                let progress = (end - start) as f64 / f64::from(plan.duck_attack_samples);
+                1.0 + (low - 1.0) * progress
+            } else {
+                low
+            };
             let progress = (at - end) as f64 / f64::from(plan.duck_release_samples);
-            low + (1.0 - low) * progress
+            reached + (1.0 - reached) * progress
         } else {
             1.0
         };
