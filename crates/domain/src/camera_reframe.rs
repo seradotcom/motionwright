@@ -388,7 +388,11 @@ mod manim_camera_closed_pair_tests {
 
         let mut original_motion = v2(scene_id);
         original_motion.component_version = CAMERA_REFRAME_VERSION;
-        original_motion.validate(&manim.scenes[0]).unwrap();
+        manim
+            .apply_change(&Change::UpsertCameraReframe {
+                reframe: original_motion,
+            })
+            .unwrap();
     }
 
     #[test]
