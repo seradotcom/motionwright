@@ -1123,6 +1123,12 @@ pub fn verify_blender_editable_stage_custody(
             row.get("request_id").and_then(Value::as_str) == Some(proof.request_id.as_str())
         })
         .collect();
+    if matching
+        .iter()
+        .any(|row| row.get("stage").and_then(Value::as_str) == Some("outcome_unknown"))
+    {
+        return Err(original_source_outcome_unknown());
+    }
     let dispatch = matching
         .iter()
         .copied()
@@ -1388,16 +1394,37 @@ pub fn verify_blender_editable_evidence_custody(
     evidence: &BlenderEditableEvidence,
     journal: &[Value],
 ) -> NativeResult<()> {
-    let mut ids = BTreeSet::new();
+    let ids: BTreeSet<&str> = evidence
+        .stages
+        .iter()
+        .map(|proof| proof.request_id.as_str())
+        .collect();
+    // Classify every selected original request before checking any receipt pair.
+    // An imported JSON journal still provides no authority to execute a command.
+    if journal.iter().any(|row| {
+        row.get("request_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| ids.contains(id))
+            && row.get("stage").and_then(Value::as_str) == Some("outcome_unknown")
+    }) {
+        return Err(original_source_outcome_unknown());
+    }
+    if ids.len() != evidence.stages.len() {
+        return Err(invalid(
+            "Blender source evidence duplicated an original request",
+        ));
+    }
     for proof in &evidence.stages {
-        if !ids.insert(&proof.request_id) {
-            return Err(invalid(
-                "Blender source evidence duplicated an original request",
-            ));
-        }
         verify_blender_editable_stage_custody(&evidence.source, proof, journal)?;
     }
     verify_evidence_chain(evidence)
+}
+
+fn original_source_outcome_unknown() -> Error {
+    Error::new(
+        ErrorCode::Conflict,
+        "Blender original source request has an unknown outcome; reconcile that original request without redispatch",
+    ).uncertain()
 }
 
 fn journal_snapshot_changed() -> Error {
@@ -1451,6 +1478,8 @@ pub fn verify_blender_editable_stored_evidence_custody(
     let mut before = None;
     let mut scanned = 0_u64;
     let mut original_rows = Vec::with_capacity(requests.len() * 2);
+    let mut observed_unknown = false;
+    let mut excess_original_rows = false;
     while scanned < watermark.count {
         let page = service
             .production_receipts_snapshot_page(
@@ -1478,14 +1507,17 @@ pub fn verify_blender_editable_stored_evidence_custody(
             // Do not filter matching requests by generation, command or stage:
             // doing so could hide an UNKNOWN, duplicate or foreign receipt.
             if requests.contains(receipt.request_id.as_str()) {
-                original_rows.push(
-                    serde_json::to_value(receipt)
-                        .map_err(|_| backend("Blender original receipt serialization failed"))?,
-                );
-                if original_rows.len() > requests.len() * 2 {
-                    return Err(backend(
-                        "Blender source requests contain extra original journal rows",
-                    ));
+                observed_unknown |= receipt.stage == "outcome_unknown";
+                if original_rows.len() < requests.len() * 2 {
+                    original_rows.push(
+                        serde_json::to_value(receipt).map_err(|_| {
+                            backend("Blender original receipt serialization failed")
+                        })?,
+                    );
+                } else {
+                    // Keep memory bounded, but finish the stable snapshot: a
+                    // still older UNKNOWN takes precedence over excess pairs.
+                    excess_original_rows = true;
                 }
             }
         }
@@ -1499,6 +1531,14 @@ pub fn verify_blender_editable_stored_evidence_custody(
             != watermark
     {
         return Err(journal_snapshot_changed());
+    }
+    if observed_unknown {
+        return Err(original_source_outcome_unknown());
+    }
+    if excess_original_rows {
+        return Err(backend(
+            "Blender source requests contain extra original journal rows",
+        ));
     }
     verify_blender_editable_evidence_custody(evidence, &original_rows)?;
     if service
