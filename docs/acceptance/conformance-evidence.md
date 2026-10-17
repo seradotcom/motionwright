@@ -74,3 +74,7 @@ A retained archive is verified both as a file and at each cited member. Member n
 ## Current OTIO negative reference verification
 
 The ce22 main CI execution 39048610833/job/117442310453 produced a first-party synthetic OTIO carrying two hash-bound ExternalReferences and one retained MissingReference. Original public media bytes were independently hashed and the native test log bound to the exact checkout. The MissingReference prohibition fields of MW05-E11-03 and A05-E11-03 have source-scoped sufficiency reviews. The receiving NLE, native edit import, real-world rights and overall scenarios remain open; no acceptance or release is granted.
+
+## Direct conformance negative identity tests
+
+Integrated ce22 CI run 39048610713/source-policy tests reject renamed/duplicated requirement histories and forged source SHAs. MW05-E00-01/A05-E00-01 and MW05-E00-04/A05-E00-04 have sufficiency reviews for their negative fields only. Positive catalog-wide behavioral evaluation, source-bound native artifacts, benchmarking, full scenarios and release remain open.

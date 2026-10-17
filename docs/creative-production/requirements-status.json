@@ -37,6 +37,17 @@
           },
           "superseded_at_utc": "2026-10-17T17:09:12.079634+00:00",
           "technical_status": "not_run"
+        },
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T23:04:53.939296+00:00",
+          "technical_status": "not_run"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -60,8 +71,7 @@
           "human_review_status": "not_required",
           "pending_criteria": [
             "MW05-E00-01#/requirement",
-            "MW05-E00-01#/acceptance",
-            "MW05-E00-01#/negative_case"
+            "MW05-E00-01#/acceptance"
           ],
           "status": "open"
         },
@@ -87,14 +97,16 @@
             "status": "not_run"
           },
           {
-            "evidence_ids": [],
-            "id": "MW05-E00-01#/negative_case",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "a5-ledger-id-negatives-main-ce22"
             ],
-            "scope_notes": [],
+            "id": "MW05-E00-01#/negative_case",
+            "missing_assertions": [],
+            "scope_notes": [
+              "Exact current-main fixture rejects renaming/source identity forgery; no positive release claim."
+            ],
             "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d",
-            "status": "not_run"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -106,7 +118,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "a5-ledger-id-negatives-main-ce22"
+          ],
           "current_source": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
@@ -138,9 +152,13 @@
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "a5-ledger-id-negatives-main-ce22"
+          ],
+          "execution_kinds": [
+            "synthetic"
+          ],
+          "status": "partial"
         }
       }
     },
@@ -496,6 +514,19 @@
           },
           "superseded_at_utc": "2026-10-17T17:09:12.079634+00:00",
           "technical_status": "partial"
+        },
+        {
+          "contract_status": "open",
+          "evidence_ids": [
+            "intake-source-main-ce22"
+          ],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T23:04:53.939296+00:00",
+          "technical_status": "partial"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -518,8 +549,7 @@
           "human_review_status": "not_required",
           "pending_criteria": [
             "MW05-E00-04#/requirement",
-            "MW05-E00-04#/acceptance",
-            "MW05-E00-04#/negative_case"
+            "MW05-E00-04#/acceptance"
           ],
           "status": "open"
         },
@@ -546,17 +576,16 @@
           },
           {
             "evidence_ids": [
+              "a5-ledger-id-negatives-main-ce22",
               "intake-source-main-ce22"
             ],
             "id": "MW05-E00-04#/negative_case",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
-            ],
+            "missing_assertions": [],
             "scope_notes": [
-              "Related observed assertions remain bounded by their evidence record limitations."
+              "Exact current-main fixture rejects renaming/source identity forgery; no positive release claim."
             ],
             "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
-            "status": "partial"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -569,6 +598,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [
+            "a5-ledger-id-negatives-main-ce22",
             "intake-source-main-ce22"
           ],
           "current_source": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
@@ -602,6 +632,7 @@
         },
         "technical_verification": {
           "evidence_ids": [
+            "a5-ledger-id-negatives-main-ce22",
             "intake-source-main-ce22"
           ],
           "execution_kinds": [
@@ -9576,7 +9607,7 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "6384fc5310441ddf331398190109527757d640474a95bd3f4349e5d905814384"
+    "sha256": "3ed2fa7aff02bb521cbfe2e5754b9e3849ae68dba126a615b4972b3d190950f4"
   },
   "upstream_integrated_sha": "d848657ed78ba73a2c925c7c3eceecce8e4f9054",
   "v05_release_ready": false
