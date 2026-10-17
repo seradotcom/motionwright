@@ -479,6 +479,211 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    use std::{
+        cell::RefCell,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    struct ReceiptBusyGate {
+        announced: bool,
+        reached: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        deadline: Instant,
+    }
+
+    thread_local! {
+        static RECEIPT_BUSY_GATE: RefCell<Option<ReceiptBusyGate>> =
+            const { RefCell::new(None) };
+    }
+
+    fn wait_for_receipt_writer_lock(_: i32) -> bool {
+        RECEIPT_BUSY_GATE.with(|slot| {
+            let Ok(mut slot) = slot.try_borrow_mut() else {
+                return false;
+            };
+            let Some(gate) = slot.as_mut() else {
+                return false;
+            };
+            if !gate.announced {
+                gate.announced = true;
+                if gate.reached.send(()).is_err() {
+                    return false;
+                }
+                let Some(remaining) = gate.deadline.checked_duration_since(Instant::now()) else {
+                    return false;
+                };
+                if gate.release.recv_timeout(remaining).is_err() {
+                    return false;
+                }
+            }
+            thread::yield_now();
+            Instant::now() < gate.deadline
+        })
+    }
+
+    fn assert_one_contended_receipt(stage: &str, second_digest: &str, second_command: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("contended-receipts.sqlite3");
+        let mut blocker = Store::open(&path).unwrap();
+        let project = blocker
+            .create_named_project("Concurrent production requests")
+            .unwrap();
+        // Opening Store performs schema setup. Both writers must already be
+        // open before the third connection holds the SQLite write lock.
+        let writers = [Store::open(&path).unwrap(), Store::open(&path).unwrap()];
+        let first = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: "shared-production-key".into(),
+            request_sha256: "a".repeat(64),
+            command: "driver.motion-canvas.render.start".into(),
+            stage: stage.into(),
+            payload: json!({"fixture": "first"}),
+        };
+        let second = ProductionReceiptInput {
+            request_sha256: second_digest.into(),
+            command: second_command.into(),
+            ..first.clone()
+        };
+        let lock = blocker
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let mut releases = Vec::new();
+        let mut handles = Vec::new();
+        for (mut writer, input) in writers.into_iter().zip([first, second]) {
+            let (release_tx, release_rx) = mpsc::channel();
+            releases.push(release_tx);
+            let reached = reached_tx.clone();
+            handles.push(thread::spawn(move || {
+                RECEIPT_BUSY_GATE.with(|slot| {
+                    *slot.borrow_mut() = Some(ReceiptBusyGate {
+                        announced: false,
+                        reached,
+                        release: release_rx,
+                        deadline: Instant::now() + Duration::from_secs(30),
+                    });
+                });
+                writer
+                    .conn
+                    .busy_handler(Some(wait_for_receipt_writer_lock))
+                    .unwrap();
+                let result = writer.append_production_receipt(input);
+                RECEIPT_BUSY_GATE.with(|slot| *slot.borrow_mut() = None);
+                result
+            }));
+        }
+        drop(reached_tx);
+        // Each signal comes from SQLite's actual busy callback. Without the
+        // transaction both writers reach INSERT after reading no prior key;
+        // with it both wait at BEGIN IMMEDIATE before reading that key.
+        let both_waiting = reached_rx.recv_timeout(Duration::from_secs(10)).is_ok()
+            && reached_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+        lock.commit().unwrap();
+        for release in releases {
+            let _ = release.send(());
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(both_waiting, "both writers must reach the real SQLite lock");
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "one request key must have exactly one winning append: {results:?}"
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(StorageError::RequestReuse)))
+                .count(),
+            1,
+            "the losing writer must receive a request conflict, not a busy error"
+        );
+        let winner = results.into_iter().find_map(Result::ok).unwrap();
+        drop(blocker);
+        let reopened = Store::open(&path).unwrap();
+        let persisted = reopened.production_receipts(project.id, 10).unwrap();
+        assert_eq!(persisted, vec![winner]);
+    }
+
+    #[test]
+    fn concurrent_receipts_cannot_bind_one_key_to_different_digests() {
+        assert_one_contended_receipt(
+            "completed",
+            &"b".repeat(64),
+            "driver.motion-canvas.render.start",
+        );
+    }
+
+    #[test]
+    fn concurrent_receipts_cannot_bind_one_key_to_different_commands() {
+        assert_one_contended_receipt(
+            "completed",
+            &"a".repeat(64),
+            "driver.mlt-video.render.start",
+        );
+    }
+
+    #[test]
+    fn concurrent_identical_dispatches_have_one_persisted_winner() {
+        assert_one_contended_receipt(
+            "dispatching",
+            &"a".repeat(64),
+            "driver.motion-canvas.render.start",
+        );
+    }
+
+    #[test]
+    fn corrupt_project_document_cannot_accept_a_production_receipt() {
+        for document in ["{".to_owned(), String::new()] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut store =
+                Store::open(temp.path().join("invalid-receipt-project.sqlite3")).unwrap();
+            let project = store.create_named_project("Document validation").unwrap();
+            let document = if document.is_empty() {
+                let mut value = serde_json::to_value(&project).unwrap();
+                value["title"] = json!("");
+                serde_json::to_string(&value).unwrap()
+            } else {
+                document
+            };
+            store
+                .conn
+                .execute(
+                    "UPDATE projects SET document_json=?1 WHERE id=?2",
+                    params![document, project.id.to_string()],
+                )
+                .unwrap();
+            let result = store.append_production_receipt(ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: "must-not-be-recorded".into(),
+                request_sha256: "a".repeat(64),
+                command: "driver.motion-canvas.render.start".into(),
+                stage: "dispatching".into(),
+                payload: json!({}),
+            });
+            assert!(matches!(
+                result,
+                Err(StorageError::Serde(_) | StorageError::Domain(_))
+            ));
+            assert_eq!(
+                store
+                    .production_receipt_watermark(project.id)
+                    .unwrap()
+                    .count,
+                0
+            );
+        }
+    }
+
     #[test]
     fn receipt_keyset_spans_more_than_old_window_with_exact_snapshot_watermark() {
         let temp = tempfile::tempdir().unwrap();
