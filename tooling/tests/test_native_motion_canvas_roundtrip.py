@@ -249,6 +249,35 @@ class PureRoundtripContractTests(unittest.TestCase):
                     mc.managed_snapshot(root, witness["stages"]["original"]["managed_inspection"],
                                         inventory, 3, 2, 2, film)
 
+    def test_exact_source_fill_must_be_the_only_canonical_film_delta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            original_row = witness["stages"]["original"]["film"]
+            edited_row = witness["stages"]["edited"]["film"]
+            original = json.loads((root / original_row["path"]).read_text())
+            edited = json.loads((root / edited_row["path"]).read_text())
+            count = mc.assert_only_film_source_color_changed(
+                original, edited, "#F5F5F2", "#E85A35")
+            self.assertEqual(count, 1)
+            for label, operation in (
+                ("retime", lambda doc: doc["output"]["frame_rate"].update(num=60)),
+                ("reframe", lambda doc: doc["output"].update(width=3)),
+                ("additional_frame", lambda doc: doc["sequences"][0].update(frames=4)),
+                ("foreign_color", lambda doc: doc["sequences"][0].update(color="#001122")),
+            ):
+                with self.subTest(label=label):
+                    corrupted = copy.deepcopy(edited)
+                    operation(corrupted)
+                    with self.assertRaisesRegex(mc.RoundtripRefused,
+                                                "unrelated_film_semantics_or_clock_changed"):
+                        mc.assert_only_film_source_color_changed(
+                            original, corrupted, "#F5F5F2", "#E85A35")
+            with self.assertRaisesRegex(mc.RoundtripRefused,
+                                        "canonical_film_color_property_not_found"):
+                mc.assert_only_film_source_color_changed(
+                    original, edited, "#ABCDEF", "#123456")
+
     def test_relative_path_escape_and_file_truncation_fail_before_decode(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

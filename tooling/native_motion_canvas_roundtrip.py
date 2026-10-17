@@ -349,6 +349,37 @@ def assert_managed_edit(original: dict, edited: dict, request: dict) -> None:
             "managed_source_fingerprint_not_changed")
 
 
+def assert_only_film_source_color_changed(original: dict, edited: dict,
+                                          from_fill: str, to_fill: str) -> int:
+    """One predeclared fill edit must never change unrelated Film semantics."""
+    expected = copy.deepcopy(original)
+    def update(value: object) -> int:
+        if type(value) is dict:
+            total = 0
+            for key, child in value.items():
+                if type(child) is str and child == from_fill:
+                    value[key] = to_fill
+                    total += 1
+                else:
+                    total += update(child)
+            return total
+        if type(value) is list:
+            total = 0
+            for index, child in enumerate(value):
+                if type(child) is str and child == from_fill:
+                    value[index] = to_fill
+                    total += 1
+                else:
+                    total += update(child)
+            return total
+        return 0
+
+    changed = update(expected)
+    require(changed > 0, "canonical_film_color_property_not_found")
+    require(expected == edited, "unrelated_film_semantics_or_clock_changed")
+    return changed
+
+
 def one_stage(root: Path, stage: object, expected_count: int,
               width: int, height: int) -> dict:
     stage = exact(stage, {"session", "project", "film", "source_files",
@@ -439,6 +470,8 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
     assert_managed_edit(original["native_project_inspection"],
                         edited["native_project_inspection"], edit)
     require(original["film"] != edited["film"], "source_edit_not_realized_in_film")
+    authorized_film_color_edits = assert_only_film_source_color_changed(
+        original["film"], edited["film"], edit["from"], edit["to"])
     require(original["source_inventory"] != edited["source_inventory"],
             "persisted_native_source_did_not_change")
     # This finite fill-edit profile changes every visible frame. It cannot be
@@ -478,6 +511,8 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
         "rights_verified": False,
         "human_visual_approval": False,
         "profile": profile, "edit": change,
+        "authorized_film_color_changes": authorized_film_color_edits,
+        "unrelated_film_semantics_unchanged": True,
         "all_frames_before_after_and_both_reopens_checked": count,
         "all_frame_rgba_identical_original_vs_reopen": True,
         "all_frame_rgba_identical_edit_vs_second_reopen": True,

@@ -315,6 +315,39 @@ mod production {
             .film
             .clone();
         assert_ne!(edited_film, original_film);
+
+        // Prove the authoring edit changes ONLY the predeclared source color
+        // in canonical Film. Other transforms, timing, camera, rights and
+        // asset/source nodes must remain identical across the persisted edit.
+        fn rewrite_color_only(value: &mut serde_json::Value, from: &str, to: &str) -> usize {
+            match value {
+                serde_json::Value::String(text) if text == from => {
+                    *text = to.into();
+                    1
+                }
+                serde_json::Value::Array(items) => items
+                    .iter_mut()
+                    .map(|item| rewrite_color_only(item, from, to))
+                    .sum(),
+                serde_json::Value::Object(fields) => fields
+                    .values_mut()
+                    .map(|item| rewrite_color_only(item, from, to))
+                    .sum(),
+                _ => 0,
+            }
+        }
+        let mut permitted_film = serde_json::to_value(&original_film).unwrap();
+        let admitted_color_changes = rewrite_color_only(&mut permitted_film, "#F5F5F2", "#E85A35");
+        assert!(
+            admitted_color_changes > 0,
+            "the requested visual fill must be represented in canonical Film"
+        );
+        assert_eq!(
+            permitted_film,
+            serde_json::to_value(&edited_film).unwrap(),
+            "an edit of one source fill must not modify unrelated Film properties, source identity or frame clock"
+        );
+
         let mut obsolete = binding;
         obsolete.intent = edited_film;
         assert!(
