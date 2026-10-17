@@ -435,6 +435,7 @@ impl ProductionCoordinator {
                 "Native multisegment AV project or Broker owner root is stale",
             ));
         }
+        reject_saved_original_mix_for_legacy_master(&project, deliverable_id)?;
         refuse_unmixed_source_sfx(&project)?;
         let output_root = &self.client.connection().output_root;
         let recipe = verify_multisegment_visual_source(

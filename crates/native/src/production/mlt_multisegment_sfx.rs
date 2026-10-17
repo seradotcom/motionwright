@@ -433,6 +433,7 @@ impl super::ProductionCoordinator {
                 "Native source-only SFX MLT owner authority or revision is stale",
             ));
         }
+        super::reject_saved_original_mix_for_legacy_master(&project, deliverable_id)?;
         if project.audio.mix.target_lufs.is_some()
             || project.audio.mix.target_true_peak_dbfs.is_some()
         {

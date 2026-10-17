@@ -660,6 +660,27 @@ pub struct MltAvMasterRequest<'a> {
     pub sync: Option<&'a AvSyncSpec>,
 }
 
+/// A saved original mix selects its canonical three-bus master. Legacy
+/// finalizers must not silently replace that recipe with an unchanged source
+/// WAV, even when its gains and mastering targets would otherwise be admitted.
+fn reject_saved_original_mix_for_legacy_master(
+    project: &motionwright_domain::Project,
+    deliverable_id: Uuid,
+) -> NativeResult<()> {
+    if project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_id)
+        .is_some_and(|recipe| recipe.original_mix.is_some())
+    {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "The selected deliverable requires its canonical original mix master",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MltAvMasterEvidence {
@@ -1459,6 +1480,18 @@ impl ProductionCoordinator {
             .iter()
             .find(|profile| profile.id == deliverable_id)
             .ok_or_else(|| invalid("Deliverable profile not found"))?;
+        reject_saved_original_mix_for_legacy_master(&project, deliverable_id)?;
+        // Encoding and muxing preserve this source WAV; neither operation
+        // realizes authored loudness or true-peak targets. Keep the saved
+        // intent intact and reject before the first native effect.
+        if project.audio.mix.target_lufs.is_some()
+            || project.audio.mix.target_true_peak_dbfs.is_some()
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "MLT audiovisual mastering does not support LUFS or true-peak targets",
+            ));
+        }
         if deliverable.video_codec != VideoCodec::H264
             || deliverable.audio_codec != AudioCodec::Aac
             || deliverable.audio_sample_rate_hz != 48_000
