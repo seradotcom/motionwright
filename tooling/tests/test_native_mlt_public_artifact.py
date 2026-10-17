@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -40,6 +41,184 @@ def synthetic_voice_wav() -> bytes:
     return output.getvalue()
 
 
+def unit_unmixed_wav() -> bytes:
+    """Unmixed zero PCM for admission plumbing tests, never a calibration oracle."""
+    pcm = bytes(96000 * 4)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(pcm), b"WAVE",
+        b"fmt ", 16, 1, 2, 48000, 192000, 4, 16, b"data", len(pcm),
+    )
+    return header + pcm
+
+
+@contextmanager
+def unit_original_mix_contract():
+    # The real fifth-mode positive is the unmocked native CI run. This explicitly
+    # scoped unit double tests routing, custody and projection without a mixer.
+    data = unit_unmixed_wav()
+    wav_sha, pcm_sha = digest(data), digest(data[44:])
+    contract = pub.MltModeContract(
+        60, (32, 28), source_fixture_id=pub.ORIGINAL_MIX_FIXTURE,
+        source_wav_sha256=wav_sha,
+    )
+    with patch.object(pub, "ORIGINAL_MIX_WAV_SHA256", wav_sha), \
+         patch.object(pub, "ORIGINAL_MIX_PCM_SHA256", pcm_sha), \
+         patch.dict(pub.MODE_CONTRACTS, {"original-mix-mp4": contract}):
+        yield data
+
+
+def unit_original_mix_project() -> dict:
+    return {
+        "project_id": "00000000-0000-0000-0000-000000000011",
+        "generation": "00000000-0000-0000-0000-000000000012", "revision": 7,
+        "master_profile_id": "00000000-0000-0000-0000-000000000013",
+        "resource": "motionwright:project:00000000-0000-0000-0000-000000000011",
+    }
+
+
+def unit_original_mix_receipt(project: dict, master_sha: str, master_bytes: int,
+                              video_sha: str) -> dict:
+    source = {
+        "project_resource": project["resource"], "generation": project["generation"],
+        "revision": project["revision"], "deliverable_id": project["master_profile_id"],
+        "frame_count": 60, "fps_num": 30, "fps_den": 1,
+        "staged_wav_sha256": pub.ORIGINAL_MIX_WAV_SHA256, "staged_wav_bytes": 384044,
+        "semantic_sfx": None, "evidence_scope": pub.ORIGINAL_MIX_SOURCE_SCOPE,
+        "original_mix": {
+            "frames": 96000, "sample_rate": 48000, "channels": 2,
+            "source_plan_sha256": "f" * 64, "rendered_pcm_sha256": pub.ORIGINAL_MIX_PCM_SHA256,
+            "measured_music_duck_windows": 2, "owner_release_approved": False,
+            "listening_intelligibility_approved": False, "independently_verified_lufs": False,
+            "independently_verified_true_peak": False,
+        },
+    }
+    for name, (wav_sha, pcm_sha) in pub.ORIGINAL_MIX_STEMS.items():
+        source[name] = {"asset_id": "00000000-0000-0000-0000-000000000099",
+                        "source_asset_sha256": wav_sha, "decoded_pcm_sha256": pcm_sha,
+                        "sample_frames": 96000}
+    return {
+        "project_resource": project["resource"], "generation": project["generation"],
+        "revision": project["revision"], "deliverable_id": project["master_profile_id"],
+        "frame_count": 60, "evidence_scope": pub.ORIGINAL_MIX_SCOPE, "original_mix": source,
+        "staged_audio": {
+            "relative_path": pub.original_mix_source_name(project, "f" * 64),
+            "sha256": pub.ORIGINAL_MIX_WAV_SHA256, "sample_rate": 48000, "channels": 2,
+        },
+        "measured_voice": {
+            "audio_sha256": pub.ORIGINAL_MIX_STEMS["measured_voice"][0],
+            "audio_pcm_frames": 96000, "audio_size_bytes": 384044,
+            "audio_sample_rate": 48000, "audio_channels": 2, "total_frames": 60,
+            "fps_num": 30, "fps_den": 1, "caption_cue_count": None,
+        },
+        "canonical_dependency": {
+            "project_generation": project["generation"], "project_revision": project["revision"],
+            "profile_id": project["master_profile_id"],
+        },
+        "canonical_film_options_sha256": "1" * 64,
+        "canonical_motion_source": [
+            {"segment_id": f"segment-{index}", "film_sha256": "4" * 64, "plan_ref": "5" * 64,
+             "native_fingerprint": "6" * 64, "connection_identity": "7" * 64,
+             "provider_generation": 1, "completed_receipt_ids": [
+                f"00000000-0000-0000-0000-0000000000{i + shift:02d}" for i in range(5)
+             ], "native_job_ref": f"PRIVATE-NATIVE-ORIGINAL-JOB-{index}"}
+            for index, shift in enumerate((20, 30))
+        ],
+        "video": {
+            "project_resource": project["resource"], "generation": project["generation"],
+            "revision": project["revision"], "deliverable_id": project["master_profile_id"],
+            "frame_count": 60, "artifact_sha256": video_sha,
+            "source": {
+                "project_resource": project["resource"], "generation": project["generation"],
+                "revision": project["revision"], "deliverable_id": project["master_profile_id"],
+                "total_frames": 60, "fps_num": 30, "fps_den": 1,
+                "verified_video_segments": [
+                    {"segment_id": f"segment-{index}", "frame_count": frames,
+                     "output_start_frame": start,
+                     "native_render_job_ref": f"PRIVATE-NATIVE-ORIGINAL-JOB-{index}"}
+                    for index, (frames, start) in enumerate(((32, 0), (28, 32)))
+                ],
+            },
+        },
+        "master": {
+            "audio_sha256": pub.ORIGINAL_MIX_WAV_SHA256, "video_sha256": video_sha,
+            "artifact": {"root": "output", "path": pub.original_mix_master_name(project),
+                         "sha256": master_sha, "bytes": master_bytes},
+        },
+        "private_provider_payload": "PRIVATE-ORIGINAL-MIX-RECEIPT",
+    }
+
+
+def unit_original_mix_readback(master_sha: str) -> dict:
+    limits = vars(pub.ContentLimits())
+    windows = []
+    for channel in (0, 1):
+        for start in range(0, 96000, limits["block_samples"]):
+            end = min(96000, start + limits["block_samples"])
+            actual_start = max(0, end - limits["block_samples"]) if end == 96000 else start
+            windows.append({
+                "channel": channel, "start_sample": actual_start, "end_exclusive": end,
+                "silent_reference": False, "correlation": 1.0, "gain": 1.0, "relative_error": 0.0,
+            })
+    return {
+        "schema": "motionwright.native-original-mix-readback/1",
+        "technical_content_readback": "PASS", "reference_wav_sha256": pub.ORIGINAL_MIX_WAV_SHA256,
+        "final_mp4_sha256": master_sha, "listening_approval": False, "rights_approval": False,
+        "editable_source_reopen_verified": False, "independent_loudness_verified": False,
+        "clock": {
+            "video_frames": 60, "video_packets": 60, "audio_duration_samples": 96000,
+            "first_video_pts": 0, "first_audio_pts": 0, "video_fps": "30", "audio_timebase": "1/48000",
+            "exact_contiguous_frame_timestamps": True, "audio_packet_presentation_end_samples": 96000,
+            "packet_priming_and_presentation_checked": True, "audio_frames": 94, "audio_packets": 95,
+            "decoded_audio_samples_from_frames": 96256, "priming_skip_samples": 1024,
+            "discard_padding_samples": 0, "final_audio_packet_duration_samples": 768,
+            "declared_decoder_suffix_budget_samples": 256,
+        },
+        "content": {
+            "reference_sample_frames": 96000, "decoded_sample_frames": 96256,
+            "decoded_access_unit_suffix_samples": 256, "reference_pcm_sha256": pub.ORIGINAL_MIX_PCM_SHA256,
+            "decoded_pcm_sha256": "c" * 64, "logical_interval": [0, 96000],
+            "all_logical_samples_compared": True, "limits": limits, "windows": windows,
+            "short_energy_windows": [
+                {"channel": channel, "start_sample": 0, "end_exclusive": 64,
+                 "reference_rms": 1000.0, "gain": 1.0} for channel in (0, 1)
+            ],
+            "alignment": [
+                {"channel": channel, "best_lag_samples": 0, "searched_lag_samples": 1600,
+                 "fingerprint_positions": 512, "search_interval_samples": [-1600, 1600],
+                 "zero_lag_margin": 0.001, "reference_zero_lag_margin": 0.001,
+                 "absolute_delay_absence_proven": False, "aligned_or_shifted_output": False}
+                for channel in (0, 1)
+            ],
+        },
+    }
+
+
+def unit_original_mix_provenance(root: Path) -> dict:
+    sources = {name: {"bytes": 1, "sha256": "d" * 64} for name in pub.ORIGINAL_MIX_SOURCE_PATHS}
+    sources["tooling/native_mlt_mix_readback.py"]["sha256"] = pub.ORIGINAL_MIX_READER_SHA256
+    sources["tooling/tests/test_native_mlt_mix_readback.py"]["sha256"] = pub.ORIGINAL_MIX_READER_TEST_SHA256
+    snapshot = {
+        "motionwright_sha": MW, "motionwright_tree": "1" * 40,
+        "semwright_sha": SW, "semwright_tree": "2" * 40,
+        "semwright_declared_version": "0.0.0", "tracked_worktrees_clean": True,
+        "source_files": sources,
+        "tools": {name: {"path": str((root / name).resolve()), "bytes": 1, "sha256": "e" * 64}
+                  for name in pub.ORIGINAL_MIX_TOOL_NAMES},
+        "tool_versions": {name: "PRIVATE-VERSION-SOURCE" for name in pub.ORIGINAL_MIX_VERSION_NAMES},
+        "native_runtime_versions_sha256": "3" * 64,
+        "real_aac_test_gate": {
+            "schema": "motionwright.native-original-mix-real-aac-tests/1", "motionwright_sha": MW,
+            "reader_sha256": pub.ORIGINAL_MIX_READER_SHA256,
+            "reader_tests_sha256": pub.ORIGINAL_MIX_READER_TEST_SHA256,
+            "test_ids": sorted(pub.ORIGINAL_MIX_AAC_TEST_IDS),
+            "tests_run": 4, "skipped": 0, "failures": 0, "errors": 0,
+        },
+    }
+    return {"schema": "motionwright.native-original-mix-provenance/1",
+            "run_id": "123", "run_attempt": "1", "same_inputs": True,
+            "source_before": snapshot, "source_after": copy.deepcopy(snapshot)}
+
+
 class MltPublicTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="mw-mlt-ci-public-")
@@ -52,14 +231,15 @@ class MltPublicTests(unittest.TestCase):
 
     def fixture(self, mode: str = "pcm") -> None:
         self.mode = mode
+        contract = pub.mode_contract(mode)
         video_only = mode != "pcm"
         mkv = ("native-two-segment-video-only.mkv" if video_only
                else "native-two-segment-lossless.mkv")
         payload = b"\x1a\x45\xdf\xa3" + b"first-party-multisegment-source-" + mode.encode()
         (self.root / mkv).write_bytes(payload)
         timeline = {
-            "frame_count": 33,
-            "native_frame_count_observed": 33 if video_only else None,
+            "frame_count": contract.video_frames,
+            "native_frame_count_observed": contract.video_frames if video_only else None,
             "transport_pcm_audio": not video_only,
             "native_render_profile": "lossless-video-only" if video_only else "lossless",
             "provider_project_cleanup": pub.NO_CLEANUP,
@@ -91,8 +271,8 @@ class MltPublicTests(unittest.TestCase):
             "motionwright_sha": MW,
             "semwright_sha": SW,
             "mode": mode,
-            "assembled_video_frames": 33,
-            "rendered_source_frames": [32, 1],
+            "assembled_video_frames": contract.video_frames,
+            "rendered_source_frames": list(contract.source_segment_frames),
             "assembled_video_codec": "ffv1",
             "assembled_video_has_audio": not video_only,
             "transport_audio_codec": None if video_only else "pcm_s16le",
@@ -171,6 +351,44 @@ class MltPublicTests(unittest.TestCase):
             (self.root / "native-multisegment-av-master-evidence.json").write_text(
                 json.dumps(receipt), encoding="utf-8",
             )
+        if mode == "original-mix-mp4":
+            # This path is used only inside unit_original_mix_contract().
+            # It is deliberately not media generated by the native provider.
+            project = unit_original_mix_project()
+            self.result["project"] = project
+            inventory.update(project_id=project["project_id"], generation=project["generation"],
+                             revision=project["revision"])
+            inventory_blob = json.dumps(inventory).encode()
+            (self.root / "native-mlt-lifetime-inventory.json").write_bytes(inventory_blob)
+            self.result["native_mlt_lifetime_inventory_sha256"] = digest(inventory_blob)
+            mp4 = b"\x00\x00\x00\x18ftypisom" + b"unit-original-mix-routing"
+            (self.root / "native-multisegment-master.mp4").write_bytes(mp4)
+            source = unit_unmixed_wav()
+            (self.root / pub.SOURCE_WAV_NAME).write_bytes(source)
+            native = unit_original_mix_receipt(project, digest(mp4), len(mp4), self.result["video_sha256"])
+            (self.root / pub.ORIGINAL_MIX_RECEIPT).write_text(json.dumps(native), encoding="utf-8")
+            readback_blob = json.dumps(unit_original_mix_readback(digest(mp4))).encode()
+            provenance_blob = json.dumps(unit_original_mix_provenance(self.root)).encode()
+            (self.root / pub.ORIGINAL_MIX_READBACK).write_bytes(readback_blob)
+            (self.root / pub.ORIGINAL_MIX_PROVENANCE).write_bytes(provenance_blob)
+            self.result.update({
+                "final_master_sha256": digest(mp4), "final_master_bytes": len(mp4),
+                "final_master_frames": 60, "final_master_video_codec": "h264",
+                "final_master_audio_codec": "aac", "final_master_audio_rate": 48000,
+                "final_master_audio_channels": 2, "original_mix_pcm_frames": 96000,
+                "final_evidence_scope": pub.ORIGINAL_MIX_SCOPE, "canonical_original_mix_requested": True,
+                "retained_source_audio": pub.synthetic_source_proof(source, mode),
+                "canonical_mix_source_plan_sha256": "f" * 64,
+                "canonical_mix_decoded_source_pcm_sha256": pub.ORIGINAL_MIX_PCM_SHA256,
+                "canonical_dependency": native["canonical_dependency"],
+                "original_mix_native_receipt_sha256": digest((self.root / pub.ORIGINAL_MIX_RECEIPT).read_bytes()),
+                "original_mix_readback_sha256": digest(readback_blob),
+                "original_mix_provenance_sha256": digest(provenance_blob),
+                **{field: "e" * 64 for field in (
+                    "motion_canvas_driver_sha256", "mlt_driver_sha256", "mlt_runner_sha256",
+                    "melt_sha256", "ffmpeg_sha256", "ffprobe_sha256",
+                )},
+            })
         if mode == "captioned-mp4":
             self.result.update({
                 "captioned_master_decoded_pixels": "PASS",
@@ -468,7 +686,7 @@ class MltPublicTests(unittest.TestCase):
         self.refused("native_mlt_source_wav_missing_or_linked")
 
     def test_unimplemented_audio_modes_are_not_admitted_by_failed_job_status(self):
-        for mode in ("original-mix-mp4", "original-sfx-mp4"):
+        for mode in ("original-sfx-mp4",):
             with self.subTest(mode=mode):
                 with self.assertRaises(pub.PublicationError) as raised:
                     pub.publish_mlt(self.root, self.out, mode, MW, SW, "failure")
@@ -485,6 +703,253 @@ class MltPublicTests(unittest.TestCase):
         self.assertIn("'tooling/tests/test_native_mlt_ci_audio.py'", source)
         self.assertIn("read_synthetic_source_wav(source_wav, mode)", source)
         self.assertIn("NATIVE_CI_JOB_STATUS: ${{ job.status }}", source)
+
+    def test_original_mix_projection_is_closed_and_separate_from_source_custody(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            receipt = pub.publish_mlt(self.root, self.out, self.mode, MW, SW, "success")
+            self.assertEqual({path.name for path in self.out.iterdir()}, {
+                "native-two-segment-video-only.mkv", "native-multisegment-master.mp4",
+                "native-master-source.wav", "public-evidence.json",
+            })
+            self.assertEqual(receipt["native_video_frames"], 60)
+            self.assertEqual(receipt["retained_source_audio"]["source_kind"], "original-mix")
+            self.assertEqual(receipt["retained_source_audio"]["pcm_frames"], 96000)
+            self.assertEqual(receipt["retained_source_audio"]["full_master_reference_readback"], "NOT_RUN")
+            proof = receipt["original_mix_readback"]
+            self.assertEqual(proof["reference_wav_sha256"], digest(unit_unmixed_wav()))
+            self.assertEqual(proof["final_mp4_sha256"], self.result["final_master_sha256"])
+            self.assertEqual(proof["technical_content_readback"], "PASS")
+            self.assertEqual(proof["window_count"], 94)
+            self.assertEqual(proof["decoded_access_unit_suffix_samples"], 256)
+            self.assertEqual(proof["clock"]["declared_decoder_suffix_budget_samples"], 256)
+            self.assertEqual(proof["limits"], vars(pub.ContentLimits()))
+            self.assertEqual(proof["source"]["real_aac_test_gate"]["tests_run"], 4)
+            self.assertEqual(proof["source"]["real_aac_test_gate"]["skipped"], 0)
+            self.assertFalse(proof["publisher_decoded_media"])
+            self.assertTrue(all(item["absolute_delay_absence_proven"] is False
+                                and item["aligned_or_shifted_output"] is False
+                                for item in proof["alignment"]))
+            text = (self.out / "public-evidence.json").read_text()
+            self.assertNotIn("PRIVATE-", text)
+            self.assertNotIn(str(self.root), text)
+            for field in ("listening_approval", "rights_approval",
+                          "editable_source_reopen_verified", "independent_loudness_verified"):
+                self.assertIs(proof[field], False)
+
+    def test_real_calibrated_identity_rejects_the_unmixed_unit_double_and_voice(self):
+        self.assertNotEqual(pub.ORIGINAL_MIX_WAV_SHA256, digest(unit_unmixed_wav()))
+        self.assertNotEqual(pub.ORIGINAL_MIX_WAV_SHA256, SOURCE_SHA)
+        self.assertNotEqual(pub.ORIGINAL_MIX_WAV_SHA256, pub.ORIGINAL_MIX_STEMS["measured_voice"][0])
+        for data in (unit_unmixed_wav(), synthetic_voice_wav()):
+            with self.subTest(size=len(data)), self.assertRaises(pub.PublicationError):
+                pub.synthetic_source_proof(data, "original-mix-mp4")
+
+    def test_original_mix_rejects_a_copied_legacy_clock(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            self.result["assembled_video_frames"] = 33
+            self.result["rendered_source_frames"] = [32, 1]
+            self.store()
+            self.refused("native_mlt_source_not_verified")
+
+    def test_original_mix_source_and_native_authority_bindings_are_not_interchangeable(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            path = self.root / pub.ORIGINAL_MIX_RECEIPT
+            original = json.loads(path.read_text())
+            changes = (
+                (("staged_audio", "relative_path"), "../private.wav"),
+                (("staged_audio", "sha256"), pub.ORIGINAL_MIX_STEMS["measured_voice"][0]),
+                (("measured_voice", "audio_sha256"), pub.ORIGINAL_MIX_WAV_SHA256),
+                (("original_mix", "staged_wav_sha256"), SOURCE_SHA),
+                (("original_mix", "fps_num"), 60),
+                (("original_mix", "fps_den"), True),
+                (("original_mix", "measured_voice", "source_asset_sha256"), pub.ORIGINAL_MIX_WAV_SHA256),
+                (("canonical_dependency", "project_revision"), 8),
+                (("canonical_dependency", "project_generation"), "00000000-0000-0000-0000-000000000014"),
+                (("master", "audio_sha256"), pub.ORIGINAL_MIX_STEMS["measured_voice"][0]),
+                (("original_mix", "original_mix", "rendered_pcm_sha256"), "8" * 64),
+                (("original_mix", "original_mix", "independently_verified_true_peak"), True),
+            )
+            for pointer, value in changes:
+                with self.subTest(pointer=pointer):
+                    altered = copy.deepcopy(original)
+                    parent = altered
+                    for key in pointer[:-1]:
+                        parent = parent[key]
+                    parent[pointer[-1]] = value
+                    path.write_text(json.dumps(altered))
+                    self.result["original_mix_native_receipt_sha256"] = digest(path.read_bytes())
+                    self.store()
+                    self.refused("native_mlt_original_mix_receipt_mismatch")
+            for mutation in ("missing", "reversed", "duplicate", "cross-segment", "job"):
+                with self.subTest(mutation=mutation):
+                    altered = copy.deepcopy(original)
+                    source = altered["canonical_motion_source"]
+                    if mutation == "missing":
+                        source[0]["completed_receipt_ids"].pop()
+                    elif mutation == "reversed":
+                        source[0]["completed_receipt_ids"].reverse()
+                    elif mutation == "duplicate":
+                        source[1]["completed_receipt_ids"] = source[0]["completed_receipt_ids"].copy()
+                    elif mutation == "cross-segment":
+                        source.reverse()
+                    else:
+                        source[0]["native_job_ref"] = source[1]["native_job_ref"]
+                    path.write_text(json.dumps(altered))
+                    self.result["original_mix_native_receipt_sha256"] = digest(path.read_bytes())
+                    self.store()
+                    self.refused("native_mlt_original_mix_receipt_mismatch")
+
+    def test_original_mix_readback_refuses_rewritten_hashes_limits_and_tail_claims(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            path = self.root / pub.ORIGINAL_MIX_READBACK
+            original = json.loads(path.read_text())
+            changes = (
+                (("reference_wav_sha256",), SOURCE_SHA),
+                (("final_mp4_sha256",), "8" * 64),
+                (("content", "reference_pcm_sha256"), "9" * 64),
+                (("content", "all_logical_samples_compared"), False),
+                (("content", "limits", "minimum_correlation"), 0.96),
+                (("content", "limits", "short_window_samples"), 128),
+                (("content", "limits", "block_samples"), 2048.0),
+                (("content", "limits", "minimum_short_window_rms"), 128),
+                (("clock", "packet_priming_and_presentation_checked"), False),
+                (("clock", "audio_packet_presentation_end_samples"), 95900),
+                (("content", "decoded_access_unit_suffix_samples"), 100),
+                (("content", "alignment", 0, "best_lag_samples"), 96),
+                (("content", "alignment", 0, "best_lag_samples"), False),
+                (("content", "alignment", 0, "absolute_delay_absence_proven"), True),
+                (("content", "windows", 93, "end_exclusive"), 95900),
+                (("content", "windows", 0, "relative_error"), 0.26),
+                (("content", "windows", 0, "gain"), float("nan")),
+                (("content", "short_energy_windows", 1, "gain"), 0.49),
+                (("content", "logical_interval"), [False, 96000]),
+                (("listening_approval",), True),
+                (("rights_approval",), True),
+                (("private_path",), "PRIVATE-EXCLUDED"),
+            )
+            for pointer, value in changes:
+                with self.subTest(pointer=pointer):
+                    altered = copy.deepcopy(original)
+                    parent = altered
+                    for key in pointer[:-1]:
+                        parent = parent[key]
+                    parent[pointer[-1]] = value
+                    blob = json.dumps(altered).encode()
+                    path.write_bytes(blob)
+                    self.result["original_mix_readback_sha256"] = digest(blob)
+                    self.store()
+                    self.refused("native_mlt_original_mix_readback_invalid")
+
+    def test_original_mix_needs_same_checkout_tools_reader_and_four_unskipped_aac_tests(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            path = self.root / pub.ORIGINAL_MIX_PROVENANCE
+            original = json.loads(path.read_text())
+            changes = (
+                (("motionwright_sha",), "c" * 40),
+                (("source_files", "tooling/native_mlt_mix_readback.py", "sha256"), "7" * 64),
+                (("real_aac_test_gate", "tests_run"), 3),
+                (("real_aac_test_gate", "skipped"), 1),
+                (("real_aac_test_gate", "failures"), 1),
+                (("real_aac_test_gate", "test_ids"), list(pub.ORIGINAL_MIX_AAC_TEST_IDS[:3])),
+                (("tracked_worktrees_clean",), False),
+            )
+            for pointer, value in changes:
+                with self.subTest(pointer=pointer):
+                    altered = copy.deepcopy(original)
+                    for label in ("source_before", "source_after"):
+                        parent = altered[label]
+                        for key in pointer[:-1]:
+                            parent = parent[key]
+                        parent[pointer[-1]] = value
+                    blob = json.dumps(altered).encode()
+                    path.write_bytes(blob)
+                    self.result["original_mix_provenance_sha256"] = digest(blob)
+                    self.store()
+                    self.refused("native_mlt_original_mix_provenance_invalid")
+            altered = copy.deepcopy(original)
+            altered["source_after"]["tools"]["ffmpeg"]["sha256"] = "8" * 64
+            blob = json.dumps(altered).encode()
+            path.write_bytes(blob)
+            self.result["original_mix_provenance_sha256"] = digest(blob)
+            self.store()
+            self.refused("native_mlt_original_mix_provenance_invalid")
+            path.write_text(json.dumps(original))
+            self.result["original_mix_provenance_sha256"] = digest(path.read_bytes())
+            self.result["ffmpeg_sha256"] = "8" * 64
+            self.store()
+            self.refused("native_mlt_original_mix_master_invalid")
+
+    def test_original_mix_missing_or_oversized_readback_never_becomes_public(self):
+        with unit_original_mix_contract():
+            for missing in (pub.ORIGINAL_MIX_READBACK, pub.ORIGINAL_MIX_PROVENANCE,
+                            pub.ORIGINAL_MIX_RECEIPT):
+                with self.subTest(missing=missing):
+                    self.fixture("original-mix-mp4")
+                    (self.root / missing).unlink()
+                    with self.assertRaises(pub.PublicationError):
+                        pub.publish_mlt(self.root, self.out, self.mode, MW, SW, "success")
+                    self.assertFalse(self.out.exists())
+            self.fixture("original-mix-mp4")
+            (self.root / pub.ORIGINAL_MIX_READBACK).write_bytes(
+                b" " * (pub.READBACK_DOCUMENT_LIMIT + 1)
+            )
+            self.refused("native_mix_file_budget")
+
+    def test_original_mix_failures_publish_no_media_even_when_custody_exists(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            for status in ("failure", "cancelled", "skipped"):
+                with self.subTest(status=status):
+                    output = self.out.with_name("mixed-" + status)
+                    receipt = pub.publish_mlt(self.root, output, self.mode, MW, SW, status)
+                    self.assertEqual({path.name for path in output.iterdir()}, {"public-evidence.json"})
+                    self.assertEqual(receipt["ci_native_mlt_evidence"], "NOT_VERIFIED")
+                    self.assertNotIn("original_mix_readback", receipt)
+                    self.assertIsNone(receipt["retained_source_audio"])
+                    self.assertEqual((self.root / pub.SOURCE_WAV_NAME).read_bytes(), unit_unmixed_wav())
+
+    def test_original_mix_changed_source_cannot_pass_by_rewriting_every_claim(self):
+        with unit_original_mix_contract():
+            self.fixture("original-mix-mp4")
+            altered = unit_unmixed_wav()[:-4] + b"\x01\x00\x00\x00"
+            (self.root / pub.SOURCE_WAV_NAME).write_bytes(altered)
+            self.result["retained_source_audio"]["sha256"] = digest(altered)
+            self.store()
+            self.refused("native_mlt_synthetic_source_identity_mismatch")
+
+    def test_fifth_mode_document_read_stops_at_initial_size_plus_one_on_real_growth(self):
+        target = self.root / "growing.json"
+        target.write_bytes(b"0123456789")
+        requests = []
+        original_fdopen = pub.os.fdopen
+
+        class GrowingRead:
+            def __init__(self, stream):
+                self.stream = stream
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.stream.close()
+            def fileno(self):
+                return self.stream.fileno()
+            def read(self, count):
+                requests.append(count)
+                with target.open("ab") as writer:
+                    writer.write(b"X" * 4096)
+                return self.stream.read(count)
+
+        with patch.object(pub.os, "fdopen",
+                          side_effect=lambda fd, mode: GrowingRead(original_fdopen(fd, mode))):
+            with self.assertRaises(pub.PublicationError) as raised:
+                pub.read_stable_native_file(target, 65536)
+        self.assertEqual(raised.exception.code, "native_mix_file_changed")
+        self.assertEqual(requests, [11])
+
 
 
 if __name__ == "__main__":

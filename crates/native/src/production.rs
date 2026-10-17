@@ -28,6 +28,8 @@ use tokio::{
 };
 use uuid::Uuid;
 
+pub mod blender_editable;
+mod manim_source;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_multisegment_sfx;
@@ -37,6 +39,12 @@ mod original_mix_av;
 mod path_boundary_tests;
 mod recovery;
 mod semantic_sfx_av;
+pub use manim_source::{
+    ManimSourceImportPreviewV2, ManimSourceInspectionV2, ManimSourceSelectionV2,
+    apply_saved_manim_source_transform, inspect_saved_manim_source,
+    preview_saved_manim_source_transform,
+};
+
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_multisegment_sfx::{
@@ -122,6 +130,12 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+    "driver.blender.composition.inspect",
+    "driver.blender.composition.plan",
+    "driver.blender.composition.apply",
+    "driver.blender.composition.verify",
+    "driver.blender.composition.persist",
+    "driver.blender.composition.reopen",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
@@ -936,7 +950,12 @@ impl ProductionClient {
             || provenance.source != expected.source
             || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
-            || provenance.untrusted_metadata
+            // SDK Metadata::for_provider marks external provider metadata as
+            // untrusted. This flag classifies descriptions, not execution
+            // authority; all authority bindings above remain mandatory.
+            || provenance.untrusted_metadata != (expected.source == SourceKind::Driver)
+            || (expected.source == SourceKind::Driver
+                && provenance.execution_provider.as_deref() != Some(expected.provider))
         {
             return Err(unobserved(backend(
                 "Canonical response provenance does not match the expected authority",
@@ -1070,6 +1089,19 @@ fn unconfirmed_started_manim_render(error: Error) -> Error {
     )
 }
 
+fn retained_manim_job_failure(data: &Value, unknown_state: bool) -> Error {
+    let original = data
+        .get("original_error")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Error>(value).ok())
+        .unwrap_or_else(|| backend("Manim Community original render reported failure"));
+    if unknown_state || !original.outcome_known {
+        unconfirmed_started_manim_render(original)
+    } else {
+        original
+    }
+}
+
 fn retryable_manim_status_error(error: &Error) -> bool {
     // A new read may observe an already-started job after an ordinary timeout.
     // An uncertain response or any other observation failure needs reconciliation.
@@ -1146,7 +1178,7 @@ impl AcknowledgedManimRender {
         let data = response_data(response).map_err(unconfirmed_started_manim_render)?;
         if !matches!(
             data.get("state").and_then(Value::as_str),
-            Some("rendering" | "cancelling" | "succeeded" | "failed" | "cancelled")
+            Some("rendering" | "cancelling" | "succeeded" | "failed" | "cancelled" | "unknown")
         ) {
             return Err(unconfirmed_started_manim_render(backend(
                 "Manim observation returned no supported canonical state",
@@ -1938,6 +1970,20 @@ impl ProductionCoordinator {
             ));
         }
         let plan = build_blender_contribution(&project, scene_id)?;
+        // The legacy material.create path does not realize the Principled
+        // Alpha input. Reject before collection.create can mutate the scene.
+        // The Collection profile has its own explicit material-opacity source
+        // contract; this guard does not claim raster transparency fidelity.
+        if plan
+            .objects
+            .iter()
+            .any(|object| object.color_rgba[3] != 1.0)
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Legacy Blender GLB production cannot preserve non-opaque material alpha",
+            ));
+        }
         let collection = self
             .execute(
                 project_id,
@@ -2101,12 +2147,30 @@ impl ProductionCoordinator {
         }))
     }
 
+    /// Legacy bounded contribution. It retains its original v1 timing behavior;
+    /// source/clock-complete production callers select the explicit v2 route.
     pub async fn realize_manim_scene(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
         request_id: &str,
         scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let plan =
+            motionwright_manim_profile::ManimStartPlan::V1(build_manim_plan(&project, scene_id)?);
+        self.realize_manim_plan(project_id, expected, request_id, scene_id, plan, profile)
+            .await
+    }
+
+    async fn realize_manim_plan(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        plan: motionwright_manim_profile::ManimStartPlan,
         profile: ManimRenderProfile,
     ) -> NativeResult<Value> {
         if request_id.trim().is_empty()
@@ -2130,17 +2194,37 @@ impl ProductionCoordinator {
             ));
         }
 
-        let projected = build_manim_plan(&project, scene_id)?;
-        let plan_value = serde_json::to_value(&projected)
-            .map_err(|_| invalid("Manim scene plan could not be encoded"))?;
-        let plan: motionwright_manim_profile::ManimScenePlan =
-            serde_json::from_value(plan_value.clone())
-                .map_err(|_| invalid("Manim scene plan does not match the Driver SDK profile"))?;
-        motionwright_manim_profile::validate_plan(&plan)
-            .map_err(|error| invalid(format!("Manim scene plan is invalid: {error}")))?;
-        let plan_bytes = serde_json::to_vec(&plan)
-            .map_err(|_| invalid("Manim scene plan could not be digested"))?;
-        let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
+        plan.validate_for_profile(profile)
+            .map_err(|error| invalid(error.to_string()))?;
+        let expected_source = match &plan {
+            motionwright_manim_profile::ManimStartPlan::V1(source) => {
+                if *source != build_manim_plan(&project, scene_id)? {
+                    return Err(invalid(
+                        "Manim legacy plan does not match the current Project",
+                    ));
+                }
+                None
+            }
+            motionwright_manim_profile::ManimStartPlan::V2(source) => {
+                let current = crate::multi_renderer::build_manim_plan_v2(
+                    &project,
+                    scene_id,
+                    source.binding.deliverable_id,
+                )?;
+                if **source != current {
+                    return Err(invalid("Manim v2 plan does not match the current Project"));
+                }
+                Some(
+                    motionwright_manim_profile::source_package_v2(source)
+                        .map_err(|error| invalid(error.to_string()))?,
+                )
+            }
+        };
+        let plan_value = serde_json::to_value(&plan)
+            .map_err(|_| invalid("Manim source plan cannot be encoded"))?;
+        let plan_sha256 = plan
+            .plan_sha256()
+            .map_err(|error| invalid(error.to_string()))?;
 
         let started = self
             .execute(
@@ -2154,6 +2238,10 @@ impl ProductionCoordinator {
             .await?;
         let binding = AcknowledgedManimRender::from_start(&started, &plan_sha256, json!(profile))?;
         let job_ref = &binding.job_ref;
+        let source_binding = expected_source
+            .as_ref()
+            .map(|package| manim_source::ManimSourceJobBinding::from_start(package, &started))
+            .transpose()?;
 
         let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
         let mut poll = 0_u32;
@@ -2188,10 +2276,16 @@ impl ProductionCoordinator {
                 Err(error) => return Err(unconfirmed_started_manim_render(error)),
             };
             let data = binding.observe(&status, "status")?;
+            if let Some(source) = &source_binding {
+                source.observe(data)?;
+            }
             match data.get("state").and_then(Value::as_str) {
                 Some("succeeded") => break,
+                Some("unknown") => {
+                    return Err(retained_manim_job_failure(data, true));
+                }
                 Some("failed") => {
-                    return Err(backend("Manim Community render reported failure"));
+                    return Err(retained_manim_job_failure(data, false));
                 }
                 Some("cancelled") => {
                     return Err(Error::new(
@@ -2229,6 +2323,9 @@ impl ProductionCoordinator {
             .await
             .map_err(unconfirmed_started_manim_render)?;
         let result_data = binding.observe(&result, "result")?;
+        if let Some(source) = &source_binding {
+            source.observe(result_data)?;
+        }
         if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
             return Err(unconfirmed_started_manim_render(backend(
                 "Manim render result is not a successful terminal artifact",
@@ -2271,6 +2368,18 @@ impl ProductionCoordinator {
             MANIM_VIDEO_MAX_BYTES,
         )?;
 
+        let source_observation = source_binding
+            .as_ref()
+            .map(|source| source.finish(&self.client.connection().output_root, result_data))
+            .transpose()?;
+        let current = self.service.project(project_id).map_err(storage_error)?;
+        if RevisionStamp::from(&current) != *expected {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Project changed while the original Manim artifact was being verified",
+            ));
+        }
+
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
@@ -2280,6 +2389,7 @@ impl ProductionCoordinator {
             "job_ref": job_ref,
             "plan_sha256": plan_sha256,
             "profile": profile,
+            "source": source_observation,
             "result": result,
             "artifact": {
                 "relative_path": relative_path,
@@ -3191,7 +3301,7 @@ mod tests {
                 provider_version: "test".into(),
                 capability_version: "test".into(),
                 descriptor_sha256: "ab".repeat(32),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(1),
@@ -3255,7 +3365,7 @@ mod tests {
                 provider_version: "test".into(),
                 capability_version: "test".into(),
                 descriptor_sha256: "cd".repeat(32),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(2),
@@ -3586,6 +3696,21 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
 
     // These are pure view-validation inputs. They are not Broker envelopes,
     // native execution receipts, persisted project state, or production proof.
+    #[test]
+    fn manim_original_host_failure_preserves_known_denial_and_unknown_code() {
+        let denial = Error::new(ErrorCode::PolicyDenied, "original host denial");
+        let kept = retained_manim_job_failure(&json!({"original_error":denial}), false);
+        assert_eq!(kept.code, ErrorCode::PolicyDenied);
+        assert!(kept.outcome_known);
+        let missing =
+            Error::new(ErrorCode::Unavailable, "original host observation lost").uncertain();
+        let kept = retained_manim_job_failure(&json!({"original_error":missing}), true);
+        assert_eq!(kept.code, ErrorCode::Unavailable);
+        assert!(!kept.outcome_known);
+        let inconsistent = retained_manim_job_failure(&json!({"original_error":missing}), false);
+        assert!(!inconsistent.outcome_known);
+    }
+
     fn manim_lifecycle_view(state: &str) -> Value {
         json!({
             "result": {
@@ -3774,6 +3899,25 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             assert!(authority.provider_generation_required);
         }
         assert!(expected_authority("driver.blender.python.exec").is_none());
+        for command in [
+            "driver.blender.composition.inspect",
+            "driver.blender.composition.plan",
+            "driver.blender.composition.apply",
+            "driver.blender.composition.verify",
+            "driver.blender.composition.persist",
+            "driver.blender.composition.reopen",
+        ] {
+            assert!(BLENDER_COMMANDS.contains(&command));
+        }
+        for command in [
+            "driver.blender.file.save",
+            "driver.blender.file.open",
+            "driver.blender.render.frame",
+            "driver.blender.scene.create",
+            "driver.blender.composition.delete",
+        ] {
+            assert!(expected_authority(command).is_none());
+        }
 
         let manim = expected_authority("driver.manim-community.render.start")
             .expect("bounded Manim render start must be explicitly enabled");
@@ -3782,6 +3926,118 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(manim.provider_generation_required);
         assert!(expected_authority("driver.manim-community.python.exec").is_none());
         assert!(expected_authority("driver.manim.render").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_blender_alpha_is_rejected_before_native_dispatch() {
+        let (service, initial, temp) = fixture_service();
+        let mut project = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "blender-alpha-fixture-scene",
+                &Change::AddScene {
+                    name: "Alpha contract fixture".into(),
+                    objective: "Reject unpreserved material alpha before mutation".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = project.scenes[0].id;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-fixture-renderer",
+                &Change::SetSceneRenderer {
+                    scene_id,
+                    renderer: motionwright_domain::RendererKind::Blender,
+                },
+            )
+            .unwrap()
+            .project;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-fixture-node",
+                &Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::from_u128(40),
+                        name: "Partially transparent rectangle".into(),
+                        kind: "rectangle".into(),
+                        parent_id: None,
+                        x: 240.0,
+                        y: 180.0,
+                        width: 600.0,
+                        height: 360.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: None,
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 0,
+                        style: NodeStyle {
+                            fill: Some("#E0204080".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: None,
+                            font_size: None,
+                            font_weight: None,
+                            line_height: None,
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            )
+            .unwrap()
+            .project;
+
+        let mut connection = fake_connection(&temp, project.resource_key());
+        let marker = connection.output_root.join("unexpected-native-dispatch");
+        fs::write(
+            &connection.executable,
+            "#!/bin/sh\n: > \"$(dirname \"$0\")/output/unexpected-native-dispatch\"\nexit 97\n",
+        )
+        .unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        let output_root = connection.output_root.clone();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let before = serde_json::to_value(&project).unwrap();
+        let error = coordinator
+            .realize_blender_scene(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-original-attempt",
+                scene_id,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.outcome_known);
+        assert!(error.message.contains("non-opaque material alpha"));
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
+        assert!(
+            !marker.exists(),
+            "rejecting alpha must not invoke a native process"
+        );
+        assert_eq!(fs::read_dir(output_root).unwrap().count(), 0);
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before
+        );
+
+        // Source parameter support is separate from the legacy GLB production
+        // route. Admitting its typed Alpha does not assert measured pixels.
+        let source =
+            blender_editable::prepare_blender_editable_project_source(&project, scene_id).unwrap();
+        assert_eq!(source.spec.materials[0].opacity, 128.0 / 255.0);
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
     }
 
     #[test]
@@ -3938,6 +4194,9 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     #[cfg(unix)]
     fn transport_fixture_envelope(command: &str) -> Envelope {
         let authority = expected_authority(command).unwrap();
+        // Exact SDK54 Metadata::for_provider classification, carried into
+        // typed InvocationProvenance without promoting provider descriptions.
+        let untrusted_metadata = authority.source != SourceKind::Builtin;
         let mut envelope = Envelope::finish(
             "transport-fixture-broker-response".into(),
             command.into(),
@@ -3952,7 +4211,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             provider_version: "test-fixture".into(),
             capability_version: "test-fixture".into(),
             descriptor_sha256: "a4".repeat(32),
-            untrusted_metadata: false,
+            untrusted_metadata,
             catalog_revision: 1,
             execution_provider: Some(authority.provider.into()),
             provider_generation: Some(1),
@@ -3990,6 +4249,76 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         fs::write(&connection.executable, script).unwrap();
         connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
         connection
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdk54_metadata_classification_accepts_bound_drivers_and_builtin() {
+        for (command, driver) in [
+            ("driver.motion-canvas.composition.inspect", true),
+            ("driver.mlt-video.sequence.list", true),
+            ("driver.blender.collection.create", true),
+            ("driver.manim-community.render.status", true),
+            ("workflow.traces.list", false),
+        ] {
+            let (_, project, temp) = fixture_service();
+            let mut envelope = transport_fixture_envelope(command);
+            let provenance = envelope.execution.provenance.as_mut().unwrap();
+            assert_eq!(provenance.untrusted_metadata, driver);
+            if !driver {
+                // Builtin authority does not require a driver worker or generation.
+                provenance.execution_provider = None;
+                provenance.provider_generation = None;
+            }
+            let response = serde_json::to_vec(&envelope).unwrap();
+            let connection =
+                transport_response_fixture(&temp, project.resource_key(), &response, 0, false);
+            let result = ProductionClient::new(connection)
+                .unwrap()
+                .execute(command, json!({}), false)
+                .await
+                .unwrap();
+            assert_eq!(result.value["provenance_checked"], true, "{command}");
+            assert_eq!(
+                result.value["execution"]["provenance"]["untrusted_metadata"], driver,
+                "{command}",
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdk54_metadata_classification_rejects_driver_builtin_inversions() {
+        for command in [
+            "driver.motion-canvas.composition.inspect",
+            "driver.mlt-video.sequence.list",
+            "driver.blender.collection.create",
+            "driver.manim-community.render.status",
+            "workflow.traces.list",
+        ] {
+            let (_, project, temp) = fixture_service();
+            let mut envelope = transport_fixture_envelope(command);
+            let provenance = envelope.execution.provenance.as_mut().unwrap();
+            provenance.untrusted_metadata = !provenance.untrusted_metadata;
+            let response = serde_json::to_vec(&envelope).unwrap();
+            let connection =
+                transport_response_fixture(&temp, project.resource_key(), &response, 0, false);
+            let error = ProductionClient::new(connection)
+                .unwrap()
+                .execute(command, json!({}), true)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::BackendFailed, "{command}");
+            assert!(!error.outcome_known, "post-spawn authority loss: {command}");
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -4036,9 +4365,39 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                 "Canonical response provenance does not match the expected authority",
             ),
             (
-                "untrusted-provenance",
+                "driver-claimed-builtin-metadata",
                 "/execution/provenance/untrusted_metadata",
-                json!(true),
+                json!(false),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "foreign-source",
+                "/execution/provenance/source",
+                serde_json::to_value(SourceKind::Builtin).unwrap(),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "missing-generation",
+                "/execution/provenance/provider_generation",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "invalid-descriptor",
+                "/execution/provenance/descriptor_sha256",
+                json!("not-a-sha256"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "missing-execution-provider",
+                "/execution/provenance/execution_provider",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "foreign-execution-provider",
+                "/execution/provenance/execution_provider",
+                json!("driver:blender"),
                 "Canonical response provenance does not match the expected authority",
             ),
             (
@@ -4103,7 +4462,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             ErrorCode::BackendFailed,
             "Semwright CLI failure response is inconsistent",
         ));
-        assert_eq!(cases.len(), 15);
+        assert_eq!(cases.len(), 20);
 
         for (name, response, exit_code, code, message) in cases {
             let (service, project, temp) = fixture_service();

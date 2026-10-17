@@ -1665,7 +1665,7 @@ mod canonical_film_source_custody {
                 provider_version: "fixture/1".into(),
                 capability_version: "1".into(),
                 descriptor_sha256: sha256(command.as_bytes()),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(42),
@@ -2105,13 +2105,18 @@ mod canonical_film_source_custody {
     }
 
     #[test]
-    fn canonical_film_source_rejects_foreign_stage_authority_and_explicit_false_omissions() {
+    fn canonical_film_source_rejects_foreign_stage_authority_and_metadata_omissions() {
         for variant in [
             "connection",
             "generation",
             "provider",
+            "source",
+            "missing_generation",
+            "invalid_descriptor",
+            "missing_execution_provider",
+            "foreign_execution_provider",
             "dry_run",
-            "untrusted",
+            "driver_claimed_builtin_metadata",
             "missing_dry_run",
             "missing_untrusted",
             "unchecked",
@@ -2128,10 +2133,30 @@ mod canonical_film_source_custody {
                     source.rows[3].payload["result"]["execution"]["provenance"]["provider"] =
                         json!("driver:blender")
                 }
+                "source" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["source"] =
+                        serde_json::to_value(SourceKind::Builtin).unwrap()
+                }
+                "missing_generation" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["provider_generation"] =
+                        Value::Null
+                }
+                "invalid_descriptor" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["descriptor_sha256"] =
+                        json!("not-a-sha256")
+                }
+                "missing_execution_provider" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["execution_provider"] =
+                        Value::Null
+                }
+                "foreign_execution_provider" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["execution_provider"] =
+                        json!("driver:blender")
+                }
                 "dry_run" => source.rows[3].payload["result"]["execution"]["dry_run"] = json!(true),
-                "untrusted" => {
+                "driver_claimed_builtin_metadata" => {
                     source.rows[3].payload["result"]["execution"]["provenance"]["untrusted_metadata"] =
-                        json!(true)
+                        json!(false)
                 }
                 "missing_dry_run" => {
                     source.rows[3].payload["result"]["execution"]

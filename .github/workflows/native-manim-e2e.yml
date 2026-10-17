@@ -14,6 +14,7 @@ on:
       - 'crates/manim-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/manim_native_readback.py'
       - 'tooling/native_scene_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_scene_public_artifact.py'
@@ -40,7 +41,7 @@ env:
 jobs:
   native-manim-roundtrip:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -152,45 +153,50 @@ jobs:
             production::tests::production_allowlist_binds_blender_to_the_native_driver \
             -- --nocapture
 
-      - name: Realize application-owned scene through real Broker and Manim Driver Host
+      - name: Verify bounded source custody and public projection contracts
+        run: |
+          python3 -B -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
+          python3 -B tooling/manim_native_readback.py --self-test
+
+      - name: Realize five original source phases through the Broker and Manim Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
         run: |
-          python3 tooling/native_manim_e2e.py \
+          python3 -B tooling/native_manim_e2e.py --source-roundtrip \
             | tee verification/native-manim-e2e/run.log
 
-      - name: Reject unsafe public Blender and Manim scene media
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
-
-      - name: Verify Manim review evidence
+      - name: Verify original source phase dispositions before publication
         run: |
-          test -s "verification/native-manim-e2e/${GITHUB_SHA}/result.json"
-          test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-evidence.json"
-          test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-community.mp4"
-          python3 - <<'PY'
-          import json, os
+          python3 -B - <<'PY'
+          import os, sys
           from pathlib import Path
+          sys.path.insert(0, "tooling")
+          from native_scene_public_artifact import SOURCE_PHASES, source_bytes, source_json
           root = Path("verification/native-manim-e2e") / os.environ["GITHUB_SHA"]
-          result = json.loads((root / "result.json").read_text())
-          assert result["native_manim_e2e"] == "PASS"
-          assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
-          assert len(result["semwright_sha"]) == 40
-          assert result["semwright_version"] == "1.0.0"
-          assert result["manim_version"] == "0.21.0"
-          assert result["mp4"]["width"] == 640
-          assert result["mp4"]["height"] == 360
-          assert result["mp4"]["bytes"] > 0
-          assert len(result["mp4"]["sha256"]) == 64
+          report = source_json(source_bytes(root, "source-roundtrip.json", 4 * 1024 * 1024))
+          assert report["status"] == "PASS"
+          assert report["motionwright_sha"] == os.environ["GITHUB_SHA"]
+          assert report["inputs_before"] == report["inputs_after"]
+          assert report["inputs_before"]["C"] == os.environ["GITHUB_SHA"]
+          assert report["finalization_errors"] == []
+          assert [row["phase"] for row in report["phases"]] == list(SOURCE_PHASES)
+          for row in report["phases"]:
+              assert type(row["native_invocations"]) is int and row["native_invocations"] == 1
+              assert row["native_outcome"] == "COMPLETED"
+              assert row["reader_status"] == "PASS"
+              assert row["original_journal_status"] == "VERIFIED_FROM_SEPARATE_DATABASE_COPY"
+              assert row["custody_status"] == "RETAINED_ON_RUNNER"
+          assert report["native_job_retried"] is False and report["human_acceptance"] is False
           PY
 
-      - name: Stage only verified Manim MP4, not original Broker receipts
+      - name: Archive approved synthetic originals and project native evidence
         if: always()
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
-          python3 tooling/native_scene_public_artifact.py \
-            --scene manim \
+          python3 -B tooling/native_scene_public_artifact.py \
+            --scene manim --manim-source-roundtrip \
             --source-sha "$GITHUB_SHA" \
             --evidence-root "verification/native-manim-e2e/$GITHUB_SHA" \
             --output-root "verification/native-manim-public" \

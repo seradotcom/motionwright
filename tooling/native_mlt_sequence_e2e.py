@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Exact-SHA source-bound two-segment Motion Canvas / MLT FFV1 video E2E.
+"""Exact-SHA two-segment Motion Canvas / MLT native CI evidence.
 
-CI only. Provisions a 33-scene application-owned project and pinned Semwright
-Broker/Driver Host, renders 32+1 real Motion Canvas segments, and assembles
-FFV1/PCM Matroska lossless intermediary through semantic MLT, not an AAC master.
+The closed modes preserve their own frame, source and output contracts.
+The canonical OriginalMix master uses its retained Rust WAV and the existing
+independent AAC reader; source custody and listening approval remain separate.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 import math
 import struct
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -24,7 +25,17 @@ from native_av_failure_guard import run_sanitized_json
 from native_mlt_caption_pixels import prove_native_captioned_master
 from native_mlt_public_artifact import (
     PublicationError, SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
-    verify_source_unchanged, verify_staged_source_receipt,
+    verify_source_unchanged, verify_staged_source_receipt, expected_source_proof,
+    read_stable_native_file, strict_object, file_sha, exact_values, same_json_value,
+    canonical_fixture_ids, original_mix_master_name, original_mix_readback_projection,
+    original_mix_provenance_projection, ORIGINAL_MIX_SCOPE, ORIGINAL_MIX_RECEIPT,
+    ORIGINAL_MIX_READBACK, ORIGINAL_MIX_PROVENANCE, ORIGINAL_MIX_READER_SHA256,
+    ORIGINAL_MIX_SOURCE_PATHS, ORIGINAL_MIX_TOOL_NAMES, ORIGINAL_MIX_VERSION_NAMES,
+    ORIGINAL_MIX_AAC_TEST_IDS, ORIGINAL_MIX_READER_TEST_SHA256,
+    READBACK_DOCUMENT_LIMIT, LIMIT,
+)
+from native_mlt_mix_readback import (
+    ContentLimits, MediaClock, ReadbackError, bounded_decoder, inspect_master,
 )
 
 from mlt_failure_diagnostic import safe_observation_diagnostic
@@ -39,12 +50,13 @@ RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
 MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
-if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4"}:
+if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4", "original-mix-mp4"}:
     raise SystemExit("Only closed native MLT smoke modes are accepted")
 CONTRACT = mode_contract(MODE)
-VIDEO_ONLY = MODE in {"video-only", "final-mp4", "captioned-mp4"}
+VIDEO_ONLY = MODE in {"video-only", "final-mp4", "captioned-mp4", "original-mix-mp4"}
 FINAL_MASTER = MODE in {"final-mp4", "captioned-mp4"}
 CAPTIONED_MASTER = MODE == "captioned-mp4"
+ORIGINAL_MIX_MASTER = MODE == "original-mix-mp4"
 PROFILE = "lossless-video-only" if VIDEO_ONLY else "lossless"
 EXPECTED_SCOPE = (
     "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
@@ -143,38 +155,238 @@ def write_private_json(path: Path, value: object) -> None:
     path.chmod(0o600)
 
 
+def retain_admitted_source_file(output_root: Path, evidence_root: Path,
+                                relative: str, mode: str) -> dict:
+    if (not output_root.is_dir() or output_root.is_symlink()
+        or not evidence_root.is_dir() or evidence_root.is_symlink()):
+        raise PublicationError("native_mlt_source_wav_root_invalid")
+    native_root, retained_root = output_root.resolve(), evidence_root.resolve()
+    if (native_root == retained_root or native_root in retained_root.parents
+        or retained_root in native_root.parents):
+        raise PublicationError("native_mlt_source_wav_roots_overlap")
+    # Callers admit a single closed basename before this function opens it.
+    if (not isinstance(relative, str) or Path(relative).name != relative
+        or "/" in relative or "\\" in relative or ":" in relative):
+        raise PublicationError("native_mlt_source_wav_path_invalid")
+    source = native_root / relative
+    data, proof, token = read_synthetic_source_wav(source, mode)
+    destination = retained_root / SOURCE_WAV_NAME
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(destination, flags, 0o600), "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    copied, copied_proof, _ = read_synthetic_source_wav(destination, mode)
+    if copied != data or copied_proof != proof:
+        raise PublicationError("native_mlt_source_wav_copy_mismatch")
+    verify_source_unchanged(source, token)
+    return proof
+
+
 def retain_native_master_source(output_root: Path, evidence_root: Path,
-                                receipt: dict, mode: str) -> dict:
+                                receipt: dict, mode: str,
+                                project: dict | None = None) -> dict:
     """Retain the admitted staged bytes; never regenerate or replace a source."""
     try:
-        if (not output_root.is_dir() or output_root.is_symlink()
-            or not evidence_root.is_dir() or evidence_root.is_symlink()):
-            raise PublicationError("native_mlt_source_wav_root_invalid")
-        native_root = output_root.resolve()
-        retained_root = evidence_root.resolve()
-        if (native_root == retained_root
-            or native_root in retained_root.parents
-            or retained_root in native_root.parents):
-            raise PublicationError("native_mlt_source_wav_roots_overlap")
-        # This admits the closed CI basename and source identity before any
-        # source file is opened. The private native receipt is never copied.
-        relative = verify_staged_source_receipt(receipt, mode)
-        source = native_root / relative
-        data, proof, token = read_synthetic_source_wav(source, mode)
-        destination = retained_root / SOURCE_WAV_NAME
-        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_BINARY", 0))
-        with os.fdopen(os.open(destination, flags, 0o600), "wb") as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
-        copied, copied_proof, _ = read_synthetic_source_wav(destination, mode)
-        if copied != data or copied_proof != proof:
-            raise PublicationError("native_mlt_source_wav_copy_mismatch")
-        verify_source_unchanged(source, token)
-        return proof
+        relative = verify_staged_source_receipt(receipt, mode, project)
+        return retain_admitted_source_file(output_root, evidence_root, relative, mode)
     except (PublicationError, OSError):
         raise AssertionError("native_master_source_retention_refused") from None
+
+
+def write_private_new_json(path: Path, value: object) -> str:
+    data = (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    if not 0 < len(data) <= READBACK_DOCUMENT_LIMIT:
+        raise AssertionError("native_original_mix_document_budget")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    observed, _ = read_stable_native_file(path, READBACK_DOCUMENT_LIMIT)
+    if observed != data:
+        raise AssertionError("native_original_mix_document_copy_mismatch")
+    return file_sha(data)
+
+
+def retain_partial_original_mix_source(output_root: Path, evidence_root: Path,
+                                       project: dict) -> None:
+    """Best-effort private custody only; never replace the primary native failure."""
+    outcome = {"scope": "SOURCE_ONLY", "master_readback": "NOT_RUN",
+               "source_status": "NOT_OBSERVED"}
+    try:
+        retained = evidence_root / SOURCE_WAV_NAME
+        if retained.exists() or retained.is_symlink():
+            _, proof, _ = read_synthetic_source_wav(retained, "original-mix-mp4")
+            outcome.update(source_status="ALREADY_RETAINED", retained_source_audio=proof)
+        else:
+            project_id, generation, revision, profile = canonical_fixture_ids(project)
+            source_proof = expected_source_proof("original-mix-mp4")
+            pattern = re.compile(
+                rf"mw-original-mix-{project_id}-{generation}-r{revision}-p{profile}-"
+                rf"[0-9a-f]{{16}}-{source_proof['sha256'][:16]}\.wav\Z"
+            )
+            if not output_root.is_dir() or output_root.is_symlink():
+                raise PublicationError("native_mlt_source_wav_root_invalid")
+            names = []
+            with os.scandir(output_root) as entries:
+                for count, item in enumerate(entries, 1):
+                    if count > 4096:
+                        raise PublicationError("native_original_mix_custody_scan_budget")
+                    if pattern.fullmatch(item.name):
+                        names.append(item.name)
+            if len(names) > 1:
+                raise PublicationError("native_original_mix_custody_ambiguous")
+            if names:
+                proof = retain_admitted_source_file(
+                    output_root, evidence_root, names[0], "original-mix-mp4"
+                )
+                outcome.update(source_status="RETAINED", retained_source_audio=proof)
+    except (PublicationError, OSError, ValueError, TypeError, AssertionError):
+        outcome["source_status"] = "REFUSED"
+    try:
+        write_private_new_json(evidence_root / "native-original-mix-partial-custody.json", outcome)
+    except (PublicationError, OSError, ValueError, TypeError, AssertionError):
+        pass
+
+
+def retain_original_mix_master(output_root: Path, evidence_root: Path,
+                               project: dict, native_receipt: dict, result: dict) -> Path:
+    name = original_mix_master_name(project)
+    artifact = native_receipt.get("master", {}).get("artifact")
+    exact_values(artifact, {"root": "output", "path": name}, "native_original_mix_master_path")
+    exact_values(result, {"master_artifact_path": name}, "native_original_mix_master_path")
+    if (not output_root.is_dir() or output_root.is_symlink()
+        or not evidence_root.is_dir() or evidence_root.is_symlink()
+        or output_root.resolve() == evidence_root.resolve()
+        or output_root.resolve() in evidence_root.resolve().parents
+        or evidence_root.resolve() in output_root.resolve().parents):
+        raise AssertionError("native_original_mix_master_roots")
+    source = output_root / name
+    data, token = read_stable_native_file(source, LIMIT)
+    exact_values(artifact, {"sha256": file_sha(data), "bytes": len(data)},
+                 "native_original_mix_master_identity")
+    exact_values(result, {"master_artifact_sha256": file_sha(data),
+                          "master_artifact_bytes": len(data)},
+                 "native_original_mix_master_identity")
+    if len(data) < 12 or data[4:8] != b"ftyp":
+        raise AssertionError("native_original_mix_master_container")
+    destination = evidence_root / "native-multisegment-master.mp4"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(destination, flags, 0o600), "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    copied, _ = read_stable_native_file(destination, LIMIT)
+    if copied != data:
+        raise AssertionError("native_original_mix_master_copy_mismatch")
+    verify_source_unchanged(source, token)
+    return destination
+
+
+def inspect_retained_original_mix(evidence_root: Path, master_sha256: str,
+                                  ffmpeg: Path, ffprobe: Path) -> tuple[dict, str]:
+    source = evidence_root / SOURCE_WAV_NAME
+    master = evidence_root / "native-multisegment-master.mp4"
+    _, custody, source_token = read_synthetic_source_wav(source, "original-mix-mp4")
+    master_bytes, master_token = read_stable_native_file(master, LIMIT)
+    if file_sha(master_bytes) != master_sha256:
+        raise AssertionError("native_original_mix_retained_master_changed")
+    try:
+        # Exactly one decoder/comparison implementation, on the retained original
+        # WAV and retained MP4. No repaired, resampled or AAC-derived reference.
+        proof = inspect_master(
+            source, master, reference_sha256=custody["sha256"],
+            master_sha256=master_sha256, clock=MediaClock(60, 1280, 720, 30, 1),
+            ffmpeg=str(ffmpeg), ffprobe=str(ffprobe), limits=ContentLimits(),
+        )
+        verify_source_unchanged(source, source_token)
+        verify_source_unchanged(master, master_token)
+        original_mix_readback_projection(proof, custody["sha256"], master_sha256)
+    except ReadbackError as exc:
+        reason = str(exc)
+        if re.fullmatch(r"[a-z0-9_]{1,128}", reason) is None:
+            reason = "reader_refused"
+        try:
+            write_private_new_json(evidence_root / "native-original-mix-readback-failure.json", {
+                "technical_content_readback": "FAIL", "reason": reason,
+                "reference_wav_sha256": custody["sha256"], "final_mp4_sha256": master_sha256,
+            })
+        except (PublicationError, OSError, ValueError, TypeError, AssertionError):
+            pass
+        raise AssertionError("native_original_mix_readback_failed") from None
+    proof_sha = write_private_new_json(evidence_root / ORIGINAL_MIX_READBACK, proof)
+    return proof, proof_sha
+
+
+def original_mix_input_snapshot() -> dict:
+    """Observe the exact checkout, built inputs and decoder versions on this runner."""
+    expected_source_proof("original-mix-mp4")
+    try:
+        identities = {}
+        for label, repository, expected in (("motionwright", ROOT, GITHUB_SHA),
+                                            ("semwright", SEMWRIGHT, PIN)):
+            def git(*arguments):
+                return subprocess.check_output(
+                    ["git", "-C", str(repository), *arguments], text=True,
+                    stderr=subprocess.DEVNULL, timeout=30,
+                ).strip()
+            if git("rev-parse", "HEAD") != expected:
+                raise AssertionError("native_original_mix_checkout_mismatch")
+            subprocess.run(["git", "-C", str(repository), "diff", "--quiet", "HEAD", "--"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=30, check=True)
+            identities[label + "_sha"] = expected
+            identities[label + "_tree"] = git("rev-parse", "HEAD^{tree}")
+        sources = {}
+        for relative in ORIGINAL_MIX_SOURCE_PATHS:
+            data, _ = read_stable_native_file(ROOT / relative, READBACK_DOCUMENT_LIMIT)
+            sources[relative] = {"bytes": len(data), "sha256": file_sha(data)}
+        if sources["tooling/native_mlt_mix_readback.py"]["sha256"] != ORIGINAL_MIX_READER_SHA256:
+            raise AssertionError("native_original_mix_reader_source_mismatch")
+        paths = {
+            "motionwright_example": MW_BIN,
+            "semwright_cli": SW_BINS / "semwright",
+            "semwright_daemon": SW_BINS / "semwrightd",
+            "semwright_sandbox": SW_BINS / "semwright-sandbox",
+            "motion_canvas_driver": SW_BINS / "semwright-motion-canvas-driver",
+            "mlt_driver": SW_BINS / "semwright-mlt-video-driver",
+            "mlt_runner": SW_BINS / "semwright-mlt-runtime-runner",
+            **{name: Path(shutil.which(name) or "").resolve()
+               for name in ("melt", "ffmpeg", "ffprobe", "bwrap", "node")},
+        }
+        if set(paths) != set(ORIGINAL_MIX_TOOL_NAMES):
+            raise AssertionError("native_original_mix_tool_inventory")
+        tools = {}
+        for name, path in paths.items():
+            path = path.resolve()
+            data, _ = read_stable_native_file(path, 512 * 1024 * 1024)
+            tools[name] = {"path": str(path), "bytes": len(data), "sha256": file_sha(data)}
+        versions = {}
+        for name in ORIGINAL_MIX_VERSION_NAMES:
+            option = "-version" if name in ("ffmpeg", "ffprobe") else "--version"
+            versions[name] = bounded_decoder([tools[name]["path"], option], 65536, timeout=10).decode("utf-8").strip()
+        runtime_versions, _ = read_stable_native_file(
+            ROOT / "verification/native-mlt-sequence-e2e/native-runtime-versions.txt", 65536
+        )
+        gate_blob, _ = read_stable_native_file(
+            ROOT / "verification/native-mlt-sequence-e2e/native-original-mix-aac-test-gate.json",
+            READBACK_DOCUMENT_LIMIT,
+        )
+        gate = strict_object(gate_blob)
+        exact_values(gate, {
+            "schema": "motionwright.native-original-mix-real-aac-tests/1",
+            "motionwright_sha": GITHUB_SHA, "reader_sha256": ORIGINAL_MIX_READER_SHA256,
+            "reader_tests_sha256": ORIGINAL_MIX_READER_TEST_SHA256,
+            "test_ids": sorted(ORIGINAL_MIX_AAC_TEST_IDS),
+            "tests_run": 4, "skipped": 0, "failures": 0, "errors": 0,
+        }, "native_original_mix_real_aac_gate_missing", closed=True)
+        return {**identities, "semwright_declared_version": semwright_version(),
+                "tracked_worktrees_clean": True, "source_files": sources, "tools": tools,
+                "tool_versions": versions, "native_runtime_versions_sha256": file_sha(runtime_versions),
+                "real_aac_test_gate": gate}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise AssertionError("native_original_mix_inputs_unverified") from None
 
 
 def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 30) -> dict:
@@ -224,6 +436,9 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
 def main() -> None:
     exact_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
+    source_before = original_mix_input_snapshot() if ORIGINAL_MIX_MASTER else None
+    if source_before is not None:
+        write_private_new_json(EVIDENCE / "native-original-mix-inputs-before.json", source_before)
 
     with tempfile.TemporaryDirectory(prefix="motionwright-native-av-") as raw:
         root = Path(raw).resolve()
@@ -266,6 +481,13 @@ def main() -> None:
             or seeded["scene_count"] != CONTRACT.scene_count
             or seeded["deliverable_count"] != CONTRACT.deliverable_count):
             raise AssertionError(f"unexpected real default profiles or source scenes: {seeded}")
+        if ORIGINAL_MIX_MASTER:
+            exact_values(seeded, {
+                "fixture_mode": "original-mix-mp4", "fixture_frame_count": 60,
+                "fixture_audio_sample_frames": 96000,
+                "fixture_speech_or_human_approval": False,
+            }, "native_original_mix_seed_mismatch")
+            canonical_fixture_ids(seeded)
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -639,7 +861,7 @@ def main() -> None:
                 raise AssertionError("Real MLT project creation provenance/lifetime is unconfirmed")
             if (result.get("frame_count") != CONTRACT.video_frames
                 or result.get("segment_count") != len(CONTRACT.source_segment_frames)):
-                raise AssertionError("Native timeline lost the 32+1 source partition")
+                raise AssertionError("Native timeline lost its exact source partition")
             if result.get("evidence_scope") != EXPECTED_SCOPE or result.get("native_render_profile") != PROFILE:
                 raise AssertionError("MLT result falsely claimed final H.264/AAC master")
 
@@ -812,6 +1034,69 @@ def main() -> None:
                         },
                         "native_captioned_human_legibility": "NOT_RUN",
                     })
+            if ORIGINAL_MIX_MASTER:
+                native_blob, native_token = read_stable_native_file(
+                    EVIDENCE / ORIGINAL_MIX_RECEIPT, READBACK_DOCUMENT_LIMIT
+                )
+                av_receipt = strict_object(native_blob)
+                verify_staged_source_receipt(av_receipt, MODE, seeded)
+                source_mix = av_receipt["original_mix"]["original_mix"]
+                exact_values(result, {
+                    "fixture_mode": MODE, "canonical_original_mix_requested": True,
+                    "master_evidence_scope": ORIGINAL_MIX_SCOPE,
+                    "master_audio_sha256": av_receipt["staged_audio"]["sha256"],
+                    "canonical_mix_source_plan_sha256": source_mix["source_plan_sha256"],
+                    "canonical_mix_decoded_source_pcm_sha256": source_mix["rendered_pcm_sha256"],
+                    "canonical_dependency": av_receipt["canonical_dependency"],
+                    "native_captioned_master_requested": False,
+                    "source_bound_caption_cue_count": None,
+                    "fixture_speech_or_human_approval": False,
+                }, "native_original_mix_result_mismatch")
+                exact_values(av_receipt["master"], {"video_sha256": digest(video_path)},
+                             "native_original_mix_visual_binding")
+                # Retain the original reference and MP4 before any independent
+                # decoder can fail or the native TemporaryDirectory can close.
+                retained_source = retain_native_master_source(
+                    paths["output"], EVIDENCE, av_receipt, MODE, seeded
+                )
+                retained_master = retain_original_mix_master(
+                    paths["output"], EVIDENCE, seeded, av_receipt, result
+                )
+                master_sha = result["master_artifact_sha256"]
+                readback, readback_sha = inspect_retained_original_mix(
+                    EVIDENCE, master_sha, ffmpeg, ffprobe
+                )
+                verify_source_unchanged(EVIDENCE / ORIGINAL_MIX_RECEIPT, native_token)
+                source_after = original_mix_input_snapshot()
+                if not same_json_value(source_before, source_after):
+                    raise AssertionError("native_original_mix_inputs_changed")
+                provenance = {
+                    "schema": "motionwright.native-original-mix-provenance/1",
+                    "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+                    "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                    "source_before": source_before, "source_after": source_after,
+                    "same_inputs": True,
+                }
+                original_mix_provenance_projection(provenance, GITHUB_SHA, PIN)
+                provenance_sha = write_private_new_json(EVIDENCE / ORIGINAL_MIX_PROVENANCE, provenance)
+                master_check = {
+                    "retained_source_audio": retained_source,
+                    "final_master_frames": readback["clock"]["video_frames"],
+                    "final_master_video_codec": "h264", "final_master_audio_codec": "aac",
+                    "final_master_audio_rate": CONTRACT.sample_rate,
+                    "final_master_audio_channels": CONTRACT.channels,
+                    "final_master_sha256": master_sha, "final_master_bytes": retained_master.stat().st_size,
+                    "original_mix_pcm_frames": readback["content"]["reference_sample_frames"],
+                    "decoded_master_pcm_frames": readback["content"]["decoded_sample_frames"],
+                    "final_evidence_scope": av_receipt["evidence_scope"],
+                    "canonical_original_mix_requested": True,
+                    "canonical_mix_source_plan_sha256": source_mix["source_plan_sha256"],
+                    "canonical_mix_decoded_source_pcm_sha256": source_mix["rendered_pcm_sha256"],
+                    "canonical_dependency": av_receipt["canonical_dependency"],
+                    "original_mix_native_receipt_sha256": file_sha(native_blob),
+                    "original_mix_readback_sha256": readback_sha,
+                    "original_mix_provenance_sha256": provenance_sha,
+                }
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -846,6 +1131,8 @@ def main() -> None:
                 },
             )
         finally:
+            if ORIGINAL_MIX_MASTER:
+                retain_partial_original_mix_source(paths["output"], EVIDENCE, seeded)
             if daemon.poll() is None:
                 pid = daemon.pid
                 daemon.terminate()

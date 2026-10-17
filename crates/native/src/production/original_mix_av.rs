@@ -275,14 +275,13 @@ fn original_motion_stage<'a>(
     let generation = provenance
         .provider_generation
         .ok_or_else(motion_source_mismatch)?;
+    // SDK54 classifies Driver descriptions as untrusted metadata. Their
+    // invocation must still come from the exact expected provider worker.
     if execution.dry_run
-        || provenance.untrusted_metadata
+        || !provenance.untrusted_metadata
         || provenance.provider != "driver:motion-canvas"
         || provenance.source != semwright_native_sdk::types::SourceKind::Driver
-        || provenance
-            .execution_provider
-            .as_deref()
-            .is_some_and(|provider| provider != "driver:motion-canvas")
+        || provenance.execution_provider.as_deref() != Some("driver:motion-canvas")
         || !super::is_sha256(&provenance.descriptor_sha256)
         || authority
             .connection_identity

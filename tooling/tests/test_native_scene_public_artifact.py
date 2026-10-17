@@ -1,4 +1,5 @@
 """Adversarial tests for v0.1 native Blender and Manim public scene evidence."""
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -205,6 +206,425 @@ class NativeSceneEvidenceTests(unittest.TestCase):
             self.assertIn("path: verification/native-" + scene + "-public", yml)
             self.assertNotIn("path: verification/native-" + scene + "-e2e\n", yml)
             self.assertIn("test_native_scene_public_artifact.py", yml)
+
+
+
+class ManimSourceCustodyTests(unittest.TestCase):
+    """Filesystem and report-contract controls, never a native provider oracle."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+        self.private = self.base / "private"
+        self.private.mkdir()
+        self.output = self.base / "public"
+        import native_manim_e2e as wrapper
+        self.wrapper = wrapper
+        self.patchers = [
+            patch.object(wrapper, "EVIDENCE", self.private),
+            patch.object(wrapper, "COMMAND_NUMBER", 0),
+            patch.object(wrapper, "INSPECTION_NUMBER", 0),
+            patch.object(wrapper, "SOURCE_ATTEMPT", None),
+            patch.object(wrapper, "SOURCE_PHASE", None),
+            patch.object(wrapper, "SOURCE_BEFORE", None),
+        ]
+        for item in self.patchers:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def identity(self):
+        return {"C": SHA, "T": "c" * 40, "semwright_sha": PIN, "semwright_version": "1.0.0",
+                "manim_version": "0.21.0",
+                "sources": [{"path": name, "bytes": 1, "sha256": "a" * 64}
+                            for name in pub.SOURCE_EVIDENCE_PATHS],
+                "binaries": {name: {"bytes": 1, "sha256": "a" * 64} for name in pub.SOURCE_TOOLS},
+                "runtime": {"files": 1, "bytes": 1, "inventory_sha256": "a" * 64}}
+
+    def roots(self):
+        result = {}
+        for name in ("data", "bundles", "work", "output"):
+            directory = self.private / "live" / name
+            directory.mkdir(parents=True)
+            result[name] = directory
+        data = result["data"] / "original"
+        data.mkdir()
+        (data / "motionwright.sqlite3").write_bytes(b"UNIT OPAQUE BYTE CUSTODY; NOT AN APPLICATION DATABASE\n")
+        content = b"UNIT SYNTHETIC CAS BYTES\n"
+        value = hash_bytes(content)
+        cas = data / "blobs" / "sha256" / value[:2]
+        cas.mkdir(parents=True)
+        (cas / value).write_bytes(content)
+        return result
+
+    def incomplete_attempt(self, roots, *, unknown=False):
+        snapshot = self.private / "custody" / "original"
+        inventory = pub.copy_source_snapshot(roots, snapshot, ())
+        phases = [{"phase": phase, "native_invocations": 0, "native_outcome": "NOT_STARTED",
+                   "reader_status": "NOT_RUN", "custody_status": "NOT_RUN", "files": {}}
+                  for phase in pub.SOURCE_PHASES]
+        phases[0].update(custody_status="RETAINED_ON_RUNNER", custody_inventory=inventory)
+        if unknown:
+            phases[0].update(native_invocations=1, native_outcome="UNKNOWN")
+            runtime = self.private / "attempt" / "runtime"
+            runtime.mkdir(parents=True)
+            (runtime / "motionwright.session").write_text(SECRET)
+        attempt = {"schema": pub.SOURCE_SCHEMA, "status": "NOT_VERIFIED",
+                   "motionwright_sha": SHA, "semwright_sha": PIN,
+                   "inputs_before": self.identity(), "inputs_after": None, "phases": phases,
+                   "native_job_retried": False, "human_acceptance": False,
+                   "original_runner_files_deleted": False}
+        (self.private / "source-roundtrip.json").write_text(json.dumps(attempt))
+        return attempt, snapshot
+
+    def source_report_fixture(self, phase="original"):
+        # Entirely authored parser controls. The marker program is inert, the MP4
+        # is a header, and the measurements are synthetic. Nothing here decodes,
+        # compiles Manim, issues a native command, or asserts native evidence.
+        import manim_native_readback as reader
+        producer, prepared, getter, origin = reader.ReaderTests.source_unit_fixture(phase)
+        producer["request_id"] = "native-manim-source-v2-" + phase
+        video = b"\x00\x00\x00\x18ftypisom" + b"\0" * 16
+        producer["result"].update(native_driver="driver:manim-community", runtime_contract="Manim Community 0.21.0",
+                                   artifact={"bytes": len(video), "sha256": hash_bytes(video)})
+        source = reader.inspect_sources(producer, prepared, getter, phase, origin_bundle=origin)
+        producer_bytes = json.dumps(producer, sort_keys=True).encode()
+        count, fps = (29, 25) if phase == "edge25" else (24, 12)
+        raw_bytes = count * 640 * 360 * 3
+        process = lambda n: {"exit_code": 0, "elapsed_seconds": .01, "stdout_bytes": n,
+                             "stderr_bytes": 0, "stderr_sha256": hash_bytes(b""), "whole_process_completed": True}
+        left = 110 if phase in {"edit", "edited-reopen"} else 80
+        report = {"schema": "motionwright.manim.static-source-readback/1", "status": "PASS", "phase": phase,
+                  "classification": "REAL_DECODED_NATIVE_FIXTURE_CONTENT_READBACK_NOT_RELEASE_ACCEPTANCE",
+                  "producer_record_sha256": hash_bytes(producer_bytes), "video_sha256": hash_bytes(video),
+                  "video_bytes": len(video), "source": source,
+                  "media": {"frame_count": count, "frame_rate": str(fps) + "/1", "time_base": "1/12288",
+                            "first_pts": "0/1", "end_exclusive": "29/25" if phase == "edge25" else "2",
+                            "audio_stream_count": 0, "codec": "h264", "pixel_format": "yuv420p",
+                            "all_frame_timestamps_verified": True},
+                  "decoder_identity": {name: {"sha256": "a" * 64, "version": name + " version UNIT",
+                                              "process": process(128)} for name in ("ffmpeg", "ffprobe")},
+                  "probe_process": process(1024), "decode_process": process(raw_bytes),
+                  "decoded_rgb24_bytes": raw_bytes, "decoded_rgb24_sha256": "c" * 64,
+                  "frames": [{"index": i, "matching_core_fractions": [1., 1., 1., 1.],
+                              "observed_visible_bounds": [[460, 40, 560, 90], [left, 60, left + 200, 180], [250, 130, 330, 210]],
+                              "stray_saturated_pixels": [0, 0, 0], "rgb24_sha256": "c" * 64} for i in range(count)],
+                  "images": [{"name": f"manim-{phase}-frame-{i:04d}.png", "bytes": 128, "sha256": "d" * 64}
+                             for i in (0, count - 1)],
+                  "thresholds": {"rgb_channel_error": reader.MAX_CHANNEL_ERROR, "boundary_margin": reader.BOUNDARY_MARGIN,
+                                 "min_shape_core_fraction": reader.MIN_CORE_FRACTION,
+                                 "min_background_fraction": reader.MIN_BACKGROUND_FRACTION,
+                                 "bbox_edge_error": reader.BBOX_EDGE_ERROR},
+                  "losses": ["static shapes only", "opaque black matte", "no audio or captions",
+                             "binary64 geometry projection",
+                             "static identical-frame permutations are not observable animation evidence"],
+                  "human_acceptance": False, "external_rights_certified": False, "native_job_retried": False}
+        return producer_bytes, origin, prepared, getter, video, report
+
+    def projection(self, phase, fixture):
+        producer, origin, prepared, getter, video, report = fixture
+        return pub.source_readback_projection(phase, producer, origin, prepared, getter, video,
+                                              json.dumps(report).encode(), self.identity())
+
+    def test_all_five_typed_clocks_and_parser_controls_remain_distinct_from_native_evidence(self):
+        for phase in pub.SOURCE_PHASES:
+            with self.subTest(phase=phase):
+                fixture = self.source_report_fixture(phase)
+                output = self.projection(phase, fixture)
+                self.assertEqual(output["frames_checked"], 29 if phase == "edge25" else 24)
+                self.assertEqual(output["frame_rate"], 25 if phase == "edge25" else 12)
+                self.assertFalse(output["video_decoded_by_publisher"])
+                self.assertFalse(output["source_projection_executed_by_publisher"])
+                self.assertFalse(output["human_acceptance"])
+                self.assertEqual(output["full_readback_sha256"], hash_bytes(json.dumps(fixture[-1]).encode()))
+
+    def test_original_carrier_physical_binding_is_mandatory_even_with_same_prepared_bundle(self):
+        fixture = list(self.source_report_fixture())
+        fixture[1] += b"CHANGED"
+        with self.assertRaises(pub.PublicationError):
+            self.projection("original", fixture)
+        fixture = self.source_report_fixture()
+        fixture[-1]["source"]["origin_carrier_bytes_independently_read"] = False
+        with self.assertRaises(pub.PublicationError):
+            self.projection("original", fixture)
+
+    def test_tail_frame_clock_thresholds_decoder_and_types_cannot_be_promoted(self):
+        changes = [
+            lambda r: r["frames"].pop(),
+            lambda r: r["frames"][-1].update(index=0),
+            lambda r: r["frames"][-1].update(observed_visible_bounds=[[], [], []]),
+            lambda r: r["frames"][-1].update(stray_saturated_pixels=[False, 0, 0]),
+            lambda r: r["frames"][-1].update(matching_core_fractions=[1, 1, .1, 1]),
+            lambda r: r["media"].update(audio_stream_count=False),
+            lambda r: r["media"].update(frame_count=True),
+            lambda r: r["thresholds"].update(rgb_channel_error=True),
+            lambda r: r["decode_process"].update(whole_process_completed=False),
+            lambda r: r["decoder_identity"]["ffmpeg"].update(sha256="b" * 64),
+            lambda r: r["images"].pop(),
+            lambda r: r.update(human_acceptance=True),
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                fixture = self.source_report_fixture()
+                change(fixture[-1])
+                with self.assertRaises(pub.PublicationError):
+                    self.projection("original", fixture)
+
+    def test_json_duplicate_nonfinite_overflow_and_bool_counters_are_rejected(self):
+        for raw in (b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}', b'{"x":1e999}'):
+            with self.subTest(raw=raw), self.assertRaises(pub.PublicationError):
+                pub.source_json(raw)
+        for value in (True, False, 1.0, "1", -1):
+            with self.subTest(value=value), self.assertRaises(pub.PublicationError):
+                pub.source_uint(value, 5, "unit_counter")
+        self.assertEqual(pub.source_uint(1, 5, "unit_counter"), 1)
+
+    def test_complete_snapshot_preserves_exact_bytes_and_excludes_unapproved_empty_roots(self):
+        roots = self.roots()
+        before = pub.snapshot_live_inventory(roots)
+        copied = pub.copy_source_snapshot(roots, self.private / "snapshot", ())
+        self.assertEqual(before, copied)
+        self.assertEqual(before, pub.snapshot_live_inventory(roots))
+        (self.private / "snapshot" / "owner").mkdir()
+        with self.assertRaises(pub.PublicationError):
+            pub.source_tree_inventory(self.private / "snapshot")
+
+    def test_missing_or_changed_cas_identity_is_not_repaired_by_custody(self):
+        roots = self.roots()
+        cas = next((roots["data"] / "original" / "blobs" / "sha256").glob("*/*"))
+        cas.write_bytes(b"TAMPERED")
+        with self.assertRaises(pub.PublicationError):
+            pub.copy_source_snapshot(roots, self.private / "snapshot", ())
+        self.assertEqual(cas.read_bytes(), b"TAMPERED")
+
+    def test_actual_emitted_session_bytes_in_approved_file_block_publication(self):
+        for label in ("PRIVATE KEY", "OPENSSH PRIVATE KEY"):
+            marker = bytes.fromhex("2d2d2d2d2d424547494e20") + label.encode("ascii") + b"-" * 5
+            with self.subTest(marker=label), self.assertRaisesRegex(pub.PublicationError, "private_key_material_in_case"):
+                pub.source_excludes_emitted_tokens(marker, ())
+        pub.source_excludes_emitted_tokens(b"synthetic noncredential media fixture", ())
+        roots = self.roots()
+        attempt, snapshot = self.incomplete_attempt(roots, unknown=True)
+        database = snapshot / "data" / "original" / "motionwright.sqlite3"
+        database.write_bytes(SECRET.encode())
+        attempt["phases"][0]["custody_inventory"] = pub.source_tree_inventory(snapshot)
+        (self.private / "source-roundtrip.json").write_text(json.dumps(attempt))
+        with self.assertRaises(pub.PublicationError):
+            pub.publish_source_roundtrip(self.private, self.output, SHA, PIN, "failure")
+        self.assertEqual(database.read_bytes(), SECRET.encode())
+        self.assertEqual(json.loads((self.output / "public-evidence.json").read_text())["native_scene_ci_evidence"],
+                         "NOT_VERIFIED")
+
+    def test_unknown_failure_archives_originals_without_requiring_a_pass_or_publishing_owner_files(self):
+        import io
+        import zipfile
+        roots = self.roots()
+        _, snapshot = self.incomplete_attempt(roots, unknown=True)
+        (self.private / "semwrightd.log").write_text(SECRET)
+        original = snapshot / "data" / "original" / "motionwright.sqlite3"
+        data = original.read_bytes()
+        with patch.object(self.wrapper, "run_json", side_effect=AssertionError("No new invocation")) as invoke:
+            report = pub.publish_source_roundtrip(self.private, self.output, SHA, PIN, "failure")
+        invoke.assert_not_called()
+        self.assertEqual(report["native_scene_ci_evidence"], "NOT_VERIFIED")
+        self.assertEqual(report["phases"][0]["native_outcome"], "UNKNOWN")
+        self.assertTrue(report["synthetic_database_files_included"])
+        self.assertFalse(report["owner_connection_or_session_material_uploaded"])
+        archive = self.output / report["included_files"][0]["name"]
+        self.assertEqual(hash_bytes(archive.read_bytes()), report["included_files"][0]["sha256"])
+        with zipfile.ZipFile(io.BytesIO(archive.read_bytes())) as zipped:
+            self.assertEqual(zipped.read("custody/original/data/original/motionwright.sqlite3"), data)
+            self.assertIsNone(zipped.testzip())
+            self.assertFalse(any("session" in name or "semwrightd" in name or "config" in name
+                                 for name in zipped.namelist()))
+        self.assertEqual(original.read_bytes(), data)
+
+    def test_early_failure_keeps_not_verified_and_drafts_are_never_overwritten(self):
+        report = pub.publish_source_roundtrip(self.private, self.output, SHA, PIN, "failure")
+        self.assertEqual(report["native_scene_ci_evidence"], "NOT_VERIFIED")
+        self.assertEqual(report["included_files"], [])
+        before = (self.output / "public-evidence.json").read_bytes()
+        with self.assertRaises(pub.PublicationError):
+            pub.publish_source_roundtrip(self.private, self.output, SHA, PIN, "failure")
+        self.assertEqual((self.output / "public-evidence.json").read_bytes(), before)
+        draft = self.private / "native.mp4"
+        draft.write_bytes(b"EXISTING")
+        with self.assertRaises(FileExistsError):
+            self.wrapper.phase_record_file(self.private, "native.mp4", b"REPLACEMENT")
+        self.assertEqual(draft.read_bytes(), b"EXISTING")
+
+    def test_read_budget_catches_a_file_that_grows_during_the_actual_read(self):
+        path = self.private / "growing"
+        path.write_bytes(b"12345678")
+        original_open = Path.open
+        requests = []
+        class GrowingRead:
+            def __init__(self, stream):
+                self.stream = stream
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.stream.close()
+            def fileno(self):
+                return self.stream.fileno()
+            def read(self, count):
+                requests.append(count)
+                with original_open(path, "ab") as writer:
+                    writer.write(b"x" * 4096)
+                return self.stream.read(count)
+        def changed_open(target, *args, **kwargs):
+            result = original_open(target, *args, **kwargs)
+            return GrowingRead(result) if target == path and args and args[0] == "rb" else result
+        with patch.object(Path, "open", changed_open), self.assertRaises(pub.PublicationError):
+            pub.source_bytes(self.private, "growing")
+        self.assertEqual(requests, [9])
+        self.assertEqual(path.stat().st_size, 4104)
+
+
+    def test_portable_reopen_preserves_every_project_field_except_two_actual_import_assignments(self):
+        before = {"id": "SYNTHETIC PROJECT", "generation": "00000000-0000-4000-8000-000000000001",
+                  "revision": 7, "updated_at": "2026-10-17T00:00:00Z",
+                  "draft": {"title": "KEEP", "unselected_profile": {"width": 1080}},
+                  "assets": [{"sha256": "f" * 64}]}
+        after = json.loads(json.dumps(before))
+        after.update(generation="00000000-0000-4000-8000-000000000002",
+                     updated_at="2026-10-16T23:59:59Z")
+        observed = pub.source_reopened_project(before, after)
+        self.assertEqual(observed["before"]["updated_at"], before["updated_at"])
+        self.assertEqual(observed["after"]["updated_at"], after["updated_at"])
+        self.assertFalse(observed["wall_clock_monotonicity_claimed"])
+        for change in (
+                lambda p: p.update(generation=before["generation"]),
+                lambda p: p.update(revision=8),
+                lambda p: p.update(updated_at=True),
+                lambda p: p["draft"].update(title="LOST"),
+                lambda p: p["draft"]["unselected_profile"].update(width=1920),
+                lambda p: p["assets"].clear(),
+                lambda p: p.update(extra="NEW")):
+            changed = json.loads(json.dumps(after))
+            change(changed)
+            with self.subTest(changed=changed), self.assertRaises(pub.PublicationError):
+                pub.source_reopened_project(before, changed)
+
+    def test_database_inspection_uses_a_separate_copy_and_keeps_original_sqlite_bytes(self):
+        import sqlite3
+        database = self.private / "original.sqlite3"
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("CREATE TABLE projects(document_json TEXT)")
+            connection.execute("INSERT INTO projects VALUES (?)", ('{"unit":"SAVED PROJECT"}',))
+            connection.execute("CREATE TABLE production_receipts(receipt_id TEXT,project_id TEXT,generation TEXT,"
+                               "revision INTEGER,request_id TEXT,request_sha256 TEXT,command TEXT,stage TEXT,payload_json TEXT)")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+        (self.private / "attempt" / "config").mkdir(parents=True)
+        before = database.read_bytes()
+        original_connect = sqlite3.connect
+        opened = []
+        handles = []
+        def copied_only(target, *args, **kwargs):
+            opened.append(str(target))
+            self.assertNotIn("original.sqlite3", str(target))
+            handle = original_connect(target, *args, **kwargs)
+            handles.append(handle)
+            return handle
+        with patch.object(sqlite3, "connect", side_effect=copied_only):
+            snapshot = self.wrapper.inspect_saved_database(database)
+        self.assertEqual(snapshot["project"], {"unit": "SAVED PROJECT"})
+        self.assertEqual(snapshot["receipts"], [])
+        self.assertEqual(len(opened), 1)
+        self.assertIn("inspect-0001", opened[0])
+        self.assertEqual(len(handles), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            handles[0].execute("SELECT 1")
+        self.assertEqual(database.read_bytes(), before)
+
+    def test_custody_error_does_not_rewrite_completed_native_outcome_or_issue_another_job(self):
+        roots = self.roots()
+        (self.private / "attempt" / "runtime").mkdir(parents=True)
+        attempt, _ = self.incomplete_attempt(roots)
+        attempt["phases"][0].update(native_invocations=1, native_outcome="COMPLETED",
+                                     reader_status="NOT_VERIFIED", custody_status="NOT_RUN")
+        self.wrapper.SOURCE_ATTEMPT = attempt
+        self.wrapper.SOURCE_PHASE = attempt["phases"][0]
+        self.wrapper.SOURCE_BEFORE = self.identity()
+        with patch.object(self.wrapper, "source_identity", return_value=self.identity()), \
+             patch.object(self.wrapper, "snapshot_source_phase", side_effect=OSError("unit custody failure")), \
+             patch.object(self.wrapper, "run_json", side_effect=AssertionError("No new job")) as invoke:
+            errors = self.wrapper.finish_source_attempt({}, self.private / "absent-session", AssertionError("unit readback failed"))
+        invoke.assert_not_called()
+        self.assertTrue(errors)
+        self.assertEqual(attempt["phases"][0]["native_outcome"], "COMPLETED")
+        self.assertEqual(attempt["phases"][0]["reader_status"], "NOT_VERIFIED")
+        self.assertEqual(attempt["status"], "NOT_VERIFIED")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pipe/process-group lifecycle")
+    def test_real_command_known_failure_retains_its_exit_and_both_original_streams(self):
+        import os
+        with self.assertRaises(self.wrapper.CaseCommandError):
+            self.wrapper.run_json([sys.executable, "-c",
+                "import sys;print('ORIGINAL OUT');sys.stderr.write('ORIGINAL ERR\\n');sys.exit(7)"],
+                env=os.environ.copy(), timeout=10, label="realize-original", mutation=True)
+        directory = self.private / "commands" / "0001"
+        row = json.loads((directory / "command.json").read_text())
+        self.assertEqual(row["state"], "EXITED")
+        self.assertEqual(row["exit_code"], 7)
+        self.assertEqual((directory / "stdout.bin").read_bytes(), b"ORIGINAL OUT\n")
+        self.assertEqual((directory / "stderr.bin").read_bytes(), b"ORIGINAL ERR\n")
+        self.assertTrue(all(value["complete"] for value in row["streams"].values()))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pipe/process-group lifecycle")
+    def test_post_popen_receipt_failure_is_unknown_and_cleanup_does_not_make_it_pass(self):
+        import os
+        original_write = self.wrapper.write_private_json
+        def fail_after_start(path, value):
+            if type(value) is dict and value.get("state") == "STARTED":
+                raise OSError("unit receipt failure after Popen")
+            return original_write(path, value)
+        with patch.object(self.wrapper, "write_private_json", side_effect=fail_after_start):
+            with self.assertRaises(self.wrapper.CaseCommandError) as error:
+                self.wrapper.command_capture([sys.executable, "-c", "import time;time.sleep(30)"],
+                    os.environ.copy(), 10, "realize-original", mutation=True)
+        row = error.exception.row
+        self.assertEqual(row["state"], "UNKNOWN")
+        self.assertIsNone(row["exit_code"])
+        self.assertIs(type(row["cleanup_exit_code"]), int)
+        self.assertFalse(row["native_mutation_retried"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pipe/process-group lifecycle")
+    def test_actual_fast_output_and_deadline_fail_closed_and_retain_original_partial_streams(self):
+        import os
+        for ordinal, (program, timeout, reason) in enumerate((
+            ("import sys;sys.stdout.write('x'*(4*1024*1024+2))", 10, "output_budget"),
+            ("import time;time.sleep(30)", .1, "deadline")), 1):
+            with self.subTest(reason=reason), self.assertRaises(self.wrapper.CaseCommandError) as error:
+                self.wrapper.command_capture([sys.executable, "-c", program],
+                    os.environ.copy(), timeout, "realize-original", mutation=True)
+            row = error.exception.row
+            self.assertEqual(row["state"], "UNKNOWN")
+            self.assertEqual(row["reason"], reason)
+            self.assertIsNone(row["exit_code"])
+            self.assertFalse(row["native_mutation_retried"])
+            directory = self.private / "commands" / f"{ordinal:04d}"
+            self.assertTrue((directory / "command.json").is_file())
+            for record in row["streams"].values():
+                self.assertFalse(record["complete"])
+                self.assertLessEqual(record["bytes_retained"], 4 * 1024 * 1024 + 1)
+
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pipe/process-group lifecycle")
+    def test_real_positive_command_keeps_complete_original_json_and_zero_exit(self):
+        import os
+        value = self.wrapper.run_json([sys.executable, "-c", "print('{\"positive\": true}')"],
+                                      env=os.environ.copy(), timeout=10, label="readback-original")
+        self.assertEqual(value, {"positive": True})
+        directory = self.private / "commands" / "0001"
+        row = json.loads((directory / "command.json").read_text())
+        self.assertEqual(row["state"], "EXITED")
+        self.assertEqual(row["exit_code"], 0)
+        self.assertEqual(row["finalization_errors"], [])
+        self.assertEqual(set(row["streams"]), {"stdout", "stderr"})
+        self.assertTrue(all(record["complete"] for record in row["streams"].values()))
+
 
 if __name__ == "__main__":
     unittest.main()
