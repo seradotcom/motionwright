@@ -13,6 +13,7 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_mlt_sequence_e2e.py'
+      - 'tooling/tests/test_native_mlt_ci_audio.py'
       - 'tooling/native_mlt_caption_pixels.py'
       - 'tooling/tests/test_native_mlt_caption_pixels.py'
       - 'tooling/native_mlt_public_artifact.py'
@@ -178,17 +179,23 @@ jobs:
             test -s "$root/native-two-segment-lossless.mkv"
           fi
           python3 - <<'PY'
-          import hashlib, json, os
+          import hashlib, json, os, sys
           from pathlib import Path
+          sys.path.insert(0, 'tooling')
+          from native_mlt_public_artifact import (
+              SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
+              strict_object, verify_staged_source_receipt,
+          )
+          mode = os.environ['MOTIONWRIGHT_MLT_MODE']
+          contract = mode_contract(mode)
           root = Path("verification/native-mlt-sequence-e2e") / os.environ["GITHUB_SHA"]
           result = json.loads((root / "result.json").read_text())
           evidence = json.loads((root / "native-multisegment-timeline-evidence.json").read_text())
           assert result["native_mlt_multisegment_e2e"] == "PASS"
           assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
-          assert result["assembled_video_frames"] == 33
-          assert result["rendered_source_frames"] == [32, 1]
+          assert result["assembled_video_frames"] == contract.video_frames
+          assert result["rendered_source_frames"] == list(contract.source_segment_frames)
           assert result["assembled_video_codec"] == "ffv1"
-          mode = os.environ["MOTIONWRIGHT_MLT_MODE"]
           assert result["mode"] == mode
           video_only = mode in ("video-only", "final-mp4", "captioned-mp4")
           assert result["assembled_video_has_audio"] is (not video_only)
@@ -196,7 +203,7 @@ jobs:
           assert evidence["transport_pcm_audio"] is (not video_only)
           assert evidence["native_render_profile"] == ("lossless-video-only" if video_only else "lossless")
           if video_only:
-              assert evidence["native_frame_count_observed"] == 33
+              assert evidence["native_frame_count_observed"] == contract.video_frames
           assert evidence["provider_project_cleanup"] == "not_requested_requires_foreground_broker_consent"
           assert result["provider_project_cleanup"] == evidence["provider_project_cleanup"]
           inventory_file = root / "native-mlt-lifetime-inventory.json"
@@ -223,21 +230,21 @@ jobs:
           scope = ("actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
                    if video_only else "actual-native-mlt-ffv1-pcm-intermediate-not-approved-sound-or-master")
           assert evidence["evidence_scope"] == result["evidence_scope"] == scope
-          assert evidence["frame_count"] == 33
-          assert len(evidence["source"]["verified_video_segments"]) == 2
+          assert evidence["frame_count"] == contract.video_frames
+          assert len(evidence["source"]["verified_video_segments"]) == len(contract.source_segment_frames)
           artifact = root / ("native-two-segment-video-only.mkv" if video_only
                              else "native-two-segment-lossless.mkv")
           assert hashlib.sha256(artifact.read_bytes()).hexdigest() == result["video_sha256"]
           assert artifact.stat().st_size == result["video_bytes"]
           if mode in ("final-mp4", "captioned-mp4"):
-              assert result["final_master_frames"] == 33
-              assert result["measured_voice_pcm_frames"] == 52800
+              assert result["final_master_frames"] == contract.video_frames
+              assert result["measured_voice_pcm_frames"] == contract.pcm_frames
               assert result["final_master_video_codec"] == "h264"
               assert result["final_master_audio_codec"] == "aac"
-              assert result["final_master_audio_rate"] == 48000
-              assert result["final_master_audio_channels"] == 2
+              assert result["final_master_audio_rate"] == contract.sample_rate
+              assert result["final_master_audio_channels"] == contract.channels
               assert result["decoded_stereo_content"] == "distinct_source_400hz_left_600hz_right"
-              assert 52_800 <= result["decoded_master_pcm_frames"] <= 53_824
+              assert contract.pcm_frames <= result["decoded_master_pcm_frames"] <= contract.pcm_frames + 1024
               assert (root / "decoded-stereo-content-proof.json").is_file()
               expected_scope = (
                   "actual-native-mlt-h264-aac-native-caption-source-not-decoded-pixel-or-human-approved"
@@ -249,7 +256,14 @@ jobs:
               assert master.is_file()
               assert hashlib.sha256(master.read_bytes()).hexdigest() == result["final_master_sha256"]
               assert master.stat().st_size == result["final_master_bytes"]
-              assert (root / "native-multisegment-av-master-evidence.json").is_file()
+              source_wav = root / SOURCE_WAV_NAME
+              assert source_wav.is_file()
+              _, source_proof, _ = read_synthetic_source_wav(source_wav, mode)
+              assert result["retained_source_audio"] == source_proof
+              source_receipt = strict_object(
+                  (root / "native-multisegment-av-master-evidence.json").read_bytes()
+              )
+              verify_staged_source_receipt(source_receipt, mode)
               if mode == "captioned-mp4":
                   proof = json.loads((root / "captioned-master-pixel-evidence.json").read_text())
                   assert proof["captioned_master_decoded_pixels"] == "PASS"

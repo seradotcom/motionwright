@@ -1,23 +1,43 @@
 """Adversarial v0.1 MLT public artifact admission tests. No native execution."""
 from __future__ import annotations
 
+import copy
 import hashlib
+import io
 import json
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_mlt_public_artifact as pub  # noqa: E402
 
 MW = "a" * 40
 SW = "b" * 40
+SOURCE_SHA = "66aeaa3aa6fff53834ab4003671ce79068bcbd6f631609f0f988b3ac9744ebe9"
 
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def synthetic_voice_wav() -> bytes:
+    # The publisher never regenerates media; this independent test oracle does.
+    pcm = b"".join(
+        struct.pack("<hh", ((i % 120) - 60) * 250, ((i % 80) - 40) * 260)
+        for i in range(52800)
+    )
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(pcm)
+    return output.getvalue()
 
 
 class MltPublicTests(unittest.TestCase):
@@ -119,6 +139,38 @@ class MltPublicTests(unittest.TestCase):
                     pub.CAPTIONED_SCOPE if mode == "captioned-mp4" else pub.FINAL_SCOPE
                 ),
             })
+            source = synthetic_voice_wav()
+            self.assertEqual(digest(source), SOURCE_SHA)
+            (self.root / "native-master-source.wav").write_bytes(source)
+            self.result["retained_source_audio"] = {
+                "schema": "motionwright.synthetic-native-source-wav/1",
+                "mode": mode,
+                "fixture_id": "motionwright.native-mlt-ci.stereo-400-600/1",
+                "name": "native-master-source.wav",
+                "sha256": SOURCE_SHA, "bytes": 211244,
+                "source_kind": "measured-voice", "video_frames": 33,
+                "fps_num": 30, "fps_den": 1, "pcm_frames": 52800,
+                "sample_rate": 48000, "channels": 2, "bits_per_sample": 16,
+                "synthetic_fixture_verified": True,
+                "full_master_reference_readback": "NOT_RUN",
+            }
+            receipt = {
+                "frame_count": 33, "evidence_scope": self.result["final_evidence_scope"],
+                "staged_audio": {
+                    "relative_path": "mw-ci-source-" + SOURCE_SHA[:16] + ".wav",
+                    "sha256": SOURCE_SHA, "sample_rate": 48000, "channels": 2,
+                },
+                "measured_voice": {
+                    "audio_sha256": SOURCE_SHA, "audio_pcm_frames": 52800,
+                    "audio_size_bytes": 211244, "audio_sample_rate": 48000,
+                    "audio_channels": 2, "total_frames": 33, "fps_num": 30, "fps_den": 1,
+                    "caption_cue_count": 2 if mode == "captioned-mp4" else None,
+                },
+                "private_provider_payload": "PRIVATE-SOURCE-RECEIPT-EXCLUDED",
+            }
+            (self.root / "native-multisegment-av-master-evidence.json").write_text(
+                json.dumps(receipt), encoding="utf-8",
+            )
         if mode == "captioned-mp4":
             self.result.update({
                 "captioned_master_decoded_pixels": "PASS",
@@ -185,6 +237,13 @@ class MltPublicTests(unittest.TestCase):
                 )}
                 if mode in ("final-mp4", "captioned-mp4"):
                     expected.add("native-multisegment-master.mp4")
+                    expected.add("native-master-source.wav")
+                    retained = receipt["retained_source_audio"]
+                    self.assertEqual(retained["sha256"], SOURCE_SHA)
+                    self.assertEqual(retained["bytes"], 211244)
+                    self.assertEqual(retained["full_master_reference_readback"], "NOT_RUN")
+                else:
+                    self.assertIsNone(receipt["retained_source_audio"])
                 self.assertEqual(
                     receipt["native_captioned_h264_decoded_pixels"],
                     "PASS" if mode == "captioned-mp4" else "NOT_VERIFIED",
@@ -208,6 +267,7 @@ class MltPublicTests(unittest.TestCase):
                     )
                     self.assertEqual(receipt["ci_native_mlt_evidence"], "NOT_VERIFIED")
                     self.assertIsNone(receipt["native_video_frames"])
+                    self.assertIsNone(receipt["retained_source_audio"])
                     self.assertEqual([p.name for p in out.iterdir()],
                                      ["public-evidence.json"])
 
@@ -328,6 +388,93 @@ class MltPublicTests(unittest.TestCase):
         with self.assertRaises(pub.PublicationError):
             pub.publish_mlt(self.root, self.out, "pcm", MW, SW, "success")
 
+
+    def test_changed_wav_is_not_public_even_if_every_json_hash_is_rewritten(self):
+        self.fixture("final-mp4")
+        source = self.root / "native-master-source.wav"
+        altered = source.read_bytes()[:-4] + b"\0\0\0\0"
+        source.write_bytes(altered)
+        forged_sha = digest(altered)
+        self.result["retained_source_audio"]["sha256"] = forged_sha
+        self.store()
+        path = self.root / "native-multisegment-av-master-evidence.json"
+        receipt = json.loads(path.read_text())
+        receipt["staged_audio"]["sha256"] = forged_sha
+        receipt["staged_audio"]["relative_path"] = "mw-ci-source-" + forged_sha[:16] + ".wav"
+        receipt["measured_voice"]["audio_sha256"] = forged_sha
+        path.write_text(json.dumps(receipt))
+        self.refused("native_mlt_synthetic_source_identity_mismatch")
+
+    def test_retained_source_metadata_is_closed_typed_and_clock_bound(self):
+        mutations = (
+            ("pcm_frames", 96000), ("pcm_frames", 52800.0),
+            ("synthetic_fixture_verified", 1), ("mode", "original-mix-mp4"),
+            ("full_master_reference_readback", "PASS"),
+            ("private_path", "/tmp/private/session"),
+        )
+        for key, value in mutations:
+            with self.subTest(key=key, value=value):
+                self.fixture("final-mp4")
+                self.result["retained_source_audio"][key] = value
+                self.store()
+                self.refused("native_mlt_retained_source_metadata_mismatch")
+
+    def test_retained_source_requires_the_native_staged_receipt(self):
+        self.fixture("final-mp4")
+        path = self.root / "native-multisegment-av-master-evidence.json"
+        original = json.loads(path.read_text())
+        mutations = (
+            ("staged_audio", "relative_path", "../private.wav"),
+            ("staged_audio", "sha256", "f" * 64),
+            ("staged_audio", "sample_rate", 44100),
+            ("staged_audio", "channels", 1),
+            ("measured_voice", "audio_sha256", "e" * 64),
+            ("measured_voice", "audio_pcm_frames", 96000),
+            ("measured_voice", "audio_size_bytes", 384044),
+            ("measured_voice", "total_frames", 60),
+            ("measured_voice", "fps_num", 60),
+        )
+        for section, key, value in mutations:
+            with self.subTest(section=section, key=key):
+                receipt = copy.deepcopy(original)
+                receipt[section][key] = value
+                path.write_text(json.dumps(receipt))
+                self.refused("native_mlt_source_wav_receipt_mismatch")
+        for key, value in (("frame_count", 60), ("evidence_scope", "unverified-mix")):
+            with self.subTest(key=key):
+                receipt = copy.deepcopy(original)
+                receipt[key] = value
+                path.write_text(json.dumps(receipt))
+                self.refused("native_mlt_source_wav_receipt_mismatch")
+        path.unlink()
+        with self.assertRaises(pub.PublicationError):
+            pub.publish_mlt(self.root, self.out, self.mode, MW, SW, "success")
+        self.assertFalse(self.out.exists())
+
+    def test_missing_retained_source_wav_prevents_publication(self):
+        self.fixture("final-mp4")
+        (self.root / "native-master-source.wav").unlink()
+        self.refused("native_mlt_source_wav_unreadable")
+
+    def test_real_retained_source_symlink_prevents_publication(self):
+        self.fixture("final-mp4")
+        source = self.root / "native-master-source.wav"
+        target = self.root / "not-an-admitted-public-filename.wav"
+        source.replace(target)
+        try:
+            source.symlink_to(target)
+        except (OSError, NotImplementedError):
+            self.skipTest("This host cannot create the real source symlink fixture")
+        self.refused("native_mlt_source_wav_missing_or_linked")
+
+    def test_unimplemented_audio_modes_are_not_admitted_by_failed_job_status(self):
+        for mode in ("original-mix-mp4", "original-sfx-mp4"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(pub.PublicationError) as raised:
+                    pub.publish_mlt(self.root, self.out, mode, MW, SW, "failure")
+                self.assertEqual(raised.exception.code, "invalid_mlt_mode")
+                self.assertFalse(self.out.exists())
+
     def test_workflow_uploads_only_staged_public_artifact(self):
         workflow = (Path(__file__).resolve().parents[2]
                     / ".github/workflows/native-mlt-sequence-e2e.yml")
@@ -335,6 +482,8 @@ class MltPublicTests(unittest.TestCase):
         self.assertIn("path: verification/native-mlt-sequence-public", source)
         self.assertNotIn("path: verification/native-mlt-sequence-e2e\n", source)
         self.assertIn("test_native_mlt_public_artifact.py", source)
+        self.assertIn("'tooling/tests/test_native_mlt_ci_audio.py'", source)
+        self.assertIn("read_synthetic_source_wav(source_wav, mode)", source)
         self.assertIn("NATIVE_CI_JOB_STATUS: ${{ job.status }}", source)
 
 
