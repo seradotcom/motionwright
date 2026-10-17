@@ -1068,23 +1068,29 @@ impl Store {
                 "invalid request id".into(),
             )));
         }
-        let required_blob = match change {
-            Change::AddAsset { asset } | Change::ImportMeasuredVoice { asset, .. } => {
-                match asset.content_sha256.as_deref() {
-                    Some(digest) => {
-                        Some((digest.to_owned(), self.checked_existing_blob_path(digest)?))
-                    }
-                    None => None,
-                }
-            }
-            _ => None,
-        };
         let request_sha = request_digest(id, change)?;
         let blob_root = self.blob_root.clone();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
+        // Durable results retain their original revision, but cannot grant
+        // access across a different resource or project generation.
+        let json: String = tx
+            .query_row(
+                "SELECT document_json FROM projects WHERE id=?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)?;
+        let mut project: Project = serde_json::from_str(&json)?;
+        project.validate()?;
+
+        if expected.resource != project.resource_key() || expected.generation != project.generation
+        {
+            return Err(StorageError::GenerationConflict);
+        }
         if let Some((stored_sha, stored_result)) = tx
             .query_row(
                 "SELECT request_sha256,result_json FROM receipts
@@ -1103,27 +1109,27 @@ impl Store {
             return Ok(outcome);
         }
 
-        let json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let mut project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
-
-        if expected.resource != project.resource_key() || expected.generation != project.generation
-        {
-            return Err(StorageError::GenerationConflict);
-        }
         if expected.revision != project.revision {
             return Err(StorageError::Conflict {
                 expected: expected.revision,
                 actual: project.revision,
             });
         }
+
+        // Only a new mutation inspects source bytes. Replaying a committed
+        // receipt neither reimports nor proves continued asset availability.
+        let required_blob = match change {
+            Change::AddAsset { asset } | Change::ImportMeasuredVoice { asset, .. } => {
+                match asset.content_sha256.as_deref() {
+                    Some(digest) => Some((
+                        digest.to_owned(),
+                        checked_existing_blob_path_from_root(&blob_root, digest)?,
+                    )),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
 
         if let Change::RegisterCaptureSource { record } = change {
             // Never touch a digest until the receipt-replay, generation and
