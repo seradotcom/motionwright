@@ -121,9 +121,17 @@ def _checked_file(path: Path, expected_sha256: str) -> tuple[str, tuple]:
     before = path.stat()
     require(0 < before.st_size <= MAX_MEDIA_BYTES, "media_byte_budget")
     digest = hashlib.sha256()
+    consumed = 0
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        while True:
+            # One extra byte distinguishes exact EOF from growth after the stat.
+            chunk = stream.read(min(1024 * 1024, before.st_size - consumed + 1))
+            if not chunk:
+                break
+            consumed += len(chunk)
+            require(consumed <= before.st_size, "media_changed_during_hash")
             digest.update(chunk)
+    require(consumed == before.st_size, "media_changed_during_hash")
     token = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
     after = path.stat()
     require(token == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
