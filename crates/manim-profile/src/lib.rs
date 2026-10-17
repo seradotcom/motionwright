@@ -865,8 +865,12 @@ pub fn inspect_source_bundle_v2(bytes: &[u8]) -> Result<ManimSourcePackageV2> {
         let mut file = zip
             .by_index(index)
             .map_err(|_| profile_invalid("source_archive_invalid"))?;
-        if !NAMES.contains(&file.name())
-            || entries.contains_key(file.name())
+        let name = file
+            .name()
+            .map_err(|_| profile_invalid("source_archive_name_invalid"))?
+            .into_owned();
+        if !NAMES.contains(&name.as_str())
+            || entries.contains_key(&name)
             || !file.is_file()
             || file.is_symlink()
             || file.encrypted()
@@ -877,7 +881,6 @@ pub fn inspect_source_bundle_v2(bytes: &[u8]) -> Result<ManimSourcePackageV2> {
         {
             return Err(profile_invalid("source_archive_entry_invalid"));
         }
-        let name = file.name().to_owned();
         let expected = file.size() as usize;
         total = total
             .checked_add(expected)
