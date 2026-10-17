@@ -4,7 +4,7 @@ use motionwright_domain::{
 };
 use motionwright_service::StudioService;
 use serde::Serialize;
-use std::{env, fs, path::Path, time::Instant};
+use std::{env, fs, io::Write, path::Path, time::Instant};
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -433,17 +433,6 @@ fn main() {
         }
     }
 
-    let budget_micros = budget_ms * 1_000;
-    if let Some(failure) = results
-        .iter()
-        .find(|result| result.max_commit_micros > budget_micros)
-    {
-        panic!(
-            "measured commit budget exceeded: {} {} took {}us (budget {}us)",
-            failure.brief, failure.size, failure.max_commit_micros, budget_micros
-        );
-    }
-
     let cache_lookup_attempts = results.len();
     let cache_hits = results
         .iter()
@@ -478,12 +467,28 @@ fn main() {
             work_unit: "scene preview-index regeneration units",
             validated_bytes: cache_validated_bytes,
             validation_micros: cache_validation_micros,
-            note: "Cache evidence counts exact-scope fingerprint-validated preview-index regeneration avoided. It does not claim renderer frames or wall-clock render savings.",
+            note: "The index is built before cache storage. Hits validate its bytes; avoided_work_count sums declared scene units, not observed regeneration skips. Changed-fingerprint misses are separate from lookup_attempts. No renderer frames or wall-clock savings are measured.",
         },
         human_feedback: "NOT_RUN: this executable does not fabricate human participants or ratings.",
         comparative_claims: "NONE: the benchmark reports Motionwright measurements only and makes no competitor-superiority claim.",
     };
 
-    serde_json::to_writer_pretty(std::io::stdout(), &report).expect("write benchmark report");
-    println!();
+    // Keep all nine measured datasets available even when a budget rejects the run.
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    serde_json::to_writer_pretty(&mut output, &report).expect("write benchmark report");
+    writeln!(output).expect("finish benchmark report");
+    output.flush().expect("flush benchmark report");
+
+    let budget_micros = budget_ms * 1_000;
+    if let Some(failure) = report
+        .results
+        .iter()
+        .find(|result| result.max_commit_micros > budget_micros)
+    {
+        panic!(
+            "measured commit budget exceeded: {} {} took {}us (budget {}us)",
+            failure.brief, failure.size, failure.max_commit_micros, budget_micros
+        );
+    }
 }
