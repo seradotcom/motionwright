@@ -398,7 +398,8 @@ mod manim_camera_closed_pair_tests {
     #[test]
     fn manim_v2_rejects_unrepresented_visual_state_without_mutation() {
         let (project, scene_id) = reference_project();
-        let cases: Vec<Box<dyn Fn(&mut Project)>> = vec![
+        type ProjectMutation = Box<dyn Fn(&mut Project)>;
+        let cases: Vec<ProjectMutation> = vec![
             Box::new(|p| p.scenes[0].nodes[0].kind = "text".into()),
             Box::new(|p| p.scenes[0].nodes[1].height = 159.0),
             Box::new(|p| p.scenes[0].nodes[0].opacity = 0.7),
