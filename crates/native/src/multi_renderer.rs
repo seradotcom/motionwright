@@ -67,6 +67,12 @@ fn ensure_flat_semantics(node: &CanvasNode) -> NativeResult<()> {
             node.id
         )));
     }
+    if node.style.blend_mode != motionwright_domain::BlendMode::Normal {
+        return Err(unsupported(format!(
+            "Canvas node {} uses a blend mode that this native contribution cannot preserve",
+            node.id
+        )));
+    }
     if node.opacity != 1.0 || node.style.stroke_width != 0.0 || node.style.stroke.is_some() {
         return Err(unsupported(format!(
             "Canvas node {} has opacity/stroke state that this native contribution cannot preserve",
@@ -80,7 +86,7 @@ fn hex_color(value: &str) -> NativeResult<[f64; 4]> {
     let hex = value
         .strip_prefix('#')
         .ok_or_else(|| unsupported("Blender material fill must be an explicit hex color"))?;
-    if hex.len() != 6 && hex.len() != 8 {
+    if (hex.len() != 6 && hex.len() != 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(unsupported(
             "Blender material fill must use #RRGGBB or #RRGGBBAA",
         ));
@@ -141,7 +147,8 @@ pub struct BlenderSceneContribution {
 fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
     // Blender 4.x data-block names are bounded to 63 bytes. Preserve a
     // human-readable fragment of Motionwright's semantic name while keeping a
-    // stable UUID-derived disambiguator so exact lookups survive export/readback.
+    // complete UUID so nodes with the same temporal UUID prefix still retain
+    // distinct editable identities after export/readback.
     let mut slug = String::with_capacity(label.len().min(40));
     let mut separator = false;
     for byte in label.bytes() {
@@ -166,10 +173,10 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
     }
 
     let uuid = id.simple().to_string();
-    let short = &uuid[..12];
+    let identity = uuid.as_str();
     let suffix = suffix.trim_matches('-');
     let reserved = 1
-        + short.len()
+        + identity.len()
         + if suffix.is_empty() {
             0
         } else {
@@ -181,9 +188,9 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
         slug.pop();
     }
     if suffix.is_empty() {
-        format!("{slug}-{short}")
+        format!("{slug}-{identity}")
     } else {
-        format!("{slug}-{short}-{suffix}")
+        format!("{slug}-{identity}-{suffix}")
     }
 }
 
@@ -271,43 +278,8 @@ pub fn blender_export_path(plan: &BlenderSceneContribution) -> String {
     format!("motionwright-blender-scene-{}.glb", plan.scene_id.simple())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ManimPrimitive {
-    Text {
-        node_id: Uuid,
-        text: String,
-        x: f64,
-        y: f64,
-        font_size: f64,
-        color: String,
-    },
-    Rectangle {
-        node_id: Uuid,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-        color: String,
-    },
-    Circle {
-        node_id: Uuid,
-        x: f64,
-        y: f64,
-        radius: f64,
-        color: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ManimScenePlan {
-    pub project_id: Uuid,
-    pub generation: Uuid,
-    pub revision: u64,
-    pub scene_id: Uuid,
-    pub primitives: Vec<ManimPrimitive>,
-}
+// Manim wire types and compilation have one implementation shared with the driver.
+pub use motionwright_manim_profile::{ManimPrimitive, ManimScenePlan};
 
 fn manim_position(node: &CanvasNode) -> NativeResult<(f64, f64)> {
     if node.rotation_deg != 0.0 {
@@ -392,62 +364,143 @@ pub fn build_manim_plan(project: &Project, scene_id: Uuid) -> NativeResult<Manim
     })
 }
 
-fn python_string(value: &str) -> NativeResult<String> {
-    serde_json::to_string(value).map_err(|_| invalid("Manim string could not be encoded"))
+pub fn compile_manim_python(plan: &ManimScenePlan) -> NativeResult<String> {
+    motionwright_manim_profile::compile_manim_python(plan)
+        .map_err(|error| invalid(error.to_string()))
 }
 
-pub fn compile_manim_python(plan: &ManimScenePlan) -> NativeResult<String> {
-    if plan.primitives.is_empty() || plan.primitives.len() > MAX_RENDERER_NODES {
-        return Err(invalid("Manim plan has an invalid primitive count"));
+/// Project-derived static source contribution. Unsupported controls are refused
+/// before any source artifact, native job, or permission request is constructed.
+pub fn build_manim_plan_v2(
+    project: &Project,
+    scene_id: Uuid,
+    deliverable_id: Uuid,
+) -> NativeResult<motionwright_manim_profile::ManimScenePlanV2> {
+    use motionwright_manim_profile::{
+        ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2, ManimProfileIdV2,
+        ManimRenderProfile, ManimSceneBindingV2, ManimScenePlanV2, ManimSourceShapeKindV2,
+        ManimStaticShapeV2, validate_plan_v2,
+    };
+    let scene = renderer_scene(project, scene_id, &RendererKind::ManimCommunity)?;
+    let deliverable = project
+        .deliverables
+        .iter()
+        .find(|item| item.id == deliverable_id)
+        .ok_or_else(|| invalid("Manim source deliverable is absent from the current Project"))?;
+    if !deliverable.included_scene_ids.is_empty()
+        && !deliverable.included_scene_ids.contains(&scene_id)
+    {
+        return Err(invalid(
+            "Manim source scene is excluded by the selected deliverable",
+        ));
     }
-    let mut body = String::from(
-        "from manim import Circle, Create, Rectangle, Scene, Text\n\n\nclass MotionwrightScene(Scene):\n    def construct(self):\n",
-    );
-    for (index, primitive) in plan.primitives.iter().enumerate() {
-        match primitive {
-            ManimPrimitive::Text {
-                text,
-                x,
-                y,
-                font_size,
-                color,
-                ..
-            } => {
-                body.push_str(&format!(
-                    "        item_{index} = Text({}, font_size={font_size:.6}, color={}).move_to([{x:.9}, {y:.9}, 0])\n",
-                    python_string(text)?,
-                    python_string(color)?
-                ));
-            }
-            ManimPrimitive::Rectangle {
-                x,
-                y,
-                width,
-                height,
-                color,
-                ..
-            } => {
-                body.push_str(&format!(
-                    "        item_{index} = Rectangle(width={width:.9}, height={height:.9}, color={}).move_to([{x:.9}, {y:.9}, 0])\n",
-                    python_string(color)?
-                ));
-            }
-            ManimPrimitive::Circle {
-                x,
-                y,
-                radius,
-                color,
-                ..
-            } => {
-                body.push_str(&format!(
-                    "        item_{index} = Circle(radius={radius:.9}, color={}).move_to([{x:.9}, {y:.9}, 0])\n",
-                    python_string(color)?
-                ));
-            }
+    if scene.camera != motionwright_domain::CameraState::default()
+        || project
+            .production_design
+            .camera_reframes
+            .iter()
+            .any(|item| item.scene_id == scene_id)
+    {
+        return Err(unsupported(
+            "Manim static shapes requires the explicit default camera; authored camera controls need a different profile",
+        ));
+    }
+    let background = project
+        .visual_language
+        .palette
+        .iter()
+        .find(|token| token.name == "background")
+        .or_else(|| {
+            project
+                .visual_language
+                .palette
+                .iter()
+                .find(|token| token.name == "surface")
+        });
+    if background.map(|token| token.value.as_str()) != Some("#000000") {
+        return Err(unsupported(
+            "Manim static shapes requires an explicitly authored #000000 background/surface token",
+        ));
+    }
+    if deliverable.container != motionwright_domain::OutputContainer::Mp4
+        || deliverable.video_codec != motionwright_domain::VideoCodec::H264
+        || deliverable.color_space != motionwright_domain::OutputColorSpace::Rec709
+    {
+        return Err(unsupported(
+            "Manim static shapes supplies an opaque H.264 MP4 contribution in the Rec.709 profile only",
+        ));
+    }
+    let clock =
+        ManimFrameClockV2::from_canonical(scene.start, scene.duration, deliverable.frame_rate)
+            .map_err(|error| unsupported(error.to_string()))?;
+    let profile = ManimRenderProfile {
+        width: deliverable.width,
+        height: deliverable.height,
+        frame_rate: u32::try_from(deliverable.frame_rate.num)
+            .map_err(|_| unsupported("Manim static shapes frame rate is not representable"))?,
+    };
+    let mut nodes = Vec::with_capacity(scene.nodes.len());
+    for (ordinal, node) in scene.nodes.iter().enumerate() {
+        ensure_flat_semantics(node)?;
+        if node.rotation_deg != 0.0
+            || node.text.is_some()
+            || node.style.font_family.is_some()
+            || node.style.font_size.is_some()
+            || node.style.font_weight.is_some()
+            || node.style.line_height.is_some()
+        {
+            return Err(unsupported(format!(
+                "Manim static shape {} contains unrepresented rotation or text controls",
+                node.id
+            )));
         }
-        body.push_str(&format!("        self.play(Create(item_{index}))\n"));
+        let source_kind = match node.kind.as_str() {
+            "shape" => ManimSourceShapeKindV2::Shape,
+            "rectangle" => ManimSourceShapeKindV2::Rectangle,
+            "circle" => ManimSourceShapeKindV2::Circle,
+            _ => {
+                return Err(unsupported(format!(
+                    "Manim static source does not support node kind {}",
+                    node.kind
+                )));
+            }
+        };
+        nodes.push(ManimStaticShapeV2 {
+            node_id: node.id,
+            display_name: node.name.clone(),
+            source_kind,
+            canonical_ordinal: ordinal as u32,
+            z_index: node.z_index,
+            x_px: node.x,
+            y_px: node.y,
+            width_px: node.width,
+            height_px: node.height,
+            fill_hex: node.style.fill.clone().ok_or_else(|| {
+                unsupported(
+                    "Manim static source requires explicit fill; absent fill is not replaced",
+                )
+            })?,
+        });
     }
-    Ok(body)
+    let plan = ManimScenePlanV2 {
+        schema_version: 2,
+        profile_id: ManimProfileIdV2::StaticShapes,
+        output_role: ManimOutputRoleV2::SceneVideoContributionWithoutAudioOrCaptions,
+        binding: ManimSceneBindingV2 {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            scene_id,
+            deliverable_id,
+        },
+        clock,
+        render_profile: profile,
+        canvas: ManimCanvasV2::default(),
+        background: ManimMatteV2::default(),
+        nodes,
+    };
+    validate_plan_v2(&plan).map_err(|error| unsupported(error.to_string()))?;
+    Ok(plan)
 }
 
 #[cfg(test)]
@@ -557,12 +610,67 @@ mod tests {
             "material",
         );
         assert!(name.starts_with("Motionwright-focus-export-"));
-        assert!(material.starts_with("Motionwright-focus-export-"));
+        assert!(material.starts_with("Motionwright-focus-"));
         assert!(material.ends_with("-material"));
-        assert!(name.contains("0123456789ab"));
-        assert!(material.contains("0123456789ab"));
+        assert!(name.contains("0123456789abcdef0123456789abcdef"));
+        assert!(material.contains("0123456789abcdef0123456789abcdef"));
         assert!(name.is_ascii() && material.is_ascii());
         assert!(name.len() <= 63 && material.len() <= 63);
+    }
+
+    #[test]
+    fn blender_projection_keeps_nodes_with_the_same_uuid_prefix_distinct() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        let first = Uuid::parse_str("019a0032-9000-7000-8000-000000000001").unwrap();
+        let second = Uuid::parse_str("019a0032-9000-7000-8000-000000000002").unwrap();
+        project.scenes[0].nodes[0].id = first;
+        project.scenes[0].nodes[0].name = "Identical display label".into();
+        let mut other = project.scenes[0].nodes[0].clone();
+        other.id = second;
+        project.scenes[0].nodes.push(other);
+        let plan = build_blender_contribution(&project, project.scenes[0].id).unwrap();
+        assert_ne!(plan.objects[0].name, plan.objects[1].name);
+        assert_ne!(plan.objects[0].material_name, plan.objects[1].material_name);
+        for (object, id) in plan.objects.iter().zip([first, second]) {
+            let identity = id.simple().to_string();
+            assert!(object.name.contains(&identity));
+            assert!(object.material_name.contains(&identity));
+            assert!(object.name.len() <= 63 && object.material_name.len() <= 63);
+        }
+    }
+
+    #[test]
+    fn native_projection_rejects_unpreserved_blending_before_a_plan_exists() {
+        for mut project in [
+            project_with_renderer(RendererKind::Blender),
+            project_with_renderer(RendererKind::ManimCommunity),
+        ] {
+            project.scenes[0].nodes[0].style.blend_mode = motionwright_domain::BlendMode::Multiply;
+            let scene_id = project.scenes[0].id;
+            let error = if project.scenes[0].renderer == RendererKind::Blender {
+                build_blender_contribution(&project, scene_id)
+                    .map(|_| ())
+                    .unwrap_err()
+            } else {
+                build_manim_plan(&project, scene_id)
+                    .map(|_| ())
+                    .unwrap_err()
+            };
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+    }
+
+    #[test]
+    fn blender_color_parser_rejects_non_ascii_boundaries_without_panicking() {
+        for invalid in ["#FéFFF", "#FFFéFFF", "#GG0000", "#00000", "#123456789"] {
+            let error = hex_color(invalid).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+        assert_eq!(
+            hex_color("#FF8040").unwrap(),
+            [1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0]
+        );
+        assert_eq!(hex_color("#ff804080").unwrap()[3], 128.0 / 255.0);
     }
 
     #[test]

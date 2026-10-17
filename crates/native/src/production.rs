@@ -28,6 +28,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod manim_source;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_multisegment_sfx;
@@ -37,6 +38,12 @@ mod original_mix_av;
 mod path_boundary_tests;
 mod recovery;
 mod semantic_sfx_av;
+pub use manim_source::{
+    ManimSourceImportPreviewV2, ManimSourceInspectionV2, ManimSourceSelectionV2,
+    apply_saved_manim_source_transform, inspect_saved_manim_source,
+    preview_saved_manim_source_transform,
+};
+
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_multisegment_sfx::{
@@ -1070,6 +1077,19 @@ fn unconfirmed_started_manim_render(error: Error) -> Error {
     )
 }
 
+fn retained_manim_job_failure(data: &Value, unknown_state: bool) -> Error {
+    let original = data
+        .get("original_error")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Error>(value).ok())
+        .unwrap_or_else(|| backend("Manim Community original render reported failure"));
+    if unknown_state || !original.outcome_known {
+        unconfirmed_started_manim_render(original)
+    } else {
+        original
+    }
+}
+
 fn retryable_manim_status_error(error: &Error) -> bool {
     // A new read may observe an already-started job after an ordinary timeout.
     // An uncertain response or any other observation failure needs reconciliation.
@@ -1146,7 +1166,7 @@ impl AcknowledgedManimRender {
         let data = response_data(response).map_err(unconfirmed_started_manim_render)?;
         if !matches!(
             data.get("state").and_then(Value::as_str),
-            Some("rendering" | "cancelling" | "succeeded" | "failed" | "cancelled")
+            Some("rendering" | "cancelling" | "succeeded" | "failed" | "cancelled" | "unknown")
         ) {
             return Err(unconfirmed_started_manim_render(backend(
                 "Manim observation returned no supported canonical state",
@@ -2101,6 +2121,24 @@ impl ProductionCoordinator {
         }))
     }
 
+    /// Legacy bounded contribution. It retains its original v1 timing behavior;
+    /// source/clock-complete production callers select the explicit v2 route.
+    async fn realize_manim_plan(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        plan: motionwright_manim_profile::ManimStartPlan,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let plan =
+            motionwright_manim_profile::ManimStartPlan::V1(build_manim_plan(&project, scene_id)?);
+        self.realize_manim_plan(project_id, expected, request_id, scene_id, plan, profile)
+            .await
+    }
+
     pub async fn realize_manim_scene(
         &self,
         project_id: Uuid,
@@ -2130,17 +2168,37 @@ impl ProductionCoordinator {
             ));
         }
 
-        let projected = build_manim_plan(&project, scene_id)?;
-        let plan_value = serde_json::to_value(&projected)
-            .map_err(|_| invalid("Manim scene plan could not be encoded"))?;
-        let plan: motionwright_manim_profile::ManimScenePlan =
-            serde_json::from_value(plan_value.clone())
-                .map_err(|_| invalid("Manim scene plan does not match the Driver SDK profile"))?;
-        motionwright_manim_profile::validate_plan(&plan)
-            .map_err(|error| invalid(format!("Manim scene plan is invalid: {error}")))?;
-        let plan_bytes = serde_json::to_vec(&plan)
-            .map_err(|_| invalid("Manim scene plan could not be digested"))?;
-        let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
+        plan.validate_for_profile(profile)
+            .map_err(|error| invalid(error.to_string()))?;
+        let expected_source = match &plan {
+            motionwright_manim_profile::ManimStartPlan::V1(source) => {
+                if *source != build_manim_plan(&project, scene_id)? {
+                    return Err(invalid(
+                        "Manim legacy plan does not match the current Project",
+                    ));
+                }
+                None
+            }
+            motionwright_manim_profile::ManimStartPlan::V2(source) => {
+                let current = crate::multi_renderer::build_manim_plan_v2(
+                    &project,
+                    scene_id,
+                    source.binding.deliverable_id,
+                )?;
+                if **source != current {
+                    return Err(invalid("Manim v2 plan does not match the current Project"));
+                }
+                Some(
+                    motionwright_manim_profile::source_package_v2(source)
+                        .map_err(|error| invalid(error.to_string()))?,
+                )
+            }
+        };
+        let plan_value = serde_json::to_value(&plan)
+            .map_err(|_| invalid("Manim source plan cannot be encoded"))?;
+        let plan_sha256 = plan
+            .plan_sha256()
+            .map_err(|error| invalid(error.to_string()))?;
 
         let started = self
             .execute(
@@ -2154,6 +2212,10 @@ impl ProductionCoordinator {
             .await?;
         let binding = AcknowledgedManimRender::from_start(&started, &plan_sha256, json!(profile))?;
         let job_ref = &binding.job_ref;
+        let source_binding = expected_source
+            .as_ref()
+            .map(|package| manim_source::ManimSourceJobBinding::from_start(package, &started))
+            .transpose()?;
 
         let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
         let mut poll = 0_u32;
@@ -2188,10 +2250,16 @@ impl ProductionCoordinator {
                 Err(error) => return Err(unconfirmed_started_manim_render(error)),
             };
             let data = binding.observe(&status, "status")?;
+            if let Some(source) = &source_binding {
+                source.observe(data)?;
+            }
             match data.get("state").and_then(Value::as_str) {
                 Some("succeeded") => break,
+                Some("unknown") => {
+                    return Err(retained_manim_job_failure(data, true));
+                }
                 Some("failed") => {
-                    return Err(backend("Manim Community render reported failure"));
+                    return Err(retained_manim_job_failure(data, false));
                 }
                 Some("cancelled") => {
                     return Err(Error::new(
@@ -2229,6 +2297,9 @@ impl ProductionCoordinator {
             .await
             .map_err(unconfirmed_started_manim_render)?;
         let result_data = binding.observe(&result, "result")?;
+        if let Some(source) = &source_binding {
+            source.observe(result_data)?;
+        }
         if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
             return Err(unconfirmed_started_manim_render(backend(
                 "Manim render result is not a successful terminal artifact",
@@ -2271,6 +2342,18 @@ impl ProductionCoordinator {
             MANIM_VIDEO_MAX_BYTES,
         )?;
 
+        let source_observation = source_binding
+            .as_ref()
+            .map(|source| source.finish(&self.client.connection().output_root, result_data))
+            .transpose()?;
+        let current = self.service.project(project_id).map_err(storage_error)?;
+        if RevisionStamp::from(&current) != *expected {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Project changed while the original Manim artifact was being verified",
+            ));
+        }
+
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
@@ -2280,6 +2363,7 @@ impl ProductionCoordinator {
             "job_ref": job_ref,
             "plan_sha256": plan_sha256,
             "profile": profile,
+            "source": source_observation,
             "result": result,
             "artifact": {
                 "relative_path": relative_path,
@@ -3586,6 +3670,21 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
 
     // These are pure view-validation inputs. They are not Broker envelopes,
     // native execution receipts, persisted project state, or production proof.
+    #[test]
+    fn manim_original_host_failure_preserves_known_denial_and_unknown_code() {
+        let denial = Error::new(ErrorCode::PolicyDenied, "original host denial");
+        let kept = retained_manim_job_failure(&json!({"original_error":denial}), false);
+        assert_eq!(kept.code, ErrorCode::PolicyDenied);
+        assert!(kept.outcome_known);
+        let missing =
+            Error::new(ErrorCode::Unavailable, "original host observation lost").uncertain();
+        let kept = retained_manim_job_failure(&json!({"original_error":missing}), true);
+        assert_eq!(kept.code, ErrorCode::Unavailable);
+        assert!(!kept.outcome_known);
+        let inconsistent = retained_manim_job_failure(&json!({"original_error":missing}), false);
+        assert!(!inconsistent.outcome_known);
+    }
+
     fn manim_lifecycle_view(state: &str) -> Value {
         json!({
             "result": {
