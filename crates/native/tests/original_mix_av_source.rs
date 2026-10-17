@@ -1543,3 +1543,731 @@ async fn canonical_native_master_requires_saved_recipe_and_refuses_unverified_in
     assert_eq!(fs::read_dir(&f.owner_root).unwrap().count(), 0);
     assert_no_native_dispatch(&f, &coordinator);
 }
+
+/// Synthetic protocol data stored through the real application journal.
+/// These tests prove source custody and rejection, not a native render, pixels,
+/// an AAC master, or an externally executed provider operation.
+mod canonical_film_source_custody {
+    use super::*;
+    use motionwright_domain::{BlendMode, CanvasNode, CoordinateSpace, NodeStyle};
+    use motionwright_native::{
+        assembly::preflight_multi_segment_mlt,
+        film::{FilmBuildOptions, MotionCanvasSegment, build_motion_canvas_segments},
+        production::MotionCanvasSegmentEvidence,
+    };
+    use motionwright_storage::{ProductionReceiptInput, ProductionReceiptWatermark};
+    use semwright_native_sdk::{
+        Value, json,
+        types::{Execution, InvocationProvenance, SourceKind},
+    };
+    use semwright_semantic_composition::canonical_digest;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const SOURCE_ERROR: &str =
+        "Canonical Motion Canvas Film is not bound to its original source receipts";
+    const UNKNOWN_ERROR: &str = "Canonical Motion Canvas source has an UNKNOWN original receipt; reconcile without redispatch";
+
+    fn canvas_fixture(scene_count: usize) -> Fixture {
+        let mut f = canonical_fixture();
+        for index in f.project.scenes.len()..scene_count {
+            f.project = apply(
+                &f.service,
+                &f.project,
+                &format!("film-source-extra-scene-{index}"),
+                Change::AddScene {
+                    name: format!("Film source scene {index}"),
+                    objective: "Complete canonical Film source identity".into(),
+                    duration_seconds: 1,
+                },
+            );
+        }
+        let scene_ids: Vec<_> = f.project.scenes.iter().map(|scene| scene.id).collect();
+        for (index, scene_id) in scene_ids.into_iter().enumerate() {
+            if scene_count == 33 {
+                f.project = apply(
+                    &f.service,
+                    &f.project,
+                    &format!("film-source-scene-clock-{index}"),
+                    Change::SetSceneDuration {
+                        scene_id,
+                        duration: RationalTime::new(if index == 32 { 28 } else { 1 }, 30).unwrap(),
+                    },
+                );
+            }
+            f.project = apply(
+                &f.service,
+                &f.project,
+                &format!("film-source-node-{index}"),
+                Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::now_v7(),
+                        name: "Original Film rectangle".into(),
+                        kind: "rectangle".into(),
+                        parent_id: None,
+                        x: 400.0,
+                        y: 250.0,
+                        width: 160.0,
+                        height: 120.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: None,
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 1,
+                        style: NodeStyle {
+                            fill: Some("#F5F5F2".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: None,
+                            font_size: None,
+                            font_weight: None,
+                            line_height: None,
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            );
+        }
+        let recipe = canonical_recipe(&f);
+        save_canonical_recipe(&mut f, "film-source-complete-recipe", Some(recipe));
+        assert_eq!(canonical_plan(&f).unwrap().sample_frames, 96_000);
+        f
+    }
+
+    fn films(
+        f: &Fixture,
+        project: &Project,
+        options: &FilmBuildOptions,
+    ) -> Vec<MotionCanvasSegment> {
+        build_motion_canvas_segments(project, f.project.deliverables[0].id, options).unwrap()
+    }
+
+    fn options(f: &Fixture) -> FilmBuildOptions {
+        canonical_original_mix_film_options(&f.project, f.project.deliverables[0].id).unwrap()
+    }
+
+    fn request_sha(command: &str, args: &Value) -> String {
+        sha256(&serde_json::to_vec(&(command, args)).unwrap())
+    }
+
+    fn typed_execution(command: &str) -> Execution {
+        Execution {
+            backend: "synthetic-protocol-contract-fixture".into(),
+            duration_ms: 0,
+            policy_decision: "allow".into(),
+            fallbacks_attempted: vec![],
+            provenance: Some(InvocationProvenance {
+                provider: "driver:motion-canvas".into(),
+                source: SourceKind::Driver,
+                provider_version: "fixture/1".into(),
+                capability_version: "1".into(),
+                descriptor_sha256: sha256(command.as_bytes()),
+                untrusted_metadata: false,
+                catalog_revision: 1,
+                execution_provider: Some("driver:motion-canvas".into()),
+                provider_generation: Some(42),
+            }),
+            dry_run: false,
+        }
+    }
+
+    struct SyntheticMotionSource {
+        rendered: MotionCanvasRenderEvidence,
+        rows: Vec<ProductionReceiptInput>,
+        manifests: Vec<(String, Vec<u8>)>,
+        film_digests: Vec<String>,
+    }
+
+    fn synthetic_source(f: &Fixture, source: &[MotionCanvasSegment]) -> SyntheticMotionSource {
+        let connection = no_dispatch_connection(f).identity().unwrap();
+        let profile = &f.project.deliverables[0];
+        let mut segments = Vec::new();
+        let mut rows = Vec::new();
+        let mut manifests = Vec::new();
+        let mut film_digests = Vec::new();
+        for (index, film) in source.iter().enumerate() {
+            let prefix = format!("source-contract-fixture:motion:{index}");
+            let intent = serde_json::to_value(&film.film).unwrap();
+            let intent_digest = canonical_digest(&film.film).unwrap().as_str().to_owned();
+            let plan_ref = sha256(format!("synthetic-source-plan-{index}").as_bytes());
+            // This synthetic token is not calculated by the native compiler.
+            let fingerprint = sha256(format!("synthetic-native-fingerprint-{index}").as_bytes());
+            let job_ref = format!("synthetic-source-job-{index}");
+            let directory = format!("render-{index:032x}");
+            let manifest_path = format!("{directory}/artifact-manifest.json");
+            let manifest = serde_json::to_vec(&json!({
+                "plan": {
+                    "width": profile.width, "height": profile.height,
+                    "fps": profile.frame_rate.num, "fps_denominator": profile.frame_rate.den,
+                    "frame_count": film.frame_count, "first_frame": 0,
+                    "end_frame_exclusive": film.frame_count,
+                },
+                "frames": (0..film.frame_count).map(|frame| json!({
+                    "index": frame, "file": format!("frames/{frame:06}.png"),
+                    "bytes": 128, "sha256": "a".repeat(64),
+                })).collect::<Vec<_>>(),
+            }))
+            .unwrap();
+            let artifact = json!({
+                "directory": directory, "manifest": manifest_path,
+                "manifest_sha256": sha256(&manifest), "frame_count": film.frame_count,
+            });
+            // Data shape deliberately passes the existing pure validator;
+            // this fixture never claims that these checks executed natively.
+            let verification = json!({
+                "report": {"execution_status": "completed", "support_level": "native"},
+                "measurement": {
+                    "findings": [],
+                    "validation": {"checks": [{"verdict": "PASS"}]},
+                },
+            });
+            let stages = [
+                (
+                    "plan",
+                    "driver.motion-canvas.composition.plan",
+                    json!({
+                        "film": &intent,
+                        "budget": {"max_iterations": 8, "max_operations": 4096,
+                            "max_findings": 1024, "max_observations": 128, "max_elapsed_ms": 120000},
+                    }),
+                    json!({
+                        "plan_ref": &plan_ref, "resulting_fingerprint": &fingerprint, "repair": false,
+                        "plan": {"digest": &plan_ref, "body": {
+                            "intent": &intent, "intent_digest": &intent_digest,
+                        }},
+                    }),
+                    false,
+                ),
+                (
+                    "apply",
+                    "driver.motion-canvas.composition.apply",
+                    json!({"plan_ref": &plan_ref, "dry_run": false}),
+                    json!({
+                        "plan_ref": &plan_ref, "intent_digest": &intent_digest,
+                        "fingerprint": &fingerprint, "applied": true, "execution_status": "completed",
+                    }),
+                    true,
+                ),
+                (
+                    "render-start",
+                    "driver.motion-canvas.render.start",
+                    json!({
+                        "expected_fingerprint": &fingerprint,
+                        "profile": {"first_frame": 0, "end_frame_exclusive": film.frame_count,
+                            "scale": "full", "transparent": false, "timeout_ms": 300000},
+                    }),
+                    json!({"job_ref": &job_ref, "state": "queued"}),
+                    true,
+                ),
+                (
+                    "render-result",
+                    "driver.motion-canvas.render.result",
+                    json!({"job_ref": &job_ref}),
+                    json!({"job_ref": &job_ref, "state": "succeeded", "artifact": &artifact}),
+                    false,
+                ),
+                (
+                    "verify",
+                    "driver.motion-canvas.composition.verify",
+                    json!({"plan_ref": &plan_ref, "job_ref": &job_ref}),
+                    verification.clone(),
+                    false,
+                ),
+            ];
+            for (stage, command, args, data, mutation) in stages {
+                let request_id = format!("{prefix}:{stage}");
+                let request_sha256 = request_sha(command, &args);
+                let job = args.get("job_ref").cloned().unwrap_or(Value::Null);
+                rows.push(ProductionReceiptInput {
+                    project_id: f.project.id,
+                    generation: f.project.generation,
+                    revision: f.project.revision,
+                    request_id: request_id.clone(),
+                    request_sha256: request_sha256.clone(),
+                    command: command.into(),
+                    stage: "dispatching".into(),
+                    payload: json!({"mutation": mutation, "connection": &connection, "job_ref": &job}),
+                });
+                rows.push(ProductionReceiptInput {
+                    project_id: f.project.id,
+                    generation: f.project.generation,
+                    revision: f.project.revision,
+                    request_id,
+                    request_sha256,
+                    command: command.into(),
+                    stage: "completed".into(),
+                    payload: json!({
+                        "broker_request_id": format!("synthetic-broker-{index}-{stage}"),
+                        "job_ref": &job,
+                        "result": {
+                            "data": data, "execution": typed_execution(command),
+                            "warnings": [], "provenance_checked": true,
+                        },
+                    }),
+                });
+            }
+            film_digests.push(intent_digest);
+            manifests.push((manifest_path, manifest));
+            segments.push(MotionCanvasSegmentEvidence {
+                segment_id: film.id.clone(),
+                scene_ids: film.scene_ids.clone(),
+                frame_count: film.frame_count,
+                plan_ref,
+                fingerprint,
+                job_ref,
+                artifact,
+                verification,
+            });
+        }
+        SyntheticMotionSource {
+            rendered: MotionCanvasRenderEvidence {
+                project_resource: f.project.resource_key(),
+                generation: f.project.generation,
+                revision: f.project.revision,
+                deliverable_id: profile.id,
+                frame_rate: Rate::new(30, 1).unwrap(),
+                segments,
+            },
+            rows,
+            manifests,
+            film_digests,
+        }
+    }
+
+    fn append_rows(f: &Fixture, rows: &[ProductionReceiptInput]) -> Vec<Uuid> {
+        rows.iter()
+            .map(|row| f.service.append_production_receipt(row.clone()).unwrap().id)
+            .collect()
+    }
+
+    fn append_unrelated_rows(f: &Fixture, count: usize) {
+        for index in 0..count {
+            f.service
+                .append_production_receipt(ProductionReceiptInput {
+                    project_id: f.project.id,
+                    generation: f.project.generation,
+                    revision: f.project.revision,
+                    request_id: format!("unrelated-source-observation-{index}"),
+                    request_sha256: sha256(b"unrelated fixture observation"),
+                    command: "driver.motion-canvas.render.status".into(),
+                    stage: "completed".into(),
+                    payload: json!({"fixture": "unrelated synthetic observation"}),
+                })
+                .unwrap();
+        }
+    }
+
+    fn inventory(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut output = BTreeMap::new();
+        for entry in fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                output.extend(inventory(&entry.path()));
+            } else {
+                output.insert(entry.path(), fs::read(entry.path()).unwrap());
+            }
+        }
+        output
+    }
+
+    fn assert_read_only(
+        f: &Fixture,
+        watermark: &ProductionReceiptWatermark,
+        output: &BTreeMap<PathBuf, Vec<u8>>,
+    ) {
+        assert_eq!(
+            &f.service
+                .production_receipt_watermark(f.project.id)
+                .unwrap(),
+            watermark
+        );
+        assert_eq!(&inventory(&f.owner_root), output);
+        assert!(!f.root.path().join("native-dispatch-marker").exists());
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+    }
+
+    fn reject_source(f: &Fixture, rendered: &MotionCanvasRenderEvidence, unknown: bool) {
+        let coordinator = canonical_coordinator(f);
+        let before = f
+            .service
+            .production_receipt_watermark(f.project.id)
+            .unwrap();
+        let output = inventory(&f.owner_root);
+        let error = coordinator
+            .verify_native_canonical_original_mix_motion_source(
+                f.project.id,
+                &f.project.stamp(),
+                f.project.deliverables[0].id,
+                rendered,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            if unknown {
+                ErrorCode::Conflict
+            } else {
+                ErrorCode::StaleReference
+            }
+        );
+        assert_eq!(
+            error.message,
+            if unknown { UNKNOWN_ERROR } else { SOURCE_ERROR }
+        );
+        assert_eq!(error.outcome_known, !unknown);
+        assert_read_only(f, &before, &output);
+    }
+
+    #[test]
+    fn canonical_film_source_uses_full_original_journal_beyond_256_and_returns_original_ids() {
+        let f = canvas_fixture(2);
+        let source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+        let ids = append_rows(&f, &source.rows);
+        append_unrelated_rows(&f, 300);
+        let coordinator = canonical_coordinator(&f);
+        let before = f
+            .service
+            .production_receipt_watermark(f.project.id)
+            .unwrap();
+        let output = inventory(&f.owner_root);
+        assert_eq!(before.count, 310);
+        let bound = coordinator
+            .verify_native_canonical_original_mix_motion_source(
+                f.project.id,
+                &f.project.stamp(),
+                f.project.deliverables[0].id,
+                &source.rendered,
+            )
+            .unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0].film_sha256, source.film_digests[0]);
+        assert_eq!(
+            bound[0].completed_receipt_ids,
+            [ids[1], ids[3], ids[5], ids[7], ids[9]]
+        );
+        assert_eq!(bound[0].provider_generation, 42);
+        assert_eq!(bound[0].native_job_ref, source.rendered.segments[0].job_ref);
+        let serialized = serde_json::to_value(&bound[0]).unwrap();
+        assert!(serialized.get("master").is_none());
+        assert!(serialized.get("pixels_verified").is_none());
+        assert_read_only(&f, &before, &output);
+    }
+
+    #[test]
+    fn canonical_film_source_rejects_changed_role_archetype_and_content_with_same_segment_tuple() {
+        for variant in ["role", "archetype", "content"] {
+            let f = canvas_fixture(2);
+            let canonical_options = options(&f);
+            let expected = films(&f, &f.project, &canonical_options);
+            let mut other_options = canonical_options.clone();
+            let mut other_project = f.project.clone();
+            match variant {
+                "role" => other_options.scene_intents[0].role = NarrativeRole::Problem,
+                "archetype" => {
+                    other_options.scene_intents[0].archetype = Archetype::ObjectSpotlight
+                }
+                "content" => other_project.scenes[0].nodes[0].style.fill = Some("#33CC99".into()),
+                _ => unreachable!(),
+            }
+            other_project.validate().unwrap();
+            assert_eq!(other_project.stamp(), f.project.stamp());
+            let alternate = films(&f, &other_project, &other_options);
+            assert_eq!(expected.len(), alternate.len());
+            for (left, right) in expected.iter().zip(&alternate) {
+                assert_eq!(left.id, right.id);
+                assert_eq!(left.scene_ids, right.scene_ids);
+                assert_eq!(left.frame_count, right.frame_count);
+            }
+            assert_ne!(
+                canonical_digest(&expected[0].film).unwrap(),
+                canonical_digest(&alternate[0].film).unwrap(),
+                "Full typed Film must change for {variant}",
+            );
+            let source = synthetic_source(&f, &alternate);
+            append_rows(&f, &source.rows);
+            reject_source(&f, &source.rendered, false);
+        }
+    }
+
+    #[test]
+    fn canonical_film_source_rejects_alias_that_passes_existing_manifest_only_multisegment_preflight()
+     {
+        let f = canvas_fixture(33);
+        let canonical_options = options(&f);
+        let mut other_options = canonical_options.clone();
+        other_options.scene_intents[0].role = NarrativeRole::Problem;
+        let alternate = films(&f, &f.project, &other_options);
+        assert_eq!(alternate.len(), 2);
+        assert_eq!(
+            alternate
+                .iter()
+                .map(|film| film.frame_count)
+                .collect::<Vec<_>>(),
+            [32, 28]
+        );
+        let source = synthetic_source(&f, &alternate);
+        for (path, bytes) in &source.manifests {
+            let path = f.owner_root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        // Physical manifests exist and have matching SHA, but no native frames
+        // exist. This demonstrates the old source-tuple alias without claiming
+        // a render or treating the old manifest-only admission as pixel proof.
+        let old_admission = preflight_multi_segment_mlt(
+            &f.project,
+            f.project.deliverables[0].id,
+            &canonical_options,
+            &source.rendered,
+            &f.owner_root,
+        )
+        .unwrap();
+        assert_eq!(old_admission.total_frames, 60);
+        assert_eq!(
+            old_admission.evidence_scope,
+            "manifest-digest-verified-not-composited-mp4"
+        );
+        append_rows(&f, &source.rows);
+        reject_source(&f, &source.rendered, false);
+    }
+
+    #[test]
+    fn canonical_film_source_requires_returned_full_intent_even_with_canonical_request_digest() {
+        let f = canvas_fixture(2);
+        let canonical = films(&f, &f.project, &options(&f));
+        let canonical_source = synthetic_source(&f, &canonical);
+        let mut other_options = options(&f);
+        other_options.scene_intents[0].role = NarrativeRole::Problem;
+        let mut source = synthetic_source(&f, &films(&f, &f.project, &other_options));
+        for (actual, expected) in source.rows.iter_mut().zip(&canonical_source.rows).take(2) {
+            actual.request_sha256 = expected.request_sha256.clone();
+        }
+        append_rows(&f, &source.rows);
+        reject_source(&f, &source.rendered, false);
+    }
+
+    #[test]
+    fn canonical_film_source_rejects_missing_or_duplicate_original_stage_buried_beyond_256() {
+        for duplicate in [false, true] {
+            let f = canvas_fixture(2);
+            let mut source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+            if duplicate {
+                source.rows.insert(4, source.rows[3].clone());
+            } else {
+                source.rows.remove(3);
+            }
+            append_rows(&f, &source.rows);
+            append_unrelated_rows(&f, 300);
+            reject_source(&f, &source.rendered, false);
+        }
+    }
+
+    #[test]
+    fn canonical_film_source_preserves_unknown_original_disposition_without_retry() {
+        let f = canvas_fixture(2);
+        let mut source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+        let mut unknown = source.rows[3].clone();
+        unknown.stage = "outcome_unknown".into();
+        unknown.payload = json!({"job_ref": null, "error": {"outcome_known": false}});
+        source.rows.insert(3, unknown);
+        append_rows(&f, &source.rows);
+        append_unrelated_rows(&f, 300);
+        reject_source(&f, &source.rendered, true);
+    }
+
+    #[test]
+    fn canonical_film_source_binds_actual_stage_order_and_exact_request_clock() {
+        for different_clock in [false, true] {
+            let f = canvas_fixture(2);
+            let mut source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+            if different_clock {
+                let wrong = request_sha(
+                    "driver.motion-canvas.render.start",
+                    &json!({
+                        "expected_fingerprint": source.rendered.segments[0].fingerprint,
+                        "profile": {"first_frame": 0, "end_frame_exclusive": 59,
+                            "scale": "full", "transparent": false, "timeout_ms": 300000},
+                    }),
+                );
+                source.rows[4].request_sha256 = wrong.clone();
+                source.rows[5].request_sha256 = wrong;
+            } else {
+                // Store accepts independent request observations; custody must
+                // reject an apply recorded before its own source plan.
+                source.rows.swap(0, 2);
+                source.rows.swap(1, 3);
+            }
+            append_rows(&f, &source.rows);
+            reject_source(&f, &source.rendered, false);
+        }
+    }
+
+    #[test]
+    fn canonical_film_source_rejects_foreign_stage_authority_and_explicit_false_omissions() {
+        for variant in [
+            "connection",
+            "generation",
+            "provider",
+            "dry_run",
+            "untrusted",
+            "missing_dry_run",
+            "missing_untrusted",
+            "unchecked",
+        ] {
+            let f = canvas_fixture(2);
+            let mut source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+            match variant {
+                "connection" => source.rows[2].payload["connection"] = json!("e".repeat(64)),
+                "generation" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["provider_generation"] =
+                        json!(43)
+                }
+                "provider" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["provider"] =
+                        json!("driver:blender")
+                }
+                "dry_run" => source.rows[3].payload["result"]["execution"]["dry_run"] = json!(true),
+                "untrusted" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]["untrusted_metadata"] =
+                        json!(true)
+                }
+                "missing_dry_run" => {
+                    source.rows[3].payload["result"]["execution"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("dry_run");
+                }
+                "missing_untrusted" => {
+                    source.rows[3].payload["result"]["execution"]["provenance"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("untrusted_metadata");
+                }
+                "unchecked" => {
+                    source.rows[3].payload["result"]["provenance_checked"] = json!(false)
+                }
+                _ => unreachable!(),
+            }
+            append_rows(&f, &source.rows);
+            reject_source(&f, &source.rendered, false);
+        }
+    }
+
+    #[test]
+    fn canonical_film_source_keeps_caller_artifact_and_verification_bound_to_original_results() {
+        let f = canvas_fixture(2);
+        let source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+        append_rows(&f, &source.rows);
+        for artifact in [false, true] {
+            let mut altered = source.rendered.clone();
+            if artifact {
+                altered.segments[0].artifact["manifest_sha256"] = json!("f".repeat(64));
+            } else {
+                // Even additional caller PASS checks cannot replace the
+                // original provider verification value.
+                altered.segments[0].verification["measurement"]["validation"]["checks"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"verdict": "PASS"}));
+            }
+            reject_source(&f, &altered, false);
+        }
+    }
+
+    #[test]
+    fn canonical_film_source_requires_full_stamp_profile_clock_and_current_original_rows() {
+        let f = canvas_fixture(2);
+        let source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+        append_rows(&f, &source.rows);
+        for variant in ["resource", "generation", "revision", "profile", "rate"] {
+            let mut altered = source.rendered.clone();
+            match variant {
+                "resource" => altered.project_resource = "motionwright:foreign-project".into(),
+                "generation" => altered.generation = Uuid::new_v4(),
+                "revision" => altered.revision -= 1,
+                "profile" => altered.deliverable_id = Uuid::new_v4(),
+                "rate" => altered.frame_rate = Rate::new(24, 1).unwrap(),
+                _ => unreachable!(),
+            }
+            reject_source(&f, &altered, false);
+        }
+        let old = canvas_fixture(2);
+        let mut old_source = synthetic_source(&old, &films(&old, &old.project, &options(&old)));
+        for row in &mut old_source.rows {
+            row.revision -= 1;
+        }
+        append_rows(&old, &old_source.rows);
+        reject_source(&old, &old_source.rendered, false);
+    }
+
+    #[test]
+    fn canonical_film_source_never_promotes_actual_foreign_project_journal_rows() {
+        let f = canvas_fixture(2);
+        let mut source = synthetic_source(&f, &films(&f, &f.project, &options(&f)));
+        let foreign = f
+            .service
+            .create_project("Foreign Film source receipt owner")
+            .unwrap();
+        for row in &mut source.rows {
+            row.project_id = foreign.id;
+            row.generation = foreign.generation;
+            row.revision = foreign.revision;
+        }
+        append_rows(&f, &source.rows);
+        assert_eq!(
+            f.service
+                .production_receipt_watermark(foreign.id)
+                .unwrap()
+                .count,
+            10
+        );
+        assert_eq!(
+            f.service
+                .production_receipt_watermark(f.project.id)
+                .unwrap()
+                .count,
+            0
+        );
+        reject_source(&f, &source.rendered, false);
+    }
+
+    #[tokio::test]
+    async fn canonical_film_source_master_entry_rejects_alias_before_downstream_media_or_effect() {
+        let f = canvas_fixture(33);
+        let mut other_options = options(&f);
+        other_options.scene_intents[0].role = NarrativeRole::Problem;
+        let source = synthetic_source(&f, &films(&f, &f.project, &other_options));
+        assert_eq!(source.rendered.segments.len(), 2);
+        append_rows(&f, &source.rows);
+        let coordinator = canonical_coordinator(&f);
+        let before = f
+            .service
+            .production_receipt_watermark(f.project.id)
+            .unwrap();
+        let output = inventory(&f.owner_root);
+        // These downstream media handles deliberately remain unopened: this
+        // test requires the exact source-custody error from the public master
+        // entry. It is not a fixture of successful FFV1 or native mux output.
+        let (_, visual, audio) = unverified_native_inputs(&f);
+        let error = coordinator
+            .assemble_native_mlt_multisegment_original_mix_master(
+                f.project.id,
+                &f.project.stamp(),
+                MltMultisegmentOriginalMixMasterRequest {
+                    request_id: "canonical-film-alias-guard",
+                    deliverable_id: f.project.deliverables[0].id,
+                    rendered: &source.rendered,
+                    visual: &visual,
+                    audio: &audio,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert_eq!(error.message, SOURCE_ERROR);
+        assert!(error.outcome_known);
+        assert_read_only(&f, &before, &output);
+    }
+}

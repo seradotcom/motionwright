@@ -11,7 +11,7 @@ use super::{
 use crate::{
     film::{
         FilmBuildOptions, MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY,
-        SceneFilmIntent,
+        SceneFilmIntent, build_motion_canvas_segments,
     },
     mlt_av_audio::{MultiSegmentAudioReadiness, preflight_multi_segment_voice_source},
     original_mix::{
@@ -26,12 +26,18 @@ use motionwright_domain::{
     variant_dependency_fingerprint,
 };
 use motionwright_service::{OriginalMixDecodedPcm, StudioService};
+use motionwright_storage::{ProductionReceipt, ProductionReceiptWatermark};
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult, Value};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    io::Write,
+    path::Path,
+};
 use uuid::Uuid;
 
 const SAMPLE_RATE: u64 = 48_000;
@@ -41,6 +47,12 @@ const MAX_SFX_SOURCE_ASSETS: usize = 64;
 const MAX_SFX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const SOURCE_SCOPE: &str =
     "verified-owner-original-mix-source-only-not-canonical-delivery-or-native-master";
+const MOTION_SOURCE_MAX_SEGMENTS: usize = 64;
+const MOTION_JOURNAL_MAX_RECEIPTS: u64 = 20_000;
+const MOTION_JOURNAL_PAGE_SIZE: usize = 64;
+// Application journal fields wrap the already bounded native output envelope.
+const MOTION_JOURNAL_MAX_ROW_BYTES: usize = super::MAX_OUTPUT_BYTES + 4096;
+const MOTION_JOURNAL_MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
 fn unsupported(reason: &'static str) -> Error {
     Error::new(ErrorCode::Unsupported, reason)
@@ -52,6 +64,522 @@ fn stale(reason: &'static str) -> Error {
 
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+/// Complete canonical Film identity bound to the application's original
+/// Motion Canvas receipts. This is source custody, not decoded-pixel approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanonicalMotionCanvasFilmSource {
+    pub segment_id: String,
+    /// The existing SDK canonical_digest of the complete typed Film.
+    pub film_sha256: String,
+    pub plan_ref: String,
+    pub native_fingerprint: String,
+    pub native_job_ref: String,
+    pub connection_identity: String,
+    pub provider_generation: u64,
+    /// Original completed rows: plan, apply, render-start, render-result, verify.
+    pub completed_receipt_ids: [Uuid; 5],
+}
+
+struct CanonicalMotionSourceSnapshot {
+    bindings: Vec<CanonicalMotionCanvasFilmSource>,
+    watermark: ProductionReceiptWatermark,
+}
+
+fn motion_source_mismatch() -> Error {
+    stale("Canonical Motion Canvas Film is not bound to its original source receipts")
+}
+
+fn motion_receipt_snapshot_changed() -> Error {
+    stale(
+        "Canonical Motion Canvas receipt snapshot changed or is incomplete; reconcile the original render without redispatch",
+    )
+}
+
+fn unresolved_motion_source() -> Error {
+    Error::new(
+        ErrorCode::Conflict,
+        "Canonical Motion Canvas source has an UNKNOWN original receipt; reconcile without redispatch",
+    ).uncertain()
+}
+
+fn motion_journal_error(error: motionwright_storage::StorageError) -> Error {
+    match error {
+        motionwright_storage::StorageError::ReceiptStreamChanged => {
+            motion_receipt_snapshot_changed()
+        }
+        other => storage_error(other),
+    }
+}
+
+fn recheck_motion_watermark(
+    service: &StudioService,
+    project_id: Uuid,
+    watermark: &ProductionReceiptWatermark,
+) -> NativeResult<()> {
+    if service
+        .production_receipt_watermark(project_id)
+        .map_err(motion_journal_error)?
+        != *watermark
+    {
+        return Err(motion_receipt_snapshot_changed());
+    }
+    Ok(())
+}
+
+/// Traverse the complete bounded snapshot, not the latest-receipts UI window.
+/// The service checks the same watermark around every keyset page.
+fn visit_motion_receipts(
+    service: &StudioService,
+    project_id: Uuid,
+    watermark: &ProductionReceiptWatermark,
+    mut visit: impl FnMut(ProductionReceipt) -> NativeResult<()>,
+) -> NativeResult<()> {
+    if watermark.count > MOTION_JOURNAL_MAX_RECEIPTS {
+        return Err(unsupported(
+            "Canonical Motion Canvas source exceeds the bounded 20,000-receipt verification budget",
+        ));
+    }
+    if (watermark.count == 0) != watermark.latest_id.is_none() {
+        return Err(motion_receipt_snapshot_changed());
+    }
+    let mut before = None;
+    let mut scanned = 0_u64;
+    while scanned < watermark.count {
+        let page = service
+            .production_receipts_snapshot_page(
+                project_id,
+                watermark,
+                before,
+                MOTION_JOURNAL_PAGE_SIZE,
+            )
+            .map_err(motion_journal_error)?;
+        if page.is_empty() || page.len() > MOTION_JOURNAL_PAGE_SIZE {
+            return Err(motion_receipt_snapshot_changed());
+        }
+        for row in page {
+            if row.project_id != project_id
+                || watermark.latest_id.is_none_or(|head| row.id > head)
+                || before.is_some_and(|cursor| row.id >= cursor)
+            {
+                return Err(motion_receipt_snapshot_changed());
+            }
+            before = Some(row.id);
+            scanned += 1;
+            if scanned > watermark.count {
+                return Err(motion_receipt_snapshot_changed());
+            }
+            visit(row)?;
+        }
+    }
+    recheck_motion_watermark(service, project_id, watermark)
+}
+
+#[derive(Default)]
+struct MotionStageAuthority {
+    connection_identity: Option<String>,
+    provider_generation: Option<u64>,
+    last_completed: Option<Uuid>,
+}
+
+struct ExpectedMotionStage<'a> {
+    request_id: String,
+    command: &'static str,
+    args: Value,
+    mutation: bool,
+    job_ref: Option<&'a str>,
+}
+
+fn original_motion_stage<'a>(
+    project: &Project,
+    rows: &'a BTreeMap<String, Vec<ProductionReceipt>>,
+    expected: ExpectedMotionStage<'_>,
+    authority: &mut MotionStageAuthority,
+    descriptors: &mut BTreeMap<&'static str, String>,
+) -> NativeResult<(&'a Value, Uuid)> {
+    let pair = rows
+        .get(&expected.request_id)
+        .ok_or_else(motion_source_mismatch)?;
+    if pair.iter().any(|row| row.stage == "outcome_unknown") {
+        return Err(unresolved_motion_source());
+    }
+    if pair.len() != 2 {
+        return Err(motion_source_mismatch());
+    }
+    let dispatch = pair
+        .iter()
+        .find(|row| row.stage == "dispatching")
+        .ok_or_else(motion_source_mismatch)?;
+    let completed = pair
+        .iter()
+        .find(|row| row.stage == "completed")
+        .ok_or_else(motion_source_mismatch)?;
+    if dispatch.id >= completed.id
+        || authority
+            .last_completed
+            .is_some_and(|prior| prior >= dispatch.id)
+    {
+        return Err(motion_source_mismatch());
+    }
+    let digest = super::request_digest(expected.command, &expected.args)?;
+    for row in pair {
+        if row.project_id != project.id
+            || row.generation != project.generation
+            || row.revision != project.revision
+            || row.request_id != expected.request_id
+            || row.command != expected.command
+            || row.request_sha256 != digest
+        {
+            return Err(motion_source_mismatch());
+        }
+    }
+    let connection = dispatch
+        .payload
+        .get("connection")
+        .and_then(Value::as_str)
+        .filter(|value| super::is_sha256(value))
+        .ok_or_else(motion_source_mismatch)?;
+    let job = expected
+        .job_ref
+        .map_or(Value::Null, |value| Value::String(value.into()));
+    if dispatch.payload.get("mutation").and_then(Value::as_bool) != Some(expected.mutation)
+        || dispatch.payload.get("job_ref") != Some(&job)
+        || completed.payload.get("job_ref") != Some(&job)
+        || completed
+            .payload
+            .get("broker_request_id")
+            .and_then(Value::as_str)
+            .is_none_or(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+    {
+        return Err(motion_source_mismatch());
+    }
+    let result = completed
+        .payload
+        .get("result")
+        .ok_or_else(motion_source_mismatch)?;
+    if result.get("provenance_checked").and_then(Value::as_bool) != Some(true) {
+        return Err(motion_source_mismatch());
+    }
+    let execution: semwright_native_sdk::types::Execution = serde_json::from_value(
+        result
+            .get("execution")
+            .cloned()
+            .ok_or_else(motion_source_mismatch)?,
+    )
+    .map_err(|_| motion_source_mismatch())?;
+    let provenance = execution
+        .provenance
+        .as_ref()
+        .ok_or_else(motion_source_mismatch)?;
+    let generation = provenance
+        .provider_generation
+        .ok_or_else(motion_source_mismatch)?;
+    if execution.dry_run
+        || provenance.untrusted_metadata
+        || provenance.provider != "driver:motion-canvas"
+        || provenance.source != semwright_native_sdk::types::SourceKind::Driver
+        || provenance
+            .execution_provider
+            .as_deref()
+            .is_some_and(|provider| provider != "driver:motion-canvas")
+        || !super::is_sha256(&provenance.descriptor_sha256)
+        || authority
+            .connection_identity
+            .as_deref()
+            .is_some_and(|prior| prior != connection)
+        || authority
+            .provider_generation
+            .is_some_and(|prior| prior != generation)
+    {
+        return Err(motion_source_mismatch());
+    }
+    authority.connection_identity = Some(connection.into());
+    authority.provider_generation = Some(generation);
+    authority.last_completed = Some(completed.id);
+    if let Some(prior) = descriptors.insert(expected.command, provenance.descriptor_sha256.clone())
+        && prior != provenance.descriptor_sha256
+    {
+        return Err(motion_source_mismatch());
+    }
+    Ok((
+        result.get("data").ok_or_else(motion_source_mismatch)?,
+        completed.id,
+    ))
+}
+
+fn canonical_motion_source_snapshot(
+    service: &StudioService,
+    project: &Project,
+    deliverable_id: Uuid,
+    options: &FilmBuildOptions,
+    rendered: &MotionCanvasRenderEvidence,
+) -> NativeResult<CanonicalMotionSourceSnapshot> {
+    if rendered.project_resource != project.resource_key()
+        || rendered.generation != project.generation
+        || rendered.revision != project.revision
+        || rendered.deliverable_id != deliverable_id
+        || rendered.frame_rate != options.frame_rate
+    {
+        return Err(motion_source_mismatch());
+    }
+    let films = build_motion_canvas_segments(project, deliverable_id, options)?;
+    if films.is_empty()
+        || films.len() > MOTION_SOURCE_MAX_SEGMENTS
+        || films.len() != rendered.segments.len()
+    {
+        return Err(motion_source_mismatch());
+    }
+    let mut jobs = BTreeMap::new();
+    for (index, (film, observed)) in films.iter().zip(&rendered.segments).enumerate() {
+        if film.id != observed.segment_id
+            || film.scene_ids != observed.scene_ids
+            || film.frame_count != observed.frame_count
+            || !super::is_sha256(&observed.plan_ref)
+            || !super::is_sha256(&observed.fingerprint)
+            || observed.job_ref.is_empty()
+            || observed.job_ref.len() > 256
+            || observed.job_ref.chars().any(char::is_control)
+            || jobs.insert(observed.job_ref.as_str(), index).is_some()
+        {
+            return Err(motion_source_mismatch());
+        }
+    }
+    let watermark = service
+        .production_receipt_watermark(project.id)
+        .map_err(motion_journal_error)?;
+    let mut attempts = vec![None; films.len()];
+    let mut ambiguous = false;
+    let mut unknown = false;
+    visit_motion_receipts(service, project.id, &watermark, |row| {
+        if row.command != "driver.motion-canvas.render.result" {
+            return Ok(());
+        }
+        let job = row
+            .payload
+            .pointer("/result/data/job_ref")
+            .or_else(|| row.payload.get("job_ref"))
+            .and_then(Value::as_str);
+        let Some(&index) = job.and_then(|job| jobs.get(job)) else {
+            return Ok(());
+        };
+        let suffix = format!(":motion:{index}:render-result");
+        let Some(attempt) = row.request_id.strip_suffix(&suffix) else {
+            return Ok(());
+        };
+        if attempt.trim().is_empty() || attempt.len() > 96 || attempt.chars().any(char::is_control)
+        {
+            return Err(motion_source_mismatch());
+        }
+        if row.stage == "outcome_unknown" {
+            unknown = true;
+        }
+        if row.stage == "completed" && attempts[index].replace(attempt.to_owned()).is_some() {
+            ambiguous = true;
+        }
+        Ok(())
+    })?;
+    if unknown {
+        return Err(unresolved_motion_source());
+    }
+    if ambiguous || attempts.iter().any(Option::is_none) {
+        return Err(motion_source_mismatch());
+    }
+    let attempt = attempts[0].as_deref().ok_or_else(motion_source_mismatch)?;
+    if attempts
+        .iter()
+        .any(|value| value.as_deref() != Some(attempt))
+    {
+        return Err(motion_source_mismatch());
+    }
+    let stages = ["plan", "apply", "render-start", "render-result", "verify"];
+    let mut requests = BTreeSet::new();
+    for index in 0..films.len() {
+        for stage in stages {
+            requests.insert(format!("{attempt}:motion:{index}:{stage}"));
+        }
+    }
+    let mut rows: BTreeMap<String, Vec<ProductionReceipt>> = BTreeMap::new();
+    let mut retained_bytes = 0_usize;
+    let mut extra_rows = false;
+    visit_motion_receipts(service, project.id, &watermark, |row| {
+        if !requests.contains(&row.request_id) {
+            return Ok(());
+        }
+        // Preserve every matching request's disposition. In particular, no
+        // generation/stage/command filter may hide older UNKNOWN/extra rows.
+        unknown |= row.stage == "outcome_unknown";
+        let pair = rows.entry(row.request_id.clone()).or_default();
+        if pair.len() == 2 {
+            extra_rows = true;
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&row.payload)
+            .map_err(|_| motion_source_mismatch())?
+            .len();
+        retained_bytes = retained_bytes
+            .checked_add(bytes)
+            .ok_or_else(motion_source_mismatch)?;
+        if bytes > MOTION_JOURNAL_MAX_ROW_BYTES
+            || retained_bytes > MOTION_JOURNAL_MAX_RETAINED_BYTES
+        {
+            return Err(unsupported(
+                "Canonical Motion Canvas source receipt payloads exceed the bounded retention budget",
+            ));
+        }
+        pair.push(row);
+        Ok(())
+    })?;
+    if unknown {
+        return Err(unresolved_motion_source());
+    }
+    if extra_rows {
+        return Err(motion_source_mismatch());
+    }
+    let mut bindings = Vec::with_capacity(films.len());
+    let mut descriptors = BTreeMap::new();
+    for (index, (film, observed)) in films.iter().zip(&rendered.segments).enumerate() {
+        let prefix = format!("{attempt}:motion:{index}");
+        let intent = serde_json::to_value(&film.film).map_err(|_| motion_source_mismatch())?;
+        let film_digest = semwright_semantic_composition::canonical_digest(&film.film)
+            .map_err(|_| motion_source_mismatch())?;
+        let mut authority = MotionStageAuthority::default();
+        let (plan, plan_id) = original_motion_stage(
+            project,
+            &rows,
+            ExpectedMotionStage {
+                request_id: format!("{prefix}:plan"),
+                command: "driver.motion-canvas.composition.plan",
+                args: semwright_native_sdk::json!({
+                    "film": &intent,
+                    "budget": {"max_iterations": 8, "max_operations": super::MOTION_PLAN_MAX_OPERATIONS,
+                        "max_findings": 1024, "max_observations": 128, "max_elapsed_ms": 120000},
+                }),
+                mutation: false,
+                job_ref: None,
+            },
+            &mut authority,
+            &mut descriptors,
+        )?;
+        if plan.get("plan_ref").and_then(Value::as_str) != Some(observed.plan_ref.as_str())
+            || plan.pointer("/plan/digest").and_then(Value::as_str)
+                != Some(observed.plan_ref.as_str())
+            || plan.pointer("/plan/body/intent") != Some(&intent)
+            || plan
+                .pointer("/plan/body/intent_digest")
+                .and_then(Value::as_str)
+                != Some(film_digest.as_str())
+            || plan.get("resulting_fingerprint").and_then(Value::as_str)
+                != Some(observed.fingerprint.as_str())
+            || plan.get("repair").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(motion_source_mismatch());
+        }
+        let (applied, apply_id) = original_motion_stage(
+            project,
+            &rows,
+            ExpectedMotionStage {
+                request_id: format!("{prefix}:apply"),
+                command: "driver.motion-canvas.composition.apply",
+                args: semwright_native_sdk::json!({"plan_ref": &observed.plan_ref, "dry_run": false}),
+                mutation: true,
+                job_ref: None,
+            },
+            &mut authority,
+            &mut descriptors,
+        )?;
+        if applied.get("plan_ref").and_then(Value::as_str) != Some(observed.plan_ref.as_str())
+            || applied.get("intent_digest").and_then(Value::as_str) != Some(film_digest.as_str())
+            || applied.get("fingerprint").and_then(Value::as_str)
+                != Some(observed.fingerprint.as_str())
+            || applied.get("applied").and_then(Value::as_bool) != Some(true)
+            || applied.get("execution_status").and_then(Value::as_str) != Some("completed")
+        {
+            return Err(motion_source_mismatch());
+        }
+        let (started, start_id) = original_motion_stage(
+            project,
+            &rows,
+            ExpectedMotionStage {
+                request_id: format!("{prefix}:render-start"),
+                command: "driver.motion-canvas.render.start",
+                args: semwright_native_sdk::json!({
+                    "expected_fingerprint": &observed.fingerprint,
+                    "profile": {"first_frame": 0, "end_frame_exclusive": film.frame_count,
+                        "scale": "full", "transparent": false, "timeout_ms": super::MOTION_RENDER_TIMEOUT_MS},
+                }),
+                mutation: true,
+                job_ref: None,
+            },
+            &mut authority,
+            &mut descriptors,
+        )?;
+        if started.get("job_ref").and_then(Value::as_str) != Some(observed.job_ref.as_str())
+            || !matches!(
+                started.get("state").and_then(Value::as_str),
+                Some("queued" | "starting" | "rendering" | "succeeded")
+            )
+        {
+            return Err(motion_source_mismatch());
+        }
+        let (result, result_id) = original_motion_stage(
+            project,
+            &rows,
+            ExpectedMotionStage {
+                request_id: format!("{prefix}:render-result"),
+                command: "driver.motion-canvas.render.result",
+                args: semwright_native_sdk::json!({"job_ref": &observed.job_ref}),
+                mutation: false,
+                job_ref: Some(&observed.job_ref),
+            },
+            &mut authority,
+            &mut descriptors,
+        )?;
+        if result.get("job_ref").and_then(Value::as_str) != Some(observed.job_ref.as_str())
+            || result.get("state").and_then(Value::as_str) != Some("succeeded")
+            || result.get("artifact") != Some(&observed.artifact)
+            || observed.artifact.get("frame_count").and_then(Value::as_u64)
+                != Some(film.frame_count)
+        {
+            return Err(motion_source_mismatch());
+        }
+        let (verified, verify_id) = original_motion_stage(
+            project,
+            &rows,
+            ExpectedMotionStage {
+                request_id: format!("{prefix}:verify"),
+                command: "driver.motion-canvas.composition.verify",
+                args: semwright_native_sdk::json!({"plan_ref": &observed.plan_ref, "job_ref": &observed.job_ref}),
+                mutation: false,
+                job_ref: Some(&observed.job_ref),
+            },
+            &mut authority,
+            &mut descriptors,
+        )?;
+        if verified != &observed.verification {
+            return Err(motion_source_mismatch());
+        }
+        super::ensure_native_motion_verification(verified)?;
+        bindings.push(CanonicalMotionCanvasFilmSource {
+            segment_id: film.id.clone(),
+            film_sha256: film_digest.as_str().into(),
+            plan_ref: observed.plan_ref.clone(),
+            native_fingerprint: observed.fingerprint.clone(),
+            native_job_ref: observed.job_ref.clone(),
+            connection_identity: authority
+                .connection_identity
+                .ok_or_else(motion_source_mismatch)?,
+            provider_generation: authority
+                .provider_generation
+                .ok_or_else(motion_source_mismatch)?,
+            completed_receipt_ids: [plan_id, apply_id, start_id, result_id, verify_id],
+        });
+    }
+    recheck_motion_watermark(service, project.id, &watermark)?;
+    Ok(CanonicalMotionSourceSnapshot {
+        bindings,
+        watermark,
+    })
 }
 
 /// Exact requested video/PCM clock. This does not prove that video exists.
@@ -708,10 +1236,56 @@ pub struct MltMultisegmentOriginalMixMasterEvidence {
     pub decoded_audio: Value,
     pub canonical_dependency: VariantDependencyFingerprint,
     pub canonical_film_options_sha256: String,
+    pub canonical_motion_source: Vec<CanonicalMotionCanvasFilmSource>,
     pub evidence_scope: String,
 }
 
 impl ProductionCoordinator {
+    /// Read-only source custody from the current saved Film and the original
+    /// application journal. Caller JSON cannot supply or replace those rows.
+    /// This grants no render/mux effect and does not verify pixels or audio.
+    pub fn verify_native_canonical_original_mix_motion_source(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        deliverable_id: Uuid,
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<Vec<CanonicalMotionCanvasFilmSource>> {
+        let project = current_project(&self.service, project_id, expected)?;
+        if self.client.connection().resource != project.resource_key() {
+            return Err(stale("Canonical original mix Broker owner root is foreign"));
+        }
+        if project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .and_then(|recipe| recipe.original_mix.as_ref())
+            .is_none()
+        {
+            return Err(unsupported(
+                "Save an original mix recipe for this delivery profile",
+            ));
+        }
+        let dependency = canonical_dependency(&project, deliverable_id)?;
+        let options = canonical_original_mix_film_options(&project, deliverable_id)?;
+        let source = canonical_motion_source_snapshot(
+            &self.service,
+            &project,
+            deliverable_id,
+            &options,
+            rendered,
+        )?;
+        recheck_canonical_dependency(
+            &self.service,
+            project_id,
+            expected,
+            deliverable_id,
+            &dependency,
+        )?;
+        recheck_motion_watermark(&self.service, project_id, &source.watermark)?;
+        Ok(source.bindings)
+    }
+
     /// Stage the actual current three-bus WAV for audition or later native
     /// source admission. This method performs no Driver Host operation.
     pub fn prepare_native_canonical_original_mix_av_audio(
@@ -808,6 +1382,13 @@ impl ProductionCoordinator {
             deliverable_id,
         )?;
         let output_root = &self.client.connection().output_root;
+        let canonical_motion_source = canonical_motion_source_snapshot(
+            &self.service,
+            &project,
+            deliverable_id,
+            &options,
+            rendered,
+        )?;
         let recipe = verify_multisegment_visual_source(
             &project,
             deliverable_id,
@@ -864,6 +1445,11 @@ impl ProductionCoordinator {
             deliverable_id,
             &canonical_dependency,
         )?;
+        recheck_motion_watermark(
+            &self.service,
+            project_id,
+            &canonical_motion_source.watermark,
+        )?;
         let (master, decoded_audio) = self
             .mux_verified_multisegment_av_source(VerifiedMuxInputs {
                 project_id,
@@ -898,6 +1484,23 @@ impl ProductionCoordinator {
             deliverable_id,
             &canonical_dependency,
         )?;
+        let after_motion = canonical_motion_source_snapshot(
+            &self.service,
+            &project,
+            deliverable_id,
+            &options,
+            rendered,
+        )?;
+        if after_motion.bindings != canonical_motion_source.bindings {
+            return Err(motion_source_mismatch());
+        }
+        recheck_canonical_dependency(
+            &self.service,
+            project_id,
+            expected,
+            deliverable_id,
+            &canonical_dependency,
+        )?;
         let captioned = measured_voice.caption_cue_count.is_some();
         Ok(MltMultisegmentOriginalMixMasterEvidence {
             project_resource: project.resource_key(),
@@ -913,11 +1516,68 @@ impl ProductionCoordinator {
             decoded_audio,
             canonical_dependency,
             canonical_film_options_sha256,
+            canonical_motion_source: canonical_motion_source.bindings,
             evidence_scope: if captioned {
                 "actual-native-canonical-original-mix-h264-aac-caption-source-not-decoded-pixel-or-human-approved"
             } else {
                 "actual-native-canonical-original-mix-h264-aac-source-bound-not-mastered-or-human-approved"
             }.into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests_canonical_film_receipt_snapshot {
+    use super::*;
+    use motionwright_storage::ProductionReceiptInput;
+    use semwright_native_sdk::json;
+
+    #[test]
+    fn canonical_film_source_snapshot_rejects_append_between_keyset_pages() {
+        let root = tempfile::Builder::new()
+            .prefix("canonical-film-snapshot-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        let project = service
+            .create_project("Original Film receipt snapshot")
+            .unwrap();
+        let row = |index| ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: format!("snapshot-observation-{index}"),
+            request_sha256: sha256(b"synthetic snapshot observation"),
+            command: "driver.motion-canvas.render.status".into(),
+            stage: "completed".into(),
+            payload: json!({"fixture": "synthetic observation, no provider execution"}),
+        };
+        for index in 0..65 {
+            service.append_production_receipt(row(index)).unwrap();
+        }
+        let watermark = service.production_receipt_watermark(project.id).unwrap();
+        let mut visited = 0;
+        let error = visit_motion_receipts(&service, project.id, &watermark, |_| {
+            visited += 1;
+            if visited == 1 {
+                // Deterministic drift after the first page is read. The next
+                // keyset page must not silently extend or truncate the source.
+                service.append_production_receipt(row(65)).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert_eq!(error.message, motion_receipt_snapshot_changed().message);
+        assert!(error.outcome_known);
+        assert_eq!(visited, MOTION_JOURNAL_PAGE_SIZE);
+        assert_eq!(
+            service
+                .production_receipt_watermark(project.id)
+                .unwrap()
+                .count,
+            66
+        );
+        assert_eq!(service.project(project.id).unwrap(), project);
     }
 }
