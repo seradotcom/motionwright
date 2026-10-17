@@ -303,6 +303,8 @@ def source_case_kind(name):
         return "carrier"
     if re.fullmatch(r"bundles/(?:original|edited|\.motionwright-export-[0-9a-f-]{36})/manifest\.json", name):
         return "bundle"
+    if re.fullmatch(r"bundles/(?:original|edited|\.motionwright-export-[0-9a-f-]{36})/blobs/sha256/[0-9a-f]{2}/[0-9a-f]{64}", name):
+        return "cas"
     if re.fullmatch(r"bundles/(?:original|edited|\.motionwright-export-[0-9a-f-]{36})/sha256/[0-9a-f]{2}/[0-9a-f]{64}", name):
         return "cas"
     if re.fullmatch(r"work/" + SOURCE_TOKEN + r"(?:\.py|\.plan\.json)", name):
@@ -323,6 +325,10 @@ def source_case_directory(name):
     if name in {"data", "bundles", "work", "output"}:
         return
     if re.fullmatch(r"data/" + SOURCE_DATA + r"(?:/blobs(?:/(?:\.staging|sha256(?:/[0-9a-f]{2})?))?)?", name):
+        return
+    # Project portability exports content-addressed bytes under blobs/sha256.
+    # This is a closed parent chain, not permission for arbitrary bundle files.
+    if re.fullmatch(r"bundles/(?:original|edited|\.motionwright-export-[0-9a-f-]{36})(?:/blobs(?:/sha256(?:/[0-9a-f]{2})?)?)?", name):
         return
     if re.fullmatch(r"bundles/(?:original|edited|\.motionwright-export-[0-9a-f-]{36})(?:/sha256(?:/[0-9a-f]{2})?)?", name):
         return

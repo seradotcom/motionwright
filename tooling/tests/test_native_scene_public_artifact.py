@@ -521,6 +521,64 @@ class ManimSourceCustodyTests(unittest.TestCase):
             self.assertNotIn("sensitive-session", str(error.exception))
         pub.source_case_directory("output/images/" + token)
 
+    def test_exported_bundle_cas_custody_matches_canonical_blob_layout(self):
+        roots = self.roots()
+        content = b"CANONICAL EXPORTED BUNDLE ORIGINAL CAS CONTROL"
+        digest = hash_bytes(content)
+        target = roots["bundles"] / "original" / "blobs" / "sha256" / digest[:2] / digest
+        target.parent.mkdir(parents=True)
+        target.write_bytes(content)
+        manifest = roots["bundles"] / "original" / "manifest.json"
+        manifest.write_bytes(b"{}")
+        before = pub.snapshot_live_inventory(roots)
+        self.assertIn("bundles/original/blobs", before["directories"])
+        self.assertIn("bundles/original/blobs/sha256/" + digest[:2], before["directories"])
+        originals = [row for row in before["files"] if row["path"] ==
+                     "bundles/original/blobs/sha256/" + digest[:2] + "/" + digest]
+        self.assertEqual(len(originals), 1)
+        self.assertEqual(originals[0]["kind"], "cas")
+        self.assertEqual(originals[0]["sha256"], digest)
+        snapshot = self.private / "bundle-closed-cas-custody"
+        self.assertEqual(before, pub.copy_source_snapshot(roots, snapshot, ()))
+        self.assertEqual(before, pub.source_tree_inventory(snapshot))
+        self.assertEqual(before, pub.snapshot_live_inventory(roots))
+        self.assertEqual(target.read_bytes(), content)
+
+    def test_bundle_cas_untrusted_bytes_and_unrelated_members_still_reject(self):
+        roots = self.roots()
+        content = b"KNOWN ORIGINAL BUNDLE CAS"
+        digest = hash_bytes(content)
+        parent = roots["bundles"] / "original" / "blobs" / "sha256" / digest[:2]
+        parent.mkdir(parents=True)
+        member = parent / digest
+        member.write_bytes(content)
+        self.assertEqual(pub.snapshot_live_inventory(roots)["total_bytes"] > 0, True)
+        member.write_bytes(b"DIFFERENT ORIGINAL BYTES")
+        with self.assertRaisesRegex(pub.PublicationError, "source_live_cas_mismatch"):
+            pub.snapshot_live_inventory(roots)
+        with self.assertRaisesRegex(pub.PublicationError, "source_snapshot_cas_mismatch"):
+            pub.copy_source_snapshot(roots, self.private / "bad-bundle-cas-custody", ())
+        self.assertEqual(member.read_bytes(), b"DIFFERENT ORIGINAL BYTES")
+        member.write_bytes(content)
+        outsider = roots["bundles"] / "original" / "blobs" / "foreign"
+        outsider.mkdir()
+        with self.assertRaises(pub.PublicationError):
+            pub.snapshot_live_inventory(roots)
+        outsider.rmdir()
+        malicious = parent / "identity.txt"
+        malicious.write_bytes(b"OUTSIDE CLOSED BUNDLE FILE PROFILE")
+        with self.assertRaisesRegex(pub.PublicationError, "unapproved_manim_case_file"):
+            pub.snapshot_live_inventory(roots)
+        self.assertEqual(malicious.read_bytes(), b"OUTSIDE CLOSED BUNDLE FILE PROFILE")
+        for path in (
+            "bundles/original/blobs/sha256/abc",
+            "bundles/original/blobs/sha256/" + digest[:2] + "/other",
+            "bundles/foreign/blobs",
+            "bundles/original/secret",
+        ):
+            with self.subTest(path=path), self.assertRaises(pub.PublicationError):
+                pub.source_case_directory(path)
+
     def test_missing_or_changed_cas_identity_is_not_repaired_by_custody(self):
         roots = self.roots()
         cas = next((roots["data"] / "original" / "blobs" / "sha256").glob("*/*"))
