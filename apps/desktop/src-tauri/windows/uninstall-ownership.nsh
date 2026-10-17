@@ -43,6 +43,8 @@
 !define MWOWN_PRESERVED 3
 !define MWOWN_DELETE_UNCERTAIN 4
 !define MWOWN_OBSERVED_NEW_SELF 5
+!define MWOWN_PUBLISHED 6
+!define MWOWN_PUBLISH_UNCERTAIN 7
 !define MWOWN_NEW_SELF_NAME "mw-owned-new-uninstaller.exe"
 ; Tauri canonicalizes installerHooks before including this file. The helper stays
 ; in the same reviewed source checkout; no installed destination supplies tooling.
@@ -65,6 +67,11 @@ Var MWOWN_Buffer
 Var MWOWN_Digest
 Var MWOWN_Info
 Var MWOWN_PathBuffer
+Var MWOWN_PublishTargetLeaf
+Var MWOWN_PublishPath
+Var MWOWN_PublishNameBytes
+Var MWOWN_PublishBufferBytes
+Var MWOWN_RenameInfo
 Var MWOWN_DeleteInfo
 Var MWOWN_RootFull
 Var MWOWN_RootPhysical
@@ -106,6 +113,21 @@ Var MWOWN_HexPointer
   Push "0000000000000000000000000000000000000000000000000000000000000000"
   Push "0"
   Push "2"
+  Call MWOWN_Guard
+  Pop ${Result}
+!macroend
+
+; Atomically rename an extracted SHA-checked staged source using the
+; SAME open SHA-checked file handle. The root is the destination's immediate
+; parent. RootDirectory must remain NULL for Win32 FileRenameInfo with an
+; absolute path (relative + non-NULL can fail with ERROR_INVALID_PARAMETER).
+!macro MWOWN_PUBLISH Root StageLeaf TargetLeaf Sha Size Result
+  StrCpy $MWOWN_PublishTargetLeaf "${TargetLeaf}"
+  Push "${Root}"
+  Push "${StageLeaf}"
+  Push "${Sha}"
+  Push "${Size}"
+  Push "3"
   Call MWOWN_Guard
   Pop ${Result}
 !macroend
@@ -166,10 +188,12 @@ mwown_error_saved:
   StrCpy $MWOWN_Info 0
   StrCpy $MWOWN_PathBuffer 0
   StrCpy $MWOWN_DeleteInfo 0
+  StrCpy $MWOWN_RenameInfo 0
 
   ${If} $MWOWN_Mode != "0"
   ${AndIf} $MWOWN_Mode != "1"
   ${AndIf} $MWOWN_Mode != "2"
+  ${AndIf} $MWOWN_Mode != "3"
     Goto mwown_exit
   ${EndIf}
   ${If} $MWOWN_Mode == "2"
@@ -195,6 +219,10 @@ mwown_error_saved:
 !endif
   ${EndIf}
 !if "${Prefix}" == "un."
+  ${If} $MWOWN_Mode == "3"
+    StrCpy $MWOWN_LastReason "publication_not_admitted_in_uninstaller"
+    Goto mwown_exit
+  ${EndIf}
   ${If} $MWOWN_Mode == "1"
   ${AndIf} $MWOWN_Relative == "uninstall.exe"
     StrCpy $MWOWN_LastReason "self_file_retained"
@@ -294,6 +322,39 @@ mwown_relative_char:
     Goto mwown_relative_char
   ${EndIf}
   !insertmacro MWOWN_VALIDATE_COMPONENT
+
+  ${If} $MWOWN_Mode == "3"
+    StrLen $MWOWN_Length $MWOWN_PublishTargetLeaf
+    ${If} $MWOWN_Length < 1
+    ${OrIf} $MWOWN_Length > 255
+      StrCpy $MWOWN_LastReason "invalid_publication_filename"
+      Goto mwown_exit
+    ${EndIf}
+    StrCpy $MWOWN_Component $MWOWN_PublishTargetLeaf
+    !insertmacro MWOWN_VALIDATE_COMPONENT
+    StrCpy $MWOWN_Index 0
+mwown_publish_target_char:
+    StrCpy $0 $MWOWN_PublishTargetLeaf 1 $MWOWN_Index
+    ${If} $0 == "\"
+    ${OrIf} $0 == "/"
+    ${OrIf} $0 == ":"
+    ${OrIf} $0 == "*"
+    ${OrIf} $0 == "?"
+    ${OrIf} $0 == "<"
+    ${OrIf} $0 == ">"
+    ${OrIf} $0 == "|"
+    ${OrIf} $0 == '"'
+    ${OrIf} $0 == "$\r"
+    ${OrIf} $0 == "$\n"
+    ${OrIf} $0 == "$\t"
+      StrCpy $MWOWN_LastReason "invalid_publication_character"
+      Goto mwown_exit
+    ${EndIf}
+    IntOp $MWOWN_Index $MWOWN_Index + 1
+    ${If} $MWOWN_Index < $MWOWN_Length
+      Goto mwown_publish_target_char
+    ${EndIf}
+  ${EndIf}
 
   IntOp $0 ${NSIS_MAX_STRLEN} * 2
   System::Alloc $0
@@ -402,6 +463,7 @@ mwown_parent_char:
   StrCpy $MWOWN_ExpectedPhysical "$MWOWN_RootPhysical\$MWOWN_Relative"
   StrCpy $3 0x80000000
   ${If} $MWOWN_Mode == "1"
+  ${OrIf} $MWOWN_Mode == "3"
     StrCpy $3 0x80010000
   ${EndIf}
   ; CHECK and OBSERVE request no DELETE access. Every mode denies
@@ -583,6 +645,55 @@ mwown_hex_byte:
     Goto mwown_exit
   ${EndIf}
 
+  ${If} $MWOWN_Mode == "3"
+    ; The verified immediate directory remains open without share-delete
+    ; across this operation; the target is its direct child, not an alias.
+    StrCpy $MWOWN_PublishPath "$MWOWN_RootFull\$MWOWN_PublishTargetLeaf"
+    StrLen $0 $MWOWN_PublishPath
+    ${If} $0 >= ${NSIS_MAX_STRLEN}
+      StrCpy $MWOWN_LastReason "publication_path_limit"
+      Goto mwown_exit
+    ${EndIf}
+    IntOp $MWOWN_PublishNameBytes $0 * 2
+    IntOp $MWOWN_PublishBufferBytes ${NSIS_MAX_STRLEN} * 2
+    IntOp $MWOWN_PublishBufferBytes $MWOWN_PublishBufferBytes + 12
+    StrCpy $2 "$MWOWN_PublishPath"
+    ; 32-bit Unicode NSIS FILE_RENAME_INFO: DWORD flags=0, NULL HANDLE,
+    ; DWORD UTF16 length, WCHAR path. Refuse replacement; no path fallback.
+    System::Call '*(i 0, p 0, i $MWOWN_PublishNameBytes, &w${NSIS_MAX_STRLEN} r2) p.r0'
+    ${If} $0 = 0
+      StrCpy $MWOWN_LastReason "publication_buffer_unavailable"
+      Goto mwown_exit
+    ${EndIf}
+    StrCpy $MWOWN_RenameInfo $0
+    StrCpy $MWOWN_Result ${MWOWN_PUBLISH_UNCERTAIN}
+    StrCpy $MWOWN_LastReason "publication_outcome_unconfirmed"
+    StrCpy $0 0
+    System::Call 'kernel32::SetFileInformationByHandle(p $MWOWN_FileHandle, i 3, p $MWOWN_RenameInfo, i $MWOWN_PublishBufferBytes) i.r0 ?e'
+    Pop $1
+    ${If} $0 = 0
+      StrCpy $MWOWN_LastReason "publication_rename_failed"
+      Goto mwown_exit
+    ${EndIf}
+    ; Read back the identity through the SAME file handle after rename.
+    System::Call 'kernel32::GetFinalPathNameByHandleW(p $MWOWN_FileHandle, p $MWOWN_PathBuffer, i ${NSIS_MAX_STRLEN}, i 0) i.r0'
+    ${If} $0 <= 0
+    ${OrIf} $0 >= ${NSIS_MAX_STRLEN}
+      StrCpy $MWOWN_LastReason "publication_identity_unavailable"
+      Goto mwown_exit
+    ${EndIf}
+    System::Call '*$MWOWN_PathBuffer(&w${NSIS_MAX_STRLEN} .r1)'
+    StrCpy $2 "$MWOWN_RootPhysical\$MWOWN_PublishTargetLeaf"
+    System::Call 'kernel32::CompareStringOrdinal(w r1, i -1, w r2, i -1, i 1) i.r0'
+    ${If} $0 != 2
+      StrCpy $MWOWN_LastReason "publication_identity_changed"
+      Goto mwown_exit
+    ${EndIf}
+    StrCpy $MWOWN_Result ${MWOWN_PUBLISHED}
+    StrCpy $MWOWN_LastReason "published_by_verified_handle"
+    Goto mwown_exit
+  ${EndIf}
+
   ${If} $MWOWN_Mode == "2"
     ; The ordinary, bounded staged file was hashed and its identity rechecked.
     ; Common cleanup must also succeed before the caller may use this observation.
@@ -612,8 +723,16 @@ mwown_hex_byte:
 
 mwown_exit:
   ; Each release is attempted once. No UNKNOWN disposition is retried.
+  ${If} $MWOWN_RenameInfo != 0
+    System::Free $MWOWN_RenameInfo
+    StrCpy $MWOWN_RenameInfo 0
+  ${EndIf}
   ; A failed pre-disposition cleanup must not retain a content-mismatch reason:
   ; callers may compare an admitted predecessor only after a clean CHECK.
+  ; Both CNG handles are released and set to 0 before entering the
+  ; publication branch. Their cleanup failures below therefore happen
+  ; only before any FileRenameInfo attempt and cannot downgrade a
+  ; PUBLISHED/UNCERTAIN publication state.
   ${If} $MWOWN_Hash != 0
     StrCpy $0 "call_failed"
     System::Call '"$SYSDIR\bcrypt.dll"::BCryptDestroyHash(p $MWOWN_Hash) i.r0'
@@ -641,7 +760,11 @@ mwown_exit:
       ${If} $MWOWN_Result = ${MWOWN_DELETE_MARKED}
         StrCpy $MWOWN_Result ${MWOWN_DELETE_UNCERTAIN}
         StrCpy $MWOWN_LastReason "close_after_delete_failed"
-      ${Else}
+      ${ElseIf} $MWOWN_Result = ${MWOWN_PUBLISHED}
+        StrCpy $MWOWN_Result ${MWOWN_PUBLISH_UNCERTAIN}
+        StrCpy $MWOWN_LastReason "close_after_publish_failed"
+      ${ElseIf} $MWOWN_Result != ${MWOWN_PUBLISH_UNCERTAIN}
+      ${AndIf} $MWOWN_Result != ${MWOWN_DELETE_UNCERTAIN}
         StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
         StrCpy $MWOWN_LastReason "file_close_failed"
       ${EndIf}
@@ -654,11 +777,13 @@ mwown_exit:
       ${If} $MWOWN_Result = ${MWOWN_DELETE_MARKED}
         StrCpy $MWOWN_Result ${MWOWN_DELETE_UNCERTAIN}
         StrCpy $MWOWN_LastReason "root_close_after_delete_failed"
-      ${Else}
-        ${If} $MWOWN_Result != ${MWOWN_DELETE_UNCERTAIN}
-          StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
-          StrCpy $MWOWN_LastReason "root_close_failed"
-        ${EndIf}
+      ${ElseIf} $MWOWN_Result = ${MWOWN_PUBLISHED}
+        StrCpy $MWOWN_Result ${MWOWN_PUBLISH_UNCERTAIN}
+        StrCpy $MWOWN_LastReason "root_close_after_publish_failed"
+      ${ElseIf} $MWOWN_Result != ${MWOWN_DELETE_UNCERTAIN}
+      ${AndIf} $MWOWN_Result != ${MWOWN_PUBLISH_UNCERTAIN}
+        StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
+        StrCpy $MWOWN_LastReason "root_close_failed"
       ${EndIf}
     ${EndIf}
   ${EndIf}
