@@ -156,6 +156,9 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         };
+        if super::project_creation::is_creation_receipt(&result_json) {
+            return Err(StorageError::RequestReuse);
+        }
         let mut outcome: ApplyOutcome = serde_json::from_str(&result_json)
             .map_err(|_| invalid_receipt("invalid receipt outcome JSON"))?;
         outcome
