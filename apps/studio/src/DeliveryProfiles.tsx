@@ -1,5 +1,5 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import NativeAvReview from "./NativeAvReview";
 import {
   evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
@@ -8,6 +8,7 @@ import {
 import VariantContinuityReview from "./VariantContinuityReview";
 import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
+import { useDeliveryRecipeDraft } from "./deliveryRecipe";
 import {
   assembleNativeAvMaster,
   assembleNativeMultisegmentAvMaster,
@@ -72,10 +73,151 @@ const motionArchetypes: Array<{ value: MotionCanvasArchetype; label: string }> =
   { value: "endcard", label: "End card" },
 ];
 
-type SceneIntentDraft = {
-  role: MotionCanvasNarrativeRole | "";
-  archetype: MotionCanvasArchetype | "";
-};
+type RecipeDraftController = ReturnType<typeof useDeliveryRecipeDraft>;
+type RecipeFieldDescription = { label: string; controlId?: string };
+
+/** Keep Space's native control action from also starting Studio playback. */
+export function containRecipeKeyboard(event: KeyboardEvent<HTMLElement>) {
+  if (event.key === " " && event.target instanceof HTMLElement
+      && event.target.closest("button, input, textarea, select, summary, audio, video")) event.stopPropagation();
+}
+
+/** Shared review of local inputs. Only the existing commit path changes a recipe. */
+export function RecipeDraftReview({
+  controller, title, revision, fields, saveLabel, clearLabel, hasSavedGroup, blockedReason,
+}: {
+  controller: RecipeDraftController;
+  title: string;
+  revision: number;
+  fields: Record<string, RecipeFieldDescription>;
+  saveLabel: string;
+  clearLabel: string;
+  hasSavedGroup: boolean;
+  blockedReason?: string | null;
+}) {
+  const review = useRef<HTMLElement>(null);
+  const status = useRef<HTMLParagraphElement>(null);
+  const label = (field: string) => fields[field]?.label ?? field.replaceAll("_", " ");
+  const afterAction = (action: () => void, field?: string) => {
+    action();
+    requestAnimationFrame(() => {
+      if (!review.current?.isConnected) return;
+      const controlId = field ? fields[field]?.controlId : undefined;
+      const control = controlId ? document.getElementById(controlId) : null;
+      if (control && !(control as HTMLInputElement).disabled) control.focus();
+      else status.current?.focus();
+    });
+  };
+  const missingControls = Object.keys(controller.edits).filter(field => !fields[field]?.controlId
+    && !controller.conflicts.includes(field));
+  const pendingControls = Object.keys(controller.edits).filter(field => fields[field]?.controlId
+    && !controller.conflicts.includes(field));
+  const cannotSave = !controller.dirty || controller.pending || controller.locked
+    || controller.sourceBehind || controller.recoveryBlocked || controller.conflicts.length > 0
+    || Boolean(blockedReason);
+  const cannotReplace = controller.dirty || controller.awaiting || controller.pending
+    || controller.recoveryBlocked || controller.sourceBehind;
+  const showValue = (value: string | undefined) => value === "" || value === undefined ? "Not set" : value;
+  const comparison = (field: string) => <div className="portable-plan"
+    style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))" }}>
+    {([
+      ["Before", controller.edits[field]?.base],
+      ["Saved now", controller.savedValues[field]],
+      ["My draft", controller.edits[field]?.value],
+    ] as const).map(([heading, value]) => <div key={heading}>
+      <span>{heading}</span>
+      <p style={{ margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{showValue(value)}</p>
+    </div>)}
+  </div>;
+  return <section ref={review} aria-label={title + " draft review"} onKeyDown={containRecipeKeyboard}>
+    <p ref={status} tabIndex={-1} role="status" className="production-help">
+      {controller.pending ? "Save requested; waiting for the project service. You may continue editing recipe inputs."
+        : controller.awaiting ? "A save was requested. Inputs remain pending until they agree with a newer saved project or you resolve them explicitly."
+        : controller.dirty ? Object.keys(controller.edits).length + " recipe field(s) have pending input."
+        : "Showing saved recipe values at revision r" + revision + "."}
+    </p>
+    {controller.locked && <p className="portable-message error">The project content lock blocks recipe changes.</p>}
+    {controller.sourceBehind && <p className="portable-message error">This draft was edited against a newer project revision. Reopen the current saved project before changing or saving these inputs.</p>}
+    {blockedReason && <p className="production-help">{blockedReason}</p>}
+    {controller.error && <p className="portable-message error" role="alert">{controller.error}</p>}
+    {controller.message && <p className="production-help" role="status">{controller.message}</p>}
+    {controller.recoveryBlocked && <div className="portable-operation-copy">
+      <p className="production-help">The unreadable copy is retained. Saving and replacing this draft are blocked until you explicitly discard that copy; new input stays in this window.</p>
+      <button type="button" className="button" disabled={controller.pending}
+        onClick={() => afterAction(controller.discardUnreadableCopy)}>
+        Discard unreadable {title.toLowerCase()} copy
+      </button>
+    </div>}
+    {controller.conflicts.length > 0 && <section aria-label={title + " conflicts"}>
+      <p className="production-help">The saved project changed these fields. Choose each value before saving; resolving a conflict does not save it.</p>
+      {controller.conflicts.map(field => <div key={field} aria-label={label(field) + " conflict"} role="group">
+        <strong>{label(field)}</strong>
+        {comparison(field)}
+        <div className="delivery-editor-actions">
+          <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+            onClick={() => afterAction(() => controller.resolve(field, "saved"), field)}>
+            Keep saved {label(field)}
+          </button>
+          <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+            onClick={() => afterAction(() => controller.resolve(field, "draft"), field)}>
+            Keep my draft {label(field)}
+          </button>
+        </div>
+      </div>)}
+    </section>}
+    {missingControls.length > 0 && <section aria-label={title + " inputs outside the current view"}>
+      <p className="production-help">These pending fields are outside the current scene selection or refer to a removed source. They are retained until you explicitly discard them.</p>
+      {missingControls.map(field => <div key={field}>
+        <strong>{label(field)}</strong>
+        {comparison(field)}
+        <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+          onClick={() => afterAction(() => controller.resolve(field, "saved"))}>
+          Discard pending {label(field)}
+        </button>
+      </div>)}
+    </section>}
+    {pendingControls.length > 0 && <details aria-label={title + " pending fields"}>
+      <summary>Review pending fields ({pendingControls.length})</summary>
+      {pendingControls.map(field => <div key={field}>
+        <strong>{label(field)}</strong>
+        {comparison(field)}
+        <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+          onClick={() => afterAction(() => controller.resolve(field, "saved"), field)}>
+          Keep saved {label(field)}
+        </button>
+      </div>)}
+    </details>}
+    <div className="delivery-editor-actions">
+      <button type="button" className="button button-primary" disabled={cannotSave}
+        onClick={() => void controller.save()}><Save size={14} aria-hidden="true" />
+        {controller.pending ? "Saving recipe…" : saveLabel}
+      </button>
+      <button type="button" className="button"
+        disabled={!hasSavedGroup || cannotReplace || controller.locked || Boolean(blockedReason)}
+        onClick={() => afterAction(controller.clearGroup)}><Trash2 size={14} aria-hidden="true" />{clearLabel}</button>
+    </div>
+    <p className="production-help">Clearing creates a pending recipe change; save it explicitly. Recovery stores authoring inputs in this browser profile, with a 256 KiB copy limit and a shared 64-copy / 2 MiB budget. It does not store execution grants or review approval.</p>
+    <details aria-label={title + " recovery copies"}>
+      <summary>Recovery copies ({controller.copies.length})</summary>
+      <p className="production-help">Copies from other editing windows are listed for this project, branch and delivery profile. They are applied only when you choose Recover.</p>
+      <button type="button" className="button" onClick={() => afterAction(controller.refreshCopies)}>Refresh {title.toLowerCase()} copies</button>
+      {controller.copies.length === 0 && <p className="production-help">No separate copy is currently listed.</p>}
+      {controller.copies.map((copy, index) => <div key={copy.key} className="portable-operation"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))" }}>
+        <div className="portable-operation-copy">
+          <strong>Copy {index + 1}</strong>
+          <span>{copy.readable ? "Revision r" + copy.revision + " · " + copy.fields + " pending field(s)" : "Unreadable copy · original bytes retained"}</span>
+        </div>
+        <div className="delivery-editor-actions">
+          <button type="button" className="button" disabled={!copy.readable || cannotReplace}
+            onClick={() => afterAction(() => controller.recoverCopy(copy.key))}>Recover {title.toLowerCase()} copy {index + 1}</button>
+          <button type="button" className="button" disabled={controller.pending}
+            onClick={() => afterAction(() => controller.discardCopy(copy.key))}>Discard {title.toLowerCase()} copy {index + 1}</button>
+        </div>
+      </div>)}
+    </details>
+  </section>;
+}
 
 function freshProfile(index: number): DeliverableProfile {
   return {
@@ -148,7 +290,7 @@ export default function DeliveryProfiles({
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
-  const [sceneIntents, setSceneIntents] = useState<Record<string, SceneIntentDraft>>({});
+  const filmDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "film", commit);
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
   const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);
@@ -180,7 +322,7 @@ export default function DeliveryProfiles({
         .finally(() => { if (active) setRuntimeProbeBusy(false); });
     }
     return () => { active = false; };
-  }, [project.id, project.generation, project.revision, desktopMode, runtimeProbeSerial]);
+  }, [project.id, project.generation, project.active_branch, project.revision, desktopMode, runtimeProbeSerial]);
 
   useEffect(() => {
     const current = project.deliverables.find((profile) => profile.id === selectedId) ?? project.deliverables[0] ?? null;
@@ -189,7 +331,7 @@ export default function DeliveryProfiles({
     setSidecarPath("");
     setOtioLosses([]);
 
-  }, [project.generation, project.revision, selectedId]);
+  }, [project.id, project.generation, project.active_branch, project.revision, selectedId]);
 
   const motionScenes = useMemo(() => {
     const selectedSceneIds = selected?.included_scene_ids ?? [];
@@ -210,12 +352,6 @@ export default function DeliveryProfiles({
           .map((node) => ({ scene, node })),
       );
   }, [draft?.included_scene_ids, project.scenes]);
-
-  useEffect(() => {
-    setSceneIntents((current) => Object.fromEntries(
-      motionScenes.map((scene) => [scene.id, current[scene.id] ?? { role: "", archetype: "" }]),
-    ));
-  }, [motionScenes]);
 
   const profileTranscript = useMemo(
     () => draft?.voice_track_id
@@ -242,10 +378,18 @@ export default function DeliveryProfiles({
     unknownTimings === 0 &&
     (draft.voice_track_id !== null || transcriptTrackCount <= 1),
   );
-  const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) => {
-    const intent = sceneIntents[scene.id];
-    return Boolean(intent?.role && intent?.archetype);
-  });
+  const filmDraftBlocked = filmDraft.dirty || filmDraft.awaiting || filmDraft.pending
+    || filmDraft.conflicts.length > 0 || filmDraft.recoveryBlocked || filmDraft.sourceBehind;
+  const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) =>
+    narrativeRoles.some(option => option.value === filmDraft.savedValues[scene.id + ":role"])
+      && motionArchetypes.some(option => option.value === filmDraft.savedValues[scene.id + ":archetype"]));
+  const filmFields: Record<string, RecipeFieldDescription> = Object.fromEntries(project.scenes.flatMap(scene => {
+    const visible = motionScenes.some(item => item.id === scene.id);
+    return [
+      [scene.id + ":role", { label: scene.name + " narrative role", ...(visible ? { controlId: "film-" + selected?.id + "-" + scene.id + "-role" } : {}) }],
+      [scene.id + ":archetype", { label: scene.name + " motion archetype", ...(visible ? { controlId: "film-" + selected?.id + "-" + scene.id + "-archetype" } : {}) }],
+    ];
+  }));
   const nativePaletteReady = useMemo(() => {
     const names = new Set(project.visual_language.palette.map((token) => token.name.toLowerCase()));
     return (names.has("text") || names.has("ink")) &&
@@ -255,6 +399,7 @@ export default function DeliveryProfiles({
     desktopMode &&
     selected &&
     !dirty &&
+    !filmDraftBlocked &&
     renderIntentsComplete &&
     nativePaletteReady &&
     fontFamily.trim() &&
@@ -342,15 +487,23 @@ export default function DeliveryProfiles({
   const preflightKey = JSON.stringify([
     project.id,
     project.generation,
+    project.active_branch,
     project.revision,
     selected?.id,
     selected?.frame_rate,
     motionScenes.map((scene) => scene.id),
-    sceneIntents,
+    filmDraft.savedValues,
     fontFamily,
     monoFontFamily,
   ]);
-  const currentPreflight = preflight?.key === preflightKey ? preflight.report : null;
+  const currentPreflight = !filmDraftBlocked && preflight?.key === preflightKey ? preflight.report : null;
+  const liveFilm = useRef({ key: preflightKey, ready: renderReady, mounted: true });
+  liveFilm.current.key = preflightKey;
+  liveFilm.current.ready = renderReady;
+  useEffect(() => {
+    liveFilm.current.mounted = true;
+    return () => { liveFilm.current.mounted = false; };
+  }, []);
   const firstRenderGate = evaluateFirstNativeRenderGate({
     project,
     profileId: selected?.id ?? null,
@@ -364,6 +517,7 @@ export default function DeliveryProfiles({
 
   function filmOptions(): MotionCanvasFilmOptions {
     if (!selected) throw new Error("Select a saved profile before building a Film projection.");
+    if (filmDraftBlocked) throw new Error("Save or resolve the scene intent draft before building a Film projection.");
     const num = Number(selected.frame_rate.num);
     const den = Number(selected.frame_rate.den);
     if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
@@ -374,14 +528,15 @@ export default function DeliveryProfiles({
       font_family: fontFamily.trim(),
       mono_font_family: monoFontFamily.trim(),
       scene_intents: motionScenes.map((scene) => {
-        const intent = sceneIntents[scene.id];
-        if (!intent?.role || !intent.archetype) {
-          throw new Error("Every Motion Canvas scene requires an explicit role and archetype.");
+        const role = narrativeRoles.find(option => option.value === filmDraft.savedValues[scene.id + ":role"])?.value;
+        const archetype = motionArchetypes.find(option => option.value === filmDraft.savedValues[scene.id + ":archetype"])?.value;
+        if (!role || !archetype) {
+          throw new Error("Every included Motion Canvas scene requires a saved role and archetype.");
         }
         return {
           scene_id: scene.id,
-          role: intent.role,
-          archetype: intent.archetype,
+          role,
+          archetype,
         };
       }),
     };
@@ -461,6 +616,7 @@ export default function DeliveryProfiles({
     const key = preflightKey;
     void run("preflight", async () => {
       const report = await preflightMotionCanvas(project, selected.id, filmOptions());
+      if (!liveFilm.current.mounted || liveFilm.current.key !== key || !liveFilm.current.ready) return;
       setPreflight({ key, report });
       setMessage(report.verdict === "projection_ready"
         ? "Semantic Film projection is supported at this revision. Native rendering is a separate operation."
@@ -540,11 +696,14 @@ export default function DeliveryProfiles({
 
   const startNativeRender = () => {
     if (!selected || !renderReady || !firstRenderGate.may_request_native_render) return;
+    const key = preflightKey;
     void run("render", async () => {
+      const options = filmOptions();
       // Runtime selection or CLI bytes may have changed since the UI probe.
       // Recheck immediately before requesting a one-time native effect grant.
       const scope = firstRenderRuntimeScope(project);
       const latest = await productionRuntimeCompatibility(project);
+      if (!liveFilm.current.mounted || liveFilm.current.key !== key || !liveFilm.current.ready) return;
       setRuntimeObservation({ scope, value: latest });
       const gate = evaluateFirstNativeRenderGate({
         project,
@@ -559,7 +718,8 @@ export default function DeliveryProfiles({
       if (!gate.may_request_native_render) {
         throw new Error("Native runtime or Film preparation changed. " + gate.explanation);
       }
-      const result = await renderMotionCanvas(project, selected.id, filmOptions());
+      const result = await renderMotionCanvas(project, selected.id, options);
+      if (!liveFilm.current.mounted || liveFilm.current.key !== key || !liveFilm.current.ready) return;
       onRenderEvidence(result);
       const frames = result.segments.reduce((sum, segment) => sum + segment.frame_count, 0);
       setMessage(
@@ -571,17 +731,17 @@ export default function DeliveryProfiles({
   };
 
   return (
-    <section className="delivery-profile-workbench" aria-label="Delivery profiles">
+    <section className="delivery-profile-workbench" aria-label="Delivery profiles" onKeyDown={containRecipeKeyboard}>
       <header className="delivery-profile-heading">
         <div>
           <strong>Output profiles</strong>
           <span>Versioned intent for frame, language, codecs and portable captions.</span>
         </div>
         <div className="delivery-editor-actions">
-          <button type="button" className="button" disabled={!selected || busy !== null} onClick={deriveProfile}>
+          <button type="button" className="button" disabled={!selected || busy !== null || filmDraft.pending} onClick={deriveProfile}>
             <Plus size={14} /> Derive selected
           </button>
-          <button type="button" className="button" disabled={busy !== null} onClick={createProfile}>
+          <button type="button" className="button" disabled={busy !== null || filmDraft.pending} onClick={createProfile}>
             <Plus size={14} /> New profile
           </button>
         </div>
@@ -619,6 +779,8 @@ export default function DeliveryProfiles({
               </span>
             </div>
 
+            <fieldset disabled={filmDraft.pending} aria-label="Output profile settings"
+              style={{ margin: 0, padding: 0, border: 0, minWidth: 0, display: "grid", gap: 14 }}>
             {parentProfile && (
               <div className="delivery-truth-note">
                 Derived from {parentProfile.name} · source revision r{draft.source_revision ?? "?"} · original remains independently inspectable.
@@ -883,6 +1045,7 @@ export default function DeliveryProfiles({
                 <Trash2 size={14} /> Remove
               </button>
             </div>
+            </fieldset>
 
             <section className="caption-export-panel" aria-label="Native Motion Canvas production">
               <header>
@@ -912,16 +1075,18 @@ export default function DeliveryProfiles({
                 <header className="portable-heading">
                   <div>
                     <strong>Scene intent</strong>
-                    <span>Role and visual archetype are explicit authoring inputs; Motionwright does not infer them at render time.</span>
+                    <span>Save each scene's role and visual archetype in this delivery profile. Film checks and rendering use those saved values.</span>
                   </div>
-                  <span className={renderIntentsComplete ? "status-pill status-current" : "status-pill status-unknown"}>
-                    {renderIntentsComplete ? "COMPLETE" : "REQUIRED"}
+                  <span className={renderIntentsComplete && !filmDraftBlocked ? "status-pill status-current" : "status-pill status-unknown"}>
+                    {filmDraftBlocked ? "PENDING REVIEW" : renderIntentsComplete ? "SAVED COMPLETE" : "SAVED INCOMPLETE"}
                   </span>
                 </header>
                 {motionScenes.map((scene) => {
-                  const intent = sceneIntents[scene.id] ?? { role: "", archetype: "" };
+                  const roleKey = scene.id + ":role";
+                  const archetypeKey = scene.id + ":archetype";
                   return (
-                    <div className="portable-operation" key={scene.id}>
+                    <div className="portable-operation" key={scene.id}
+                      style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))" }}>
                       <div className="portable-operation-copy">
                         <strong>{scene.name}</strong>
                         <span className="mono">scene:{scene.id.slice(0, 8)}</span>
@@ -929,43 +1094,44 @@ export default function DeliveryProfiles({
                       <label>
                         <span className="field-label">Narrative role</span>
                         <select
+                          id={filmFields[roleKey]?.controlId}
                           aria-label={scene.name + " narrative role"}
-                          value={intent.role}
-                          disabled={busy !== null}
-                          onChange={(event) => setSceneIntents((current) => ({
-                            ...current,
-                            [scene.id]: {
-                              ...(current[scene.id] ?? { role: "", archetype: "" }),
-                              role: event.target.value as MotionCanvasNarrativeRole | "",
-                            },
-                          }))}
+                          value={filmDraft.values[roleKey] ?? ""}
+                          disabled={filmDraft.locked || filmDraft.sourceBehind}
+                          onChange={(event) => { liveFilm.current.ready = false; filmDraft.set(roleKey, event.target.value); }}
                         >
                           <option value="">Choose role…</option>
+                          {filmDraft.values[roleKey] && !narrativeRoles.some(option => option.value === filmDraft.values[roleKey]) && <option value={filmDraft.values[roleKey]}>Unrecognized input: {filmDraft.values[roleKey]}</option>}
                           {narrativeRoles.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
                       </label>
                       <label>
                         <span className="field-label">Archetype</span>
                         <select
+                          id={filmFields[archetypeKey]?.controlId}
                           aria-label={scene.name + " motion archetype"}
-                          value={intent.archetype}
-                          disabled={busy !== null}
-                          onChange={(event) => setSceneIntents((current) => ({
-                            ...current,
-                            [scene.id]: {
-                              ...(current[scene.id] ?? { role: "", archetype: "" }),
-                              archetype: event.target.value as MotionCanvasArchetype | "",
-                            },
-                          }))}
+                          value={filmDraft.values[archetypeKey] ?? ""}
+                          disabled={filmDraft.locked || filmDraft.sourceBehind}
+                          onChange={(event) => { liveFilm.current.ready = false; filmDraft.set(archetypeKey, event.target.value); }}
                         >
                           <option value="">Choose archetype…</option>
+                          {filmDraft.values[archetypeKey] && !motionArchetypes.some(option => option.value === filmDraft.values[archetypeKey]) && <option value={filmDraft.values[archetypeKey]}>Unrecognized input: {filmDraft.values[archetypeKey]}</option>}
                           {motionArchetypes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
                       </label>
                     </div>
                   );
                 })}
+                <RecipeDraftReview controller={filmDraft} title="Scene intent" revision={project.revision}
+                  fields={filmFields} saveLabel="Save scene intent" clearLabel="Clear saved scene intent"
+                  hasSavedGroup={Object.values(filmDraft.savedValues).some(Boolean)}
+                  blockedReason={dirty ? "Save the output profile settings before saving scene intent. Your recipe inputs remain pending."
+                    : busy !== null ? "Wait for the current delivery operation before saving a recipe change." : null} />
               </div>
+
+              {filmDraftBlocked && <p className="delivery-truth-note warning" role="status">
+                Save or resolve pending scene intent before checking Film or rendering. These operations use only the saved recipe at the current revision.
+              </p>}
 
               <div className="delivery-editor-actions">
                 <button
@@ -979,7 +1145,7 @@ export default function DeliveryProfiles({
                 <button
                   type="button"
                   className="button button-primary"
-                  disabled={!firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
+                  disabled={!renderReady || !firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
                   onClick={startNativeRender}
                   title={firstRenderGate.explanation}
                 >

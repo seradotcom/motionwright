@@ -1,4 +1,5 @@
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
+import type { DeliveryRecipe } from "./deliveryRecipe";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
@@ -656,6 +657,7 @@ export type Change =
   | { type: "register_identity_origin"; record: IdentityOriginRecord }
   | { type: "revoke_identity_origin"; revocation: IdentityRevocation }
   | { type: "set_production_plan"; plan: ProductionPlan | null }
+  | { type: "set_delivery_recipe"; deliverable_profile_id: string; recipe: DeliveryRecipe | null }
   | { type: "upsert_measured_table"; table: MeasuredTable }
   | { type: "upsert_measured_binding"; binding_id: string; scene_id: string; node_id: string; table_id: string; datum_key: string; view: MeasuredView }
   | { type: "detach_measured_binding"; binding_id: string }
