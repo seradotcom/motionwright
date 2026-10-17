@@ -293,6 +293,10 @@ fn editorial_gain_edit_after_bundle_import_changes_pcm_and_invalidates_previous_
     fs::create_dir_all(&target).unwrap();
     let destination = StudioService::open(target.join("studio.sqlite3")).unwrap();
     let imported = destination.import_project_bundle(&bundle).unwrap();
+    let (imported_plan, imported_pcm) = current_plan(&destination, &imported, ids, Some(&plan));
+    assert!(imported_plan.validate(&imported).is_ok());
+    assert_eq!(imported_pcm, pcm);
+    assert_eq!(mix(&imported_plan, &imported, &imported_pcm), before_wav);
     let mut intent = imported.audio.mix.clone();
     intent.music_gain_db -= 6.0;
     let edited = apply(
@@ -305,19 +309,33 @@ fn editorial_gain_edit_after_bundle_import_changes_pcm_and_invalidates_previous_
     assert_eq!(edited.assets, imported.assets);
     assert_eq!(edited.audio.voice_tracks, imported.audio.voice_tracks);
     assert_eq!(edited.audio.transcript, imported.audio.transcript);
-    let (changed_plan, source_pcm) = current_plan(&destination, &edited, ids, Some(&plan));
+    assert_eq!(edited.generation, imported.generation);
+    let (changed_plan, source_pcm) = current_plan(&destination, &edited, ids, Some(&imported_plan));
     assert_eq!(source_pcm, pcm);
-    assert!(plan.validate(&edited).is_err());
+    assert!(imported_plan.validate(&edited).is_err());
     let after_wav = mix(&changed_plan, &edited, &source_pcm);
     assert_ne!(sha(&before_wav), sha(&after_wav));
     let energy = |wav: &[u8]| -> f64 {
         wav[44..44 + 20_000 * 4]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|sample| f64::from(i16::from_le_bytes([sample[0], sample[1]])).powi(2))
             .sum()
     };
     let measured_gain_ratio = (energy(&after_wav) / energy(&before_wav)).sqrt();
     assert!((0.49..0.52).contains(&measured_gain_ratio));
+    drop(destination);
+    let reopened_service = StudioService::open(target.join("studio.sqlite3")).unwrap();
+    let reopened = reopened_service.project(edited.id).unwrap();
+    assert_eq!(reopened.stamp(), edited.stamp());
+    assert_eq!(reopened.audio, edited.audio);
+    assert_eq!(reopened.assets, edited.assets);
+    let (persisted_plan, persisted_pcm) =
+        current_plan(&reopened_service, &reopened, ids, Some(&imported_plan));
+    assert!(imported_plan.validate(&reopened).is_err());
+    assert_eq!(persisted_pcm, source_pcm);
+    assert_eq!(mix(&persisted_plan, &reopened, &persisted_pcm), after_wav);
 }
 
 #[test]
