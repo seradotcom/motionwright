@@ -3,6 +3,11 @@
 //! This module does not implement a native runtime, grant authority, open a
 //! Scene, or claim raster/audio fidelity. Every native command goes through
 //! the existing ProductionCoordinator and its original receipt journal.
+//!
+//! SDK54d keeps Driver catalog metadata marked untrusted even after the
+//! owner/Broker binds execution provenance. That marker is not execution
+//! authority; the provider, source, generation, descriptor and original
+//! request/receipt checks below remain independently mandatory.
 
 use super::*;
 use crate::multi_renderer::{BlenderPrimitive, BlenderSceneContribution};
@@ -1184,7 +1189,7 @@ pub fn verify_blender_editable_stage_custody(
             .pointer("/execution/provenance/execution_provider")
             .and_then(Value::as_str)
             != Some("driver:blender")
-        || actual_result.pointer("/execution/provenance/untrusted_metadata") != Some(&json!(false))
+        || actual_result.pointer("/execution/provenance/untrusted_metadata") != Some(&json!(true))
         || actual_result
             .pointer("/execution/provenance/provider_generation")
             .and_then(Value::as_u64)
@@ -2017,7 +2022,7 @@ impl ProductionCoordinator {
                 .and_then(Value::as_str)
                 != Some("driver:blender")
             || response.pointer("/result/execution/provenance/untrusted_metadata")
-                != Some(&json!(false))
+                != Some(&json!(true))
         {
             return Err(backend(
                 "Blender source stage lacks fresh, trusted execution provenance",

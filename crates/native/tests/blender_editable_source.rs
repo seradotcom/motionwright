@@ -418,7 +418,7 @@ fn sdk_serde_preserves_explicit_false_execution_and_provenance_flags() {
 
 fn synthetic_custody(source: &BlenderEditableSource) -> (BlenderEditableStageEvidence, Vec<Value>) {
     let result = json!({"data":{"native_session":"contract-fixture"}, "provenance_checked":true,
-        "execution":synthetic_sdk_execution(false, false), "warnings":[]});
+        "execution":synthetic_sdk_execution(false, true), "warnings":[]});
     let mut row = json!({"project_id":source.canonical_contribution.project_id,
         "generation":source.canonical_contribution.generation, "revision":source.canonical_contribution.revision,
         "request_id":"synthetic-create-inspect", "request_sha256":"c".repeat(64),
@@ -443,11 +443,11 @@ fn synthetic_custody(source: &BlenderEditableSource) -> (BlenderEditableStageEvi
 }
 
 #[test]
-fn custody_rejects_dry_run_untrusted_or_missing_flags_even_in_matching_rows() {
+fn custody_rejects_dry_run_misclassified_driver_or_missing_flags_even_in_matching_rows() {
     let source = source();
     let (valid, journal) = synthetic_custody(&source);
     assert!(verify_blender_editable_stage_custody(&source, &valid, &journal).is_ok());
-    for (dry_run, untrusted_metadata) in [(true, false), (false, true), (true, true)] {
+    for (dry_run, untrusted_metadata) in [(true, true), (false, false), (true, false)] {
         let mut changed = valid.clone();
         let mut changed_rows = journal.clone();
         changed.response["result"]["execution"] =
@@ -481,6 +481,84 @@ fn custody_rejects_dry_run_untrusted_or_missing_flags_even_in_matching_rows() {
             );
         }
     }
+}
+
+#[test]
+fn driver_metadata_mark_accepts_a_fully_bound_original_blender_receipt_pair() {
+    // This is a synthetic contract fixture using real SDK public types. The
+    // marker matches Metadata::for_provider for SourceKind::Driver at SDK54d;
+    // it is not a captured native execution or authority derived from metadata.
+    let source = source();
+    let (proof, rows) = synthetic_custody(&source);
+    let before = rows.clone();
+    let execution: Execution =
+        serde_json::from_value(proof.response["result"]["execution"].clone()).unwrap();
+    let provenance = execution.provenance.unwrap();
+    assert!(!execution.dry_run);
+    assert_eq!(provenance.source, SourceKind::Driver);
+    assert_eq!(provenance.provider, "driver:blender");
+    assert_eq!(
+        provenance.execution_provider.as_deref(),
+        Some("driver:blender")
+    );
+    assert!(
+        provenance.untrusted_metadata,
+        "the Driver's catalog metadata keeps its external classification"
+    );
+    assert_eq!(
+        provenance.provider_generation,
+        Some(proof.provider_generation)
+    );
+    assert_eq!(provenance.descriptor_sha256, proof.descriptor_sha256);
+    assert!(verify_blender_editable_stage_custody(&source, &proof, &rows).is_ok());
+    assert_eq!(rows, before);
+}
+
+#[test]
+fn matching_original_rows_cannot_forge_blender_driver_execution_authority() {
+    let source = source();
+    let (original, rows) = synthetic_custody(&source);
+    assert!(verify_blender_editable_stage_custody(&source, &original, &rows).is_ok());
+    for (pointer, value) in [
+        ("/execution/provenance/untrusted_metadata", json!(false)),
+        ("/execution/provenance/provider", json!("driver:foreign")),
+        ("/execution/provenance/source", json!("builtin")),
+        (
+            "/execution/provenance/execution_provider",
+            json!("driver:foreign"),
+        ),
+        ("/execution/provenance/execution_provider", Value::Null),
+        ("/execution/provenance/provider_generation", json!(18)),
+        (
+            "/execution/provenance/descriptor_sha256",
+            json!("d".repeat(64)),
+        ),
+        ("/execution/backend", json!("driver:foreign")),
+        ("/execution/policy_decision", json!("deny")),
+        ("/execution/dry_run", json!(true)),
+        ("/provenance_checked", json!(false)),
+    ] {
+        let mut proof = original.clone();
+        let mut matching_rows = rows.clone();
+        *proof.response["result"].pointer_mut(pointer).unwrap() = value;
+        matching_rows[1]["payload"]["result"] = proof.response["result"].clone();
+        proof.response["receipt"] = matching_rows[1].clone();
+        // The wrapper and original completed row deliberately agree. A pass
+        // cannot come from equality alone or from the metadata marker alone.
+        assert_eq!(
+            proof.response["result"],
+            matching_rows[1]["payload"]["result"]
+        );
+        let before = matching_rows.clone();
+        assert!(
+            verify_blender_editable_stage_custody(&source, &proof, &matching_rows).is_err(),
+            "authority mutation {pointer}"
+        );
+        assert_eq!(matching_rows, before);
+    }
+    let mut replayed = original;
+    replayed.response["replayed"] = json!(true);
+    assert!(verify_blender_editable_stage_custody(&source, &replayed, &rows).is_err());
 }
 
 #[test]
