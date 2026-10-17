@@ -1,5 +1,38 @@
 import { expect, test } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 test("sampled native PNG readback uses only a session grant and follows the editorial playhead", async ({ page }) => {
   // Synthetic Tauri transport. Real Semwright bytes/digests are checked in Rust and native E2E.
@@ -11,7 +44,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
   const rendered = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     deliverable_id: master.id,
     frame_rate: { num: 30, den: 1 },
     segments: [{
@@ -32,6 +65,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
     }],
   };
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4XyX4HwAGkAKKXzfbLwAAAABJRU5ErkJggg==";
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initialBoot, receipt, fixturePng }) => {
     const runtime = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -41,6 +75,19 @@ test("sampled native PNG readback uses only a session grant and follows the edit
     runtime.__SYNTHETIC_READS__ = [];
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === project.id && recipeRequest.generation === project.generation
+            && recipeRequest.revision === project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          project = await apply(project, recipeRequest);
+          initialBoot.project = structuredClone(project);
+          receipt.revision = project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(project);
+        }
+
         if (command === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -90,6 +137,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
@@ -113,7 +161,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
     window as unknown as { __SYNTHETIC_READS__: Array<Record<string, unknown>> }
   ).__SYNTHETIC_READS__);
   expect(requests.every((request) => request.project_id === boot.project.id
-    && request.revision === boot.project.revision
+    && request.revision === boot.project.revision + 1
     && request.token === "mock-read-token"
     && !("path" in request)
     && !("sha256" in request))).toBe(true);
@@ -144,7 +192,7 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
   const receipt = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     deliverable_id: boot.project.deliverables[0].id,
     frame_rate: { num: 30, den: 1 },
     segments: [{
@@ -159,12 +207,25 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
     }],
     preview: [{ token: "bad-token", segment_id: "bad-frame", scene_ids: [first.id], frame_count: 210 }],
   };
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initialBoot, initialReceipt }) => {
     const runtime = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
     };
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initialBoot.project.id && recipeRequest.generation === initialBoot.project.generation
+            && recipeRequest.revision === initialBoot.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initialBoot.project = await apply(initialBoot.project, recipeRequest);
+          initialReceipt.revision = initialBoot.project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(initialBoot.project);
+        }
+
         if (command === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -202,6 +263,7 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
     await page.getByLabel(scene.name + " narrative role").selectOption(role);
     await page.getByLabel(scene.name + " motion archetype").selectOption(archetype);
   }
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();

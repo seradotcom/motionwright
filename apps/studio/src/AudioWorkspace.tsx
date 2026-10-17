@@ -545,7 +545,7 @@ export default function AudioWorkspace({
           </section>
 
           <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
-          <NativeOriginalMixReview project={project} desktopMode={desktopMode}/>
+          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commit}/>
           <SemanticSfxWorkbench project={project} commit={commit} onSeek={onSeek}/>
           <section className="audio-editor-section audio-mix-section">
             <header><div><strong>Mix intent</strong><span>Targets are intent; they are not measured output evidence.</span></div></header>

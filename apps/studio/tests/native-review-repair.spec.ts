@@ -1,5 +1,38 @@
 import { expect, test } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 test("a sampled native frame becomes a user-authored scoped repair, never an automatic edit", async ({ page }) => {
   // Synthetic Tauri transport only. Real Semwright frames and digests are
@@ -31,6 +64,7 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
     }],
   };
 
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initialBoot, nativeReceipt, nativeWidth, nativeHeight }) => {
     const runtime = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -39,6 +73,18 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
     runtime.__REVIEW_TEST_COMMANDS__ = [];
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initialBoot.project.id && recipeRequest.generation === initialBoot.project.generation
+            && recipeRequest.revision === initialBoot.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initialBoot.project = await apply(initialBoot.project, recipeRequest);
+          nativeReceipt.revision = initialBoot.project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(initialBoot.project);
+        }
+
         if (command === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -82,12 +128,13 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
   }, { initialBoot: boot, nativeReceipt: receipt, nativeWidth: profile.width, nativeHeight: profile.height });
 
   await page.goto("/");
-  const revision = await page.locator(".revision-chip").innerText();
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
   await page.getByLabel(first.name + " narrative role").selectOption("hook");
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await saveFixtureRecipe(page);
+  const revision = await page.locator(".revision-chip").innerText();
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();

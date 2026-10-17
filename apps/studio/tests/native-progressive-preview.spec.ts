@@ -1,5 +1,38 @@
 import {expect,test} from "@playwright/test";
 import {fixtureBootstrap} from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 test("rapid editorial seeks coalesce delayed native reads and settle on exact source frame",async({page})=>{
   const boot=structuredClone(fixtureBootstrap);
@@ -26,6 +59,7 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
     }],
   };
   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4XyX4HwAGkAKKXzfbLwAAAABJRU5ErkJggg==";
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({initialBoot,renderReceipt,encodedPng})=>{
     const w=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(command:string,args?:Record<string,unknown>)=>Promise<unknown>};
@@ -36,6 +70,18 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
       filmChecks:0,runtimeChecks:0,grants:0,renders:0};
     w.__TAURI_INTERNALS__={
       invoke:async(command,args)=>{
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initialBoot.project.id && recipeRequest.generation === initialBoot.project.generation
+            && recipeRequest.revision === initialBoot.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initialBoot.project = await apply(initialBoot.project, recipeRequest);
+          renderReceipt.revision = initialBoot.project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(initialBoot.project);
+        }
+
         if(command==="bootstrap")return structuredClone(initialBoot);
         if(command==="production_runtime_status"){
           const request=args?.request as {project_id:string;expected_generation:string;expected_revision:number};
@@ -111,6 +157,7 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
   await page.getByLabel(second.name+" motion archetype").selectOption("diagram_build");
   const renderButton=page.getByRole("button",{name:"Render native segments"});
   await expect(renderButton).toBeDisabled();
+  await saveFixtureRecipe(page);
   await page.getByRole("button",{name:"Check Film projection"}).click();
   await expect(page.getByLabel("First native production readiness"))
     .toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
@@ -148,7 +195,7 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
   await expect(stage).not.toContainText("Holding previously verified");
 
   const revision=await page.locator(".revision-chip").first().innerText();
-  expect(revision).toBe("r"+boot.project.revision);
+  expect(revision).toBe("r"+(boot.project.revision + 1));
 
   // Remove the source grant by switching profile WHILE a read is in flight.
   // Its later completion must never resurrect a PNG from the prior profile.
