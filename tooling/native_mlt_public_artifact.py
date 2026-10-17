@@ -20,6 +20,10 @@ import sys
 import uuid
 
 from native_mlt_mix_readback import ContentLimits
+from mlt_failure_diagnostic import (
+    ORIGINAL_MIX_FAILURE_FILE, ORIGINAL_MIX_FAILURE_LIMIT,
+    readback_run_identity, safe_original_mix_readback_diagnostic,
+)
 
 from cross_app_public_artifact import (
     PublicationError, read_bounded, require, strict_object,
@@ -93,6 +97,7 @@ ORIGINAL_MIX_SOURCE_PATHS = (
     "crates/native/src/production/original_mix_av.rs",
     "crates/native/src/production/mlt_multisegment_av.rs",
     "tooling/native_mlt_sequence_e2e.py", "tooling/native_mlt_public_artifact.py",
+    "tooling/mlt_failure_diagnostic.py",
     "tooling/native_mlt_mix_readback.py", "tooling/tests/test_native_mlt_mix_readback.py",
     ".github/workflows/native-mlt-sequence-e2e.yml",
 )
@@ -948,6 +953,46 @@ def verify_private_source(root: Path, mode: str, source_sha: str,
     return admitted
 
 
+
+def original_mix_failure_projection(root: Path, source_sha: str,
+                                    semwright_sha: str) -> dict | None:
+    """Admit only a current, closed error report; never admit failed-job media."""
+    try:
+        execution = readback_run_identity(os.environ)
+        require(execution is not None, "native_mix_failure_execution_unbound")
+        require(".." not in root.parts, "native_mix_failure_path_invalid")
+        # A failure may occur before the evidence directory exists. Missing,
+        # linked, reparse or unreadable documents leave the report unadmitted.
+        for directory in (root.absolute(), *root.absolute().parents):
+            info = directory.lstat()
+            require(stat.S_ISDIR(info.st_mode)
+                    and not (getattr(info, "st_file_attributes", 0) & 0x400),
+                    "native_mix_failure_directory_invalid")
+        blob, _ = read_stable_native_file(root / ORIGINAL_MIX_FAILURE_FILE,
+                                          ORIGINAL_MIX_FAILURE_LIMIT)
+        record = strict_object(blob)
+        diagnostic = safe_original_mix_readback_diagnostic(record.get("reason"))
+        master_sha = record.get("final_mp4_sha256")
+        require(type(master_sha) is str and bool(SHA256.fullmatch(master_sha)),
+                "native_mix_failure_master_identity_invalid")
+        exact_values(record, {
+            **diagnostic, "mode": "original-mix-mp4",
+            "motionwright_source_sha": source_sha, "semwright_source_pin": semwright_sha,
+            "reader_sha256": ORIGINAL_MIX_READER_SHA256, "execution": execution,
+            "reference_wav_sha256": ORIGINAL_MIX_WAV_SHA256,
+            "final_mp4_sha256": master_sha,
+        }, "native_mix_failure_document_invalid", closed=True)
+        return {
+            **diagnostic, "execution": execution,
+            "reader_sha256": ORIGINAL_MIX_READER_SHA256,
+            "failure_document_sha256": file_sha(blob),
+            "reference_wav_sha256_before_call": ORIGINAL_MIX_WAV_SHA256,
+            "final_mp4_sha256_before_call": master_sha,
+        }
+    except (PublicationError, OSError, ValueError, TypeError):
+        return None
+
+
 def publish_mlt(root: Path, output: Path, mode: str, source_sha: str,
                 semwright_sha: str, job_status: str) -> dict:
     require(mode in MODES, "invalid_mlt_mode")
@@ -962,6 +1007,10 @@ def publish_mlt(root: Path, output: Path, mode: str, source_sha: str,
     projections: dict = {}
     files = (verify_private_source(root, mode, source_sha, semwright_sha, projections=projections)
              if job_status == "success" else {})
+    if mode == "original-mix-mp4" and job_status == "failure":
+        diagnostic = original_mix_failure_projection(root, source_sha, semwright_sha)
+        if diagnostic is not None:
+            projections["original_mix_readback_failure"] = diagnostic
     entries = [
         {"name": name, "bytes": len(data), "sha256": file_sha(data)}
         for name, data in sorted(files.items())

@@ -312,20 +312,97 @@ class OriginalMixCustodyAndReaderRoutingTests(unittest.TestCase):
 
     def test_reader_failure_retains_original_bytes_without_a_success_document(self):
         self.retain_both()
-        with patch("native_mlt_sequence_e2e.inspect_master",
-                   side_effect=ReadbackError("local_audio_content_correlation")):
+        captured = io.StringIO()
+        run = {"GITHUB_RUN_ID": "39054798740", "GITHUB_RUN_ATTEMPT": "1"}
+        with patch.dict(os.environ, run), \
+             patch("native_mlt_sequence_e2e.GITHUB_SHA", "a" * 40), \
+             patch("native_mlt_sequence_e2e.PIN", "b" * 40), \
+             patch("native_mlt_sequence_e2e.sys.stderr", captured), \
+             patch("native_mlt_sequence_e2e.inspect_master",
+                   side_effect=ReadbackError("local_audio_content_correlation")) as inspected:
             with self.assertRaisesRegex(AssertionError, "native_original_mix_readback_failed"):
                 inspect_retained_original_mix(
                     self.evidence, self.master_sha, pathlib.Path("ffmpeg"), pathlib.Path("ffprobe")
                 )
+            public = pathlib.Path(self.root) / "public-failure"
+            published = pub.publish_mlt(
+                self.evidence, public, "original-mix-mp4", "a" * 40, "b" * 40, "failure"
+            )
+        inspected.assert_called_once()
         self.native_temp.cleanup()
         self.assertEqual((self.evidence / pub.SOURCE_WAV_NAME).read_bytes(), self.data)
         self.assertEqual((self.evidence / "native-multisegment-master.mp4").read_bytes(), self.mp4)
         self.assertFalse((self.evidence / pub.ORIGINAL_MIX_READBACK).exists())
-        diagnostic = json.loads((self.evidence / "native-original-mix-readback-failure.json").read_text())
+        diagnostic = json.loads((self.evidence / pub.ORIGINAL_MIX_FAILURE_FILE).read_text())
         self.assertEqual(diagnostic["technical_content_readback"], "FAIL")
         self.assertEqual(diagnostic["reason"], "local_audio_content_correlation")
         self.assertNotIn(self.root, repr(diagnostic))
+        logged = json.loads(captured.getvalue())
+        self.assertEqual(logged["reason"], diagnostic["reason"])
+        self.assertEqual(logged["input_stability_after_failure"], "NOT_VERIFIED")
+        self.assertEqual(published["ci_native_mlt_evidence"], "NOT_VERIFIED")
+        projection = published["original_mix_readback_failure"]
+        self.assertEqual(projection["reason"], logged["reason"])
+        self.assertEqual(projection["final_mp4_sha256_before_call"], self.master_sha)
+        self.assertEqual(projection["failure_document_sha256"], hashlib.sha256(
+            (self.evidence / pub.ORIGINAL_MIX_FAILURE_FILE).read_bytes()
+        ).hexdigest())
+        self.assertEqual({path.name for path in public.iterdir()}, {"public-evidence.json"})
+        self.assertEqual(published["included_files"], [])
+        self.assertIsNone(published["retained_source_audio"])
+        self.assertNotIn("original_mix_readback", published)
+
+    def test_private_diagnostic_write_refusal_keeps_the_primary_error_and_safe_log(self):
+        self.retain_both()
+        retained = self.evidence / pub.ORIGINAL_MIX_FAILURE_FILE
+        previous = b"existing-private-draft-must-remain-exact"
+        retained.write_bytes(previous)
+        captured = io.StringIO()
+        with patch("native_mlt_sequence_e2e.sys.stderr", captured), \
+             patch("native_mlt_sequence_e2e.inspect_master",
+                   side_effect=ReadbackError("reference_timing_signature_ambiguous")) as inspected:
+            with self.assertRaisesRegex(AssertionError, "native_original_mix_readback_failed"):
+                inspect_retained_original_mix(
+                    self.evidence, self.master_sha, pathlib.Path("ffmpeg"), pathlib.Path("ffprobe")
+                )
+        inspected.assert_called_once()
+        self.assertEqual(retained.read_bytes(), previous)
+        self.assertEqual(json.loads(captured.getvalue())["reason"],
+                         "reference_timing_signature_ambiguous")
+        self.assertFalse((self.evidence / pub.ORIGINAL_MIX_READBACK).exists())
+        self.assertEqual((self.evidence / pub.SOURCE_WAV_NAME).read_bytes(), self.data)
+        self.assertEqual((self.evidence / "native-multisegment-master.mp4").read_bytes(), self.mp4)
+
+    def test_unknown_reader_reason_is_redacted_in_both_retained_document_and_log(self):
+        self.retain_both()
+        captured = io.StringIO()
+        private = "customer_secret_password"
+        with patch("native_mlt_sequence_e2e.sys.stderr", captured), \
+             patch("native_mlt_sequence_e2e.inspect_master", side_effect=ReadbackError(private)):
+            with self.assertRaisesRegex(AssertionError, "native_original_mix_readback_failed"):
+                inspect_retained_original_mix(
+                    self.evidence, self.master_sha, pathlib.Path("ffmpeg"), pathlib.Path("ffprobe")
+                )
+        document = (self.evidence / pub.ORIGINAL_MIX_FAILURE_FILE).read_text()
+        self.assertNotIn(private, document + captured.getvalue())
+        for value in (json.loads(document), json.loads(captured.getvalue())):
+            self.assertEqual(value["reason"], "reader_refused")
+            self.assertIs(value["reason_identified"], False)
+            self.assertEqual(value["complete_master_readback"], "NOT_VERIFIED")
+
+    def test_stderr_refusal_does_not_replace_the_primary_reader_error(self):
+        self.retain_both()
+        with patch("native_mlt_sequence_e2e.sys.stderr") as stderr, \
+             patch("native_mlt_sequence_e2e.inspect_master",
+                   side_effect=ReadbackError("local_audio_gain")):
+            stderr.write.side_effect = OSError("private stderr unavailable")
+            with self.assertRaisesRegex(AssertionError, "native_original_mix_readback_failed"):
+                inspect_retained_original_mix(
+                    self.evidence, self.master_sha, pathlib.Path("ffmpeg"), pathlib.Path("ffprobe")
+                )
+        document = json.loads((self.evidence / pub.ORIGINAL_MIX_FAILURE_FILE).read_text())
+        self.assertEqual(document["reason"], "local_audio_gain")
+        self.assertFalse((self.evidence / pub.ORIGINAL_MIX_READBACK).exists())
 
     def test_changed_retained_source_or_master_during_readback_cannot_leave_pass(self):
         self.retain_both()

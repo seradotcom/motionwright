@@ -19,6 +19,7 @@ import native_mlt_public_artifact as pub  # noqa: E402
 
 MW = "a" * 40
 SW = "b" * 40
+READBACK_RUN = {"GITHUB_RUN_ID": "39054798740", "GITHUB_RUN_ATTEMPT": "1"}
 SOURCE_SHA = "66aeaa3aa6fff53834ab4003671ce79068bcbd6f631609f0f988b3ac9744ebe9"
 
 
@@ -684,6 +685,26 @@ class MltPublicTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("This host cannot create the real source symlink fixture")
         self.refused("native_mlt_source_wav_missing_or_linked")
+        # Reuse this real symlink capability check for the small failure document.
+        failure, _ = self.write_readback_failure()
+        actual = self.root / "not-an-admitted-diagnostic.json"
+        failure.rename(actual)
+        failure.symlink_to(actual)
+        with patch.dict(pub.os.environ, READBACK_RUN):
+            receipt = pub.publish_mlt(
+                self.root, self.out, "original-mix-mp4", MW, SW, "failure"
+            )
+            self.assertNotIn("original_mix_readback_failure", receipt)
+            self.assertEqual(receipt["included_files"], [])
+        failure.unlink()
+        actual.rename(failure)
+        child = self.root / "child"
+        child.mkdir()
+        (child / pub.ORIGINAL_MIX_FAILURE_FILE).write_bytes(failure.read_bytes())
+        alias = Path(self.temp.name) / "linked-parent"
+        alias.symlink_to(self.root, target_is_directory=True)
+        with patch.dict(pub.os.environ, READBACK_RUN):
+            self.assertIsNone(pub.original_mix_failure_projection(alias / "child", MW, SW))
 
     def test_unimplemented_audio_modes_are_not_admitted_by_failed_job_status(self):
         for mode in ("original-sfx-mp4",):
@@ -972,6 +993,124 @@ class MltPublicTests(unittest.TestCase):
             self.result["retained_source_audio"]["sha256"] = digest(altered)
             self.store()
             self.refused("native_mlt_synthetic_source_identity_mismatch")
+
+
+    def write_readback_failure(self, record=None):
+        if record is None:
+            record = {
+                **pub.safe_original_mix_readback_diagnostic("reference_timing_signature_ambiguous"),
+                "mode": "original-mix-mp4", "motionwright_source_sha": MW,
+                "semwright_source_pin": SW, "reader_sha256": pub.ORIGINAL_MIX_READER_SHA256,
+                "execution": {"github_run_id": READBACK_RUN["GITHUB_RUN_ID"],
+                              "github_run_attempt": READBACK_RUN["GITHUB_RUN_ATTEMPT"]},
+                "reference_wav_sha256": pub.ORIGINAL_MIX_WAV_SHA256,
+                "final_mp4_sha256": "d" * 64,
+            }
+        path = self.root / pub.ORIGINAL_MIX_FAILURE_FILE
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path, record
+
+    def test_current_failed_readback_projects_only_a_diagnostic_and_never_media(self):
+        path, record = self.write_readback_failure()
+        (self.root / "semwrightd.log").write_text("PRIVATE-OWNER-TOKEN", encoding="utf-8")
+        (self.root / "native-multisegment-master.mp4").write_bytes(b"PRIVATE-UNVERIFIED-MEDIA")
+        (self.root / pub.SOURCE_WAV_NAME).write_bytes(b"PRIVATE-UNVERIFIED-SOURCE")
+        with patch.dict(pub.os.environ, READBACK_RUN):
+            for mode in sorted(pub.MODES):
+                for status in ("failure", "cancelled", "skipped"):
+                    with self.subTest(mode=mode, status=status):
+                        output = self.out.with_name("diagnostic-" + mode + "-" + status)
+                        receipt = pub.publish_mlt(self.root, output, mode, MW, SW, status)
+                        self.assertEqual(receipt["ci_native_mlt_evidence"], "NOT_VERIFIED")
+                        self.assertEqual(receipt["included_files"], [])
+                        self.assertIsNone(receipt["retained_source_audio"])
+                        self.assertNotIn("original_mix_readback", receipt)
+                        self.assertEqual({file.name for file in output.iterdir()}, {"public-evidence.json"})
+                        if mode == "original-mix-mp4" and status == "failure":
+                            report = receipt["original_mix_readback_failure"]
+                            self.assertEqual(report["reason"], record["reason"])
+                            self.assertEqual(report["execution"], record["execution"])
+                            self.assertEqual(report["failure_document_sha256"], digest(path.read_bytes()))
+                            self.assertEqual(report["reference_wav_sha256_before_call"],
+                                             pub.ORIGINAL_MIX_WAV_SHA256)
+                            self.assertEqual(report["final_mp4_sha256_before_call"], "d" * 64)
+                            self.assertEqual(report["input_stability_after_failure"], "NOT_VERIFIED")
+                            self.assertEqual(report["complete_master_readback"], "NOT_VERIFIED")
+                            self.assertEqual(set(report), {
+                                "schema", "technical_content_readback", "reason", "reason_identified",
+                                "complete_master_readback", "input_stability_after_failure",
+                                "raw_decoder_text_exposed", "execution", "reader_sha256",
+                                "failure_document_sha256", "reference_wav_sha256_before_call",
+                                "final_mp4_sha256_before_call",
+                            })
+                        else:
+                            self.assertNotIn("original_mix_readback_failure", receipt)
+                        self.assertNotIn("PRIVATE-", (output / "public-evidence.json").read_text())
+        self.assertEqual((self.root / pub.SOURCE_WAV_NAME).read_bytes(), b"PRIVATE-UNVERIFIED-SOURCE")
+        self.assertEqual((self.root / "native-multisegment-master.mp4").read_bytes(),
+                         b"PRIVATE-UNVERIFIED-MEDIA")
+
+    def test_failed_readback_diagnostic_requires_exact_source_run_and_closed_fields(self):
+        _, original = self.write_readback_failure()
+        variants = []
+        for field, value in (
+            ("motionwright_source_sha", "c" * 40), ("semwright_source_pin", "c" * 40),
+            ("mode", "final-mp4"), ("reader_sha256", "c" * 64),
+            ("reference_wav_sha256", pub.LEGACY_VOICE_WAV_SHA256),
+            ("final_mp4_sha256", "/private/master.mp4"),
+            ("technical_content_readback", "PASS"), ("complete_master_readback", "PASS"),
+            ("input_stability_after_failure", "PASS"), ("raw_decoder_text_exposed", 0),
+            ("reason_identified", 1), ("reason", "customer_secret_password"),
+            ("schema", "other-schema"), ("untrusted_extra", "PRIVATE-SESSION"),
+            ("execution", {"github_run_id": "39054798739", "github_run_attempt": "1"}),
+            ("execution", {"github_run_id": READBACK_RUN["GITHUB_RUN_ID"], "github_run_attempt": "2"}),
+            ("execution", {"github_run_id": int(READBACK_RUN["GITHUB_RUN_ID"]), "github_run_attempt": "1"}),
+        ):
+            changed = copy.deepcopy(original)
+            changed[field] = value
+            variants.append((field + "-" + str(len(variants)), changed))
+        for field in original:
+            changed = copy.deepcopy(original)
+            del changed[field]
+            variants.append(("missing-" + field, changed))
+        with patch.dict(pub.os.environ, READBACK_RUN):
+            for index, (name, value) in enumerate(variants):
+                with self.subTest(change=name):
+                    self.write_readback_failure(value)
+                    output = self.out.with_name("refused-diagnostic-" + str(index))
+                    receipt = pub.publish_mlt(
+                        self.root, output, "original-mix-mp4", MW, SW, "failure"
+                    )
+                    self.assertNotIn("original_mix_readback_failure", receipt)
+                    self.assertEqual(receipt["ci_native_mlt_evidence"], "NOT_VERIFIED")
+                    self.assertEqual(receipt["included_files"], [])
+                    self.assertEqual({file.name for file in output.iterdir()}, {"public-evidence.json"})
+        self.write_readback_failure(original)
+        with patch.dict(pub.os.environ, {"GITHUB_RUN_ID": "", "GITHUB_RUN_ATTEMPT": ""}):
+            self.assertIsNone(pub.original_mix_failure_projection(self.root, MW, SW))
+
+    def test_failed_readback_malformed_or_oversized_document_does_not_escape(self):
+        path, original = self.write_readback_failure()
+        duplicate = json.dumps(original)[:-1] + ', "reason": "PRIVATE-DUPLICATE"}'
+        raw_documents = (
+            b"", b"PRIVATE-NON-JSON", b"[]", duplicate.encode(),
+            b"x" * (pub.ORIGINAL_MIX_FAILURE_LIMIT + 1),
+        )
+        with patch.dict(pub.os.environ, READBACK_RUN):
+            for index, blob in enumerate(raw_documents):
+                with self.subTest(case=index):
+                    path.write_bytes(blob)
+                    output = self.out.with_name("invalid-diagnostic-" + str(index))
+                    receipt = pub.publish_mlt(
+                        self.root, output, "original-mix-mp4", MW, SW, "failure"
+                    )
+                    self.assertNotIn("original_mix_readback_failure", receipt)
+                    self.assertEqual(receipt["included_files"], [])
+                    self.assertNotIn("PRIVATE-", (output / "public-evidence.json").read_text())
+            path.unlink()
+            self.assertIsNone(pub.original_mix_failure_projection(self.root, MW, SW))
+            path.mkdir()
+            self.assertIsNone(pub.original_mix_failure_projection(self.root, MW, SW))
 
     def test_fifth_mode_document_read_stops_at_initial_size_plus_one_on_real_growth(self):
         target = self.root / "growing.json"

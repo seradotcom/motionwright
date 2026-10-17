@@ -2,6 +2,15 @@ name: Native Motionwright MLT multisegment timeline
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Native timeline cases to execute'
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - original-mix-mp4
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -52,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ['pcm', 'video-only', 'final-mp4', 'captioned-mp4', 'original-mix-mp4']
+        mode: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'original-mix-mp4' && fromJSON('["original-mix-mp4"]') || fromJSON('["pcm","video-only","final-mp4","captioned-mp4","original-mix-mp4"]') }}
     env:
       MOTIONWRIGHT_MLT_MODE: ${{ matrix.mode }}
     steps:
@@ -84,6 +93,9 @@ jobs:
 
       - name: Verify v0.1 native CLI failures never expose private job receipts
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
+
+      - name: Verify bounded canonical readback failure diagnostics
+        run: python3 -m unittest discover -s tooling/tests -p 'test_mlt_failure_diagnostic.py' -v
 
       - name: Reject private MLT CI uploads and false success before native execution
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_mlt_public_artifact.py' -v

@@ -38,7 +38,10 @@ from native_mlt_mix_readback import (
     ContentLimits, MediaClock, ReadbackError, bounded_decoder, inspect_master,
 )
 
-from mlt_failure_diagnostic import safe_observation_diagnostic
+from mlt_failure_diagnostic import (
+    ORIGINAL_MIX_FAILURE_FILE, readback_run_identity,
+    safe_observation_diagnostic, safe_original_mix_readback_diagnostic,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
@@ -304,15 +307,27 @@ def inspect_retained_original_mix(evidence_root: Path, master_sha256: str,
         verify_source_unchanged(master, master_token)
         original_mix_readback_projection(proof, custody["sha256"], master_sha256)
     except ReadbackError as exc:
-        reason = str(exc)
-        if re.fullmatch(r"[a-z0-9_]{1,128}", reason) is None:
-            reason = "reader_refused"
+        diagnostic = safe_original_mix_readback_diagnostic(str(exc))
         try:
-            write_private_new_json(evidence_root / "native-original-mix-readback-failure.json", {
-                "technical_content_readback": "FAIL", "reason": reason,
-                "reference_wav_sha256": custody["sha256"], "final_mp4_sha256": master_sha256,
+            write_private_new_json(evidence_root / ORIGINAL_MIX_FAILURE_FILE, {
+                **diagnostic,
+                "mode": "original-mix-mp4",
+                "motionwright_source_sha": GITHUB_SHA,
+                "semwright_source_pin": PIN,
+                "reader_sha256": ORIGINAL_MIX_READER_SHA256,
+                "execution": readback_run_identity(os.environ),
+                # These identities were checked before the failed call. No
+                # after-call stability or complete readback is inferred here.
+                "reference_wav_sha256": custody["sha256"],
+                "final_mp4_sha256": master_sha256,
             })
         except (PublicationError, OSError, ValueError, TypeError, AssertionError):
+            pass
+        try:
+            # The existing Actions log retains this fixed-vocabulary diagnostic
+            # even if exclusive private retention fails. Never print exc/argv.
+            print(json.dumps(diagnostic, sort_keys=True), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
             pass
         raise AssertionError("native_original_mix_readback_failed") from None
     proof_sha = write_private_new_json(evidence_root / ORIGINAL_MIX_READBACK, proof)

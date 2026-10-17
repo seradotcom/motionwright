@@ -127,7 +127,7 @@ def semwright_version() -> str:
         return tomllib.load(stream)["workspace"]["package"]["version"]
 
 
-def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -> None:
+def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path, *, owner_endpoint=None) -> None:
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -135,6 +135,8 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
                 raise AssertionError("original_daemon_exited_before_owner_socket")
             raise AssertionError(log.read_text(encoding="utf-8", errors="replace"))
         if socket.is_socket():
+            if owner_endpoint is not None:
+                source_owner_endpoint_observe_socket(owner_endpoint)
             return
         time.sleep(0.05)
     raise AssertionError("semwrightd did not expose the owner socket")
@@ -256,6 +258,98 @@ def preserved_attempt_directory():
     root = (EVIDENCE / "attempt").resolve()
     root.mkdir(mode=0o700)
     yield str(root)
+
+
+# The native source gate runs on Linux, whose pathname socket includes a NUL
+# after at most 107 encoded bytes. This endpoint is not a policy authority.
+SOURCE_OWNER_ENDPOINT_PARENT = Path("/tmp")
+SOURCE_OWNER_ENDPOINT_MAX_BYTES = 107
+
+
+def source_owner_endpoint_identity(path, *, directory):
+    metadata = path.lstat()
+    kind = stat.S_ISDIR if directory else stat.S_ISSOCK
+    mode = 0o700 if directory else 0o600
+    if (not kind(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != mode
+            or (directory and path.resolve(strict=True) != path)):
+        raise AssertionError("owner_endpoint_identity_not_private")
+    return (metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_mode)
+
+
+def source_owner_endpoint_root(endpoint):
+    root = endpoint["root"]
+    if source_owner_endpoint_identity(root, directory=True) != endpoint["root_identity"]:
+        raise AssertionError("owner_endpoint_directory_changed")
+    return root
+
+
+def source_owner_endpoint_path(endpoint):
+    if endpoint is None:
+        raise AssertionError("source_owner_endpoint_not_allocated")
+    path = source_owner_endpoint_root(endpoint) / "broker.sock"
+    if not path.is_absolute() or len(os.fsencode(path)) > SOURCE_OWNER_ENDPOINT_MAX_BYTES:
+        raise AssertionError("owner_endpoint_path_too_long")
+    return path
+
+
+def source_owner_endpoint_observe_socket(endpoint):
+    path = source_owner_endpoint_path(endpoint)
+    endpoint["socket_identity"] = source_owner_endpoint_identity(path, directory=False)
+
+
+def source_owner_endpoint_cleanup(endpoint):
+    # The case records failed daemon termination or log finalization here. Keep
+    # its endpoint intact whenever shutdown could not be verified; the original
+    # operation error and cleanup diagnostics remain authoritative.
+    if SOURCE_DAEMON_ERRORS:
+        SOURCE_DAEMON_ERRORS.append("owner_endpoint_retained_daemon_cleanup_unverified")
+        return
+    # Never remove a replacement entry, a foreign child, or the retained
+    # attempt/data/session tree.
+    root = source_owner_endpoint_root(endpoint)
+    path = root / "broker.sock"
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if (endpoint["socket_identity"] is None
+                or source_owner_endpoint_identity(path, directory=False) != endpoint["socket_identity"]):
+            raise AssertionError("owner_endpoint_socket_not_owned")
+        path.unlink()
+    root.rmdir()
+
+
+@contextmanager
+def source_owner_endpoint():
+    if not sys.platform.startswith("linux"):
+        raise AssertionError("source_owner_endpoint_requires_linux")
+    parent = SOURCE_OWNER_ENDPOINT_PARENT
+    metadata = parent.lstat()
+    if (not parent.is_absolute() or parent.resolve(strict=True) != parent
+            or not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or (metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX)):
+        raise AssertionError("owner_endpoint_parent_not_canonical")
+    root = Path(tempfile.mkdtemp(prefix="mw-manim-", dir=str(parent)))
+    endpoint = {"root": root, "root_identity": None, "socket_identity": None}
+    original_error = None
+    try:
+        endpoint["root_identity"] = source_owner_endpoint_identity(root, directory=True)
+        source_owner_endpoint_path(endpoint)
+        yield endpoint
+    except BaseException as error:
+        original_error = error
+        raise
+    finally:
+        if endpoint["root_identity"] is not None:
+            try:
+                source_owner_endpoint_cleanup(endpoint)
+            except BaseException as error:
+                SOURCE_DAEMON_ERRORS.append("owner_endpoint_cleanup:" + type(error).__name__)
+                if original_error is None:
+                    raise
 
 
 def command_capture(argv, env, timeout, label, mutation=False):
@@ -957,8 +1051,10 @@ SOURCE_SESSION = None
 SOURCE_DAEMON_ERRORS = []
 
 
-def run_case() -> None:
+def run_case(owner_endpoint=None) -> None:
     global SOURCE_PATHS, SOURCE_SESSION
+    if SOURCE_MODE:
+        source_owner_endpoint_path(owner_endpoint)
     exact_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
 
@@ -1126,7 +1222,8 @@ def run_case() -> None:
         config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
         config_path.chmod(0o600)
 
-        socket = paths["runtime"] / "broker.sock"
+        socket = (source_owner_endpoint_path(owner_endpoint) if SOURCE_MODE
+                  else paths["runtime"] / "broker.sock")
         session = paths["runtime"] / "motionwright.session"
         daemon_log = EVIDENCE / "semwrightd.log"
         log_stream = daemon_log.open("wb")
@@ -1147,7 +1244,7 @@ def run_case() -> None:
                 stderr=log_stream,
                 start_new_session=True,
             )
-            wait_for_socket(daemon, socket, daemon_log)
+            wait_for_socket(daemon, socket, daemon_log, owner_endpoint=owner_endpoint)
             capabilities = capability_catalog(env, socket, session)
             ids = {item.get("id") for item in capabilities}
             required = {
@@ -1299,7 +1396,13 @@ def main(argv=None):
     SOURCE_MODE = args.source_roundtrip
     original_error = None
     try:
-        run_case()
+        if SOURCE_MODE:
+            # Allocate and validate the endpoint before even the read-only input
+            # probes start a process. The existing case owns the only Broker.
+            with source_owner_endpoint() as owner_endpoint:
+                run_case(owner_endpoint)
+        else:
+            run_case()
     except BaseException as error:
         original_error = error
     final_errors = []

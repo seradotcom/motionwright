@@ -1,6 +1,7 @@
 """Adversarial tests for the public-safe Motion Canvas observation classifier."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -109,6 +110,65 @@ class MltRenderDiagnosticTests(unittest.TestCase):
             alias = Path(external) / "unsafe"
             alias.symlink_to(self.root, target_is_directory=True)
             self.assertEqual(diagnostic.safe_observation_diagnostic(alias)["status"], "unclassified")
+
+
+
+class OriginalMixReadbackDiagnosticTests(unittest.TestCase):
+    def test_allowlist_covers_only_static_codes_from_the_canonical_reader(self):
+        tree = ast.parse(SCRIPT.with_name("native_mlt_mix_readback.py").read_text(encoding="utf-8"))
+        reasons = set()
+        for node in ast.walk(tree):
+            if (not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name)
+                    or node.func.id not in {"require", "ReadbackError", "_integer", "_fraction"}):
+                continue
+            index = 0 if node.func.id == "ReadbackError" else 1
+            if len(node.args) <= index:
+                continue
+            argument = node.args[index]
+            if isinstance(argument, ast.Constant) and type(argument.value) is str:
+                reasons.add(argument.value)
+            else:
+                self.assertIsInstance(argument, ast.Name)
+                self.assertEqual(argument.id, "reason")
+        self.assertTrue(reasons)
+        self.assertEqual(reasons, diagnostic.ORIGINAL_MIX_READBACK_REASONS)
+        for reason in reasons:
+            with self.subTest(reason=reason):
+                report = diagnostic.safe_original_mix_readback_diagnostic(reason)
+                self.assertEqual(report["reason"], reason)
+                self.assertIs(report["reason_identified"], True)
+                self.assertEqual(report["technical_content_readback"], "FAIL")
+                self.assertEqual(report["complete_master_readback"], "NOT_VERIFIED")
+                self.assertEqual(report["input_stability_after_failure"], "NOT_VERIFIED")
+                self.assertIs(report["raw_decoder_text_exposed"], False)
+
+    def test_unknown_reason_never_passes_a_lexical_filter_into_public_text(self):
+        for private in (
+            "customer_secret_password", "local_audio_gain /home/customer/private.wav",
+            "decoder_failed\\nPRIVATE-DECODER-STDERR", {"reason": "private"}, None, 7,
+        ):
+            with self.subTest(kind=type(private).__name__):
+                report = diagnostic.safe_original_mix_readback_diagnostic(private)
+                self.assertEqual(report["reason"], "reader_refused")
+                self.assertIs(report["reason_identified"], False)
+                self.assertEqual(report, diagnostic.safe_original_mix_readback_diagnostic(None))
+        self.assertEqual(set(report), {
+            "schema", "technical_content_readback", "reason", "reason_identified",
+            "complete_master_readback", "input_stability_after_failure", "raw_decoder_text_exposed",
+        })
+
+    def test_run_identity_is_explicit_bounded_and_never_coerces_input(self):
+        self.assertEqual(diagnostic.readback_run_identity({
+            "GITHUB_RUN_ID": "39054798740", "GITHUB_RUN_ATTEMPT": "1",
+            "UNRELATED_PRIVATE_VALUE": "/private/path",
+        }), {"github_run_id": "39054798740", "github_run_attempt": "1"})
+        for invalid in (None, 1, True, "", "0", "01", "1\\n", "x" * 40, "1" * 21):
+            for field in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+                environment = {"GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}
+                environment[field] = invalid
+                with self.subTest(field=field, value=repr(invalid)):
+                    self.assertIsNone(diagnostic.readback_run_identity(environment))
+        self.assertIsNone(diagnostic.readback_run_identity({}))
 
 
 if __name__ == "__main__":

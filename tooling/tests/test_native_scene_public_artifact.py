@@ -3,7 +3,10 @@ from contextlib import ExitStack, closing, contextmanager
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import socket
+import stat
 import struct
 import sys
 import tempfile
@@ -520,6 +523,259 @@ class ManimSourceCustodyTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.wrapper.phase_record_file(self.private, "native.mp4", b"REPLACEMENT")
         self.assertEqual(draft.read_bytes(), b"EXISTING")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pathname AF_UNIX endpoint")
+    def test_actual_142_byte_socket_rejected_and_short_owner_endpoint_preserves_attempt(self):
+        short_temporary = tempfile.TemporaryDirectory(prefix="mw-af-", dir="/tmp")
+        self.addCleanup(short_temporary.cleanup)
+        short_base = Path(short_temporary.name)
+        padding = 142 - len(os.fsencode(str(short_base))) - len(b"/broker.sock") - 1
+        self.assertGreater(padding, 0)
+        legacy_parent = short_base / ("l" * padding)
+        legacy_parent.mkdir(mode=0o700)
+        legacy_socket = legacy_parent / "broker.sock"
+        self.assertEqual(len(os.fsencode(legacy_socket)), 142)
+        with closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+            with self.assertRaises(OSError):
+                listener.bind(str(legacy_socket))
+        self.assertFalse(legacy_socket.exists())
+
+        class LiveListener:
+            def poll(self):
+                return None
+
+        with self.wrapper.preserved_attempt_directory() as retained_raw:
+            retained = Path(retained_raw)
+            runtime = retained / "runtime"
+            runtime.mkdir(mode=0o700)
+            session = runtime / "motionwright.session"
+            session.write_bytes(b"ORIGINAL SYNTHETIC SESSION")
+            database = retained / "motionwright-data" / "original" / "motionwright.sqlite3"
+            database.parent.mkdir(parents=True)
+            database.write_bytes(b"ORIGINAL OPAQUE DATABASE CONTROL")
+            original = {path: path.read_bytes() for path in (session, database)}
+            with patch.object(self.wrapper, "SOURCE_DAEMON_ERRORS", []), \
+                    patch.object(self.wrapper.subprocess, "Popen",
+                                 side_effect=AssertionError("No Broker or provider")) as launch, \
+                    patch.object(self.wrapper, "run_json",
+                                 side_effect=AssertionError("No native command")) as invoke:
+                with self.wrapper.source_owner_endpoint() as endpoint:
+                    endpoint_root = endpoint["root"]
+                    endpoint_path = self.wrapper.source_owner_endpoint_path(endpoint)
+                    self.assertLessEqual(len(os.fsencode(endpoint_path)), 107)
+                    self.assertEqual(endpoint_root.resolve(), endpoint_root)
+                    self.assertEqual(stat.S_IMODE(endpoint_root.lstat().st_mode), 0o700)
+                    self.assertEqual(endpoint_root.lstat().st_uid, os.getuid())
+                    self.assertNotIn(retained, endpoint_root.parents)
+                    with closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+                        listener.bind(str(endpoint_path))
+                        endpoint_path.chmod(0o600)
+                        listener.listen(1)
+                        self.wrapper.wait_for_socket(
+                            LiveListener(), endpoint_path, self.private / "absent-daemon.log",
+                            owner_endpoint=endpoint)
+                        self.assertIsNotNone(endpoint["socket_identity"])
+                launch.assert_not_called()
+                invoke.assert_not_called()
+                self.assertEqual(self.wrapper.SOURCE_DAEMON_ERRORS, [])
+            self.assertFalse(endpoint_root.exists())
+            self.assertEqual({path: path.read_bytes() for path in original}, original)
+        self.assertTrue(retained.is_dir())
+        self.assertEqual({path: path.read_bytes() for path in original}, original)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pathname AF_UNIX endpoint")
+    def test_endpoint_byte_bound_and_linked_parent_reject_before_first_process(self):
+        short_temporary = tempfile.TemporaryDirectory(prefix="mw-ap-", dir="/tmp")
+        self.addCleanup(short_temporary.cleanup)
+        short_base = Path(short_temporary.name)
+        long_parent = short_base / ("l" * 110)
+        unicode_parent = short_base / ("é" * 45)
+        real_parent = short_base / "canonical-parent"
+        linked_parent = short_base / "linked-parent"
+        for parent in (long_parent, unicode_parent, real_parent):
+            parent.mkdir(mode=0o700)
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        allocate = tempfile.mkdtemp
+        for parent, reason in (
+                (long_parent, "owner_endpoint_path_too_long"),
+                (unicode_parent, "owner_endpoint_path_too_long"),
+                (linked_parent, "owner_endpoint_parent_not_canonical")):
+            created = []
+            def capture_directory(*args, **kwargs):
+                path = Path(allocate(*args, **kwargs))
+                created.append(path)
+                return str(path)
+            with self.subTest(parent=parent.name), \
+                    patch.multiple(self.wrapper, SOURCE_OWNER_ENDPOINT_PARENT=parent,
+                                   SOURCE_PATHS=None, SOURCE_ATTEMPT=None, SOURCE_MODE=False,
+                                   SOURCE_DAEMON_ERRORS=[]), \
+                    patch.object(self.wrapper.tempfile, "mkdtemp", side_effect=capture_directory), \
+                    patch.object(self.wrapper, "exact_inputs",
+                                 side_effect=AssertionError("input probe reached")) as inputs, \
+                    patch.object(self.wrapper.subprocess, "Popen",
+                                 side_effect=AssertionError("process reached")) as launch, \
+                    patch.object(self.wrapper, "run_json",
+                                 side_effect=AssertionError("seed reached")) as invoke:
+                with self.assertRaisesRegex(AssertionError, reason):
+                    self.wrapper.main(["--source-roundtrip"])
+                inputs.assert_not_called()
+                launch.assert_not_called()
+                invoke.assert_not_called()
+                self.assertIsNone(self.wrapper.SOURCE_ATTEMPT)
+            if parent == linked_parent:
+                self.assertEqual(created, [])
+            else:
+                self.assertEqual(len(created), 1)
+                endpoint_path = created[0] / "broker.sock"
+                self.assertGreater(len(os.fsencode(endpoint_path)), 107)
+                if parent == unicode_parent:
+                    self.assertLessEqual(len(str(endpoint_path)), 107)
+                self.assertFalse(created[0].exists())
+                self.assertEqual(list(parent.iterdir()), [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pathname AF_UNIX endpoint")
+    def test_endpoint_cleanup_preserves_original_unknown_and_foreign_replacement(self):
+        row = {"label": "realize-original", "state": "UNKNOWN", "exit_code": None,
+               "cleanup_exit_code": None, "native_mutation_retried": False}
+        original = self.wrapper.CaseCommandError(row)
+        before = dict(row)
+        root = path = None
+        with patch.object(self.wrapper, "SOURCE_DAEMON_ERRORS", []), \
+                patch.object(self.wrapper.subprocess, "Popen",
+                             side_effect=AssertionError("No replacement process")) as launch, \
+                patch.object(self.wrapper, "run_json",
+                             side_effect=AssertionError("No replacement command")) as invoke:
+            try:
+                with self.assertRaises(self.wrapper.CaseCommandError) as caught:
+                    with self.wrapper.source_owner_endpoint() as endpoint:
+                        root = endpoint["root"]
+                        path = self.wrapper.source_owner_endpoint_path(endpoint)
+                        with closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+                            listener.bind(str(path))
+                            path.chmod(0o600)
+                            self.wrapper.source_owner_endpoint_observe_socket(endpoint)
+                        path.unlink()
+                        path.write_bytes(b"FOREIGN REPLACEMENT CONTROL")
+                        raise original
+                self.assertIs(caught.exception, original)
+                self.assertEqual(row, before)
+                self.assertEqual(path.read_bytes(), b"FOREIGN REPLACEMENT CONTROL")
+                self.assertTrue(root.is_dir())
+                self.assertEqual(self.wrapper.SOURCE_DAEMON_ERRORS,
+                                 ["owner_endpoint_cleanup:AssertionError"])
+                launch.assert_not_called()
+                invoke.assert_not_called()
+            finally:
+                # Only this test created the replacement; production left it intact.
+                if path is not None and path.is_file():
+                    path.unlink()
+                if root is not None and root.exists():
+                    root.rmdir()
+
+        # The existing run_case finally records a failed wait/kill/log close in
+        # SOURCE_DAEMON_ERRORS. An observed socket is still in use until shutdown
+        # is verified, even if its inode, owner and mode still match.
+        root = path = None
+        with self.subTest(daemon_cleanup="unverified"), \
+                patch.object(self.wrapper, "SOURCE_DAEMON_ERRORS", []), \
+                patch.object(self.wrapper.subprocess, "Popen",
+                             side_effect=AssertionError("No replacement process")) as launch, \
+                patch.object(self.wrapper, "run_json",
+                             side_effect=AssertionError("No replacement command")) as invoke:
+            try:
+                with closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+                    with self.assertRaises(self.wrapper.CaseCommandError) as caught:
+                        with self.wrapper.source_owner_endpoint() as endpoint:
+                            root = endpoint["root"]
+                            path = self.wrapper.source_owner_endpoint_path(endpoint)
+                            listener.bind(str(path))
+                            path.chmod(0o600)
+                            listener.listen(1)
+                            self.wrapper.source_owner_endpoint_observe_socket(endpoint)
+                            observed = endpoint["socket_identity"]
+                            self.wrapper.SOURCE_DAEMON_ERRORS.append("TimeoutExpired")
+                            raise original
+                    self.assertIs(caught.exception, original)
+                    self.assertEqual(row, before)
+                    self.assertTrue(root.is_dir())
+                    self.assertEqual(
+                        self.wrapper.source_owner_endpoint_identity(path, directory=False),
+                        observed)
+                    self.assertEqual(self.wrapper.SOURCE_DAEMON_ERRORS, [
+                        "TimeoutExpired",
+                        "owner_endpoint_retained_daemon_cleanup_unverified",
+                    ])
+                    launch.assert_not_called()
+                    invoke.assert_not_called()
+            finally:
+                # This test, not the production finalizer, owns the retained fixture.
+                if path is not None and path.exists():
+                    path.unlink()
+                if root is not None and root.exists():
+                    root.rmdir()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pathname AF_UNIX endpoint")
+    def test_endpoint_cleanup_keeps_unobserved_socket_and_unrelated_child(self):
+        for observed in (False, True):
+            root = path = other = None
+            with self.subTest(observed=observed), \
+                    patch.object(self.wrapper, "SOURCE_DAEMON_ERRORS", []):
+                try:
+                    expected = OSError if observed else AssertionError
+                    with self.assertRaises(expected):
+                        with self.wrapper.source_owner_endpoint() as endpoint:
+                            root = endpoint["root"]
+                            path = self.wrapper.source_owner_endpoint_path(endpoint)
+                            with closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+                                listener.bind(str(path))
+                                path.chmod(0o600)
+                                if observed:
+                                    self.wrapper.source_owner_endpoint_observe_socket(endpoint)
+                                    other = root / "unrelated.bin"
+                                    other.write_bytes(b"UNRELATED CHILD CONTROL")
+                    self.assertTrue(root.is_dir())
+                    if observed:
+                        self.assertFalse(path.exists())
+                        self.assertEqual(other.read_bytes(), b"UNRELATED CHILD CONTROL")
+                        self.assertEqual(self.wrapper.SOURCE_DAEMON_ERRORS,
+                                         ["owner_endpoint_cleanup:OSError"])
+                    else:
+                        self.assertTrue(stat.S_ISSOCK(path.lstat().st_mode))
+                        self.assertEqual(self.wrapper.SOURCE_DAEMON_ERRORS,
+                                         ["owner_endpoint_cleanup:AssertionError"])
+                finally:
+                    # Both entries are synthetic objects created by this test.
+                    for candidate in (path, other):
+                        if candidate is not None and candidate.exists():
+                            candidate.unlink()
+                    if root is not None and root.exists():
+                        root.rmdir()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pathname AF_UNIX endpoint")
+    def test_endpoint_directory_mode_and_identity_are_rechecked_before_use(self):
+        with patch.object(self.wrapper, "SOURCE_DAEMON_ERRORS", []):
+            with self.wrapper.source_owner_endpoint() as endpoint:
+                root = endpoint["root"]
+                root.chmod(0o755)
+                try:
+                    with self.assertRaisesRegex(AssertionError, "owner_endpoint_identity_not_private"):
+                        self.wrapper.source_owner_endpoint_path(endpoint)
+                finally:
+                    root.chmod(0o700)
+                moved = root.with_name(root.name + "-held")
+                root.rename(moved)
+                root.mkdir(mode=0o700)
+                try:
+                    with self.assertRaisesRegex(AssertionError, "owner_endpoint_directory_changed"):
+                        self.wrapper.source_owner_endpoint_path(endpoint)
+                    self.assertTrue(root.is_dir())
+                    self.assertTrue(moved.is_dir())
+                finally:
+                    root.rmdir()
+                    moved.rename(root)
+                self.assertEqual(self.wrapper.source_owner_endpoint_path(endpoint), root / "broker.sock")
+            self.assertFalse(root.exists())
+            self.assertEqual(self.wrapper.SOURCE_DAEMON_ERRORS, [])
 
     def test_runtime_inventory_accepts_empty_regular_files_and_retains_exact_identity(self):
         with self.source_identity_inputs() as inputs:
