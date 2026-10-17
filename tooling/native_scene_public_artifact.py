@@ -334,7 +334,24 @@ def source_case_directory(name):
         return
     if re.fullmatch(r"output/videos(?:/" + SOURCE_TOKEN + r"(?:/360p(?:12|25)(?:/partial_movie_files(?:/MotionwrightScene)?)?)?)?", name):
         return
-    raise PublicationError("unapproved_manim_case_directory")
+    # Diagnostics expose only a closed structural category, never a filename
+    # or native session path. Unexpected trees remain strictly rejected.
+    nodes = name.split("/")
+    category = nodes[0] if nodes[0] in {"data", "bundles", "work", "output"} else "other"
+    known = {"images", "videos", "Tex", "texts", "logs", "sections",
+             "partial_movie_files", "original", "reopen", "edited-reopen",
+             "edge25", "blobs", "sha256", ".staging", "MotionwrightScene",
+             "__pycache__", ".cache", ".matplotlib", ".tmp"}
+    branch = nodes[1] if len(nodes) > 1 and nodes[1] in known else "other"
+    leaf = nodes[-1] if nodes[-1] in known else (
+        "source-token" if re.fullmatch(SOURCE_TOKEN, nodes[-1]) else (
+            "execution-token" if re.fullmatch(SOURCE_TOKEN + r"_execution", nodes[-1])
+            else "other"
+        )
+    )
+    raise PublicationError(
+        f"unapproved_manim_case_directory:{category}:{branch}:{leaf}:{len(nodes)}"
+    )
 
 
 def source_tree_inventory(root):

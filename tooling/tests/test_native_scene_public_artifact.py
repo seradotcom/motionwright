@@ -498,6 +498,29 @@ class ManimSourceCustodyTests(unittest.TestCase):
             pub.copy_source_snapshot(roots, self.private / "refused-image-snapshot", ())
         self.assertEqual(unexpected.read_bytes(), original)
 
+    def test_unapproved_directory_failure_reports_only_closed_shape(self):
+        token = "mw_" + "e" * 32
+        examples = [
+            ("output/images/" + token + "_execution",
+             "unapproved_manim_case_directory:output:images:execution-token:3"),
+            ("work/" + token + "_execution/__pycache__",
+             "unapproved_manim_case_directory:work:other:__pycache__:3"),
+            ("output/Tex",
+             "unapproved_manim_case_directory:output:Tex:Tex:2"),
+            ("data/original/private-project-alpha",
+             "unapproved_manim_case_directory:data:original:other:3"),
+            ("output/sensitive-session-credential",
+             "unapproved_manim_case_directory:output:other:other:2"),
+        ]
+        for candidate, expected in examples:
+            with self.subTest(candidate=candidate), self.assertRaises(pub.PublicationError) as error:
+                pub.source_case_directory(candidate)
+            self.assertEqual(str(error.exception), expected)
+            self.assertNotIn(token, str(error.exception))
+            self.assertNotIn("private-project", str(error.exception))
+            self.assertNotIn("sensitive-session", str(error.exception))
+        pub.source_case_directory("output/images/" + token)
+
     def test_missing_or_changed_cas_identity_is_not_repaired_by_custody(self):
         roots = self.roots()
         cas = next((roots["data"] / "original" / "blobs" / "sha256").glob("*/*"))
