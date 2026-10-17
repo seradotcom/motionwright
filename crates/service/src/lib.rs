@@ -676,15 +676,13 @@ impl StudioService {
         project_id: Uuid,
         limit: usize,
     ) -> StorageResult<Vec<ProductionJobProjection>> {
-        let store = self.store.lock();
-        let project = store.load_project(project_id)?;
-        let receipts = store.production_receipts(project_id, 256)?;
-        Ok(jobs::derive_production_jobs(
-            &receipts,
-            project.generation,
-            project.revision,
-            limit,
-        ))
+        // Studio must use the same watermark-bound original receipt history
+        // as the complete Native SDK enumeration, not a 256-row suffix that
+        // silently turns acknowledged starts into orphans.
+        let watermark = self.production_receipt_watermark(project_id)?;
+        let mut jobs = self.production_jobs_snapshot(project_id, &watermark)?;
+        jobs.truncate(limit.clamp(1, 64));
+        Ok(jobs)
     }
 
     /// Snapshot the locally persisted production receipt stream independently
