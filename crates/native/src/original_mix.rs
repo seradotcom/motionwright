@@ -140,6 +140,115 @@ fn check_stem(asset: &PcmStemReceipt, project: &Project, n: u64) -> Result<()> {
     )?;
     Ok(())
 }
+fn admitted_voice_windows(project: &Project, track_id: Uuid) -> Result<Vec<VoiceActivityWindow>> {
+    let track = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .ok_or_else(|| MixError("Reviewed timing has no current measured voice source".into()))?;
+    let mut accepted = project
+        .audio
+        .transcript
+        .iter()
+        .filter(|s| s.voice_track_id == track_id)
+        .map(|s| {
+            let source_is_measured = match &s.alignment {
+                AlignmentEvidence::Manual => true,
+                AlignmentEvidence::Measured {
+                    source_sha256,
+                    confidence_millis: Some(conf),
+                    ..
+                } if *conf >= 800 && source_sha256 == &track.source_sha256 => true,
+                _ => false,
+            };
+            if !source_is_measured {
+                return Err(MixError(
+                    "Unreviewed or foreign-source ASR timing cannot drive source-bound ducking"
+                        .into(),
+                ));
+            }
+            Ok(VoiceActivityWindow {
+                start_sample: time_to_sample(s.start)?,
+                end_exclusive: time_to_sample(s.end)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    accepted.sort_by_key(|w| w.start_sample);
+    Ok(accepted)
+}
+
+/// Derive all editable mix settings from the selected persisted recipe and
+/// existing global audio intent. Receipts must still be decoded from owner CAS
+/// and verified against their physical PCM by the source preparation boundary.
+/// This pure plan never grants audition, mastering or delivery authority.
+pub fn original_mix_plan_from_canonical_recipe(
+    project: &Project,
+    deliverable_profile_id: Uuid,
+    measured_voice: PcmStemReceipt,
+    original_music: PcmStemReceipt,
+    original_sfx: PcmStemReceipt,
+) -> Result<OriginalMixPlan> {
+    project
+        .validate()
+        .map_err(|_| MixError("Canonical original mix project is invalid".into()))?;
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.id == deliverable_profile_id)
+        .ok_or_else(|| MixError("Canonical mix profile is absent".into()))?;
+    let recipe = project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_profile_id)
+        .and_then(|recipe| recipe.original_mix.as_ref())
+        .ok_or_else(|| MixError("Save an original mix recipe for this delivery profile".into()))?;
+    check(
+        profile.voice_track_id.is_some()
+            && profile.voice_track_id == project.audio.active_voice_track_id,
+        "Canonical original mix requires the same selected and active measured voice",
+    )?;
+    check(
+        recipe.music_asset_id == Some(original_music.asset_id)
+            && recipe.sfx_asset_id == Some(original_sfx.asset_id),
+        "Original music and SFX receipts differ from the selected saved recipe",
+    )?;
+    check(
+        project.audio.cues.is_empty() && project.audio.sfx_cues.is_empty(),
+        "Canonical three-bus mix does not yet combine separately authored audio or semantic SFX cues",
+    )?;
+    let track_id = profile
+        .voice_track_id
+        .ok_or_else(|| MixError("Canonical mix has no selected measured voice".into()))?;
+    let plan = OriginalMixPlan {
+        schema: "motionwright.original-audio-mix/1".into(),
+        project_id: project.id,
+        generation: project.generation,
+        project_revision: project.revision,
+        deliverable_profile_id,
+        language: profile.language.clone(),
+        sample_rate: 48_000,
+        channels: 2,
+        sample_frames: measured_voice.sample_frames,
+        measured_voice,
+        original_music,
+        original_sfx,
+        voice_gain_db: f64::from(project.audio.mix.voice_gain_db),
+        music_gain_db: f64::from(project.audio.mix.music_gain_db),
+        sfx_gain_db: recipe.sfx_gain_db,
+        duck_attenuation_db: recipe.duck_attenuation_db,
+        duck_attack_samples: recipe.duck_attack_samples,
+        duck_release_samples: recipe.duck_release_samples,
+        voice_windows: admitted_voice_windows(project, track_id)?,
+        sample_peak_guard_dbfs: -1.0,
+        source_classification: "ORIGINAL_LICENSED_SOURCE_REQUIRED_NOT_SPEECH_VERIFIED".into(),
+        owner_mixing_approval_authenticated: false,
+        is_mastered: false,
+    };
+    plan.validate(project)?;
+    Ok(plan)
+}
+
 impl OriginalMixPlan {
     pub fn validate(&self, project: &Project) -> Result<()> {
         check(
@@ -251,32 +360,7 @@ impl OriginalMixPlan {
         // Windows are taken from the existing, manually/reliably aligned
         // measured voice transcript. There is no amplitude-based voice activity
         // guess and no template guess based on word count.
-        let mut accepted = project
-            .audio
-            .transcript
-            .iter()
-            .filter(|s| s.voice_track_id == track.id)
-            .map(|s| {
-                let source_is_measured = match &s.alignment {
-                    AlignmentEvidence::Manual => true,
-                    AlignmentEvidence::Measured {
-                        confidence_millis: Some(conf),
-                        ..
-                    } if *conf >= 800 => true,
-                    _ => false,
-                };
-                if !source_is_measured {
-                    return Err(MixError(
-                        "Unreviewed ASR timing cannot drive approved ducking".into(),
-                    ));
-                }
-                Ok(VoiceActivityWindow {
-                    start_sample: time_to_sample(s.start)?,
-                    end_exclusive: time_to_sample(s.end)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        accepted.sort_by_key(|w| w.start_sample);
+        let accepted = admitted_voice_windows(project, track.id)?;
         check(
             accepted == self.voice_windows,
             "Mix duck windows differ from the project's source-bound reviewed transcript",

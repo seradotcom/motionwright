@@ -204,6 +204,61 @@ fn refuse_unmixed_source_sfx(project: &Project) -> NativeResult<()> {
     Ok(())
 }
 
+/// Rebuild the exact semantic recipe and verify its already-produced no-audio
+/// FFV1 timeline. This gate does not select or process any audio source.
+pub(super) fn verify_multisegment_visual_source(
+    project: &Project,
+    deliverable_id: Uuid,
+    options: &FilmBuildOptions,
+    rendered: &MotionCanvasRenderEvidence,
+    visual: &MltVerifiedLosslessTimeline,
+    output_root: &Path,
+) -> NativeResult<MltNativeVideoRecipe> {
+    let checked =
+        preflight_multi_segment_mlt(project, deliverable_id, options, rendered, output_root)?;
+    let recipe = mlt_native_video_recipe(&checked)?;
+    let expected_video_path = format!(
+        "{}-sequence-video-only-ffv1.mkv",
+        recipe.owner_output_namespace
+    );
+    if visual.project_resource != project.resource_key()
+        || visual.generation != project.generation
+        || visual.revision != project.revision
+        || visual.deliverable_id != deliverable_id
+        || visual.recipe_sha256 != recipe.input_sha256
+        || visual.frame_count != recipe.total_frames
+        || visual.native_frame_count_observed != Some(recipe.total_frames)
+        || visual.native_render_profile != "lossless-video-only"
+        || visual.transport_pcm_audio
+        || visual.evidence_scope
+            != "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+        || visual.artifact_path != expected_video_path
+        || !visual.native_job_ref.starts_with("render:")
+        || visual.provider_project_cleanup != "not_requested_requires_foreground_broker_consent"
+    {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Native MLT video-only intermediary is not exact source-verified content",
+        ));
+    }
+    let source_video = verify_output_artifact(
+        output_root,
+        &visual.artifact_path,
+        &visual.artifact_sha256,
+        MLT_MASTER_MAX_BYTES,
+    )?;
+    if fs::metadata(source_video)
+        .map_err(|_| backend("Native no-audio FFV1 is inaccessible"))?
+        .len()
+        != visual.artifact_bytes
+    {
+        return Err(backend(
+            "Native no-audio FFV1 bytes disagree with source receipt",
+        ));
+    }
+    Ok(recipe)
+}
+
 /// A trusted typed native-only mux context. Both callers must already have
 /// verified their distinct original source classes independently: measured
 /// voice from StudioService CAS, or original semantic SFX from source CAS.
@@ -381,54 +436,15 @@ impl ProductionCoordinator {
             ));
         }
         refuse_unmixed_source_sfx(&project)?;
-        let checked = preflight_multi_segment_mlt(
+        let output_root = &self.client.connection().output_root;
+        let recipe = verify_multisegment_visual_source(
             &project,
             deliverable_id,
             options,
             rendered,
-            &self.client.connection().output_root,
-        )?;
-        let recipe = mlt_native_video_recipe(&checked)?;
-        let expected_video_path = format!(
-            "{}-sequence-video-only-ffv1.mkv",
-            recipe.owner_output_namespace
-        );
-        if visual.project_resource != project.resource_key()
-            || visual.generation != project.generation
-            || visual.revision != project.revision
-            || visual.deliverable_id != deliverable_id
-            || visual.recipe_sha256 != recipe.input_sha256
-            || visual.frame_count != recipe.total_frames
-            || visual.native_frame_count_observed != Some(recipe.total_frames)
-            || visual.native_render_profile != "lossless-video-only"
-            || visual.transport_pcm_audio
-            || visual.evidence_scope
-                != "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
-            || visual.artifact_path != expected_video_path
-            || !visual.native_job_ref.starts_with("render:")
-            || visual.provider_project_cleanup != "not_requested_requires_foreground_broker_consent"
-        {
-            return Err(Error::new(
-                ErrorCode::StaleReference,
-                "Native MLT video-only intermediary is not exact source-verified content",
-            ));
-        }
-        let output_root = &self.client.connection().output_root;
-        let source_video = verify_output_artifact(
+            visual,
             output_root,
-            &visual.artifact_path,
-            &visual.artifact_sha256,
-            MLT_MASTER_MAX_BYTES,
         )?;
-        if fs::metadata(source_video)
-            .map_err(|_| backend("Native no-audio FFV1 is inaccessible"))?
-            .len()
-            != visual.artifact_bytes
-        {
-            return Err(backend(
-                "Native no-audio FFV1 bytes disagree with source receipt",
-            ));
-        }
         let voice_track_id = project
             .deliverables
             .iter()
