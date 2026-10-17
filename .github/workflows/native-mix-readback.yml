@@ -1,0 +1,377 @@
+name: Native mix readback contracts
+
+on:
+  pull_request:
+    paths:
+      - 'tooling/native_mlt_mix_readback.py'
+      - 'tooling/tests/test_native_mlt_mix_readback.py'
+      - 'crates/native/tests/original_mix_master_roundtrip.rs'
+      - '.github/workflows/native-mix-readback.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'tooling/native_mlt_mix_readback.py'
+      - 'tooling/tests/test_native_mlt_mix_readback.py'
+      - 'crates/native/tests/original_mix_master_roundtrip.rs'
+      - '.github/workflows/native-mix-readback.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: checkout
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        id: python
+        with:
+          python-version: '3.12'
+      - name: Ensure real FFmpeg and FFprobe on the disposable runner
+        id: media
+        run: |
+          set -euo pipefail
+          mkdir -p verification/native-mix-readback-g1
+          set +e
+          (
+            set -euo pipefail
+            if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ffmpeg
+            fi
+            test -x "$(command -v ffmpeg)"
+            test -x "$(command -v ffprobe)"
+          ) > verification/native-mix-readback-g1/provision.stdout.log \
+            2> verification/native-mix-readback-g1/provision.stderr.log
+          readback_provision_exit=$?
+          set -e
+          printf '%s\n' "$readback_provision_exit" > verification/native-mix-readback-g1/provision.exit-code.log
+          cat verification/native-mix-readback-g1/provision.stdout.log
+          cat verification/native-mix-readback-g1/provision.stderr.log >&2
+          exit "$readback_provision_exit"
+      - name: Run the complete reader module and retain exact coverage
+        if: always()
+        env:
+          READBACK_CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          READBACK_PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          READBACK_MEDIA_OUTCOME: ${{ steps.media.outcome }}
+          READBACK_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          READBACK_PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B - <<'PY'
+          import collections
+          import hashlib
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import signal
+          import subprocess
+          import sys
+          import time
+          import traceback
+
+          evidence = Path("verification/native-mix-readback-g1")
+          evidence.mkdir(parents=True, exist_ok=True)
+          source_paths = (
+              "tooling/native_mlt_mix_readback.py",
+              "tooling/tests/test_native_mlt_mix_readback.py",
+              "crates/native/tests/original_mix_master_roundtrip.rs",
+          )
+          expected_ids = set("""
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_both_pipes_are_drained_and_bounded
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_closed_pipes_do_not_end_deadline_while_leader_is_running
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_exited_parent_with_descendant_holding_pipes_obeys_external_deadline
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_invalid_deadline_rejected_before_any_spawn
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_job_assignment_failure_never_releases_decoder_launch_gate
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_nonzero_exit_fails
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_partial_pipe_write_overflow_is_detected_without_waiting_for_64k
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_small_and_exact_limit_output
+          test_native_mlt_mix_readback.BoundedDecoderProcessTests.test_successful_parent_cannot_leave_a_descendant_without_open_pipes
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_all_final_identity_fields_are_still_checked
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_eof_must_match_initial_size_even_when_shorter_bytes_match_digest
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_growing_file_rejected_after_initial_size_plus_one_bytes
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_initial_size_cap_is_checked_before_open
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_nonempty_short_reads_can_reach_the_exact_initial_size
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_stable_physical_file_with_wrong_digest_still_fails
+          test_native_mlt_mix_readback.CheckedFileHashTests.test_stable_physical_files_retain_their_digest_and_identity
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_alignment_report_exposes_its_finite_search_scope
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_all_samples_and_tail_are_compared_without_shifting
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_central_tone_gate_misses_a_tail_that_the_full_reader_rejects
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_channel_swap_and_duplication_fail
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_codec_sized_suffix_is_disclosed_without_claiming_extra_content
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_cut_and_last_100_milliseconds_cannot_disappear
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_each_missing_bus_fails
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_fractional_project_sample_clock_fails
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_invalid_limits_cannot_disable_the_reader
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_last_100_samples_cannot_disappear_inside_a_large_window
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_missing_or_partial_logical_sample_and_excess_padding_fail
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_periodic_reference_cannot_claim_a_unique_alignment
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_shifts_from_one_sample_to_one_video_frame_fail
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_silence_cannot_prove_alignment
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_suffix_requires_the_validated_packet_declaration
+          test_native_mlt_mix_readback.FullContentReadbackTests.test_wrong_gain_fails
+          test_native_mlt_mix_readback.RealAacCalibrationTests.test_real_aac_cannot_hide_a_loss_of_the_last_100_samples
+          test_native_mlt_mix_readback.RealAacCalibrationTests.test_real_aac_positive_retains_the_measured_comparison_limits
+          test_native_mlt_mix_readback.RealAacCalibrationTests.test_real_audible_suffix_is_not_reclassified_as_codec_padding
+          test_native_mlt_mix_readback.RealAacCalibrationTests.test_real_periodic_audio_cannot_prove_zero_delay_or_hide_96_sample_shift
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_aac_profile_cannot_change_access_unit_assumptions
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_arbitrary_short_audio_frames_cannot_hide_behind_a_suffix_budget
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_audio_packet_end_cannot_hide_extra_presented_samples
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_decoder_output_is_bounded_while_reading
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_decoder_stderr_is_rejected_even_with_exit_zero
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_decoder_timeout_kills_and_reaps
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_discard_metadata_must_match_the_nominal_access_unit_end
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_exact_frame_clock_exposes_aac_suffix
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_explicit_final_discard_padding_is_coherent_with_exact_presentation
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_metadata_frame_total_cannot_hide_a_missing_decoded_frame
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_no_channel_or_rate_normalization_hides_a_wrong_stream
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_nonzero_or_discontinuous_pts_fail_with_unchanged_pcm
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_packets_are_required_in_addition_to_decoded_frames
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_priming_is_explicit_and_consistent_with_the_first_packet_pts
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_reference_wav_is_read_physically_without_resampling
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_skip_discard_and_packet_timestamps_cannot_move_interior_content
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_stream_durations_must_match_the_exact_logical_clock
+          test_native_mlt_mix_readback.TimestampAndDecoderTests.test_video_packets_and_frames_cannot_disagree
+          """.split())
+          windows_only = (
+              "test_native_mlt_mix_readback.BoundedDecoderProcessTests."
+              "test_job_assignment_failure_never_releases_decoder_launch_gate"
+          )
+          expected_skip = "skipped 'requires real Windows Job Objects'"
+          aac_ids = {identity for identity in expected_ids
+                     if ".RealAacCalibrationTests." in identity}
+          receipt = {
+              "schema": "motionwright.native-mix-readback-g1/1",
+              "status": "NOT_VERIFIED",
+              "github_event": os.environ.get("GITHUB_EVENT_NAME"),
+              "github_sha": os.environ.get("GITHUB_SHA"),
+              "pr_head_sha": os.environ.get("READBACK_PR_HEAD") or None,
+              "pr_base_sha": os.environ.get("READBACK_PR_BASE") or None,
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "python": sys.version,
+              "prerequisites": {
+                  name: os.environ.get("READBACK_" + name.upper() + "_OUTCOME")
+                  for name in ("checkout", "python", "media")
+              },
+              "expected_ids": sorted(expected_ids),
+              "expected_linux_skip": {"id": windows_only,
+                                      "reason": "requires real Windows Job Objects"},
+              "native_production_execution": False,
+              "rust_roundtrip_executed_by_this_gate": False,
+              "human_acceptance": False,
+          }
+          failures = []
+
+
+          def save_receipt():
+              (evidence / "receipt.json").write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+              )
+
+
+          save_receipt()
+
+
+          def check(condition, reason):
+              if not condition:
+                  failures.append(reason)
+
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with Path(path).open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+
+          def file_record(path):
+              return {"bytes": Path(path).stat().st_size, "sha256": sha256(path)}
+
+
+          def git(*arguments):
+              result = subprocess.run(
+                  ["git", *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  check=True, timeout=20,
+              )
+              return result.stdout.decode("utf-8", errors="strict").strip()
+
+
+          def source_binding():
+              return {
+                  "checkout": git("rev-parse", "HEAD"),
+                  "tree": git("rev-parse", "HEAD^{tree}"),
+                  "status_porcelain": git("status", "--porcelain", "--untracked-files=all"),
+                  "files": {path: file_record(path) for path in source_paths},
+                  "workflow": file_record(".github/workflows/native-mix-readback.yml"),
+              }
+
+
+          def tool_record(name):
+              selected = shutil.which(name)
+              if not selected:
+                  raise RuntimeError("required_media_instrument_missing")
+              path = Path(selected).resolve(strict=True)
+              return {"path": str(path), **file_record(path)}
+
+
+          started = time.monotonic()
+          try:
+              check(all(value == "success" for value in receipt["prerequisites"].values()),
+                    "prerequisite_step_not_successful")
+              check(sys.platform.startswith("linux") and sys.version_info[:2] == (3, 12),
+                    "unexpected_python_or_platform")
+              check(len(expected_ids) == 54 and len(aac_ids) == 4
+                    and windows_only in expected_ids, "invalid_frozen_test_inventory")
+              if failures:
+                  raise RuntimeError("readback_g1_prerequisites_not_verified")
+
+              before = source_binding()
+              receipt["source_before"] = before
+              check(before["checkout"] == os.environ.get("GITHUB_SHA"),
+                    "checkout_differs_from_event_sha")
+              check(not before["status_porcelain"], "dirty_checkout_before_tests")
+              print("READBACK_G1_CHECKOUT", before["checkout"], "TREE", before["tree"], flush=True)
+              instruments = {name: tool_record(name) for name in ("ffmpeg", "ffprobe")}
+              receipt["instruments_before"] = instruments
+              for name, instrument in instruments.items():
+                  command = [instrument["path"], "-version"]
+                  completed = subprocess.run(command, stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE, timeout=15, check=False)
+                  (evidence / (name + "-version.stdout.log")).write_bytes(completed.stdout)
+                  (evidence / (name + "-version.stderr.log")).write_bytes(completed.stderr)
+                  instrument["version_command"] = command
+                  instrument["version_exit_code"] = completed.returncode
+                  instrument["version_first_line"] = completed.stdout.decode(
+                      "utf-8", errors="replace").splitlines()[:1]
+                  check(completed.returncode == 0 and bool(instrument["version_first_line"]),
+                        name + "_version_not_verified")
+                  print(name, json.dumps(instrument, sort_keys=True), flush=True)
+              if failures:
+                  raise RuntimeError("readback_g1_source_or_instruments_not_verified")
+
+              command = [
+                  sys.executable, "-B", "-m", "unittest", "discover",
+                  "-s", "tooling/tests", "-p", "test_native_mlt_mix_readback.py", "-v",
+              ]
+              receipt["test_command"] = command
+              receipt["test_timeout_seconds"] = 300
+              timed_out = False
+              with (evidence / "unittest.stdout.log").open("wb") as stdout, \
+                      (evidence / "unittest.stderr.log").open("wb") as stderr:
+                  process = subprocess.Popen(command, stdout=stdout, stderr=stderr,
+                                             start_new_session=True)
+                  try:
+                      receipt["test_process_started"] = True
+                      save_receipt()
+                      try:
+                          process.wait(timeout=300)
+                      except subprocess.TimeoutExpired:
+                          timed_out = True
+                  finally:
+                      if process.poll() is None:
+                          try:
+                              os.killpg(process.pid, signal.SIGKILL)
+                          except ProcessLookupError:
+                              pass
+                          finally:
+                              process.wait(timeout=5)
+                      receipt["test_exit_code"] = process.returncode
+                      receipt["test_timed_out"] = timed_out
+                      (evidence / "unittest.exit-code.log").write_text(
+                          str(process.returncode) + "\n", encoding="utf-8",
+                      )
+              returncode = process.returncode
+              stdout_text = (evidence / "unittest.stdout.log").read_text(encoding="utf-8", errors="replace")
+              stderr_text = (evidence / "unittest.stderr.log").read_text(encoding="utf-8", errors="replace")
+              print(stdout_text, end="", flush=True)
+              print(stderr_text, end="", file=sys.stderr, flush=True)
+              check(not timed_out and returncode == 0, "unittest_did_not_exit_successfully")
+
+              rows = re.findall(
+                  r"^(test_\w+) \((test_native_mlt_mix_readback\.[A-Za-z_]\w*\.test_\w+)\)"
+                  r" \.\.\. (.+)$", stderr_text, re.MULTILINE,
+              )
+              counts = collections.Counter(identity for _, identity, _ in rows)
+              observed = {identity: status for _, identity, status in rows}
+              receipt["observed_tests"] = [
+                  {"id": identity, "status": status} for _, identity, status in rows
+              ]
+              check(set(counts) == expected_ids and all(value == 1 for value in counts.values()),
+                    "test_ids_missing_extra_or_duplicated")
+              check(all(identity.endswith("." + method) for method, identity, _ in rows),
+                    "test_id_and_method_disagree")
+              check(observed.get(windows_only) == expected_skip, "windows_only_skip_differs")
+              check(all(observed.get(identity) == "ok"
+                        for identity in expected_ids - {windows_only}),
+                    "required_linux_test_did_not_pass")
+              check(all(observed.get(identity) == "ok" for identity in aac_ids),
+                    "required_real_aac_test_did_not_pass")
+              summary = re.findall(r"^Ran (\d+) tests in ([0-9.]+)s$", stderr_text, re.MULTILINE)
+              check(len(summary) == 1 and int(summary[0][0]) == 54
+                    and math.isfinite(float(summary[0][1])), "unittest_summary_differs")
+              check(len(re.findall(r"^OK \(skipped=1\)$", stderr_text, re.MULTILINE)) == 1,
+                    "unittest_completion_differs")
+              receipt["tests_run"] = int(summary[0][0]) if len(summary) == 1 else None
+              receipt["passed"] = sum(status == "ok" for status in observed.values())
+              receipt["skipped"] = sum(status.startswith("skipped ") for status in observed.values())
+              receipt["real_aac_passed"] = sum(observed.get(identity) == "ok" for identity in aac_ids)
+
+              after = source_binding()
+              receipt["source_after"] = after
+              check(after == before and not after["status_porcelain"], "source_changed_during_tests")
+              after_tools = {name: tool_record(name) for name in ("ffmpeg", "ffprobe")}
+              receipt["instruments_after"] = after_tools
+              check(all(after_tools[name] == {key: original[key] for key in ("path", "bytes", "sha256")}
+                        for name, original in instruments.items()), "instrument_changed_during_tests")
+              if not failures:
+                  receipt["status"] = "PASS"
+          except Exception as error:
+              failures.append("verification_exception:" + type(error).__name__)
+              (evidence / "verification-error.log").write_text(
+                  traceback.format_exc(), encoding="utf-8",
+              )
+          finally:
+              receipt["elapsed_seconds"] = time.monotonic() - started
+              receipt["failures"] = failures
+              receipt["retained_logs"] = {
+                  path.name: file_record(path) for path in sorted(evidence.glob("*.log"))
+                  if path.is_file() and not path.is_symlink()
+              }
+              save_receipt()
+              print(json.dumps({
+                  "native_mix_readback_g1": receipt["status"],
+                  "test_exit_code": receipt.get("test_exit_code"),
+                  "tests_run": receipt.get("tests_run"),
+                  "passed": receipt.get("passed"),
+                  "skipped": receipt.get("skipped"),
+                  "real_aac_passed": receipt.get("real_aac_passed"),
+                  "failures": failures,
+              }, sort_keys=True), flush=True)
+          raise SystemExit(0 if receipt["status"] == "PASS" else 1)
+
+          PY
+      - name: Retain only G1 logs and receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-mix-readback-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verification/native-mix-readback-g1/receipt.json
+            verification/native-mix-readback-g1/*.log
+          if-no-files-found: error
+          retention-days: 7

@@ -23,6 +23,12 @@ on:
       - "crates/native/**"
       - ".github/workflows/native-production.yml"
   workflow_dispatch:
+    inputs:
+      calibrate_original_mix:
+        description: "Calibrate synthetic original-mix source with the Rust mixer; no native dispatch"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -30,6 +36,7 @@ permissions:
 jobs:
   production-contracts:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -38,10 +45,430 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Source policy
+        id: policy
         run: python3 tooling/source_policy.py
       - name: Production receipt storage
+        id: storage
         run: cargo test -p motionwright-storage production
       - name: Broker client and coordinator
-        run: cargo test -p motionwright-native production::tests --all-targets
+        id: native
+        run: cargo test -p motionwright-native production:: --all-targets
       - name: Native production clippy
+        id: clippy
         run: cargo clippy -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+      - name: Calibrate original-mix source without native dispatch
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.calibrate_original_mix }}
+        env:
+          MOTIONWRIGHT_MLT_MODE: original-mix-mp4
+          CALIBRATION_POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          CALIBRATION_STORAGE_OUTCOME: ${{ steps.storage.outcome }}
+          CALIBRATION_NATIVE_OUTCOME: ${{ steps.native.outcome }}
+          CALIBRATION_CLIPPY_OUTCOME: ${{ steps.clippy.outcome }}
+        run: |
+          python3 -B - <<'PY'
+          import copy
+          import hashlib
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import re
+          import signal
+          import stat
+          import struct
+          import subprocess
+          import sys
+          import time
+          import traceback
+          import uuid
+
+          root = Path("verification/native-original-mix-calibration")
+          root.mkdir(parents=True, exist_ok=True)
+          calibration = root / "calibration"
+          database = root / "fixture.sqlite"
+          source_paths = (
+              "crates/native/examples/native-mlt-sequence-e2e.rs",
+              "crates/native/src/original_mix.rs",
+              "crates/native/src/production/original_mix_av.rs",
+              "Cargo.lock", "SOURCE_LOCK.json", ".github/workflows/native-production.yml",
+          )
+          fixture_id = "fixture_tests::integer_fixture_wavs_match_independently_calibrated_source_bytes"
+          stem_digests = {
+              "voice": ("92600baa4f59af065cf2d4132cd84943313e6c842392c226efe8eac00e176c49",
+                        "741d45438a68fa44d875398653c588f02a3a2674638070b1dc0149795a37f0a8"),
+              "music": ("708d8953769f4a92228df3417487e04344c6a3a3a07f89e4bc36e3f9b1031ad1",
+                        "3ea758e4872cd184d0f3ffb60e535e4f72d1f416867a396682bdf6a0de4c7e26"),
+              "sfx": ("efe99c94f674aa38fb094c9d37ba00ba2baca0c5b87cdc14449d79dbbca74a11",
+                      "b9c647103eee2fd4201da8be2da5d5b7bbe4ec2b77aa030d225e1f5ded1c4026"),
+          }
+          receipt = {
+              "schema": "motionwright.original-mix-calibration-ci/1",
+              "status": "NOT_VERIFIED",
+              "github_sha": os.environ.get("GITHUB_SHA"),
+              "event": os.environ.get("GITHUB_EVENT_NAME"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "platform": sys.platform, "python": sys.version,
+              "prerequisites": {
+                  name: os.environ.get("CALIBRATION_" + name.upper() + "_OUTCOME")
+                  for name in ("policy", "storage", "native", "clippy")
+              },
+              "commands": [],
+              "native_master_readback": "NOT_RUN",
+              "native_provider_execution": False,
+              "human_acceptance": False,
+          }
+
+          def save():
+              (root / "receipt.json").write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+              )
+
+          def require(value, reason):
+              if not value:
+                  raise RuntimeError(reason)
+
+          def digest(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def record(path):
+              path = Path(path)
+              value = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      value.update(chunk)
+              return {"bytes": path.stat().st_size, "sha256": value.hexdigest()}
+
+          def source():
+              def git(*args):
+                  value = subprocess.run(["git", *args], check=True, capture_output=True, timeout=20)
+                  return value.stdout.decode("utf-8").strip()
+              return {
+                  "checkout": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+                  "status_porcelain": git("status", "--porcelain", "--untracked-files=all"),
+                  "files": {path: record(path) for path in source_paths},
+              }
+
+          def run(label, command, timeout):
+              row = {"label": label, "command": command, "started": False, "exit_code": None,
+                     "timed_out": False}
+              receipt["commands"].append(row)
+              save()
+              with (root / (label + ".stdout.log")).open("wb") as out, \
+                      (root / (label + ".stderr.log")).open("wb") as err:
+                  process = subprocess.Popen(command, stdout=out, stderr=err, start_new_session=True)
+                  try:
+                      row["started"] = True
+                      save()
+                      try:
+                          process.wait(timeout=timeout)
+                      except subprocess.TimeoutExpired:
+                          row["timed_out"] = True
+                  finally:
+                      if process.poll() is None:
+                          try:
+                              os.killpg(process.pid, signal.SIGKILL)
+                          except ProcessLookupError:
+                              pass
+                          finally:
+                              process.wait(timeout=5)
+                      row["exit_code"] = process.returncode
+                      (root / (label + ".exit-code.log")).write_text(
+                          str(process.returncode) + "\n", encoding="utf-8",
+                      )
+                      save()
+              stdout = (root / (label + ".stdout.log")).read_text(encoding="utf-8", errors="replace")
+              stderr = (root / (label + ".stderr.log")).read_text(encoding="utf-8", errors="replace")
+              print(stdout, end="", flush=True)
+              print(stderr, end="", file=sys.stderr, flush=True)
+              require(row["exit_code"] == 0 and not row["timed_out"], label + "_failed")
+              return stdout
+
+          def physical(path, limit):
+              before = path.lstat()
+              require(stat.S_ISREG(before.st_mode) and before.st_size <= limit, "nonregular_or_large_output")
+              with path.open("rb") as stream:
+                  data = stream.read(limit + 1)
+              after = path.lstat()
+              require(len(data) == before.st_size and len(data) <= limit
+                      and (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                      == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+                      "physical_output_changed")
+              return data
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  require(key not in result, "duplicate_json_key")
+                  result[key] = value
+              return result
+
+          def finite_float(value):
+              number = float(value)
+              require(math.isfinite(number), "nonfinite_json_number")
+              return number
+
+          def reject_constant(value):
+              raise RuntimeError("nonfinite_json_constant")
+
+          def parse(data):
+              return json.loads(data, object_pairs_hook=unique_object,
+                                parse_float=finite_float, parse_constant=reject_constant)
+
+          def report_types(seed, manifest, summary):
+              expected_keys = (
+                  (seed, "project_id generation revision resource width height fps_num fps_den scene_count "
+                   "deliverable_count master_profile_id fixture_mode fixture_frame_count "
+                   "fixture_audio_sample_frames fixture_speech_or_human_approval"),
+                  (manifest, "schema evidence_scope project_id source_project_stamp source_project_sha256 "
+                   "source_project_serialization source_project_unchanged selected_profile saved_delivery_recipe "
+                   "canonical_film_options canonical_film_projection_only original_mix_plan_sha256 source_stems "
+                   "actual_mixed_wav_sha256 actual_mixed_pcm_sha256 actual_pcm_sample_frames pcm_sample_rate_hz "
+                   "pcm_channels pcm_encoding mixed_wav_differs_from_voice_wav mixed_pcm_differs_from_voice_pcm "
+                   "source_readiness retained_files production_receipts_before production_receipts_after "
+                   "native_jobs_dispatched broker_connected external_process_launched mlt_or_aac_executed "
+                   "independent_lufs_or_true_peak_verified speech_listening_rights_or_human_approval "
+                   "example_source_sha256 mixer_source_sha256 source_preparer_source_sha256"),
+                  (summary, "canonical_original_mix_rust_calibration manifest manifest_sha256 "
+                   "mixed_wav_relative_path mixed_wav_sha256 mixed_pcm_sha256 pcm_sample_frames "
+                   "production_receipts source_project_unchanged native_master_verified"),
+              )
+              for payload, names in expected_keys:
+                  require(type(payload) is dict and set(payload) == set(names.split()), "report_keys_differ")
+              integer_fields = (
+                  (seed, {"width": 1280, "height": 720, "fps_num": 30, "fps_den": 1,
+                          "scene_count": 33, "deliverable_count": 3, "fixture_frame_count": 60,
+                          "fixture_audio_sample_frames": 96000}),
+                  (manifest, {"actual_pcm_sample_frames": 96000, "pcm_sample_rate_hz": 48000,
+                              "pcm_channels": 2, "native_jobs_dispatched": 0}),
+                  (summary, {"pcm_sample_frames": 96000, "production_receipts": 0}),
+              )
+              for payload, fields in integer_fields:
+                  for key, expected in fields.items():
+                      require(type(payload[key]) is int and payload[key] == expected, "integer_field_differs")
+              require(type(seed["revision"]) is int and seed["revision"] >= 0, "revision_type_differs")
+              for key in ("production_receipts_before", "production_receipts_after"):
+                  value = manifest[key]
+                  require(type(value) is dict and set(value) == {"count", "latest_id"}
+                          and type(value["count"]) is int and value["count"] == 0
+                          and value["latest_id"] is None, "receipt_watermark_type_differs")
+              require(type(manifest["source_stems"]) is dict
+                      and set(manifest["source_stems"]) == set(stem_digests), "stem_keys_differ")
+              for value in manifest["source_stems"].values():
+                  require(type(value) is dict and set(value) == {
+                      "asset_id", "source_asset_sha256", "decoded_pcm_sha256", "sample_frames",
+                  } and type(value["sample_frames"]) is int and value["sample_frames"] == 96000,
+                          "stem_frame_type_differs")
+              projection = manifest["canonical_film_projection_only"]
+              require(type(projection) is dict and set(projection) == {
+                  "rendered", "frame_count", "segment_frame_counts", "segment_pcm_frame_counts", "fps_num", "fps_den",
+              } and projection["rendered"] is False, "projection_keys_or_render_claim_differ")
+              for key, expected in (("frame_count", 60), ("fps_num", 30), ("fps_den", 1)):
+                  require(type(projection[key]) is int and projection[key] == expected, "projection_integer_differs")
+              for key, expected in (("segment_frame_counts", [32, 28]),
+                                    ("segment_pcm_frame_counts", [51200, 44800])):
+                  value = projection[key]
+                  require(type(value) is list and all(type(item) is int for item in value)
+                          and value == expected, "projection_segment_type_differs")
+              require(type(manifest["retained_files"]) is list, "retained_files_type_differs")
+              for entry in manifest["retained_files"]:
+                  require(type(entry) is dict and set(entry) in (
+                      {"path", "bytes", "sha256"}, {"path", "bytes", "sha256", "kind"},
+                  ) and type(entry["path"]) is str and type(entry["bytes"]) is int
+                          and entry["bytes"] > 0 and type(entry["sha256"]) is str
+                          and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is not None,
+                          "retained_entry_type_differs")
+                  if "kind" in entry:
+                      require(entry["kind"] == "actual_rust_mixed_wav", "retained_kind_differs")
+              require(manifest["mixed_wav_differs_from_voice_wav"] is True
+                      and manifest["mixed_pcm_differs_from_voice_pcm"] is True, "mixed_voice_claim_type_differs")
+
+          def check_report_negatives(seed, manifest, summary):
+              controls = []
+              for label, document in (
+                  ("json_nan", '{"value":NaN}'), ("json_positive_infinity", '{"value":Infinity}'),
+                  ("json_negative_infinity", '{"value":-Infinity}'), ("json_exponent_overflow", '{"value":1e999}'),
+                  ("json_duplicate_key", '{"value":1,"value":2}'),
+              ):
+                  try:
+                      parse(document)
+                  except (RuntimeError, ValueError):
+                      controls.append({"id": label, "result": "REJECTED_AS_REQUIRED"})
+                  else:
+                      raise RuntimeError(label + "_was_not_rejected")
+              for label, report_index, path, value in (
+                  ("seed_bool_frame_count", 0, ("fixture_frame_count",), True),
+                  ("seed_float_sample_frames", 0, ("fixture_audio_sample_frames",), 96000.0),
+                  ("manifest_bool_native_jobs", 1, ("native_jobs_dispatched",), False),
+                  ("manifest_float_pcm_channels", 1, ("pcm_channels",), 2.0),
+                  ("watermark_bool_count", 1, ("production_receipts_before", "count"), False),
+                  ("projection_float_segment", 1, ("canonical_film_projection_only", "segment_frame_counts"), [32.0, 28]),
+                  ("summary_bool_receipts", 2, ("production_receipts",), False),
+              ):
+                  reports = copy.deepcopy((seed, manifest, summary))
+                  target = reports[report_index]
+                  for key in path[:-1]:
+                      target = target[key]
+                  target[path[-1]] = value
+                  try:
+                      report_types(*reports)
+                  except (RuntimeError, ValueError, TypeError):
+                      controls.append({"id": label, "result": "REJECTED_AS_REQUIRED"})
+                  else:
+                      raise RuntimeError(label + "_was_not_rejected")
+              return controls
+
+          started = time.monotonic()
+          save()
+          try:
+              require(all(value == "success" for value in receipt["prerequisites"].values()),
+                      "required_production_gate_not_successful")
+              require(sys.platform.startswith("linux"), "calibration_requires_linux")
+              require(not database.exists() and not calibration.exists(), "calibration_destination_not_new")
+              before = source()
+              receipt["source_before"] = before
+              require(before["checkout"] == os.environ.get("GITHUB_SHA") and not before["status_porcelain"],
+                      "checkout_not_event_sha_or_dirty")
+              print("ORIGINAL_MIX_CALIBRATION_CHECKOUT", before["checkout"], "TREE", before["tree"], flush=True)
+              run("rustc-version", ["rustc", "-Vv"], 20)
+              run("cargo-version", ["cargo", "--version"], 20)
+              metadata = parse(run("cargo-metadata", [
+                  "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1",
+              ], 120))
+              binary = Path(metadata["target_directory"]) / "debug/examples/native-mlt-sequence-e2e"
+              run("example-build", [
+                  "cargo", "build", "--locked", "-p", "motionwright-native",
+                  "--example", "native-mlt-sequence-e2e",
+              ], 1200)
+              fixture_stdout = run("integer-fixture-test", [
+                  "cargo", "test", "--locked", "-p", "motionwright-native",
+                  "--example", "native-mlt-sequence-e2e", fixture_id, "--", "--exact", "--nocapture",
+              ], 300)
+              require(re.findall(r"^test (.+) \.\.\. ok$", fixture_stdout, re.MULTILINE) == [fixture_id],
+                      "integer_fixture_test_id_differs")
+              require(len(re.findall(
+                  r"^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; "
+                  r"finished in [0-9.]+s$", fixture_stdout, re.MULTILINE,
+              )) == 1, "integer_fixture_test_count_differs")
+              receipt["integer_fixture_test"] = {"id": fixture_id, "passed": 1, "ignored": 0}
+              receipt["binary_before"] = {"path": str(binary), **record(binary)}
+              seeded = parse(run("seed", [str(binary), "seed", str(database)], 60))
+              summary = parse(run("calibrate", [
+                  str(binary), "calibrate-original-mix", str(database), str(calibration),
+              ], 60))
+              require(seeded["fixture_mode"] == "original-mix-mp4"
+                      and seeded["fixture_frame_count"] == 60
+                      and seeded["fixture_audio_sample_frames"] == 96000
+                      and seeded["scene_count"] == 33 and seeded["deliverable_count"] == 3
+                      and seeded["fixture_speech_or_human_approval"] is False, "seed_contract_differs")
+              manifest_bytes = physical(calibration / "calibration-manifest.json", 4 * 1024 * 1024)
+              manifest = parse(manifest_bytes)
+              report_types(seeded, manifest, summary)
+              receipt["json_and_report_negative_controls"] = check_report_negatives(seeded, manifest, summary)
+              require(summary["canonical_original_mix_rust_calibration"] == "PASS_SOURCE_ONLY"
+                      and summary["manifest"] == "calibration-manifest.json"
+                      and summary["manifest_sha256"] == digest(manifest_bytes)
+                      and summary["native_master_verified"] is False, "calibration_summary_differs")
+              require(manifest["schema"] == "motionwright.canonical-original-mix-rust-calibration/1"
+                      and manifest["evidence_scope"] == "actual-canonical-rust-source-mixer-only-before-mlt-not-native-master",
+                      "calibration_manifest_scope_differs")
+              expected_wav = (
+                  "mw-original-mix-" + uuid.UUID(seeded["project_id"]).hex + "-"
+                  + uuid.UUID(seeded["generation"]).hex + "-r" + str(seeded["revision"])
+                  + "-p" + uuid.UUID(seeded["master_profile_id"]).hex + "-"
+                  + manifest["original_mix_plan_sha256"][:16] + "-"
+                  + manifest["actual_mixed_wav_sha256"][:16] + ".wav"
+              )
+              require(summary["mixed_wav_relative_path"] == expected_wav, "mixed_wav_basename_differs")
+              expected_names = {
+                  expected_wav, "mixed.pcm.s16le", "canonical-original-mix-plan.json", "source-project.json",
+              }
+              retained = manifest["retained_files"]
+              require(len(retained) == 4 and {entry["path"] for entry in retained} == expected_names,
+                      "retained_manifest_inventory_differs")
+              require({path.name for path in calibration.iterdir()}
+                      == expected_names | {"calibration-manifest.json"}, "physical_calibration_inventory_differs")
+              physical_files = {}
+              for entry in retained:
+                  data = physical(calibration / entry["path"], 4 * 1024 * 1024)
+                  require(len(data) == entry["bytes"] and digest(data) == entry["sha256"],
+                          "retained_file_hash_or_size_differs")
+                  physical_files[entry["path"]] = data
+              wav, pcm = physical_files[expected_wav], physical_files["mixed.pcm.s16le"]
+              header = (b"RIFF" + struct.pack("<I", 384036) + b"WAVEfmt " + struct.pack(
+                  "<IHHIIHH", 16, 1, 2, 48000, 192000, 4, 16,
+              ) + b"data" + struct.pack("<I", 384000))
+              require(len(wav) == 384044 and wav[:44] == header and len(pcm) == 384000 and wav[44:] == pcm,
+                      "physical_wav_pcm_clock_or_bytes_differ")
+              require(digest(wav) == manifest["actual_mixed_wav_sha256"] == summary["mixed_wav_sha256"]
+                      and digest(pcm) == manifest["actual_mixed_pcm_sha256"] == summary["mixed_pcm_sha256"],
+                      "physical_mix_digest_binding_differs")
+              require(manifest["actual_pcm_sample_frames"] == summary["pcm_sample_frames"] == 96000
+                      and manifest["pcm_sample_rate_hz"] == 48000 and manifest["pcm_channels"] == 2,
+                      "physical_mix_clock_differs")
+              require(digest(physical_files["canonical-original-mix-plan.json"])
+                      == manifest["original_mix_plan_sha256"]
+                      and digest(physical_files["source-project.json"]) == manifest["source_project_sha256"],
+                      "plan_or_project_hash_differs")
+              for name, (wav_hash, pcm_hash) in stem_digests.items():
+                  stem = manifest["source_stems"][name]
+                  require(stem["source_asset_sha256"] == wav_hash and stem["decoded_pcm_sha256"] == pcm_hash
+                          and stem["sample_frames"] == 96000, "source_stem_fixture_differs")
+              require(digest(wav) != stem_digests["voice"][0] and digest(pcm) != stem_digests["voice"][1],
+                      "mixed_source_is_voice")
+              require(manifest["project_id"] == seeded["project_id"]
+                      and manifest["selected_profile"]["id"] == seeded["master_profile_id"]
+                      and manifest["source_project_unchanged"] is True
+                      and summary["source_project_unchanged"] is True, "source_identity_differs")
+              require(manifest["production_receipts_before"] == manifest["production_receipts_after"]
+                      == {"count": 0, "latest_id": None} and summary["production_receipts"] == 0
+                      and manifest["native_jobs_dispatched"] == 0, "native_receipt_or_job_present")
+              for key in ("broker_connected", "external_process_launched", "mlt_or_aac_executed",
+                          "independent_lufs_or_true_peak_verified", "speech_listening_rights_or_human_approval"):
+                  require(manifest[key] is False, "unexpected_native_or_human_claim")
+              for field, path in zip(
+                  ("example_source_sha256", "mixer_source_sha256", "source_preparer_source_sha256"),
+                  source_paths[:3],
+              ):
+                  require(manifest[field] == before["files"][path]["sha256"], "compiled_source_hash_differs")
+              after = source()
+              receipt["source_after"] = after
+              receipt["binary_after"] = {"path": str(binary), **record(binary)}
+              require(before == after and not after["status_porcelain"], "source_changed_during_calibration")
+              require(receipt["binary_before"] == receipt["binary_after"], "binary_changed_during_calibration")
+              receipt["physical_calibration_files"] = {
+                  name: {"bytes": len(data), "sha256": digest(data)}
+                  for name, data in physical_files.items()
+              }
+              receipt["manifest"] = {"bytes": len(manifest_bytes), "sha256": digest(manifest_bytes)}
+              receipt["actual_mixed_wav_sha256"] = digest(wav)
+              receipt["actual_mixed_pcm_sha256"] = digest(pcm)
+              receipt["status"] = "PASS_SOURCE_CALIBRATION_ONLY"
+          except Exception as error:
+              receipt["failure"] = type(error).__name__ + ":" + str(error)
+              (root / "calibration-error.log").write_text(traceback.format_exc(), encoding="utf-8")
+          finally:
+              receipt["elapsed_seconds"] = time.monotonic() - started
+              receipt["retained_logs"] = {
+                  path.name: record(path) for path in sorted(root.glob("*.log"))
+                  if path.is_file() and not path.is_symlink()
+              }
+              save()
+              print(json.dumps({"original_mix_calibration_ci": receipt["status"],
+                                "actual_mixed_wav_sha256": receipt.get("actual_mixed_wav_sha256"),
+                                "actual_mixed_pcm_sha256": receipt.get("actual_mixed_pcm_sha256"),
+                                "failure": receipt.get("failure")}, sort_keys=True), flush=True)
+          raise SystemExit(0 if receipt["status"] == "PASS_SOURCE_CALIBRATION_ONLY" else 1)
+
+          PY
+      - name: Retain source calibration and its partial diagnostics
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.calibrate_original_mix }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: original-mix-source-calibration-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verification/native-original-mix-calibration/receipt.json
+            verification/native-original-mix-calibration/*.log
+            verification/native-original-mix-calibration/calibration/
+          if-no-files-found: error
+          retention-days: 7
