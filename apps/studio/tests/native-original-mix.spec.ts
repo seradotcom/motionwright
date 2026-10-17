@@ -1,22 +1,55 @@
 import {test,expect} from "@playwright/test";
 import {fixtureBootstrap} from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 async function openAudition(page:import("@playwright/test").Page){
   await page.goto("/");
   await page.getByRole("button",{name:"Audio",exact:true}).click();
   const desk=page.locator('details[aria-label="Original three-bus native PCM audition"]');
   await expect(desk).toBeVisible();
-  await desk.locator("summary").click();
+  await desk.locator(":scope > summary").click();
   return desk;
 }
 test("browser-only Audio cannot fabricate a mixed WAV or rights receipt",async({page})=>{
   const desk=await openAudition(page);
-  await expect(desk).toContainText("Desktop domain service is required");
+  await expect(desk).toContainText("Local PCM audition requires the desktop native service");
   await expect(desk.getByRole("button",{name:"Create local original PCM audition"})).toBeDisabled();
   await expect(desk.locator("audio")).toHaveCount(0);
 });
 
-test("explicit desktop audition reads only owned voice/music/SFX, leaves project unchanged",async({page})=>{
+test("explicit desktop audition reads a saved recipe and leaves that project revision unchanged",async({page})=>{
   const boot=structuredClone(fixtureBootstrap);
   boot.native_sdk.mode="tauri";
   const project=boot.project;
@@ -25,8 +58,8 @@ test("explicit desktop audition reads only owned voice/music/SFX, leaves project
   const voiceId="00000000-0000-4000-8000-000000000053";
   const voiceAsset=project.assets.find(asset=>asset.media_type==="audio/wav")!;
   project.assets.push(
-    {id:music,media_type:"audio/wav",content_sha256:"b".repeat(64),name:"Owner music"},
-    {id:sfx,media_type:"audio/wav",content_sha256:"c".repeat(64),name:"Owner foley"}
+    {id:music,media_type:"audio/wav",content_sha256:"b".repeat(64),name:"Owner music",source_revision:"synthetic-ui-fixture"},
+    {id:sfx,media_type:"audio/wav",content_sha256:"c".repeat(64),name:"Owner foley",source_revision:"synthetic-ui-fixture"}
   );
   project.audio.voice_tracks=[{
     id:voiceId,asset_id:voiceAsset.id,label:"Original recorded",
@@ -39,6 +72,7 @@ test("explicit desktop audition reads only owned voice/music/SFX, leaves project
     start:{num:"0",den:"1"},end:{num:"1",den:"1"},
     text:"Source words manually reviewed",speaker:null,alignment:{kind:"manual"},
   }];
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({boot,selectedMusic,selectedSfx})=>{
     const runtime=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(command:string,args?:Record<string,unknown>)=>Promise<unknown>};
@@ -47,6 +81,17 @@ test("explicit desktop audition reads only owned voice/music/SFX, leaves project
     const calls:Array<{name:string;request?:Record<string,unknown>}>=[];
     runtime.__MIX_TEST_CALLS__=calls;
     runtime.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === boot.project.id && recipeRequest.generation === boot.project.generation
+            && recipeRequest.revision === boot.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          boot.project = await apply(boot.project, recipeRequest);
+          return structuredClone(boot.project);
+        }
+
       if(command==="bootstrap")return structuredClone(boot);
       if(command==="production_runtime_status")return{
         status:"ready",reason:null,expected_version:"1.0.0",
@@ -79,10 +124,11 @@ test("explicit desktop audition reads only owned voice/music/SFX, leaves project
     }};
   },{boot,selectedMusic:music,selectedSfx:sfx});
   const desk=await openAudition(page);
-  const before=await page.locator(".revision-chip").innerText();
   await desk.getByLabel("Delivery language / profile").selectOption(project.deliverables[0].id);
   await desk.getByLabel("Original music asset").selectOption(music);
   await desk.getByLabel("Original SFX asset").selectOption(sfx);
+  await saveFixtureRecipe(page, "mix");
+  const before=await page.locator(".revision-chip").innerText();
   const request=desk.getByRole("button",{name:"Create local original PCM audition"});
   await expect(request).toBeDisabled();
   await desk.getByLabel(/I confirm I have permission to use these exact original sources/).check();
@@ -95,6 +141,8 @@ test("explicit desktop audition reads only owned voice/music/SFX, leaves project
     __MIX_TEST_CALLS__:Array<{name:string;request?:Record<string,unknown>}>
   }).__MIX_TEST_CALLS__);
   expect(calls.filter(call=>call.name==="native_original_mix_audition")).toHaveLength(1);
+  // Recipe authoring was acknowledged above; the isolated audition call log
+  // must still contain no editing, rendering, release or provider operation.
   expect(calls.some(call=>/apply_change|provider|render|payment|release/.test(call.name))).toBe(false);
   await desk.getByLabel("Original music asset").selectOption("");
   await expect(desk.getByLabel(/I confirm I have permission to use these exact original sources/)).not.toBeChecked();

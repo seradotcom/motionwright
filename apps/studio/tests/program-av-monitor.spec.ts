@@ -1,5 +1,38 @@
 import { expect, test } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 test("Program AV monitor reads exact source token only for matching scene, profile and revision", async ({ page }) => {
   // Synthetic Tauri contract: actual H.264/AAC decode and WebView playback
@@ -27,7 +60,7 @@ test("Program AV monitor reads exact source token only for matching scene, profi
   const render = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     deliverable_id: profile.id,
     frame_rate: { num: 30, den: 1 },
     segments: [{
@@ -53,6 +86,7 @@ test("Program AV monitor reads exact source token only for matching scene, profi
     decoded_audio: {}, sync: null,
   };
 
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial, visual, av }) => {
     const mock = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -62,6 +96,20 @@ test("Program AV monitor reads exact source token only for matching scene, profi
     mock.__AV_MONITOR_READS__ = [];
     mock.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === project.id && recipeRequest.generation === project.generation
+            && recipeRequest.revision === project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          project = await apply(project, recipeRequest);
+          initial.project = structuredClone(project);
+          visual.revision = project.revision; // Future synthetic native reply uses the saved source.
+          av.revision = project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(project);
+        }
+
         if (command === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -112,6 +160,7 @@ test("Program AV monitor reads exact source token only for matching scene, profi
     await page.getByLabel(scene.name + " narrative role").selectOption(role);
     await page.getByLabel(scene.name + " motion archetype").selectOption(archetype);
   }
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
@@ -130,7 +179,7 @@ test("Program AV monitor reads exact source token only for matching scene, profi
     window as unknown as { __AV_MONITOR_READS__: Array<Record<string, unknown>> }
   ).__AV_MONITOR_READS__);
   expect(readings.every((request) => request.project_id === boot.project.id
-    && request.revision === boot.project.revision
+    && request.revision === boot.project.revision + 1
     && request.export_token === "synthetic-master-token"
     && !("path" in request)
     && !("sha256" in request)
