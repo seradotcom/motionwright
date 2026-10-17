@@ -3,9 +3,12 @@
 //! This is an opt-in integration-test executable, never a production backend or
 //! a Tauri/installer/native-renderer certification. It listens only on stdin.
 //! Requests use `{id, command, args}` and responses `{id, ok, result|error}`.
-//! `issue_effect_grant` and `apply_change` preserve the desktop invoke payloads
-//! and reuse its real, one-time, revision-scoped grant registry. Grants belong
-//! only to this process and are discarded on reopen.
+//! Local imports, portable bundles, waveform and project changes preserve the
+//! desktop invoke payloads and use the existing service and one-time grant
+//! registry. Grants belong only to this process and are discarded on reopen.
+//! `--desktop-invoke-fixture` opts into the desktop UI routes in browser tests;
+//! the response still identifies service-test-jsonl, never installed Tauri.
+//! No render, remote, installation or publication authority is exposed.
 //!
 //! Run: `studio_review_session --database /absolute/test.sqlite3 --synthetic-fixture`
 //! The fixture flag creates explicitly synthetic editable content only when the
@@ -13,7 +16,7 @@
 //! StudioService; project IDs, revisions and event history are never canned.
 
 #[path = "../../../apps/desktop/src-tauri/src/effect_grants.rs"]
-#[allow(dead_code)] // This transport deliberately exposes only the project-edit subset.
+#[allow(dead_code)] // This transport deliberately exposes only the tested local subset.
 mod effect_grants;
 
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
@@ -21,7 +24,7 @@ use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, HeroConfig, NodeStyle,
     Project, RevisionStamp, hero_node_id,
 };
-use motionwright_service::StudioService;
+use motionwright_service::{StudioService, VoiceImportMetadata};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -105,6 +108,66 @@ struct RecentHistoryRequest {
     limit: usize,
 }
 
+// These request fields and defaults follow apps/desktop/src-tauri/src/main.rs
+// at descendant base 101ac038775a6201bcb16f7ca056bfdd0ab05805. Only transport
+// parsing and response shaping live here; StudioService owns every operation.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportAssetRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    effect_grant: Uuid,
+    path: String,
+    name: Option<String>,
+    media_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportVoiceRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    effect_grant: Uuid,
+    path: String,
+    name: Option<String>,
+    media_type: Option<String>,
+    label: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaveformPageRequest {
+    project_id: Uuid,
+    track_id: Uuid,
+    page_index: u64,
+    page_size: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundlePathRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportBundleRequest {
+    path: String,
+    effect_grant: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportBundleRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    path: String,
+    effect_grant: Uuid,
+}
+
 fn encoded(value: impl Serialize) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
@@ -114,6 +177,75 @@ fn request<T: DeserializeOwned>(args: Value) -> Result<T, String> {
         .get("request")
         .ok_or_else(|| "Expected the desktop invoke args.request payload".to_string())?;
     serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+}
+
+fn absolute_asset_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an absolute asset file path.".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("Asset file paths must be absolute.".into());
+    }
+    Ok(path)
+}
+
+fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an absolute portable bundle path.".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("Portable bundle paths must be absolute.".into());
+    }
+    Ok(path)
+}
+
+fn infer_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
+        "m4a" | "aac" => "audio/mp4",
+        "aif" | "aiff" => "audio/aiff",
+        "caf" => "audio/x-caf",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
+        "json" => "application/json",
+        "srt" => "application/x-subrip",
+        "vtt" => "text/vtt",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn import_name(source: &Path, name: Option<&str>, kind: &str) -> Result<String, String> {
+    name.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| format!("{kind} file name is unavailable."))
 }
 
 fn fixture_node(text: &str) -> CanvasNode {
@@ -223,6 +355,7 @@ pub struct Session {
     database: PathBuf,
     service: StudioService,
     grants: EffectGrantRegistry,
+    desktop_invoke_fixture: bool,
 }
 
 impl Session {
@@ -248,6 +381,7 @@ impl Session {
             database,
             service,
             grants: EffectGrantRegistry::default(),
+            desktop_invoke_fixture: false,
         })
     }
 
@@ -288,10 +422,13 @@ impl Session {
                         "application": "motionwright",
                         "pinned_revision": "54d3459a051adbce4cae9f60c0dea8f60c824be6",
                         "version": "1.0.0",
-                        "mode": "browser-demo"
+                        // Selects UI routes for the explicit browser fixture;
+                        // it is not a claim that this process hosts Tauri.
+                        "mode": if self.desktop_invoke_fixture { "tauri" } else { "browser-demo" }
                     },
                     "test_transport": "service-test-jsonl",
                     "evidence_scope": "real_service_sqlite_cas; excludes_tauri_installer_native_render",
+                    "desktop_invoke_fixture": self.desktop_invoke_fixture,
                     "fixture": {
                         "label": FIXTURE_LABEL,
                         "scene_id": hero.map(|item| item.scene_id),
@@ -305,20 +442,26 @@ impl Session {
             }
             "issue_effect_grant" => {
                 let request: GrantRequest = request(args)?;
-                if request.effect != EffectKind::ProjectEdit {
-                    return Err("This test transport exposes project_edit grants only".into());
-                }
-                let (Some(id), Some(generation), Some(revision)) =
-                    (request.project_id, request.generation, request.revision)
-                else {
-                    return Err("Effect grant project scope must be complete".into());
-                };
-                self.checked_project(id, generation, revision)?;
-                encoded(self.grants.issue(
+                if !matches!(
                     request.effect,
-                    EffectScope::project(id, generation, revision),
-                    request.subject.trim(),
-                )?)
+                    EffectKind::ProjectEdit | EffectKind::ImportLocal | EffectKind::DeliverLocal
+                ) {
+                    return Err("This test transport exposes project_edit, import_local and deliver_local grants only; no render or external authority".into());
+                }
+                let scope = match (request.project_id, request.generation, request.revision) {
+                    (Some(id), Some(generation), Some(revision)) => {
+                        self.checked_project(id, generation, revision)?;
+                        EffectScope::project(id, generation, revision)
+                    }
+                    (None, None, None) => EffectScope::unscoped_import(),
+                    _ => {
+                        return Err("Effect grant project scope must be complete or absent.".into());
+                    }
+                };
+                encoded(
+                    self.grants
+                        .issue(request.effect, scope, request.subject.trim())?,
+                )
             }
             "apply_change" => {
                 let request: ApplyRequest = request(args)?;
@@ -366,12 +509,170 @@ impl Session {
                 let request: ProjectRequest = request(args)?;
                 if command == "reopen" {
                     // Replace the connection from persisted SQLite state and discard all grants.
-                    let replacement = Self::open(&self.database, false)?;
+                    let mut replacement = Self::open(&self.database, false)?;
+                    replacement.desktop_invoke_fixture = self.desktop_invoke_fixture;
                     *self = replacement;
                 }
                 encoded(
                     self.service
                         .project(request.project_id)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            "import_asset_file" => {
+                let request: ImportAssetRequest = request(args)?;
+                let source = absolute_asset_path(&request.path)?;
+                let project =
+                    self.checked_project(request.project_id, request.generation, request.revision)?;
+                self.grants.consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::project(request.project_id, request.generation, request.revision),
+                    request.path.trim(),
+                )?;
+                if !source.is_file() {
+                    return Err("Asset source must be an existing local file.".into());
+                }
+                let name = import_name(&source, request.name.as_deref(), "Asset")?;
+                let media_type = request
+                    .media_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| infer_media_type(&source).to_owned());
+                encoded(
+                    self.service
+                        .import_asset_file(
+                            request.project_id,
+                            &project.stamp(),
+                            &Uuid::now_v7().to_string(),
+                            &source,
+                            name,
+                            media_type,
+                        )
+                        .map_err(|error| error.to_string())?
+                        .project,
+                )
+            }
+            "import_voice_file" => {
+                let request: ImportVoiceRequest = request(args)?;
+                let source = absolute_asset_path(&request.path)?;
+                let project =
+                    self.checked_project(request.project_id, request.generation, request.revision)?;
+                self.grants.consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::project(request.project_id, request.generation, request.revision),
+                    request.path.trim(),
+                )?;
+                if !source.is_file() {
+                    return Err("Voice source must be an existing local file.".into());
+                }
+                let name = import_name(&source, request.name.as_deref(), "Voice")?;
+                let label = request
+                    .label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        source
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| "Voice take".into());
+                let media_type = request
+                    .media_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| infer_media_type(&source).to_owned());
+                if !media_type.starts_with("audio/") {
+                    return Err("Voice import requires a supported audio file.".into());
+                }
+                encoded(
+                    self.service
+                        .import_voice_file(
+                            request.project_id,
+                            &project.stamp(),
+                            &Uuid::now_v7().to_string(),
+                            &source,
+                            VoiceImportMetadata {
+                                name,
+                                media_type,
+                                label,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?
+                        .project,
+                )
+            }
+            "waveform_page" => {
+                let request: WaveformPageRequest = request(args)?;
+                encoded(
+                    self.service
+                        .waveform_page(
+                            request.project_id,
+                            request.track_id,
+                            request.page_index,
+                            request.page_size,
+                        )
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            "export_project_bundle" => {
+                let request: ExportBundleRequest = request(args)?;
+                self.checked_project(request.project_id, request.generation, request.revision)?;
+                self.grants.consume(
+                    request.effect_grant,
+                    EffectKind::DeliverLocal,
+                    EffectScope::project(request.project_id, request.generation, request.revision),
+                    request.path.trim(),
+                )?;
+                let destination = absolute_bundle_path(&request.path)?;
+                let manifest = self
+                    .service
+                    .export_project_bundle(request.project_id, &destination)
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "destination": destination.display().to_string(),
+                    "blob_count": manifest.blobs.len(),
+                    "total_blob_bytes": manifest.blobs.iter().map(|blob| blob.size_bytes).sum::<u64>().to_string(),
+                }))
+            }
+            "inspect_project_bundle" => {
+                let request: BundlePathRequest = request(args)?;
+                let source = absolute_bundle_path(&request.path)?;
+                let plan = self
+                    .service
+                    .inspect_project_bundle(&source)
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "project_id": plan.project.project_id,
+                    "title": plan.project.title,
+                    "source_generation": plan.project.source_generation,
+                    "revision": plan.project.revision.to_string(),
+                    "event_count": plan.project.event_count,
+                    "blob_count": plan.blob_count,
+                    "total_blob_bytes": plan.total_blob_bytes.to_string(),
+                    "rotates_generation": plan.project.rotates_generation,
+                }))
+            }
+            "import_project_bundle" => {
+                let request: ImportBundleRequest = request(args)?;
+                self.grants.consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::unscoped_import(),
+                    request.path.trim(),
+                )?;
+                let source = absolute_bundle_path(&request.path)?;
+                encoded(
+                    self.service
+                        .import_project_bundle(&source)
                         .map_err(|error| error.to_string())?,
                 )
             }
@@ -431,20 +732,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some("--database") {
         return Err(
-            "Usage: studio_review_session --database /absolute/test.sqlite3 [--synthetic-fixture]"
+            "Usage: studio_review_session --database /absolute/test.sqlite3 [--synthetic-fixture] [--desktop-invoke-fixture]"
                 .into(),
         );
     }
     let database = args.next().ok_or("Missing test database path")?;
-    let synthetic = match args.next().as_deref() {
-        Some("--synthetic-fixture") => true,
-        None => false,
-        _ => return Err("Unknown test transport option".into()),
-    };
-    if args.next().is_some() {
-        return Err("Unexpected extra arguments".into());
+    let mut synthetic = false;
+    let mut desktop_invoke_fixture = false;
+    for arg in args {
+        match arg.as_str() {
+            "--synthetic-fixture" if !synthetic => synthetic = true,
+            "--desktop-invoke-fixture" if !desktop_invoke_fixture => desktop_invoke_fixture = true,
+            _ => return Err("Unknown or duplicate test transport option".into()),
+        }
     }
     let mut session = Session::open(database, synthetic)?;
+    session.desktop_invoke_fixture = desktop_invoke_fixture;
     let input = io::stdin();
     let mut input = input.lock();
     let output = io::stdout();

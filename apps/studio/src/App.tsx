@@ -41,7 +41,8 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProjectMutationGate } from "./projectMutation";
 import {
   applyChange,
   bootstrap,
@@ -604,7 +605,7 @@ function DeliverView({
   project,
   commit,
   desktopMode,
-  onImported,
+  onImportBundle,
   onOpenAudio,
   renderEvidence,
   onRenderEvidence,
@@ -616,7 +617,7 @@ function DeliverView({
   project: Project;
   commit: (change: Change) => Promise<void>;
   desktopMode: boolean;
-  onImported: (project: Project) => void;
+  onImportBundle: (path: string) => Promise<Project>;
   onOpenAudio: () => void;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
@@ -672,8 +673,7 @@ function DeliverView({
     setPortableStatus(null);
     setPortableError(null);
     try {
-      const imported = await importProjectBundle(importPath.trim());
-      onImported(imported);
+      const imported = await onImportBundle(importPath.trim());
       setPortableStatus(
         "Imported " + imported.title + " at revision " + imported.revision +
         " with a fresh execution generation.",
@@ -843,6 +843,7 @@ function ProjectRail({
   selectedSceneId,
   selectScene,
   commit,
+  commitRequired,
   ingestAsset,
   desktopMode,
   collapsed,
@@ -852,6 +853,7 @@ function ProjectRail({
   selectedSceneId: string | null;
   selectScene: (id: string) => void;
   commit: (change: Change) => Promise<void>;
+  commitRequired: (change: Change) => Promise<void>;
   ingestAsset: (path: string) => Promise<void>;
   desktopMode: boolean;
   collapsed: boolean;
@@ -859,6 +861,9 @@ function ProjectRail({
 }) {
   const [addingScene, setAddingScene] = useState(false);
   const [newName, setNewName] = useState("New scene");
+  const [sceneBusy, setSceneBusy] = useState(false);
+  const sceneSubmitting = useRef(false);
+  const [sceneError, setSceneError] = useState<string | null>(null);
   const [addingAsset, setAddingAsset] = useState(false);
   const [assetPath, setAssetPath] = useState("");
   const [assetBusy, setAssetBusy] = useState(false);
@@ -893,7 +898,7 @@ function ProjectRail({
       <div className="rail-section">
         <div className="rail-section-title">
           <span>Scenes</span>
-          <button type="button" className="plain-icon" aria-label="Add scene" onClick={() => setAddingScene((value) => !value)}>
+          <button type="button" className="plain-icon" aria-label="Add scene" disabled={sceneBusy} onClick={() => { setAddingScene((value) => !value); setSceneError(null); }}>
             {addingScene ? <X size={14} /> : <Plus size={14} />}
           </button>
         </div>
@@ -902,14 +907,27 @@ function ProjectRail({
             className="add-scene-form"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (!newName.trim()) return;
-              await commit({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
-              setAddingScene(false);
-              setNewName("New scene");
+              if (!newName.trim() || sceneSubmitting.current) return;
+              sceneSubmitting.current = true;
+              setSceneBusy(true);
+              setSceneError(null);
+              try {
+                await commitRequired({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
+                setAddingScene(false);
+                setNewName("New scene");
+              } catch (reason) {
+                setSceneError(reason instanceof Error ? reason.message : String(reason));
+              } finally {
+                sceneSubmitting.current = false;
+                setSceneBusy(false);
+              }
             }}
           >
-            <input value={newName} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
-            <button className="button button-primary compact" type="submit">Add</button>
+            <input value={newName} disabled={sceneBusy} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
+            <button className="button button-primary compact" type="submit" disabled={sceneBusy || !newName.trim()}>
+              {sceneBusy ? "Adding…" : "Add"}
+            </button>
+            {sceneError && <span className="asset-import-error" role="alert">{sceneError}</span>}
           </form>
         )}
         <div className="tree-list">
@@ -1787,11 +1805,18 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const bootRef = useRef<Bootstrap | null>(boot);
+  const mutationGate = useRef(new ProjectMutationGate());
 
   const loadProject = useCallback(async () => {
+    const openingFrom = bootRef.current;
     setBootError(null);
     try {
       const value = await bootstrap();
+      // A concurrent opening or mutation may already have published a newer
+      // view. A late read must not restore its old document or scene selection.
+      if (bootRef.current !== openingFrom) return;
+      bootRef.current = value;
       setBoot(value);
       setSelectedSceneId(value.project.scenes[0]?.id ?? null);
       setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
@@ -1801,7 +1826,7 @@ export default function App() {
       setNativeAvReceipt(null);
       setNativeExportReceipt(null);
     } catch (reason) {
-      setBootError(reason instanceof Error ? reason.message : String(reason));
+      if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
     }
   }, []);
 
@@ -1930,36 +1955,77 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [stepFrame, paletteOpen]);
 
+  const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
+    // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    return mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      operation,
+      next => {
+        const current = bootRef.current;
+        if (!current) return;
+        const updated = { ...current, project: next };
+        bootRef.current = updated;
+        setBoot(updated);
+        setSelectedSceneId(selected => selected && next.scenes.some(scene => scene.id === selected)
+          ? selected : next.scenes[0]?.id ?? null);
+      },
+      setBusy,
+    );
+  }, [boot]);
+
+  // Deliver has its own error boundary and must observe a rejected CAS before
+  // selecting newly authored profiles. Other editor controls retain their
+  // globally reported, nonthrowing commit contract.
+  const commitRequired = useCallback(async (change: Change): Promise<void> => {
+    await transactProject(source => applyChange(source, change));
+  }, [transactProject]);
+
   const commit = useCallback(async (change: Change) => {
-    if (!boot || busy) return;
-    setBusy(true);
     setError(null);
     try {
-      const next = await applyChange(boot.project, change);
-      setBoot({ ...boot, project: next });
-      if (!selectedSceneId || !next.scenes.some((scene) => scene.id === selectedSceneId)) {
-        setSelectedSceneId(next.scenes[0]?.id ?? null);
-      }
+      await commitRequired(change);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
     }
-  }, [boot, busy, selectedSceneId]);
+  }, [commitRequired]);
 
   const ingestAsset = useCallback(async (path: string) => {
-    if (!boot) throw new Error("Project is not ready.");
-    if (busy) throw new Error("Finish the current project change before importing an asset.");
-    const next = await importAssetFile(boot.project, path);
-    setBoot({ ...boot, project: next });
-  }, [boot, busy]);
+    await transactProject(source => importAssetFile(source, path));
+  }, [transactProject]);
 
   const ingestVoice = useCallback(async (path: string, label?: string) => {
-    if (!boot) throw new Error("Project is not ready.");
-    if (busy) throw new Error("Finish the current project change before importing a voice take.");
-    const next = await importVoiceFile(boot.project, path, label);
-    setBoot({ ...boot, project: next });
-  }, [boot, busy]);
+    await transactProject(source => importVoiceFile(source, path, label));
+  }, [transactProject]);
+
+  const importPortableBundle = useCallback(async (path: string): Promise<Project> => {
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    return mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      () => importProjectBundle(path),
+      imported => {
+        const current = bootRef.current;
+        if (!current) throw new Error("The current project is unavailable. Reopen to reconcile the import.");
+        const updated = { ...current, project: imported };
+        bootRef.current = updated;
+        setBoot(updated);
+        setNativeRenderReceipt(null);
+        setNativeAvReceipt(null);
+        setNativeExportReceipt(null);
+        setSelectedSceneId(imported.scenes[0]?.id ?? null);
+        setPlayhead(0);
+        setPlaying(false);
+        setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
+        setTimecodeMode("ndf");
+      },
+      setBusy,
+      "replace",
+    );
+  }, [boot]);
 
   if (!project || !boot) {
     return (
@@ -2011,7 +2077,7 @@ export default function App() {
         return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
+          commitRequired={commitRequired} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([
@@ -2049,7 +2115,7 @@ export default function App() {
         return (
           <DeliverView
             project={project}
-            commit={commit}
+            commit={commitRequired}
             onOpenAudio={() => setWorkspace("Audio")}
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}
@@ -2058,17 +2124,7 @@ export default function App() {
             onAvEvidence={(result) => setNativeAvReceipt(result)}
             exportEvidence={nativeExportReceipt}
             onExportEvidence={(result) => setNativeExportReceipt(result)}
-            onImported={(imported) => {
-              setNativeRenderReceipt(null);
-              setNativeAvReceipt(null);
-              setNativeExportReceipt(null);
-              setBoot({ ...boot, project: imported });
-              setSelectedSceneId(imported.scenes[0]?.id ?? null);
-              setPlayhead(0);
-              setPlaying(false);
-              setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
-              setTimecodeMode("ndf");
-            }}
+            onImportBundle={importPortableBundle}
           />
         );
     }
@@ -2152,8 +2208,8 @@ export default function App() {
               <WifiOff size={13} aria-hidden="true" /> OFFLINE · LOCAL
             </span>
           )}
-          <span className="sdk-chip" title={boot.native_sdk.pinned_revision}>
-            Native SDK · {boot.native_sdk.mode === "tauri" ? "connected" : "browser demo"}
+          <span className="sdk-chip" title={"Pinned Semwright Native SDK: " + boot.native_sdk.pinned_revision + ". Desktop hosting does not verify Broker or renderer readiness; check Integrations."}>
+            Native SDK · {boot.native_sdk.mode === "tauri" ? "desktop mode" : "browser demo"}
           </span>
           <button type="button" className="quick-command-trigger" aria-label="Open command palette"
             title="Search workspaces and editor actions" onClick={() => setPaletteOpen(true)}>
@@ -2189,7 +2245,7 @@ export default function App() {
 
       {error && (
         <div className="error-banner" role="alert">
-          <strong>Change not committed.</strong>
+          <strong>Project change needs attention.</strong>
           <span>{error}</span>
           <button type="button" className="plain-icon" aria-label="Dismiss error" onClick={() => setError(null)}><X size={15} /></button>
         </div>
@@ -2202,6 +2258,7 @@ export default function App() {
           selectedSceneId={selectedSceneId}
           selectScene={selectScene}
           commit={commit}
+          commitRequired={commitRequired}
           ingestAsset={ingestAsset}
           desktopMode={boot.native_sdk.mode === "tauri"}
           collapsed={railCollapsed}
