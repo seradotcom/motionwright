@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from native_render_stage_cost import elapsed_us
+from native_mlt_mix_readback import ReadbackError, bounded_decoder
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -49,9 +50,22 @@ def sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _unique_manifest_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DirectParityError("Native parity manifest has duplicate JSON fields")
+        result[key] = value
+    return result
+
+
+def _reject_manifest_constant(value: str) -> Any:
+    raise DirectParityError("Native parity manifest contains a nonfinite JSON value")
+
+
 def native_png_hashes(artifact_root: Path, expected_frames: int = 60) -> list[str]:
     """Validate native driver manifests *and actual bytes*, no advertised-only claims."""
-    if not (1 <= expected_frames <= 120):
+    if type(expected_frames) is not int or not (1 <= expected_frames <= 120):
         raise DirectParityError("Native parity frame budget is invalid")
     if artifact_root.is_symlink() or not artifact_root.is_dir():
         raise DirectParityError("Native parity artifact root is missing or symlinked")
@@ -64,8 +78,12 @@ def native_png_hashes(artifact_root: Path, expected_frames: int = 60) -> list[st
     if not 0 < manifest.stat().st_size <= MAX_MANIFEST:
         raise DirectParityError("Native parity manifest violates the size budget")
     try:
-        value = json.loads(manifest.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeError) as error:
+        value = json.loads(
+            manifest.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_manifest_fields,
+            parse_constant=_reject_manifest_constant,
+        )
+    except (ValueError, UnicodeError, RecursionError) as error:
         raise DirectParityError("Native parity manifest is malformed") from error
     if not isinstance(value, dict):
         raise DirectParityError("Native parity manifest must be an object")
@@ -74,7 +92,9 @@ def native_png_hashes(artifact_root: Path, expected_frames: int = 60) -> list[st
     if not isinstance(plan, dict) or not isinstance(frames, list):
         raise DirectParityError("Native parity manifest has no frame plan")
     if (
-        plan.get("first_frame") != 0
+        any(type(plan.get(key)) is not int for key in
+            ("first_frame", "end_frame_exclusive", "frame_count"))
+        or plan.get("first_frame") != 0
         or plan.get("end_frame_exclusive") != expected_frames
         or plan.get("frame_count") != expected_frames
         or len(frames) != expected_frames
@@ -83,7 +103,12 @@ def native_png_hashes(artifact_root: Path, expected_frames: int = 60) -> list[st
     hashes: list[str] = []
     for index, row in enumerate(frames):
         relative = f"frames/{index:06}.png"
-        if not isinstance(row, dict) or row.get("file") != relative or row.get("index") != index:
+        if (
+            not isinstance(row, dict)
+            or row.get("file") != relative
+            or type(row.get("index")) is not int
+            or row.get("index") != index
+        ):
             raise DirectParityError("Native parity frame index/path is inconsistent")
         advertised_sha = row.get("sha256")
         bytes_claimed = row.get("bytes")
@@ -114,26 +139,30 @@ def decoded_rgba_frame_hashes(
     cannot render or alter a Motionwright Film. Framehash hashes decoded raw
     RGBA bytes exactly once per source-indexed PNG; every frame is checked.
     """
-    if not 1 <= expected_frames <= 120 or not (1 <= width <= 3840 and 1 <= height <= 3840):
+    if (
+        any(type(value) is not int for value in (expected_frames, width, height))
+        or not 1 <= expected_frames <= 120
+        or not (1 <= width <= 3840 and 1 <= height <= 3840)
+    ):
         raise DirectParityError("Decoded native comparison has an invalid output budget")
     argv = [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-xerror", "-err_detect", "crccheck+explode",
+        "-protocol_whitelist", "file,pipe", "-threads", "1",
         "-f", "image2", "-framerate", "30", "-start_number", "0",
         "-i", str(artifact_root / "frames" / "%06d.png"),
         "-frames:v", str(expected_frames), "-pix_fmt", "rgba",
+        "-fps_mode", "passthrough", "-threads", "1",
         "-f", "framehash", "-hash", "SHA256", "pipe:1",
     ]
     try:
-        process = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, check=False, timeout=180,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise DirectParityError("Independent native RGBA verification is unavailable") from error
-    if process.returncode != 0 or not 0 < len(process.stdout) <= 100_000:
+        payload = bounded_decoder(argv, maximum_stdout=100_000, timeout=180)
+    except (OSError, ReadbackError) as error:
+        raise DirectParityError("Independent native RGBA verification failed") from error
+    if not 0 < len(payload) <= 100_000:
         raise DirectParityError("Independent native RGBA verification failed")
     try:
-        text = process.stdout.decode("ascii")
+        text = payload.decode("ascii")
     except UnicodeError as error:
         raise DirectParityError("Decoded RGBA digest protocol is not ASCII") from error
     header = f"#dimensions 0: {width}x{height}"

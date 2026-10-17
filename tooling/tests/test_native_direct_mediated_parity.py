@@ -317,6 +317,102 @@ class RealDecodedFramehashTests(unittest.TestCase):
             )
             self.assertNotEqual(a, b, "even one changed visible pixel must change the digest")
 
+    def test_corrupt_middle_png_crc_with_recomputed_manifest_is_not_pixel_fidelity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frames = root / "frames"
+            frames.mkdir()
+            manifest = {"plan": {
+                "first_frame": 0, "end_frame_exclusive": 3, "frame_count": 3},
+                "frames": []}
+            for index in range(3):
+                image = real_rgb_png(
+                    pixels=bytes([255, 0, 0] * 4), note=f"native-{index}".encode())
+                path = frames / f"{index:06}.png"
+                path.write_bytes(image)
+                manifest["frames"].append({
+                    "index": index, "file": f"frames/{index:06}.png",
+                    "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest(),
+                })
+            manifest_path = root / "artifact-manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            self.assertEqual(len(parity.native_png_hashes(root, 3)), 3)
+            original_rgba = parity.decoded_rgba_frame_hashes(
+                root, expected_frames=3, width=2, height=2)
+            self.assertEqual(len(set(original_rgba)), 1)
+            image = bytearray((frames / "000001.png").read_bytes())
+            offset = len(parity.PNG_MAGIC)
+            while offset < len(image):
+                length = struct.unpack_from(">I", image, offset)[0]
+                kind = image[offset + 4:offset + 8]
+                if kind == b"IDAT":
+                    image[offset + 8 + length] ^= 1  # CRC, not decoded payload.
+                    break
+                offset += 12 + length
+            else:
+                self.fail("real PNG fixture missing IDAT")
+            (frames / "000001.png").write_bytes(image)
+            manifest["frames"][1]["sha256"] = hashlib.sha256(image).hexdigest()
+            manifest_path.write_text(json.dumps(manifest))
+            # A valid byte/manifest hash cannot certify PNG decoder integrity.
+            self.assertEqual(len(parity.native_png_hashes(root, 3)), 3)
+            with self.assertRaisesRegex(
+                    parity.DirectParityError, "Independent native RGBA verification failed"):
+                parity.decoded_rgba_frame_hashes(
+                    root, expected_frames=3, width=2, height=2)
+
+
+class ClosedManifestTypesTests(unittest.TestCase):
+    def test_frame_plan_and_indices_require_json_integers(self):
+        cases = (
+            ("boolean_first_frame", lambda d: d["plan"].update(first_frame=False)),
+            ("decimal_frame_count", lambda d: d["plan"].update(frame_count=2.0)),
+            ("decimal_end_frame", lambda d: d["plan"].update(end_frame_exclusive=2.0)),
+            ("boolean_frame_index", lambda d: d["frames"][0].update(index=False)),
+            ("decimal_frame_index", lambda d: d["frames"][1].update(index=1.0)),
+        )
+        for name, change in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                root = fixture_artifact(Path(tmp) / "frameset", size=2)
+                path = root / "artifact-manifest.json"
+                document = json.loads(path.read_text())
+                change(document)
+                path.write_text(json.dumps(document))
+                with self.assertRaises(parity.DirectParityError):
+                    parity.native_png_hashes(root, expected_frames=2)
+
+    def test_duplicate_keys_cannot_replace_a_disagreeing_frame_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = fixture_artifact(Path(tmp) / "frameset", size=2)
+            path = root / "artifact-manifest.json"
+            original = path.read_text()
+            changed = original.replace(
+                '"first_frame": 0', '"first_frame": 1, "first_frame": 0', 1,
+            )
+            self.assertNotEqual(changed, original)
+            path.write_text(changed)
+            with self.assertRaises(parity.DirectParityError):
+                parity.native_png_hashes(root, expected_frames=2)
+
+    def test_nonfinite_manifest_values_are_not_json(self):
+        for value in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                root = fixture_artifact(Path(tmp) / "frameset", size=2)
+                path = root / "artifact-manifest.json"
+                path.write_text(path.read_text().replace(
+                    '"frames":', '"undeclared_measurement":' + value + ',"frames":', 1,
+                ))
+                with self.assertRaises(parity.DirectParityError):
+                    parity.native_png_hashes(root, expected_frames=2)
+
+    def test_caller_frame_budget_cannot_use_bool_or_float(self):
+        for expected, count in ((True, 1), (2.0, 2)):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                root = fixture_artifact(Path(tmp) / "frameset", size=count)
+                with self.assertRaises(parity.DirectParityError):
+                    parity.native_png_hashes(root, expected_frames=expected)
+
+
 
 if __name__ == "__main__":
     unittest.main()
