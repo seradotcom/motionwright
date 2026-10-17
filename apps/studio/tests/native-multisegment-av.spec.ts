@@ -1,5 +1,38 @@
 import { expect, test } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 for (const captioned of [false, true]) {
 test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" : "final AV is source-token-bound, measured and export-authorized"), async ({ page }) => {
@@ -32,7 +65,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
   const token = "77777777-7777-4777-8777-777777777777";
   const native = {
     project_resource: "project:" + boot.project.id,
-    generation: boot.project.generation, revision: boot.project.revision,
+    generation: boot.project.generation, revision: boot.project.revision + 1,
     deliverable_id: profile.id,
     frame_rate: { num: 30, den: 1 },
     segments: [
@@ -61,6 +94,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
       ? "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved"
       : "native-multisegment-av-verified-technical-output-not-human-approved",
   };
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial, original, previewToken, av }) => {
     const shim = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -72,6 +106,19 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
     shim.__MULTI_AV__ = { sources: [], assemblies: [], exports: [], reviews: [], effects: 0 };
     shim.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initial.project.id && recipeRequest.generation === initial.project.generation
+            && recipeRequest.revision === initial.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initial.project = await apply(initial.project, recipeRequest);
+          original.revision = initial.project.revision; // Future synthetic native reply uses the saved source.
+          av.revision = initial.project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(initial.project);
+        }
+
         if (command === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -155,6 +202,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
     await page.getByLabel(scene.name + " narrative role").selectOption("mechanism");
     await page.getByLabel(scene.name + " motion archetype").selectOption("statement");
   }
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
@@ -188,7 +236,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
   expect(requests.effects).toBe(2);
   expect(requests.assemblies[0]).toMatchObject({
     project_id: boot.project.id, generation: boot.project.generation,
-    revision: boot.project.revision, deliverable_id: profile.id,
+    revision: boot.project.revision + 1, deliverable_id: profile.id,
     voice_track_id: wavTrack, preview_token: token,
   });
   expect(JSON.stringify(requests.assemblies[0]))

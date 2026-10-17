@@ -42,7 +42,14 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ProjectMutationGate } from "./projectMutation";
+import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
+import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
+import {
+  forgetProjectSelection, listProjectLibrary, openProjectFromLibrary,
+  readProjectSelection, rememberOpenedProject, type ProjectSelectionRead,
+  createProjectWithRetainedIntent, discardProjectCreationCopy, readProjectCreations,
+  recoverRetainedProjectCreation, PROJECT_CREATION_PREFIX, type ProjectCreationCopy,
+} from "./projectLibrary";
 import {
   applyChange,
   bootstrap,
@@ -56,6 +63,7 @@ import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
+import type { DeliveryProjectState } from "./deliveryProfileDraft";
 import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
@@ -70,6 +78,7 @@ import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
   Beat,
   Bootstrap,
+  StudioBootstrap,
   Change,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
@@ -607,6 +616,7 @@ function DeliverView({
   desktopMode,
   onImportBundle,
   onOpenAudio,
+  currentProjectState,
   renderEvidence,
   onRenderEvidence,
   avEvidence,
@@ -619,6 +629,7 @@ function DeliverView({
   desktopMode: boolean;
   onImportBundle: (path: string) => Promise<Project>;
   onOpenAudio: () => void;
+  currentProjectState: () => DeliveryProjectState;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
@@ -697,7 +708,7 @@ function DeliverView({
       </header>
 
       <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
-        onOpenAudio={onOpenAudio}
+        onOpenAudio={onOpenAudio} currentProjectState={currentProjectState}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
@@ -1807,27 +1818,199 @@ export default function App() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const bootRef = useRef<Bootstrap | null>(boot);
   const mutationGate = useRef(new ProjectMutationGate());
+  const currentProjectState = useCallback((): DeliveryProjectState => ({
+    project: bootRef.current?.project ?? null,
+    ...mutationGate.current.activity,
+  }), []);
+
+  const [bootReady, setBootReady] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
+  const [creationCopies, setCreationCopies] = useState<ProjectCreationCopy[]>([]);
+  const [creationLimited, setCreationLimited] = useState(false);
+  const [creationError, setCreationError] = useState<string | null>(null);
+  const shellSdkRef = useRef<Bootstrap["native_sdk"] | null>(null);
+  const selectionRef = useRef<ProjectSelectionRead | null>(null);
+  const desktopBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  const publishOpenedProject = useCallback((next: Project, nativeSdk: Bootstrap["native_sdk"]) => {
+    const previous = bootRef.current?.project;
+    const sameScope = previous?.id === next.id && previous.generation === next.generation;
+    const value: Bootstrap = { project: next, native_sdk: nativeSdk };
+    bootRef.current = value;
+    shellSdkRef.current = nativeSdk;
+    setBoot(value);
+    setBootReady(true);
+    setBootError(null);
+    setSelectedSceneId(selected => sameScope && selected && next.scenes.some(scene => scene.id === selected)
+      ? selected : next.scenes[0]?.id ?? null);
+    setPlayhead(at => sameScope ? Math.min(at, projectTimelineDuration(next)) : 0);
+    setPlaying(false);
+    setTimebaseProfileId(selected => sameScope && next.deliverables.some(profile => profile.id === selected)
+      ? selected : next.deliverables[0]?.id ?? null);
+    if (!sameScope) setTimecodeMode("ndf");
+    setNativeRenderReceipt(null);
+    setNativeAvReceipt(null);
+    setNativeExportReceipt(null);
+  }, []);
+
+  const rememberSelection = useCallback((opened: Project, before: ProjectSelectionRead) => {
+    // Preference failure must never turn an admitted open into a reported
+    // project failure or roll back the editor's real canonical snapshot.
+    try {
+      const result = rememberOpenedProject(opened, before);
+      selectionRef.current = result.observed;
+      setLibraryNotice(result.status === "saved" ? null
+        : `The project is open. ${result.message ?? "The startup selection could not be remembered."}`);
+    } catch (reason) {
+      setLibraryNotice(`The project is open, but its startup selection could not be remembered. ${String(reason)}`);
+    }
+  }, []);
 
   const loadProject = useCallback(async () => {
     const openingFrom = bootRef.current;
     setBootError(null);
+    const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    // Preserve the existing explicitly labelled browser demo. Library commands
+    // have no demo fallback and are exposed only when the desktop bridge exists.
+    if (!desktop) {
+      try {
+        const value = await bootstrap();
+        if (bootRef.current !== openingFrom) return;
+        if (value.project) publishOpenedProject(value.project, value.native_sdk);
+      } catch (reason) {
+        if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+      }
+      return;
+    }
+    const saved = readProjectSelection();
+    selectionRef.current = saved;
+    if (saved.status === "invalid" || saved.status === "unavailable") setLibraryNotice(saved.message);
+    const requestedId = openingFrom?.project.id ?? (saved.status === "remembered" ? saved.projectId : null);
     try {
-      const value = await bootstrap();
-      // A concurrent opening or mutation may already have published a newer
-      // view. A late read must not restore its old document or scene selection.
-      if (bootRef.current !== openingFrom) return;
-      bootRef.current = value;
-      setBoot(value);
-      setSelectedSceneId(value.project.scenes[0]?.id ?? null);
-      setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
-      setTimebaseProfileId(value.project.deliverables[0]?.id ?? null);
-      setTimecodeMode("ndf");
-      setNativeRenderReceipt(null);
-      setNativeAvReceipt(null);
-      setNativeExportReceipt(null);
+      await mutationGate.current.read<Project, StudioBootstrap>({
+        source: openingFrom?.project ?? null,
+        current: () => bootRef.current?.project ?? null,
+        requestedProjectId: requestedId,
+        load: () => bootstrap(requestedId),
+        project: value => value.project,
+        publish: value => {
+          shellSdkRef.current = value.native_sdk;
+          setBootReady(true);
+          if (value.project) {
+            publishOpenedProject(value.project, value.native_sdk);
+          } else {
+            // A failed selected identity retains the editor and preference.
+            // Healthy projects remain reachable through an explicit library choice.
+            setBootError(value.project_selection.status === "unavailable" ? value.project_selection.message : null);
+            setLibraryOpen(true);
+          }
+        },
+        pending: setBusy,
+      });
     } catch (reason) {
+      if (reason instanceof ProjectReadSupersededError) return;
       if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
     }
+  }, [publishOpenedProject]);
+
+  const openLibraryProject = useCallback(async (id: string): Promise<Project> => {
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    const opened = await mutationGate.current.read<Project, Project>({
+      source: boot?.project ?? null,
+      current: () => bootRef.current?.project ?? null,
+      requestedProjectId: id,
+      load: () => openProjectFromLibrary(id),
+      project: value => value,
+      publish: value => publishOpenedProject(value, nativeSdk),
+      pending: setBusy,
+    });
+    rememberSelection(opened, saved);
+    return opened;
+  }, [boot, publishOpenedProject, rememberSelection]);
+
+  const refreshCreations = useCallback(() => {
+    try {
+      const value = readProjectCreations();
+      setCreationCopies(value.copies); setCreationLimited(value.limited); setCreationError(null);
+    } catch (reason) {
+      setCreationError("Retained creation requests could not be read. Existing projects remain available. " + String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!desktopBridge) return;
+    refreshCreations();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(PROJECT_CREATION_PREFIX)) refreshCreations();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [desktopBridge, refreshCreations]);
+
+  const finishObservedCreation = useCallback((copy: ProjectCreationCopy, warning: string | null) => {
+    // Canonical admission has already succeeded. Preference/receipt cleanup
+    // errors must not turn that successful operation into a reported failure.
+    try { if (!warning) discardProjectCreationCopy(copy); }
+    catch (reason) { warning = "The project is open; its local creation record was retained. " + String(reason); }
+    if (warning) setLibraryNotice(previous => [previous, warning].filter(Boolean).join(" "));
+  }, []);
+
+  const createLibraryProject = useCallback(async (title: string): Promise<Project> => {
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    let observed: Awaited<ReturnType<typeof createProjectWithRetainedIntent>> | undefined;
+    try {
+      const opened = await mutationGate.current.create<Project>(bootRef.current?.project ?? null,
+        () => bootRef.current?.project ?? null,
+        async () => {
+          observed = await createProjectWithRetainedIntent(title);
+          // The receipt is the original r0. Read current authority separately,
+          // including revisions authored after the creation transaction.
+          return openProjectFromLibrary(observed.outcome.project.id);
+        }, value => publishOpenedProject(value, nativeSdk), setBusy);
+      rememberSelection(opened, saved);
+      if (observed) finishObservedCreation(observed.copy, observed.warning);
+      return opened;
+    } finally { refreshCreations(); }
+  }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
+
+  const recoverLibraryCreation = useCallback(async (copy: ProjectCreationCopy): Promise<Project | null> => {
+    const source = bootRef.current?.project ?? null;
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    try {
+      const observed = await recoverRetainedProjectCreation(copy);
+      if (!observed.outcome) {
+        setLibraryNotice(observed.warning);
+        return null;
+      }
+      const opened = await mutationGate.current.read<Project, Project>({
+        source, current: () => bootRef.current?.project ?? null,
+        requestedProjectId: observed.outcome.project.id,
+        load: () => openProjectFromLibrary(observed.outcome!.project.id),
+        project: value => value, publish: value => publishOpenedProject(value, nativeSdk), pending: setBusy,
+      });
+      rememberSelection(opened, saved);
+      finishObservedCreation(observed.copy, observed.warning);
+      return opened;
+    } finally { refreshCreations(); }
+  }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
+
+  const discardLibraryCreation = useCallback((copy: ProjectCreationCopy) => {
+    try { discardProjectCreationCopy(copy); }
+    finally { refreshCreations(); }
+  }, [refreshCreations]);
+
+  const forgetRememberedSelection = useCallback(() => {
+    const before = selectionRef.current ?? readProjectSelection();
+    const result = forgetProjectSelection(before);
+    selectionRef.current = result.observed;
+    setLibraryNotice(result.status === "cleared" ? null : result.message);
   }, []);
 
   useEffect(() => {
@@ -1919,6 +2102,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (libraryOpen) return;
       if (isPaletteShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -1953,7 +2137,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [stepFrame, paletteOpen]);
+  }, [stepFrame, paletteOpen, libraryOpen]);
 
   const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
     // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
@@ -2003,7 +2187,8 @@ export default function App() {
   const importPortableBundle = useCallback(async (path: string): Promise<Project> => {
     const source = boot?.project;
     if (!source) throw new Error("Project is not ready.");
-    return mutationGate.current.run(
+    const saved = readProjectSelection();
+    const imported = await mutationGate.current.run(
       source,
       () => bootRef.current?.project ?? null,
       () => importProjectBundle(path),
@@ -2025,31 +2210,42 @@ export default function App() {
       setBusy,
       "replace",
     );
-  }, [boot]);
+    rememberSelection(imported, saved);
+    return imported;
+  }, [boot, rememberSelection]);
+
+  const libraryDialog = desktopBridge ? (
+    <ProjectLibraryDialog key="project-library" open={libraryOpen}
+      currentProjectId={project?.id ?? null} onClose={() => setLibraryOpen(false)}
+      onList={listProjectLibrary} onOpen={openLibraryProject}
+      onCreate={createLibraryProject} creationCopies={creationCopies}
+      creationLimited={creationLimited} creationError={creationError}
+      onRecoverCreation={recoverLibraryCreation} onDiscardCreation={discardLibraryCreation}
+      onRefreshCreations={refreshCreations}
+      notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null} />
+  ) : null;
 
   if (!project || !boot) {
     return (
-      <main className="boot-screen" aria-busy={!bootError}>
+      <main className="boot-screen" aria-busy={!bootReady && !bootError}>
         <div className="brand-mark">MW</div>
         {bootError ? (
           <section className="boot-error" role="alert" aria-label="Project open error">
-            <strong>Couldn’t open the local project</strong>
+            <strong>Couldn’t open the selected project</strong>
             <span>{bootError}</span>
-            <button type="button" className="button button-primary" onClick={() => void loadProject()}>
-              Retry opening project
-            </button>
+            <button type="button" className="button button-primary" onClick={() => void loadProject()}>Retry selected project</button>
           </section>
+        ) : bootReady ? (
+          <section className="boot-loading" role="status"><strong>Choose a project</strong><span>Your saved projects are in the local library.</span></section>
         ) : (
           <section className="boot-loading" role="status" aria-live="polite">
-            <strong>Opening Motionwright</strong>
-            <span>Loading the local project store…</span>
-            <div className="boot-skeleton" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </div>
+            <strong>Opening Motionwright</strong><span>Loading the local project store…</span>
+            <div className="boot-skeleton" aria-hidden="true"><i /><i /><i /></div>
           </section>
         )}
+        {desktopBridge && <button type="button" className="button button-primary"
+          onClick={() => setLibraryOpen(true)}>Open project library</button>}
+        {libraryDialog}
       </main>
     );
   }
@@ -2117,6 +2313,7 @@ export default function App() {
             project={project}
             commit={commitRequired}
             onOpenAudio={() => setWorkspace("Audio")}
+            currentProjectState={currentProjectState}
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}
@@ -2202,6 +2399,8 @@ export default function App() {
           <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
         </div>
         <div className="command-actions">
+          {desktopBridge && <button type="button" className="button compact"
+            disabled={busy} onClick={() => setLibraryOpen(true)}>Open project library</button>}
           {busy && <span className="saving-state" role="status" aria-live="polite"><RefreshCw size={13} className="spin" /> Committing</span>}
           {!online && (
             <span className="offline-chip" title="Network unavailable. Local project editing remains available.">
@@ -2227,6 +2426,11 @@ export default function App() {
       </header>
 
       {paletteOpen && <CommandPalette commands={editorCommands} onClose={() => setPaletteOpen(false)} />}
+      {libraryDialog}
+      {libraryNotice && <div className="project-format-notice" role="status">
+        <span>{libraryNotice}</span>
+        <button type="button" className="button compact" onClick={forgetRememberedSelection}>Forget remembered selection</button>
+      </div>}
 
       <nav className="workspace-bar" aria-label="Workspaces">
         {workspaces.map(({ name, icon: Icon }) => (

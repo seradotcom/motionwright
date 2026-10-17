@@ -1,4 +1,5 @@
 import type { CreativePatchRecord } from "./creativeUndo";
+import { validateDeliveryRecipe, type DeliveryRecipe } from "./deliveryRecipe";
 import type { ComponentDistillationProposal } from "./componentDistillation";
 import type { ProductStageInstance } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
@@ -55,14 +56,14 @@ export interface NarrationTakeLock {
   reviewer_identity_authenticated:false;media_bytes_independently_decoded:false;
   artistic_quality_approved:false;publication_approved:false;
 }
-export interface ProductionDesign { narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
+export interface ProductionDesign { delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
   | { kind: "transform"; node_id: string; transform: CanvasTransform }
   | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe };
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
-export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
+export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "set_delivery_recipe" | "upsert_native_capsule" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
 
 export function validateNativePropertyFidelity(properties: NativePropertyFidelity[]) {
   if (properties.length > 64) throw new Error("At most 64 native property classifications are permitted.");
@@ -387,6 +388,16 @@ export async function applyProductionDesignChange(project: Project, change: Prod
     case "set_production_plan":
       if (change.plan) await validateProductionPlan(project,change.plan);
       design.plan = structuredClone(change.plan); break;
+    case "set_delivery_recipe": {
+      if (!project.deliverables.some(profile => profile.id === change.deliverable_profile_id)) throw new Error("The delivery profile no longer exists.");
+      if (change.recipe) validateDeliveryRecipe(project, change.deliverable_profile_id, change.recipe);
+      const recipes = { ...design.delivery_recipes };
+      if (change.recipe) recipes[change.deliverable_profile_id] = structuredClone(change.recipe);
+      else delete recipes[change.deliverable_profile_id];
+      if (Object.keys(recipes).length) design.delivery_recipes = recipes;
+      else delete design.delivery_recipes;
+      break;
+    }
     case "upsert_native_capsule": {
       const capsule = change.capsule; unlocked(project,capsule.scene_id,["content"]);
       textBudget(capsule.label,256,"capsule label"); textBudget(capsule.native_editor_hint,256,"native editor label");
