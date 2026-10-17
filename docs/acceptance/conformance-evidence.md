@@ -46,7 +46,7 @@ The retained archive contains selected execution-log observations and source-dec
 
 ## Current integrated observation
 
-The assessed source is c987e7a3f714653e5e6778f9fdb9be81cefc4bd3. Its CI run39017405595 and exact checkout/log observations are retained without changing the earlier runs' identities.
+The assessed source is ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46. CI run 39048610713 provides 38 newly checked test observations from its exact checkout. The enclosing CAS body is unchanged from the separately retained c987 source inspection. Its observations and sufficiency decisions remain historical records with their original bindings.
 
 CR-PROJECT-03 is technically verified: inspection confirms the revision comparison lies within the immediate transaction, and two concurrent connections produce one success and one Conflict. Its objective fields have been accepted after technical sufficiency review. The linked scenarios retain their separate states.
 
@@ -66,3 +66,7 @@ The focused integrity regression suite is:
     python -m unittest tooling.tests.test_conformance_policy tooling.tests.test_acceptance_policy tooling.tests.test_creative_status_policy -v
 
 The canonical public inputs are requirements-status.json and acceptance-status.json in this directory, the expansion requirements-status.json in docs/creative-production, and technical-evidence.json. Original private source text and internal review records are not published.
+
+## Retained archive members
+
+A retained archive is verified both as a file and at each cited member. Member names must be safe relative paths, occur exactly once, and have the recorded SHA-256. A correct archive digest alone cannot admit a missing, duplicate or modified cited member.
