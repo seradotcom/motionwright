@@ -13,6 +13,11 @@ members. A later edit does not cause a second project load or substitute the
 newer revision. Existing backup format 1, storage schema 2, payload digests and
 canonical project fields remain unchanged.
 
+Every export also validates the same backup invariants required by import:
+journal length equals the project revision, event revisions are contiguous, and
+event timestamps are present. Corrupt history is rejected before returning a
+backup or publishing a bundle, without repairing or changing the stored rows.
+
 A bundle inspection returns both the normal import plan and a BundleFingerprint.
 The fingerprint is SHA-256 over the domain
 motionwright.bundle-inspection.v1 followed by a NUL byte and the exact raw
@@ -29,10 +34,18 @@ After that validation, it captures every member into the existing private
 file-import staging area. The shared capture reads at most the admitted size
 plus one byte, rejects excess before writing it, and distinguishes an oversized
 source from a shorter capture that no longer matches the manifest. It checks each
-captured digest, size and applicable secret policy before publishing any member. A changed later source discards
-the private captures; an earlier valid member is not published as a side effect
+captured digest, size and applicable secret policy before publishing any member.
+A changed later source discards the private captures; an earlier valid member
+is not published as a side effect
 of rejecting a changed member. Cleanup never removes another operation's
 staging file or an object already published in shared CAS.
+
+All portable member reads are bounded during the actual IO. Preliminary hashes,
+text scans, private capture, export copies and copied-file readback cannot rely
+only on a previous filesystem size check. Each stream reads at most its budget
+plus one byte and rejects excess before accepting it into a copy or text buffer.
+Export also checks the aggregate member budget and actual serialized manifest
+size, so it cannot knowingly publish a bundle rejected for those import limits.
 
 ## APIs and caller contract
 
@@ -85,8 +98,22 @@ rotation, reopen and source bytes, absence of restored operational receipts,
 foreign authority before missing-source IO, changed member bytes, equivalent
 JSON reencoding, readonly inspection, malformed fingerprints, corrupt SQL
 authority columns, a captured export after a peer edit, capture cleanup and the
-manifest size bound and bounded member capture. These additional cases are distinct from the three
+manifest size bound and bounded member capture. These cases complement the
 observed before/after regressions.
+
+A second tests-only baseline, fc58b526a1d23029a7f9c408ea2ef26c32b6775c,
+covers six additional failures in
+[Project Portability run 39019336775](https://github.com/seradotcom/motionwright/actions/runs/39019336775).
+Three cases modify real SQLite event rows: a missing event, a gap in revisions
+and an empty timestamp. The original exporter returns and publishes backups
+that its own real import validator rejects. Three file cases append real bytes
+after a size review; the original hash, text scan and copy helpers accept work
+beyond that retained budget. Their positive controls and six regression bodies
+are unchanged on the corrected implementation.
+
+An additional file-backed stream case appends 4096 bytes when the actual read
+starts after a 64-byte size check. The shared transfer reads exactly 65 bytes,
+returns BlobTooLarge and never accepts an oversized output buffer.
 
 ## Boundaries
 
@@ -98,8 +125,9 @@ objects to simulate a rollback.
 Filesystem checks and staging use paths. They do not establish full ancestor
 ownership, handle-based protection against every concurrent filesystem
 replacement, or an atomic no-replace directory rename on every platform.
-The existing bundle export staging behavior on a copy/publication failure is
-unchanged.
+A failed export attempts to remove only its own newly created staging
+directory. This cleanup is best effort if the filesystem itself refuses removal;
+it does not remove unrelated staging directories or shared CAS objects.
 
 This backend contract does not demonstrate an installed desktop caller, abrupt
 process termination, physical power loss, native execution, authentic consent,

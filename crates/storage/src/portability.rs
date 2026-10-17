@@ -148,7 +148,11 @@ impl Store {
                 ));
             }
             if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                ensure_secret_free_file(captured.path(), "captured portable text-like asset")?;
+                ensure_secret_free_portable_file(
+                    captured.path(),
+                    "captured portable text-like asset",
+                    blob.size_bytes,
+                )?;
             }
             staged.push(captured);
         }
@@ -238,6 +242,7 @@ impl Store {
             events,
             payload_sha256,
         };
+        validate_backup(&backup)?;
         tx.commit()?;
         Ok(backup)
     }
@@ -250,6 +255,7 @@ impl Store {
         if destination.exists() {
             return Err(StorageError::DestinationExists);
         }
+        validate_backup(&backup)?;
         ensure_backup_secret_free(&backup)?;
         let mut digests = BTreeSet::new();
         for asset in &backup.project.assets {
@@ -260,18 +266,30 @@ impl Store {
             digests.insert(digest.to_owned());
         }
 
+        if digests.len() > MAX_BUNDLE_BLOBS {
+            return Err(StorageError::InvalidBackup(
+                "portable bundle contains too many blobs".into(),
+            ));
+        }
         let mut blobs = Vec::with_capacity(digests.len());
+        let mut total_blob_bytes = 0_u64;
         for digest in digests {
             let source = self.checked_existing_blob_path(&digest)?;
-            if project_blob_requires_secret_scan(&backup.project, &digest) {
-                ensure_secret_free_file(&source, "portable text-like asset")?;
-            }
-            let descriptor = hash_file(&source)?;
+            let descriptor =
+                hash_portable_file(&source, MAX_BUNDLE_TOTAL_BYTES - total_blob_bytes)?;
             if descriptor.sha256 != digest {
                 return Err(StorageError::InvalidBackup(
                     "stored blob digest differs from its content-addressed path".into(),
                 ));
             }
+            if project_blob_requires_secret_scan(&backup.project, &digest) {
+                ensure_secret_free_portable_file(
+                    &source,
+                    "portable text-like asset",
+                    descriptor.size_bytes,
+                )?;
+            }
+            total_blob_bytes += descriptor.size_bytes;
             blobs.push(PortableBlob {
                 relative_path: blob_relative_path(&digest)?,
                 sha256: digest,
@@ -286,10 +304,18 @@ impl Store {
             blobs,
         };
 
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+        if manifest_bytes.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+            return Err(StorageError::BlobTooLarge {
+                size: manifest_bytes.len() as u64,
+                limit: MAX_BUNDLE_MANIFEST_BYTES,
+            });
+        }
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
         let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
         fs::create_dir(&staging)?;
+        let mut owned_stage = BundleExportStage(Some(staging.clone()));
 
         for blob in &manifest.blobs {
             let source = self.checked_existing_blob_path(&blob.sha256)?;
@@ -297,8 +323,13 @@ impl Store {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::copy(&source, &target)?;
-            let copied = hash_file(&target)?;
+            let captured = copy_portable_file(&source, &target, blob.size_bytes)?;
+            if captured.sha256 != blob.sha256 || captured.size_bytes != blob.size_bytes {
+                return Err(StorageError::InvalidBackup(
+                    "export source changed after blob validation".into(),
+                ));
+            }
+            let copied = hash_portable_file(&target, blob.size_bytes)?;
             if copied.sha256 != blob.sha256 || copied.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "exported blob failed readback verification".into(),
@@ -306,7 +337,6 @@ impl Store {
             }
         }
 
-        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         let manifest_path = staging.join("manifest.json");
         let mut manifest_file = OpenOptions::new()
             .write(true)
@@ -315,9 +345,96 @@ impl Store {
         manifest_file.write_all(&manifest_bytes)?;
         manifest_file.flush()?;
         manifest_file.sync_all()?;
+        drop(manifest_file);
         fs::rename(&staging, destination)?;
+        owned_stage.0 = None;
         Ok(manifest)
     }
+}
+
+/// Only the directory created for this attempt is removed on failure.
+struct BundleExportStage(Option<PathBuf>);
+
+impl Drop for BundleExportStage {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+/// The byte budget constrains the actual read, including growth after stat.
+fn transfer_portable_bytes(
+    input: impl Read,
+    mut output: impl Write,
+    limit: u64,
+) -> Result<BlobDescriptor> {
+    let mut input = input.take(limit.saturating_add(1));
+    let mut hasher = Sha256::new();
+    let mut size_bytes = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size_bytes = size_bytes.checked_add(read as u64).ok_or_else(|| {
+            StorageError::InvalidBackup("portable source byte count overflowed".into())
+        })?;
+        if size_bytes > limit {
+            return Err(StorageError::BlobTooLarge {
+                size: size_bytes,
+                limit,
+            });
+        }
+        output.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(BlobDescriptor {
+        sha256: hex::encode(hasher.finalize()),
+        size_bytes,
+    })
+}
+
+fn checked_portable_source(path: &Path, context: &str, limit: u64) -> Result<File> {
+    let size = ensure_regular_file(path, context)?.len();
+    if size > limit {
+        return Err(StorageError::BlobTooLarge { size, limit });
+    }
+    Ok(File::open(path)?)
+}
+
+pub(super) fn hash_portable_file(path: &Path, limit: u64) -> Result<BlobDescriptor> {
+    let input = checked_portable_source(path, "hashed portable source", limit)?;
+    transfer_portable_bytes(input, std::io::sink(), limit)
+}
+
+pub(super) fn ensure_secret_free_portable_file(
+    path: &Path,
+    context: &str,
+    limit: u64,
+) -> Result<()> {
+    let limit = limit.min(MAX_SECRET_SCAN_BYTES);
+    let input = checked_portable_source(path, context, limit)?;
+    let mut bytes = Vec::new();
+    transfer_portable_bytes(input, &mut bytes, limit)?;
+    ensure_secret_free_bytes(&bytes, context)
+}
+
+fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDescriptor> {
+    let input = checked_portable_source(source, "copied portable source", limit)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options.open(target)?;
+    let descriptor = transfer_portable_bytes(input, &mut output, limit)?;
+    output.flush()?;
+    output.sync_all()?;
+    Ok(descriptor)
 }
 
 pub(super) fn read_bundle_manifest_bytes(source: &Path) -> Result<Vec<u8>> {
@@ -754,18 +871,99 @@ mod tests {
         }
     }
 
-    // Before/after adapters call the original product helpers on the baseline.
-    fn reviewed_hash_source(path: &Path, _limit: u64) -> Result<BlobDescriptor> {
-        hash_file(path)
+    #[test]
+    fn portable_transfer_limits_growth_during_the_actual_file_read() {
+        struct GrowingFile {
+            input: File,
+            append: File,
+            grown: bool,
+            bytes_read: usize,
+        }
+        impl Read for GrowingFile {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if !self.grown {
+                    self.append.write_all(&[b'X'; 4096])?;
+                    self.append.flush()?;
+                    self.grown = true;
+                }
+                let count = self.input.read(buffer)?;
+                self.bytes_read += count;
+                Ok(count)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("growing.bin");
+        fs::write(&path, [b'A'; 64]).unwrap();
+        let limit = fs::metadata(&path).unwrap().len();
+        let mut source = GrowingFile {
+            input: File::open(&path).unwrap(),
+            append: OpenOptions::new().append(true).open(&path).unwrap(),
+            grown: false,
+            bytes_read: 0,
+        };
+        let mut captured = Vec::new();
+        let result = transfer_portable_bytes(&mut source, &mut captured, limit);
+        assert!(matches!(
+            result,
+            Err(StorageError::BlobTooLarge {
+                size: 65,
+                limit: 64
+            })
+        ));
+        assert!(source.grown);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 4160);
+        assert_eq!(source.bytes_read, 65);
+        assert!(captured.len() as u64 <= limit);
     }
 
-    fn reviewed_text_source(path: &Path, _limit: u64) -> Result<()> {
-        ensure_secret_free_file(path, "portable text-like asset")
+    #[test]
+    fn publication_rechecks_private_and_existing_cas_with_the_captured_size_limit() {
+        for changed_existing in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+            let input = directory.path().join("input.bin");
+            fs::write(&input, b"original immutable bytes").unwrap();
+            let captured = store.stage_file_import(&input).unwrap();
+            let descriptor = captured.descriptor().clone();
+            let stage_path = captured.path().to_path_buf();
+            let destination = store.blob_path(&descriptor.sha256).unwrap();
+            let changed_path = if changed_existing {
+                store.publish_file_import(&captured).unwrap();
+                destination.clone()
+            } else {
+                stage_path.clone()
+            };
+            let mut changed = fs::read(&changed_path).unwrap();
+            changed.extend_from_slice(b" appended after capture");
+            fs::write(&changed_path, &changed).unwrap();
+            let result = store.publish_file_import(&captured);
+            assert!(matches!(
+                result,
+                Err(StorageError::BlobTooLarge { limit, .. }) if limit == descriptor.size_bytes
+            ));
+            drop(captured);
+            assert!(!stage_path.exists());
+            if changed_existing {
+                // The rejected attempt cannot remove or repair a shared object.
+                assert_eq!(fs::read(&destination).unwrap(), changed);
+            } else {
+                assert!(!destination.exists());
+            }
+            assert!(store.list_projects(10).unwrap().is_empty());
+        }
     }
 
-    fn reviewed_copy_source(source: &Path, target: &Path, _limit: u64) -> Result<()> {
-        fs::copy(source, target)?;
-        Ok(())
+    // The same regression bodies now call the bounded product helpers.
+    fn reviewed_hash_source(path: &Path, limit: u64) -> Result<BlobDescriptor> {
+        hash_portable_file(path, limit)
+    }
+
+    fn reviewed_text_source(path: &Path, limit: u64) -> Result<()> {
+        ensure_secret_free_portable_file(path, "portable text-like asset", limit)
+    }
+
+    fn reviewed_copy_source(source: &Path, target: &Path, limit: u64) -> Result<()> {
+        copy_portable_file(source, target, limit).map(|_| ())
     }
 
     fn corrupt_journal_export_case(corruption: &str) {

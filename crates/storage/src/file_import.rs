@@ -210,7 +210,6 @@ impl Store {
 
 use super::{
     BlobDescriptor, create_checked_blob_directory, ensure_regular_directory, ensure_regular_file,
-    hash_file,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -338,7 +337,8 @@ impl Store {
                 "staged import is outside the blob staging directory".into(),
             ));
         }
-        let captured = hash_file(&staged.path)?;
+        let captured =
+            super::portability::hash_portable_file(&staged.path, staged.descriptor.size_bytes)?;
         if captured != staged.descriptor {
             return Err(StorageError::InvalidBlobDigest);
         }
@@ -359,7 +359,7 @@ impl Store {
         };
         if verify_existing {
             let existing = self.checked_existing_blob_path(&captured.sha256)?;
-            if hash_file(&existing)? != captured {
+            if super::portability::hash_portable_file(&existing, captured.size_bytes)? != captured {
                 return Err(StorageError::InvalidBlobDigest);
             }
         }
@@ -600,6 +600,7 @@ mod tests {
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    use crate::hash_file;
     #[test]
     fn staged_import_rejects_changed_capture_without_publishing_or_leaking_stage() {
         let temp = tempfile::tempdir().unwrap();

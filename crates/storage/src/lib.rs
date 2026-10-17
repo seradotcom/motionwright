@@ -183,17 +183,6 @@ fn project_blob_requires_secret_scan(project: &Project, digest: &str) -> bool {
     })
 }
 
-fn ensure_secret_free_file(path: &Path, context: &str) -> Result<()> {
-    let size = ensure_regular_file(path, context)?.len();
-    if size > MAX_SECRET_SCAN_BYTES {
-        return Err(StorageError::BlobTooLarge {
-            size,
-            limit: MAX_SECRET_SCAN_BYTES,
-        });
-    }
-    ensure_secret_free_bytes(&fs::read(path)?, context)
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectSummary {
     pub id: Uuid,
@@ -660,9 +649,13 @@ impl Store {
                 });
             }
             if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                ensure_secret_free_file(&path, "portable text-like asset")?;
+                portability::ensure_secret_free_portable_file(
+                    &path,
+                    "portable text-like asset",
+                    blob.size_bytes,
+                )?;
             }
-            let descriptor = hash_file(&path)?;
+            let descriptor = portability::hash_portable_file(&path, blob.size_bytes)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
