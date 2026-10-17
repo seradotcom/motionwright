@@ -329,4 +329,293 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&forged).unwrap()).unwrap();
         assert!(registry.resolve(project_id, generation).is_err());
     }
+
+    #[test]
+    fn missing_registry_root_rejects_all_operations() {
+        let temporary = TempDir::new().unwrap();
+        let base = fs::canonicalize(temporary.path()).unwrap();
+        let registry = RuntimeConnectionRegistry::new(&base).unwrap();
+        let project = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(2);
+        let root = base.join("owner-native-connections");
+        fs::remove_dir(&root).unwrap();
+
+        let read = registry.resolve(project, generation);
+        let write = registry.remember_verified(project, generation, &base.join("connection.json"));
+        let clear = registry.clear_saved(project);
+
+        assert!(!root.exists(), "an operation recreated the absent registry");
+        assert!(
+            read.is_err() && write.is_err() && clear.is_err(),
+            "missing root accepted an operation: read={read:?}, write={write:?}, clear={clear:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    mod root_integrity {
+        use super::*;
+        use std::ffi::OsString;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        const DIRECTORY: &str = "owner-native-connections";
+
+        #[derive(Clone, Copy, Debug)]
+        enum Operation {
+            Read,
+            Write,
+            Clear,
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct Snapshot {
+            entries: Vec<OsString>,
+            record: Option<Vec<u8>>,
+            mode: u32,
+        }
+
+        fn snapshot(root: &Path, project: Uuid) -> Snapshot {
+            let mut entries: Vec<_> = fs::read_dir(root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            entries.sort_unstable();
+            let record = match fs::read(root.join(format!("{}.json", project.simple()))) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!("cannot snapshot record: {error}"),
+            };
+            Snapshot {
+                entries,
+                record,
+                mode: fs::symlink_metadata(root).unwrap().permissions().mode() & 0o7777,
+            }
+        }
+
+        struct Fixture {
+            _temporary: TempDir,
+            base: PathBuf,
+            registry: RuntimeConnectionRegistry,
+            project: Uuid,
+            generation: Uuid,
+        }
+
+        impl Fixture {
+            fn new() -> Self {
+                let temporary = TempDir::new().unwrap();
+                // Normalize only the fixture base, including macOS temp aliases.
+                let base = fs::canonicalize(temporary.path()).unwrap();
+                let app_data = base.join("original").join("app-data");
+                let decoy_data = base.join("decoy").join("app-data");
+                let registry = RuntimeConnectionRegistry::new(&app_data).unwrap();
+                let decoy = RuntimeConnectionRegistry::new(&decoy_data).unwrap();
+                let project = Uuid::from_u128(1);
+                let generation = Uuid::from_u128(2);
+                // Synthetic absolute references test this registry only. No
+                // ProductionConnection, Broker or owner consent is claimed.
+                for (item, name) in [(&registry, "original.json"), (&decoy, "decoy.json")] {
+                    let selected = base.join(name);
+                    item.remember_verified(project, generation, &selected)
+                        .unwrap();
+                    assert_eq!(item.resolve(project, generation).unwrap(), Some(selected));
+                }
+                Self {
+                    _temporary: temporary,
+                    base,
+                    registry,
+                    project,
+                    generation,
+                }
+            }
+
+            fn root(&self, tree: &str) -> PathBuf {
+                self.base.join(tree).join("app-data").join(DIRECTORY)
+            }
+
+            fn apply(&self, operation: Operation) -> Result<(), String> {
+                match operation {
+                    Operation::Read => self
+                        .registry
+                        .resolve(self.project, self.generation)
+                        .map(|_| ()),
+                    Operation::Write => self.registry.remember_verified(
+                        self.project,
+                        self.generation,
+                        &self.base.join("replacement.json"),
+                    ),
+                    Operation::Clear => self.registry.clear_saved(self.project).map(|_| ()),
+                }
+            }
+
+            fn assert_rejected_unchanged(&self, operation: Operation, preserved: &Path) {
+                let decoy = self.root("decoy");
+                let original_before = snapshot(preserved, self.project);
+                let decoy_before = snapshot(&decoy, self.project);
+                let result = self.apply(operation);
+                assert_eq!(
+                    snapshot(preserved, self.project),
+                    original_before,
+                    "{operation:?} changed the preserved original registry"
+                );
+                assert_eq!(
+                    snapshot(&decoy, self.project),
+                    decoy_before,
+                    "{operation:?} changed foreign bytes or left temporary entries"
+                );
+                assert!(
+                    result.is_err(),
+                    "{operation:?} accepted an invalid registry root"
+                );
+            }
+
+            fn through_alias(&self) -> (RuntimeConnectionRegistry, PathBuf) {
+                let alias = self.base.join("initial-alias");
+                symlink(self.base.join("original").join("app-data"), &alias).unwrap();
+                (RuntimeConnectionRegistry::new(&alias).unwrap(), alias)
+            }
+        }
+
+        fn rejects_substitution(operation: Operation, ancestor: bool) {
+            let fixture = Fixture::new();
+            let root = fixture.root("original");
+            let preserved;
+            if ancestor {
+                let original_parent = fixture.base.join("original");
+                let preserved_parent = fixture.base.join("preserved");
+                fs::rename(&original_parent, &preserved_parent).unwrap();
+                symlink(fixture.base.join("decoy"), &original_parent).unwrap();
+                preserved = preserved_parent.join("app-data").join(DIRECTORY);
+
+                // Final root and record deliberately satisfy the old checks.
+                let metadata = fs::symlink_metadata(&root).unwrap();
+                assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+                assert_eq!(metadata.permissions().mode() & 0o7777, 0o700);
+                let record =
+                    fs::symlink_metadata(fixture.registry.destination(fixture.project)).unwrap();
+                assert!(record.is_file() && !record.file_type().is_symlink());
+                assert_eq!(record.permissions().mode() & 0o7777, 0o600);
+                assert_ne!(fs::canonicalize(&root).unwrap(), root);
+            } else {
+                preserved = fixture.base.join("preserved-root");
+                fs::rename(&root, &preserved).unwrap();
+                symlink(fixture.root("decoy"), &root).unwrap();
+                assert!(
+                    fs::symlink_metadata(&root)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+            }
+            fixture.assert_rejected_unchanged(operation, &preserved);
+        }
+
+        fn rejects_non_private_root(operation: Operation) {
+            let fixture = Fixture::new();
+            let root = fixture.root("original");
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(snapshot(&root, fixture.project).mode, 0o755);
+            // Rejection must preserve even the changed permissions.
+            fixture.assert_rejected_unchanged(operation, &root);
+        }
+
+        #[test]
+        fn read_rejects_root_substitution() {
+            rejects_substitution(Operation::Read, false);
+        }
+        #[test]
+        fn write_rejects_root_substitution() {
+            rejects_substitution(Operation::Write, false);
+        }
+        #[test]
+        fn clear_rejects_root_substitution() {
+            rejects_substitution(Operation::Clear, false);
+        }
+        #[test]
+        fn read_rejects_ancestor_substitution() {
+            rejects_substitution(Operation::Read, true);
+        }
+        #[test]
+        fn write_rejects_ancestor_substitution() {
+            rejects_substitution(Operation::Write, true);
+        }
+        #[test]
+        fn clear_rejects_ancestor_substitution() {
+            rejects_substitution(Operation::Clear, true);
+        }
+        #[test]
+        fn read_rejects_non_private_root() {
+            rejects_non_private_root(Operation::Read);
+        }
+        #[test]
+        fn write_rejects_non_private_root() {
+            rejects_non_private_root(Operation::Write);
+        }
+        #[test]
+        fn clear_rejects_non_private_root() {
+            rejects_non_private_root(Operation::Clear);
+        }
+
+        #[test]
+        fn initial_app_data_alias_supports_normal_round_trip() {
+            let fixture = Fixture::new();
+            let (registry, _) = fixture.through_alias();
+            let decoy_before = snapshot(&fixture.root("decoy"), fixture.project);
+            let replacement = fixture.base.join("replacement.json");
+            registry
+                .remember_verified(fixture.project, fixture.generation, &replacement)
+                .unwrap();
+            assert_eq!(
+                registry
+                    .resolve(fixture.project, fixture.generation)
+                    .unwrap(),
+                Some(replacement.clone())
+            );
+            assert_eq!(
+                fixture
+                    .registry
+                    .resolve(fixture.project, fixture.generation)
+                    .unwrap(),
+                Some(replacement)
+            );
+            assert!(registry.clear_saved(fixture.project).unwrap());
+            assert!(
+                snapshot(&fixture.root("original"), fixture.project)
+                    .entries
+                    .is_empty()
+            );
+            assert_eq!(
+                snapshot(&fixture.root("decoy"), fixture.project),
+                decoy_before
+            );
+        }
+
+        #[test]
+        fn retargeted_initial_alias_keeps_original_physical_registry() {
+            let fixture = Fixture::new();
+            let (registry, alias) = fixture.through_alias();
+            let decoy_before = snapshot(&fixture.root("decoy"), fixture.project);
+            fs::remove_file(&alias).unwrap();
+            symlink(fixture.base.join("decoy").join("app-data"), &alias).unwrap();
+
+            let original = registry.resolve(fixture.project, fixture.generation);
+            let replacement = fixture.base.join("replacement.json");
+            let write =
+                registry.remember_verified(fixture.project, fixture.generation, &replacement);
+            let updated = registry.resolve(fixture.project, fixture.generation);
+            let clear = registry.clear_saved(fixture.project);
+
+            assert_eq!(
+                snapshot(&fixture.root("decoy"), fixture.project),
+                decoy_before
+            );
+            assert_eq!(original, Ok(Some(fixture.base.join("original.json"))));
+            assert_eq!(write, Ok(()));
+            assert_eq!(updated, Ok(Some(replacement)));
+            assert_eq!(clear, Ok(true));
+            assert!(
+                snapshot(&fixture.root("original"), fixture.project)
+                    .entries
+                    .is_empty()
+            );
+        }
+    }
 }
