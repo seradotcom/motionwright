@@ -14,11 +14,13 @@ use uuid::Uuid;
 
 mod capture_evidence;
 mod derived_cache;
+mod file_import;
 mod identity_evidence;
 mod integrity;
 mod production;
 mod render_window_cache;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
+pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
@@ -43,6 +45,8 @@ pub enum StorageError {
     Conflict { expected: u64, actual: u64 },
     #[error("request id was reused with a different payload")]
     RequestReuse,
+    #[error("invalid file import receipt: {0}")]
+    InvalidFileImportReceipt(String),
     #[error("production receipt stream changed during enumeration")]
     ReceiptStreamChanged,
     #[error("resource generation differs from expected base")]
