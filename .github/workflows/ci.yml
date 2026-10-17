@@ -26,7 +26,9 @@ jobs:
       - name: Verify source distribution hygiene guards
         run: python3 -m unittest discover -s tooling/tests -p 'test_public_surface_policy.py' -v
       - name: Verify acceptance ledger invariants
-        run: python3 tooling/acceptance_policy.py
+        run: |
+          python3 tooling/acceptance_policy.py
+          python3 -m unittest discover -s tooling/tests -p 'test_acceptance_policy.py' -v
       - name: Verify creative expansion traceability without promoting acceptance
         run: |
           python3 tooling/creative_status_policy.py

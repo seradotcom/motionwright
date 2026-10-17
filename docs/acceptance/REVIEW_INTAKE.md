@@ -111,3 +111,9 @@ The CI `source-policy` job runs synthetic, lightweight regression tests for the 
 ## Current state
 
 At creation, all 60 canonical acceptance cases are `NOT_RUN`. The acceptance intake does not change that status. Product readiness still requires executable projects on each intended OS, end-to-end audiovisual output, real native rendering receipts, actual media review, correct asset/version handling and independent acceptance.
+
+## Curated public evidence pointers
+
+Private intake files and recordings remain outside the public checkout. A maintainer who has actually reviewed a case may separately publish a privacy-cleared JSON summary under `docs/acceptance/evidence/ACC-NNN/`. The public ledger descriptor contains exactly `path`, `sha256` and `size_bytes`, identifying that curated file, not a private recording or an arbitrary external filesystem path. The public checker verifies actual bytes, size, JSON syntax, case scope and uniqueness. It rejects directories, links/reparse components, malformed JSON and string/integer substitutes for the Boolean `independent` flag. A `NOT_RUN` case cannot carry review/evidence; a `FAIL` needs evidence as well.
+
+These checks validate public metadata, not reviewer identity, private-scenario execution, installed binary provenance or artistic quality. Even a correctly hashed public summary cannot authenticate its own claims. They never copy private evidence, promote a case automatically or authorize a release. All existing statuses are preserved. See `docs/audit/SOURCE_RECONCILIATION.md` for the source cut, reproduced false positives and correction scope.
