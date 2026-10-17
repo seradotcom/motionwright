@@ -936,7 +936,12 @@ impl ProductionClient {
             || provenance.source != expected.source
             || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
-            || provenance.untrusted_metadata
+            // SDK Metadata::for_provider marks external provider metadata as
+            // untrusted. This flag classifies descriptions, not execution
+            // authority; all authority bindings above remain mandatory.
+            || provenance.untrusted_metadata != (expected.source == SourceKind::Driver)
+            || (expected.source == SourceKind::Driver
+                && provenance.execution_provider.as_deref() != Some(expected.provider))
         {
             return Err(unobserved(backend(
                 "Canonical response provenance does not match the expected authority",
@@ -3191,7 +3196,7 @@ mod tests {
                 provider_version: "test".into(),
                 capability_version: "test".into(),
                 descriptor_sha256: "ab".repeat(32),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(1),
@@ -3255,7 +3260,7 @@ mod tests {
                 provider_version: "test".into(),
                 capability_version: "test".into(),
                 descriptor_sha256: "cd".repeat(32),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(2),
@@ -3938,6 +3943,9 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     #[cfg(unix)]
     fn transport_fixture_envelope(command: &str) -> Envelope {
         let authority = expected_authority(command).unwrap();
+        // Exact SDK54 Metadata::for_provider classification, carried into
+        // typed InvocationProvenance without promoting provider descriptions.
+        let untrusted_metadata = authority.source != SourceKind::Builtin;
         let mut envelope = Envelope::finish(
             "transport-fixture-broker-response".into(),
             command.into(),
@@ -3952,7 +3960,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             provider_version: "test-fixture".into(),
             capability_version: "test-fixture".into(),
             descriptor_sha256: "a4".repeat(32),
-            untrusted_metadata: false,
+            untrusted_metadata,
             catalog_revision: 1,
             execution_provider: Some(authority.provider.into()),
             provider_generation: Some(1),
@@ -3990,6 +3998,76 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         fs::write(&connection.executable, script).unwrap();
         connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
         connection
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdk54_metadata_classification_accepts_bound_drivers_and_builtin() {
+        for (command, driver) in [
+            ("driver.motion-canvas.composition.inspect", true),
+            ("driver.mlt-video.sequence.list", true),
+            ("driver.blender.collection.create", true),
+            ("driver.manim-community.render.status", true),
+            ("workflow.traces.list", false),
+        ] {
+            let (_, project, temp) = fixture_service();
+            let mut envelope = transport_fixture_envelope(command);
+            let provenance = envelope.execution.provenance.as_mut().unwrap();
+            assert_eq!(provenance.untrusted_metadata, driver);
+            if !driver {
+                // Builtin authority does not require a driver worker or generation.
+                provenance.execution_provider = None;
+                provenance.provider_generation = None;
+            }
+            let response = serde_json::to_vec(&envelope).unwrap();
+            let connection =
+                transport_response_fixture(&temp, project.resource_key(), &response, 0, false);
+            let result = ProductionClient::new(connection)
+                .unwrap()
+                .execute(command, json!({}), false)
+                .await
+                .unwrap();
+            assert_eq!(result.value["provenance_checked"], true, "{command}");
+            assert_eq!(
+                result.value["execution"]["provenance"]["untrusted_metadata"], driver,
+                "{command}",
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdk54_metadata_classification_rejects_driver_builtin_inversions() {
+        for command in [
+            "driver.motion-canvas.composition.inspect",
+            "driver.mlt-video.sequence.list",
+            "driver.blender.collection.create",
+            "driver.manim-community.render.status",
+            "workflow.traces.list",
+        ] {
+            let (_, project, temp) = fixture_service();
+            let mut envelope = transport_fixture_envelope(command);
+            let provenance = envelope.execution.provenance.as_mut().unwrap();
+            provenance.untrusted_metadata = !provenance.untrusted_metadata;
+            let response = serde_json::to_vec(&envelope).unwrap();
+            let connection =
+                transport_response_fixture(&temp, project.resource_key(), &response, 0, false);
+            let error = ProductionClient::new(connection)
+                .unwrap()
+                .execute(command, json!({}), true)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::BackendFailed, "{command}");
+            assert!(!error.outcome_known, "post-spawn authority loss: {command}");
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -4036,9 +4114,39 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                 "Canonical response provenance does not match the expected authority",
             ),
             (
-                "untrusted-provenance",
+                "driver-claimed-builtin-metadata",
                 "/execution/provenance/untrusted_metadata",
-                json!(true),
+                json!(false),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "foreign-source",
+                "/execution/provenance/source",
+                serde_json::to_value(SourceKind::Builtin).unwrap(),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "missing-generation",
+                "/execution/provenance/provider_generation",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "invalid-descriptor",
+                "/execution/provenance/descriptor_sha256",
+                json!("not-a-sha256"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "missing-execution-provider",
+                "/execution/provenance/execution_provider",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "foreign-execution-provider",
+                "/execution/provenance/execution_provider",
+                json!("driver:blender"),
                 "Canonical response provenance does not match the expected authority",
             ),
             (
@@ -4103,7 +4211,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             ErrorCode::BackendFailed,
             "Semwright CLI failure response is inconsistent",
         ));
-        assert_eq!(cases.len(), 15);
+        assert_eq!(cases.len(), 20);
 
         for (name, response, exit_code, code, message) in cases {
             let (service, project, temp) = fixture_service();
