@@ -1,0 +1,205 @@
+{
+  "arch": "x86_64",
+  "command": "cargo test -p motionwright-storage -p motionwright-service --all-targets",
+  "event_count": 4,
+  "executable_sha256": "93b6ec2977b6fbfb723ee9aa4257403e6fd42e78fa4eae40f166b3fc1795ddc9",
+  "exporter_base_sha": "2178e31c55f1d041e39fea23227536f4886c4873",
+  "fixture_encoding": "UTF-8 compact JSON with one final LF, no BOM",
+  "fixture_file_sha256": "1f959cbe8cf5f5ee7dbed8c2596087ea710f6e064be0e35b47dbdcc5343b0a57",
+  "fixture_file_size_bytes": 5173,
+  "generator_commit": "bc1daa6cbff28936d392af41ac7d337a1e6b796d",
+  "generator_test": "export_pre_recipe_backup_with_real_journal_and_cas",
+  "not_claimed": "Installed desktop export, human acceptance, platform signing",
+  "original_source_sha256": "d1ccea4e8d77015dafa44aeedc2f1e5c9ff416c04743a7e7137976f6788a9656",
+  "original_source_utf8": "Synthetic original source for pre-recipe storage compatibility.\n",
+  "os": "linux",
+  "payload_sha256": "db077decfba681e1534b85280b4997229fb0f0c68e1ceeae3bc8bca395143d2a",
+  "producer": "Actual pre-recipe Store::export_project in a compiled integration-test executable",
+  "project_revision": 4,
+  "schema": "motionwright.pre-recipe-backup-provenance/1",
+  "source_files": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "bdb5e9f5b6ae282bbf9476e4ad722c35be599140130b1a03c389b850befa319c"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+    },
+    {
+      "path": "SOURCE_LOCK.json",
+      "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+    },
+    {
+      "path": "crates/domain/Cargo.toml",
+      "sha256": "8787b18304fa8b66c57597168d2d54ced44acfb0911467f8cad8dcb3c31a5a3b"
+    },
+    {
+      "path": "crates/domain/src/brand_campaign.rs",
+      "sha256": "1f07f935c6d95d3743ddca6582bb49a7889f302360d444d1458e569ca29e6e78"
+    },
+    {
+      "path": "crates/domain/src/brand_governance.rs",
+      "sha256": "6c066d99e71827dd373d58b8152ebf7ffc41ad36df82c1792e52fd84f5161a09"
+    },
+    {
+      "path": "crates/domain/src/camera_reframe.rs",
+      "sha256": "1874c2e7d872a597e7903b25131e41ba8c1406edfc6c89219edf7831b2957e7e"
+    },
+    {
+      "path": "crates/domain/src/canvas.rs",
+      "sha256": "cdef5818fa86b475148a7f03747340002fd333c14098109a80cd38a8a8a67e30"
+    },
+    {
+      "path": "crates/domain/src/capture_source.rs",
+      "sha256": "f1dac87420bea01d43cfab9e66242054008429bbda261f830581674ae08a1212"
+    },
+    {
+      "path": "crates/domain/src/component_distillation.rs",
+      "sha256": "7bd304c30c7ecda8399fdbc83e52a4392b523a053879c0e938b3b16e0d748eec"
+    },
+    {
+      "path": "crates/domain/src/creative.rs",
+      "sha256": "b160fadff32b2424441e55b839b3aab7cea6a5de00deb88827ea12b585cb7185"
+    },
+    {
+      "path": "crates/domain/src/creative_evaluator.rs",
+      "sha256": "c1c6c597076590cb8730baf34cce223222882b42856c1debbab0fd9e207825b6"
+    },
+    {
+      "path": "crates/domain/src/creative_revisions.rs",
+      "sha256": "bf528a56dbf70e5397244bc0f57fb82130b0d4c4873aedd62200545822a3d418"
+    },
+    {
+      "path": "crates/domain/src/delivery.rs",
+      "sha256": "dc5cceb0a39bbd316cda8607f52a85c2046843fc735fb71fedc9f636597037eb"
+    },
+    {
+      "path": "crates/domain/src/extensions.rs",
+      "sha256": "2e793f8d5e1b86ca340f64ef4819de478ce3a3f127dea135c2d894c9b68ad718"
+    },
+    {
+      "path": "crates/domain/src/hero.rs",
+      "sha256": "42006f1537a2ec256c5af310cb34b69bb2538a29809abb9501d1ee96047aea46"
+    },
+    {
+      "path": "crates/domain/src/history.rs",
+      "sha256": "4a567caf18d565f9fcb2ef0a5c28c004156d01570962a5865f788abcb038d74f"
+    },
+    {
+      "path": "crates/domain/src/identity_origin.rs",
+      "sha256": "4067166727d9309e6985c4d52bd449d6f166c9c75d617ab21321e17539dc7e3a"
+    },
+    {
+      "path": "crates/domain/src/integrations.rs",
+      "sha256": "7550a197e14dd9e44927321c54909c9a0537cea40531b67d8d13582a59cf7cd6"
+    },
+    {
+      "path": "crates/domain/src/lib.rs",
+      "sha256": "d78c9df77db9d067289fb737920ed226636578c19b79491e90891a19df0ade42"
+    },
+    {
+      "path": "crates/domain/src/measured_data.rs",
+      "sha256": "700561af45963220d9989dd82054873a2634421a09377c5174150682e24908a8"
+    },
+    {
+      "path": "crates/domain/src/music_clock.rs",
+      "sha256": "9cc4932d1f9c301b2f47abf9193086747a5e410e27a62341dfc406f5d96790a4"
+    },
+    {
+      "path": "crates/domain/src/music_conform.rs",
+      "sha256": "7d1e3a6d778f6cc219f256d156b75854b4c5104776d69e071f776f8b3f6b125f"
+    },
+    {
+      "path": "crates/domain/src/narration_impact.rs",
+      "sha256": "b856e7f52d5a6e42bb890f0bb04a157f007e709363f836af8301655adad2c34a"
+    },
+    {
+      "path": "crates/domain/src/narration_lock.rs",
+      "sha256": "f3f3ea4ad2d77b687f4f12935aee55113ecf7ef5fa5030f5923368d37ebd79f9"
+    },
+    {
+      "path": "crates/domain/src/otio_cut_review.rs",
+      "sha256": "ea0bec23b359ccd79bcbffe6dfb0ea770f0427e390843cd4f0bfdfcc6d84977f"
+    },
+    {
+      "path": "crates/domain/src/paid_generation.rs",
+      "sha256": "87edaafc3f4b2c3b979c2b1e4a184a61640a2c674bd33eb533a8d59f40c54074"
+    },
+    {
+      "path": "crates/domain/src/procedural.rs",
+      "sha256": "a7f6c696d706a9c5309ac63d254c58df3e5c2793a689fb92407a0618847a8e72"
+    },
+    {
+      "path": "crates/domain/src/product_stage.rs",
+      "sha256": "b97c56466d8b863ad1be3fef275049b9863936b0551e9f64b256c2c00a1bb683"
+    },
+    {
+      "path": "crates/domain/src/production_design.rs",
+      "sha256": "d3209f666ca18967b283eeb5fee2c68e2a434044a85c731504b1f43f780f14b7"
+    },
+    {
+      "path": "crates/domain/src/render_tail_impact.rs",
+      "sha256": "3d0471b5f2ba05a31c30843106d50296483284389e737dba26cd1741c5c78f30"
+    },
+    {
+      "path": "crates/domain/src/semantic_sfx.rs",
+      "sha256": "3c2ba043c721a3c9a01a9c630e2481ff31aa4e3f114fbb9e34861fcdc4b9621d"
+    },
+    {
+      "path": "crates/domain/src/stage_capture.rs",
+      "sha256": "7f9e5be600570b493e7dc398160e00b70fbce6d584dbeceb8064ff5617b34353"
+    },
+    {
+      "path": "crates/storage/Cargo.toml",
+      "sha256": "f60ec852c01b3dd28ded6bf1560645f43655d4e13bc46feef990b566b3e0d263"
+    },
+    {
+      "path": "crates/storage/src/capture_evidence.rs",
+      "sha256": "d520247e74c3008daea071126d9e6a87d20714036e3a1eeb0d6063a62725c684"
+    },
+    {
+      "path": "crates/storage/src/derived_cache.rs",
+      "sha256": "1b01a89993c51ffab768285b8a347e655807bf75bc47b9098cb18a2b8be42b07"
+    },
+    {
+      "path": "crates/storage/src/identity_evidence.rs",
+      "sha256": "dfa5199f3958986fbfcd93a3d1c2058e79b21d0ee709c29619eb777feb63143e"
+    },
+    {
+      "path": "crates/storage/src/integrity.rs",
+      "sha256": "51b999cf2c5ebaffbd836a9a282e27db9930ccf59c9ace7468f858c109c726bb"
+    },
+    {
+      "path": "crates/storage/src/lib.rs",
+      "sha256": "ed373ab5840d0a12f4eafd5ed489f21a7c7dc9969baabce4a07f5f989153d306"
+    },
+    {
+      "path": "crates/storage/src/production.rs",
+      "sha256": "ad2a6857168c7a98a3cbffbd1c9f651280b16454fcefb3288cef8820da2aa06d"
+    },
+    {
+      "path": "crates/storage/src/render_window_cache.rs",
+      "sha256": "c26087eba7efd09a26b5a2dde8ee2244086891c75334f352db600c0e1fe505fc"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "887f9be066a15585a2c583578e84b0fcb541126d81546276bad3d2ff00d61167"
+    }
+  ],
+  "workflow": "Project Portability",
+  "workflow_run_attempt": "1",
+  "workflow_run_id": "39008166467",
+  "capture_verification": {
+    "verified_actual_checkout": "bc1daa6cbff28936d392af41ac7d337a1e6b796d",
+    "verified_tree": "efd875963d708f95af1c441adbd5030d7f658339",
+    "workflow_url": "https://github.com/seradotcom/motionwright/actions/runs/39008166467",
+    "job_id": 117324807623,
+    "captured_normalized_log_sha256": "3886d368ab299c87e5978d25ae577702e26d0d4317a092792bbcde350bda7bd0",
+    "production_manifest_verified_against_git_objects": 42,
+    "generator_diff_paths": [
+      "crates/storage/tests/delivery_recipe_compatibility.rs"
+    ],
+    "capture_protocol": "Exactly one complete record per marker; preserve compact JSON bytes with one final LF; require producer SHA and size"
+  }
+}
