@@ -52,7 +52,7 @@ jobs:
         run: cargo test -p motionwright-storage production
       - name: Broker client and coordinator
         id: native
-        run: cargo test -p motionwright-native production:: --all-targets
+        run: 'cargo test -p motionwright-native production:: --all-targets'
       - name: Native production clippy
         id: clippy
         run: cargo clippy -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
