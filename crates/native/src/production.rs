@@ -2255,7 +2255,7 @@ fn storage_error(error: motionwright_storage::StorageError) -> Error {
 }
 
 #[cfg(test)]
-mod final_master_admission_tests {
+mod tests_final_master_admission {
     use super::*;
     use crate::{
         assembly::preflight_multi_segment_mlt, mlt_av_audio::preflight_multi_segment_audio,
