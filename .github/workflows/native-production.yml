@@ -82,7 +82,7 @@ jobs:
           import traceback
           import uuid
 
-          root = Path("verification/native-original-mix-calibration")
+          root = Path("verification/native-original-mix-calibration").resolve()
           root.mkdir(parents=True, exist_ok=True)
           calibration = root / "calibration"
           database = root / "fixture.sqlite"

@@ -12,6 +12,8 @@ on:
       - "crates/service/**"
       - "docs/architecture.md"
       - "docs/testing.md"
+      - "tooling/project_process_recovery.py"
+      - "docs/reliability/project-process-recovery.md"
       - ".github/workflows/project-portability.yml"
   pull_request:
     paths:
@@ -23,6 +25,8 @@ on:
       - "crates/service/**"
       - "docs/architecture.md"
       - "docs/testing.md"
+      - "tooling/project_process_recovery.py"
+      - "docs/reliability/project-process-recovery.md"
       - ".github/workflows/project-portability.yml"
   workflow_dispatch:
 
@@ -159,6 +163,299 @@ jobs:
           (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           if receipt["status"] != "PASS":
               raise SystemExit("file-import-platform-tests-not-verified")
+      - name: Build and verify committed recovery after actual process termination
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: python
+        run: |
+          import hashlib
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import time
+          import traceback
+          import zipfile
+
+          source_root = Path.cwd().resolve(strict=True)
+          out = source_root / "verification/project-process-platform"
+          out.mkdir(parents=True, exist_ok=True)
+          case_root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True) / (
+              "project-process-" + os.environ["GITHUB_RUN_ID"] + "-"
+              + os.environ["GITHUB_RUN_ATTEMPT"] + "-" + os.environ["RUNNER_OS"]
+          )
+          receipt = {
+              "schema": "motionwright.project-process-platform-check/1",
+              "status": "NOT_VERIFIED",
+              "event": os.environ["GITHUB_EVENT_NAME"], "event_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_os": os.environ["RUNNER_OS"], "python": sys.version,
+              "case_root": str(case_root), "commands": [],
+              "case_archive_complete": False,
+              "fixture_binary_retained": False,
+              "human_acceptance": False,
+          }
+          harness = None
+          case_data = {}
+          archive_path = out / "complete-case.zip"
+          started = time.monotonic()
+
+          def save():
+              (out / "receipt.json").write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8",
+              )
+
+          def require(condition, reason):
+              if not condition:
+                  raise RuntimeError(reason)
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def run(label, argv):
+              receipt["commands"].append({"label": label, "argv": argv, "returncode": None})
+              save()
+              print(json.dumps({"command": argv, "label": label}), flush=True)
+              with (out / (label + ".stdout.log")).open("wb") as stdout, \
+                      (out / (label + ".stderr.log")).open("wb") as stderr:
+                  completed = subprocess.run(argv, stdout=stdout, stderr=stderr, check=False)
+              receipt["commands"][-1]["returncode"] = completed.returncode
+              (out / (label + ".exit-code.log")).write_text(str(completed.returncode) + "\n", encoding="utf-8")
+              save()
+              for suffix, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
+                  data = (out / (label + "." + suffix + ".log")).read_bytes()
+                  print(data.decode("utf-8", errors="replace"), end="", file=stream, flush=True)
+              require(completed.returncode == 0, label + "_did_not_exit_successfully")
+              return (out / (label + ".stdout.log")).read_text(encoding="utf-8")
+
+          def git(*args):
+              value = subprocess.run(["git", *args], check=True, capture_output=True, timeout=20)
+              return value.stdout.decode("utf-8").strip()
+
+          def source_binding():
+              paths = (
+                  "crates/service/examples/project-process-recovery.rs",
+                  "tooling/project_process_recovery.py",
+                  "docs/reliability/project-process-recovery.md",
+                  "Cargo.lock", "SOURCE_LOCK.json", ".github/workflows/project-portability.yml",
+              )
+              return {
+                  "checkout": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+                  "tracked_status": git("status", "--porcelain=v1", "--untracked-files=no"),
+                  "files": {path: {"bytes": (source_root / path).stat().st_size,
+                                   "sha256": sha((source_root / path).read_bytes())} for path in paths},
+              }
+
+          def retain_case():
+              if not os.path.lexists(case_root):
+                  return
+              require(harness is not None, "case_cannot_be_admitted_without_original_wrapper")
+              deadline = harness.Deadline(60)
+              case = harness.Case(case_root)
+              case.guard_tree(deadline)
+              entries = sorted(case_root.rglob("*"))
+              directories = [path.relative_to(case_root).as_posix() for path in entries if path.is_dir()]
+              paths = [path for path in entries if not path.is_dir()]
+              total = 0
+              for path in paths:
+                  relative = path.relative_to(case_root).as_posix()
+                  data = harness.read_bounded_file(
+                      case.existing_file(relative), 32 * 1024 * 1024, deadline, "CI case artifact custody",
+                  )
+                  total += len(data)
+                  require(total <= 128 * 1024 * 1024, "case_artifact_total_exceeds_128MiB")
+                  case_data[relative] = data
+              case.guard_tree(deadline)
+              require({path.relative_to(case_root).as_posix() for path in case_root.rglob("*")}
+                      == set(case_data) | set(directories), "case_artifact_inventory_changed")
+              with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                  for relative in directories:
+                      archive.writestr(relative + "/", b"")
+                  for relative, data in case_data.items():
+                      archive.writestr(relative, data)
+              with zipfile.ZipFile(archive_path) as archive:
+                  require(archive.testzip() is None and set(archive.namelist())
+                          == set(case_data) | {name + "/" for name in directories},
+                          "case_archive_verification_failed")
+              receipt["case_archive"] = {
+                  "path": archive_path.name, "bytes": archive_path.stat().st_size,
+                  "sha256": sha(archive_path.read_bytes()), "uncompressed_bytes": total,
+                  "directories": directories,
+                  "members": {name: {"bytes": len(data), "sha256": sha(data)} for name, data in case_data.items()},
+              }
+              receipt["case_archive_complete"] = True
+
+          save()
+          try:
+              require(sys.version_info[:2] == (3, 12), "Python312_required")
+              before = source_binding()
+              receipt["source_before"] = before
+              require(before["checkout"] == os.environ["GITHUB_SHA"] and not before["tracked_status"],
+                      "checkout_is_not_clean_event_source")
+              event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+              pr = event.get("pull_request") or {}
+              receipt["pr_head_metadata"] = (pr.get("head") or {}).get("sha")
+              receipt["pr_base_metadata"] = (pr.get("base") or {}).get("sha")
+              print("PROJECT_PROCESS_CHECKOUT", before["checkout"], "TREE", before["tree"], flush=True)
+              require(not os.path.lexists(case_root), "case_root_already_exists")
+              spec = importlib.util.spec_from_file_location(
+                  "project_process_recovery", source_root / "tooling/project_process_recovery.py",
+              )
+              harness = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(harness)
+              run("rustc-version", ["rustc", "-Vv"])
+              run("cargo-version", ["cargo", "--version"])
+              metadata = harness.strict_json(run("cargo-metadata", [
+                  "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1",
+              ]), "cargo metadata")
+              run("fixture-build", [
+                  "cargo", "build", "--locked", "-p", "motionwright-service",
+                  "--example", "project-process-recovery",
+              ])
+              binary = Path(metadata["target_directory"]) / "debug/examples" / (
+                  "project-process-recovery.exe" if os.name == "nt" else "project-process-recovery"
+              )
+              binary = binary.parent.resolve(strict=True) / binary.name
+              binary_record = harness.hash_regular_file(
+                  binary, harness.MAX_BINARY_BYTES, harness.Deadline(60), "CI fixture executable hashing",
+              )
+              receipt["binary_before"] = {"path": str(binary), **binary_record}
+              summary = harness.strict_json(run("process-recovery", [
+                  sys.executable, str(source_root / "tooling/project_process_recovery.py"),
+                  "--source-root", str(source_root), "--binary", str(binary),
+                  "--case-root", str(case_root),
+                  "--expected-source-sha", os.environ["GITHUB_SHA"],
+                  "--actual-source-sha", before["checkout"],
+                  "--expected-binary-sha256", binary_record["sha256"],
+                  "--run-id", os.environ["GITHUB_RUN_ID"],
+                  "--job-name", os.environ["GITHUB_JOB"],
+                  "--runner-os", os.environ["RUNNER_OS"], "--timeout-seconds", "120",
+              ]), "wrapper summary")
+              require(summary["schema"] == harness.SCHEMA and summary["status"] == "passed"
+                      and Path(summary["result_path"]) == case_root / "evidence/result.json"
+                      and not summary["error"] and not summary["evidence_write_error"]
+                      and summary["cleanup_errors"] == [], "wrapper_summary_not_passed")
+              result_bytes = harness.read_bounded_file(
+                  case_root / "evidence/result.json", harness.MAX_EVIDENCE_JSON_BYTES,
+                  harness.Deadline(20), "CI wrapper result",
+              )
+              result = harness.strict_json(result_bytes.decode("utf-8"), "wrapper result")
+              require(result["schema"] == harness.SCHEMA and result["status"] == "passed", "case_not_passed")
+              claims = {
+                  "process_termination_recovery", "one_distinct_change_cas_winner",
+                  "logical_sqlite_state_preserved", "synthetic_cas_bytes_preserved",
+                  "readonly_recovery_retained_original_intents",
+              }
+              require(set(result["claims"]) == claims
+                      and all(value is True for value in result["claims"].values()), "case_claims_differ")
+              provenance = result["source_provenance"]
+              require(provenance["expected_source_sha"] == provenance["runner_reported_actual_source_sha"]
+                      == before["checkout"], "wrapper_source_binding_differs")
+              for key in ("initial_observed", "final_observed"):
+                  require(provenance[key]["observed_git_head"] == before["checkout"]
+                          and provenance[key]["tracked_checkout_clean"] is True, "wrapper_source_observation_differs")
+              for key in ("initial_observed", "before_verify_observed", "final_observed"):
+                  require(result["binary"][key] == binary_record, "wrapper_binary_observation_differs")
+              captures = result["processes"]
+              require(len(captures) == 2 and {entry["name"] for entry in captures} == {"hold", "verify"},
+                      "expected_two_direct_fixture_processes")
+              by_name = {entry["name"]: entry for entry in captures}
+              expected_exit = 1 if os.name == "nt" else -9
+              require(type(by_name["hold"]["return_code"]) is int
+                      and type(by_name["verify"]["return_code"]) is int
+                      and by_name["hold"]["return_code"] == expected_exit and by_name["verify"]["return_code"] == 0,
+                      "fixture_exit_contract_differs")
+              termination = result["termination"]
+              require(type(termination["pid"]) is int and termination["pid"] == by_name["hold"]["pid"]
+                      and termination["alive_immediately_before_call"] is True
+                      and type(termination["return_code"]) is int and termination["return_code"] == expected_exit
+                      and termination["method"] == (
+                          "subprocess.Popen.kill / TerminateProcess" if os.name == "nt"
+                          else "subprocess.Popen.kill / SIGKILL"
+                      ), "forced_termination_not_observed")
+              for entry in captures:
+                  require(type(entry["pid"]) is int and entry["pid"] > 0
+                          and type(entry["protocol_message"]["pid"]) is int
+                          and entry["protocol_message"]["pid"] == entry["pid"]
+                          and not entry["capture_errors"] and not entry["cleanup_errors"],
+                          "process_protocol_or_capture_error")
+                  require(set(entry["streams"]) == {"stdout", "stderr"}, "both_process_streams_required")
+                  for stream in entry["streams"].values():
+                      require(type(stream["observed_bytes"]) is int and type(stream["saved_bytes"]) is int
+                              and stream["saved_bytes"] >= 0
+                              and stream["truncated"] is False and stream["eof_observed"] is True
+                              and stream["observed_bytes"] == stream["saved_bytes"]
+                              and stream["saved_bytes"] <= harness.MAX_STREAM_BYTES, "process_capture_incomplete")
+              phases = {"before_termination", "after_termination", "after_readonly_verification"}
+              require(set(result["snapshots"]) == set(result["cas_checks"]) == phases, "three_phases_required")
+              require(all(len(value) == 3 for value in result["cas_checks"].values()), "three_cas_blobs_required")
+              after = source_binding()
+              receipt["source_after"] = after
+              require(before == after and not after["tracked_status"], "source_changed_during_fixture")
+              receipt["binary_after"] = {"path": str(binary), **harness.hash_regular_file(
+                  binary, harness.MAX_BINARY_BYTES, harness.Deadline(60), "CI final executable hashing",
+              )}
+              require(receipt["binary_before"] == receipt["binary_after"], "fixture_binary_changed")
+              receipt["wrapper_result"] = {"bytes": len(result_bytes), "sha256": sha(result_bytes)}
+              receipt["wrapper_status"] = result["status"]
+              receipt["observed_termination"] = termination
+              receipt["status"] = "PASS_PENDING_COMPLETE_CUSTODY"
+          except Exception as error:
+              receipt["failure"] = type(error).__name__ + ":" + str(error)
+              (out / "ci-error.log").write_text(traceback.format_exc(), encoding="utf-8")
+          finally:
+              try:
+                  retain_case()
+                  if receipt["status"] == "PASS_PENDING_COMPLETE_CUSTODY":
+                      require(case_data["evidence/result.json"] == result_bytes, "retained_result_differs")
+                      for entry in result["processes"]:
+                          for stream in entry["streams"].values():
+                              data = case_data[stream["path"]]
+                              require(len(data) == stream["saved_bytes"] and sha(data) == stream["captured_sha256"],
+                                      "retained_process_stream_differs")
+                      for phase in result["cas_checks"].values():
+                          for blob in phase:
+                              data = case_data[blob["relative_path"]]
+                              require(len(data) == blob["size_bytes"] and sha(data) == blob["sha256"],
+                                      "retained_cas_blob_differs")
+                      require(all(relative not in case_data for relative in harness.SOURCE_FILES),
+                              "retained_case_contains_deleted_original_source")
+                      require(set(result["control_files"]) == set(harness.CONTROL_FILES), "control_roster_differs")
+                      for relative, descriptor in result["control_files"].items():
+                          data = case_data[relative]
+                          require(len(data) == descriptor["size_bytes"] and sha(data) == descriptor["sha256"],
+                                  "retained_intent_or_checkpoint_differs")
+                      invocation = result["invocation_artifact"]
+                      require(invocation["path"] == "evidence/invocation.json", "invocation_path_differs")
+                      data = case_data[invocation["path"]]
+                      require(len(data) == invocation["size_bytes"] and sha(data) == invocation["sha256"],
+                              "retained_invocation_differs")
+                      for descriptor in result["snapshots"].values():
+                          data = case_data[descriptor["path"]]
+                          require(len(data) == descriptor["size_bytes"] and sha(data) == descriptor["sha256"],
+                                  "retained_snapshot_differs")
+                      snapshots = [case_data[value["path"]] for value in result["snapshots"].values()]
+                      require(len(snapshots) == 3 and snapshots[0] == snapshots[1] == snapshots[2],
+                              "retained_logical_snapshots_differ")
+                      require(receipt["case_archive_complete"], "complete_case_custody_missing")
+                      receipt["status"] = "PASS"
+              except Exception as error:
+                  receipt["status"] = "NOT_VERIFIED"
+                  receipt["custody_failure"] = type(error).__name__ + ":" + str(error)
+                  (out / "custody-error.log").write_text(traceback.format_exc(), encoding="utf-8")
+              receipt["elapsed_seconds"] = time.monotonic() - started
+              receipt["logs"] = {
+                  path.name: {"bytes": path.stat().st_size, "sha256": sha(path.read_bytes())}
+                  for path in sorted(out.glob("*.log")) if path.is_file()
+              }
+              save()
+              print(json.dumps({"project_process_platform": receipt["status"],
+                                "case_archive_complete": receipt["case_archive_complete"],
+                                "failure": receipt.get("failure"),
+                                "custody_failure": receipt.get("custody_failure")}, sort_keys=True), flush=True)
+          raise SystemExit(0 if receipt["status"] == "PASS" else 1)
       - name: Retain source binding and selective test evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -166,3 +463,11 @@ jobs:
           name: file-import-platform-${{ matrix.os }}-${{ github.sha }}
           path: verification/file-import-platforms
           if-no-files-found: error
+      - name: Retain complete process case and source-bound build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-process-platform-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/project-process-platform
+          if-no-files-found: error
+          retention-days: 7
