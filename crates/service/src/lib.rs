@@ -1,7 +1,9 @@
 mod audio;
+mod file_import;
 mod jobs;
 mod mlt_cleanup;
 mod models;
+mod project_creation;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
     WaveformPage,
@@ -30,16 +32,15 @@ pub struct VerifiedMasterVoice {
     pub size_bytes: u64,
 }
 
-use motionwright_domain::{
-    Asset, Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp, VoiceTrack,
-};
+use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
-    BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, ImportPlan, PortableBlob,
-    ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark, ProjectBackup,
-    ProjectBundleManifest, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
-    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
+    BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, FileImportIntent, ImportPlan,
+    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    ProjectBackup, ProjectBundleManifest, ProjectCreationIntent, ProjectCreationOutcome,
+    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary, RenderWindowCacheKey,
+    RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };
 use parking_lot::Mutex;
 use std::{
@@ -117,7 +118,11 @@ fn has_external_href(text: &str) -> bool {
     false
 }
 
-fn validate_importable_asset(source: &Path, media_type: &str) -> StorageResult<()> {
+fn validate_importable_asset(
+    source: &Path,
+    media_type: &str,
+    original_svg_extension: bool,
+) -> StorageResult<()> {
     let metadata = fs::symlink_metadata(source)?;
     let file_type = metadata.file_type();
     if file_type.is_symlink() || !file_type.is_file() {
@@ -126,11 +131,7 @@ fn validate_importable_asset(source: &Path, media_type: &str) -> StorageResult<(
         ));
     }
 
-    let declared_svg = media_type.eq_ignore_ascii_case("image/svg+xml")
-        || source
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+    let declared_svg = media_type.eq_ignore_ascii_case("image/svg+xml") || original_svg_extension;
     if !declared_svg && !source_looks_like_svg(source)? {
         return Ok(());
     }
@@ -412,20 +413,13 @@ impl StudioService {
         name: String,
         media_type: String,
     ) -> StorageResult<ApplyOutcome> {
-        let source = source.as_ref();
-        validate_importable_asset(source, &media_type)?;
-        let mut store = self.store.lock();
-        let blob = store.ingest_blob_file(source)?;
-        let change = Change::AddAsset {
-            asset: Asset {
-                id: Uuid::now_v7(),
-                name,
-                media_type,
-                content_sha256: Some(blob.sha256),
-                source_revision: Some("local-import".into()),
-            },
-        };
-        store.apply(project_id, expected, request_id, &change)
+        self.import_file_with_identity(
+            project_id,
+            expected,
+            request_id,
+            source.as_ref(),
+            FileImportIntent::Asset { name, media_type },
+        )
     }
 
     pub fn waveform_page(
@@ -601,44 +595,16 @@ impl StudioService {
         source: impl AsRef<Path>,
         metadata: VoiceImportMetadata,
     ) -> StorageResult<ApplyOutcome> {
-        if !metadata.media_type.starts_with("audio/") {
-            return Err(motionwright_domain::DomainError::Invalid(
-                "voice import requires an audio media type".into(),
-            )
-            .into());
-        }
-        let source = source.as_ref();
-        let (blob, immutable_path) = {
-            let store = self.store.lock();
-            let blob = store.ingest_blob_file(source)?;
-            let immutable_path = store.verified_blob_path(&blob.sha256)?;
-            (blob, immutable_path)
-        };
-        let measured = audio::measure_audio_file(&immutable_path)?;
-        let asset_id = Uuid::now_v7();
-        let asset = Asset {
-            id: asset_id,
-            name: metadata.name,
-            media_type: metadata.media_type,
-            content_sha256: Some(blob.sha256.clone()),
-            source_revision: Some("measured-audio-import".into()),
-        };
-        let track = VoiceTrack {
-            id: Uuid::now_v7(),
-            asset_id,
-            label: metadata.label,
-            sample_rate_hz: measured.sample_rate_hz,
-            channels: measured.channels,
-            measured_duration: measured.duration,
-            source_sha256: blob.sha256,
-            loudness_lufs: None,
-            true_peak_dbfs: None,
-        };
-        self.store.lock().apply(
+        self.import_file_with_identity(
             project_id,
             expected,
             request_id,
-            &Change::ImportMeasuredVoice { asset, track },
+            source.as_ref(),
+            FileImportIntent::Voice {
+                name: metadata.name,
+                media_type: metadata.media_type,
+                label: metadata.label,
+            },
         )
     }
 
