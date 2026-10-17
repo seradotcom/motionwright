@@ -156,6 +156,9 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         };
+        if super::project_creation::is_creation_receipt(&result_json) {
+            return Err(StorageError::RequestReuse);
+        }
         let mut outcome: ApplyOutcome = serde_json::from_str(&result_json)
             .map_err(|_| invalid_receipt("invalid receipt outcome JSON"))?;
         outcome
@@ -241,10 +244,27 @@ impl Drop for StagedFileImport {
 impl Store {
     /// Capture the source once without a SQLite writer transaction.
     pub fn stage_file_import(&self, source: &Path) -> Result<StagedFileImport> {
+        self.stage_file_import_with_limit(source, u64::MAX)
+    }
+
+    /// Capture at most the admitted byte budget into one private staging file.
+    /// Reading one extra byte detects growth after the metadata check; excess
+    /// bytes are rejected before they can be written to that capture.
+    pub fn stage_file_import_with_limit(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
         ensure_regular_directory(&self.blob_root, "blob root")?;
+        let size = ensure_regular_file(source, "import source")?.len();
+        if size > max_bytes {
+            return Err(StorageError::BlobTooLarge {
+                size,
+                limit: max_bytes,
+            });
+        }
         let staging_root = self.blob_root.join(".staging");
         create_checked_blob_directory(&staging_root)?;
-        ensure_regular_file(source, "import source")?;
         let input = File::open(source)?;
         let path = staging_root.join(format!("{}.part", Uuid::now_v7().simple()));
         let mut options = OpenOptions::new();
@@ -266,7 +286,7 @@ impl Store {
         };
         {
             // Handles close before the outer guard cleans up on any error.
-            let mut input = input;
+            let mut input = input.take(max_bytes.saturating_add(1));
             let mut output = output;
             let mut hasher = Sha256::new();
             let mut buffer = [0_u8; 128 * 1024];
@@ -276,9 +296,22 @@ impl Store {
                 if count == 0 {
                     break;
                 }
+                let next_size =
+                    size_bytes
+                        .checked_add(count as u64)
+                        .ok_or(StorageError::BlobTooLarge {
+                            size: u64::MAX,
+                            limit: max_bytes,
+                        })?;
+                if next_size > max_bytes {
+                    return Err(StorageError::BlobTooLarge {
+                        size: next_size,
+                        limit: max_bytes,
+                    });
+                }
                 output.write_all(&buffer[..count])?;
                 hasher.update(&buffer[..count]);
-                size_bytes = size_bytes.saturating_add(count as u64);
+                size_bytes = next_size;
             }
             output.flush()?;
             output.sync_all()?;

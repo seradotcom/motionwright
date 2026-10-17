@@ -139,7 +139,7 @@ impl Store {
         let mut staged = Vec::with_capacity(manifest.blobs.len());
         for blob in &manifest.blobs {
             let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let captured = self.stage_file_import(&path)?;
+            let captured = self.stage_file_import_with_limit(&path, blob.size_bytes)?;
             if captured.descriptor().sha256 != blob.sha256
                 || captured.descriptor().size_bytes != blob.size_bytes
             {
@@ -677,5 +677,80 @@ mod tests {
         ));
         assert!(target.list_projects(10).unwrap().is_empty());
         assert!(fs::read_dir(target.blob_root()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn bounded_capture_handles_exact_empty_and_excess_sources_without_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let stage_root = store.blob_root().join(".staging");
+        fs::create_dir(&stage_root).unwrap();
+        let foreign = stage_root.join("another-operation.part");
+        fs::write(&foreign, b"other operation remains").unwrap();
+        let source = directory.path().join("source.bin");
+        fs::write(&source, b"12345").unwrap();
+        assert!(matches!(
+            store.stage_file_import_with_limit(&source, 4),
+            Err(StorageError::BlobTooLarge { size: 5, limit: 4 }),
+        ));
+        let unrestricted = store.stage_file_import(&source).unwrap();
+        assert_eq!(unrestricted.descriptor().size_bytes, 5);
+        assert_eq!(fs::read(unrestricted.path()).unwrap(), b"12345");
+        drop(unrestricted);
+        fs::write(&source, b"1234").unwrap();
+        let exact = store.stage_file_import_with_limit(&source, 4).unwrap();
+        let digest = exact.descriptor().sha256.clone();
+        assert_eq!(exact.descriptor().size_bytes, 4);
+        assert_eq!(fs::read(exact.path()).unwrap(), b"1234");
+        assert!(store.read_blob(&digest, 16).is_err());
+        drop(exact);
+        fs::write(&source, b"").unwrap();
+        let empty = store.stage_file_import_with_limit(&source, 0).unwrap();
+        assert_eq!(empty.descriptor().size_bytes, 0);
+        assert_eq!(empty.descriptor().sha256, hex::encode(Sha256::digest(b"")));
+        drop(empty);
+        let remaining: Vec<_> = fs::read_dir(&stage_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(remaining, vec![foreign.clone()]);
+        assert_eq!(fs::read(foreign).unwrap(), b"other operation remains");
+        assert!(store.list_projects(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn late_short_and_growing_members_fail_before_any_cas_publication() {
+        for growing in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (bundle, manifest) = bundle_fixture(directory.path());
+            let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+            target.validate_bundle(&bundle, &manifest).unwrap();
+            let before = snapshot(&target);
+            let member = manifest.blobs.last().unwrap();
+            let changed_len = if growing {
+                member.size_bytes + 1
+            } else {
+                member.size_bytes - 1
+            };
+            let changed = vec![b'X'; changed_len as usize];
+            let changed_digest = hex::encode(Sha256::digest(&changed));
+            fs::write(bundle.join(&member.relative_path), changed).unwrap();
+            let result = target.import_validated_bundle(&bundle, &manifest);
+            if growing {
+                assert!(matches!(
+                    result, Err(StorageError::BlobTooLarge { size, limit })
+                    if size == changed_len && limit == member.size_bytes
+                ));
+            } else {
+                assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+            }
+            assert_eq!(snapshot(&target), before);
+            for blob in &manifest.blobs {
+                assert!(target.read_blob(&blob.sha256, 4096).is_err());
+            }
+            assert!(target.read_blob(&changed_digest, 4096).is_err());
+            let staging = target.blob_root().join(".staging");
+            assert!(!staging.exists() || fs::read_dir(staging).unwrap().next().is_none());
+        }
     }
 }

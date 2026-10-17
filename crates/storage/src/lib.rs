@@ -19,6 +19,7 @@ mod identity_evidence;
 mod integrity;
 mod portability;
 mod production;
+mod project_creation;
 mod render_window_cache;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
@@ -27,6 +28,7 @@ pub use integrity::{
 };
 pub use portability::{BundleFingerprint, InspectedProjectBundle};
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
+pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
 pub use render_window_cache::{
     RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };
@@ -49,6 +51,8 @@ pub enum StorageError {
     RequestReuse,
     #[error("invalid file import receipt: {0}")]
     InvalidFileImportReceipt(String),
+    #[error("invalid project creation receipt: {0}")]
+    InvalidProjectCreationReceipt(String),
     #[error("production receipt stream changed during enumeration")]
     ReceiptStreamChanged,
     #[error("resource generation differs from expected base")]

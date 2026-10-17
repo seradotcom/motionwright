@@ -26,8 +26,10 @@ complete manifest, backup, member set, canonical paths, size budgets, source
 digests and applicable secret checks.
 
 After that validation, it captures every member into the existing private
-file-import staging area. It checks each captured digest, size and applicable
-secret policy before publishing any member. A changed later source discards
+file-import staging area. The shared capture reads at most the admitted size
+plus one byte, rejects excess before writing it, and distinguishes an oversized
+source from a shorter capture that no longer matches the manifest. It checks each
+captured digest, size and applicable secret policy before publishing any member. A changed later source discards
 the private captures; an earlier valid member is not published as a side effect
 of rejecting a changed member. Cleanup never removes another operation's
 staging file or an object already published in shared CAS.
@@ -83,7 +85,7 @@ rotation, reopen and source bytes, absence of restored operational receipts,
 foreign authority before missing-source IO, changed member bytes, equivalent
 JSON reencoding, readonly inspection, malformed fingerprints, corrupt SQL
 authority columns, a captured export after a peer edit, capture cleanup and the
-manifest size bound. These additional cases are distinct from the three
+manifest size bound and bounded member capture. These additional cases are distinct from the three
 observed before/after regressions.
 
 ## Boundaries
