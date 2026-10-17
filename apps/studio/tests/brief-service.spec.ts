@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { Change, Project } from "../src/types";
-import { ScopedChangeService } from "./support/scopedChangeService";
+import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
 // These are synthetic authoring scenarios against the real StudioService,
 // grants and SQLite journal. The invoke bridge is test transport, not evidence
@@ -108,18 +108,26 @@ function holdNextApply(service: ScopedChangeService, change: Change["type"], pha
   };
 }
 
-async function evidence(testInfo: TestInfo, services: ScopedChangeService[], initial?: Project, final?: Project) {
-  const path = testInfo.outputPath("brief-real-service-evidence.json");
-  await writeFile(path, JSON.stringify({
-    fixture: "synthetic_test_fixture",
-    evidenceScope: "browser_interaction_real_service_sqlite; excludes_tauri_model_dispatch_film_native_render_and_human_acceptance",
-    initial, final,
-    services: services.map(service => ({
-      databasePath: service.databasePath, binaryPath: service.binaryPath,
-      stderr: service.stderr, transcript: service.transcript,
-    })),
-  }, null, 2));
-  await testInfo.attach("brief-real-service-evidence", { path, contentType: "application/json" });
+async function evidence(testInfo: TestInfo, services: ScopedChangeService[], initial: Project | undefined, final: Project | undefined, prepare: (() => Promise<unknown>)[] = []) {
+  let finalization: StoreFinalization | undefined;
+  try {
+    finalization = await services[0].finalizeClosedStore(testInfo.outputPath("closed-store-1"), final, services.slice(1), prepare);
+  } finally {
+    const path = testInfo.outputPath("brief-real-service-evidence.json");
+    await writeFile(path, JSON.stringify({
+      fixture: "synthetic_test_fixture",
+      evidenceScope: "browser_interaction_real_service_sqlite; excludes_tauri_model_dispatch_film_native_render_and_human_acceptance",
+      initial, final, canonicalOracle: finalization?.oracle,
+      finalizationPath: testInfo.outputPath("closed-store-1-outcomes.json"),
+      services: services.map(service => ({
+        databasePath: service.databasePath, binaryPath: service.binaryPath,
+        stderr: service.stderr, transcript: service.transcript,
+        processExits: service.processExits, lifecycleTaints: service.lifecycleTaints,
+      })),
+    }, null, 2));
+    await testInfo.attach("brief-real-service-evidence", { path, contentType: "application/json" });
+    await testInfo.attach("complete-store-finalization", { path: testInfo.outputPath("closed-store-1-outcomes.json"), contentType: "application/json" });
+  }
 }
 
 test("saving the title or brief commits only that group and conserves the other raw inputs", async ({ page }, testInfo) => {
@@ -180,8 +188,7 @@ test("saving the title or brief commits only that group and conserves the other 
     expect(applyRequests(service)).toHaveLength(2);
     expect(await service.reopen(initial.id)).toEqual(final);
   } finally {
-    await service.close();
-    await evidence(testInfo, [service], initial, final);
+    await evidence(testInfo, [service], initial, final, [() => page.close()]);
   }
 });
 
@@ -251,9 +258,7 @@ test("a late real reply preserves newer typing and reload never replays an alrea
     expect(outsideBrief(final)).toEqual(outsideBrief(initial));
     await page.screenshot({ path: testInfo.outputPath("reloaded-pending-input-without-replay.png"), fullPage: true });
   } finally {
-    for (const gate of gates) await gate.dispose();
-    await service.close();
-    await evidence(testInfo, [service], initial, final);
+    await evidence(testInfo, [service], initial, final, [...gates.map(gate => () => gate.dispose()), () => page.close()]);
   }
 });
 
@@ -334,9 +339,7 @@ test("returning an in-flight field to its original value survives navigation and
     expect(applyRequests(service)).toHaveLength(requestsBefore + 2);
     expect(await service.reopen(initial.id)).toEqual(final);
   } finally {
-    if (gate) await gate.dispose();
-    await service.close();
-    await evidence(testInfo, [service], initial, final);
+    await evidence(testInfo, [service], initial, final, [...(gate ? [() => gate!.dispose()] : []), () => page.close()]);
   }
 });
 
@@ -381,20 +384,21 @@ test("a real brief validation failure preserves every input through reload and c
     expect(applyRequests(service)).toHaveLength(2);
     expect(await service.reopen(initial.id)).toEqual(final);
   } finally {
-    await service.close();
-    await evidence(testInfo, [service], initial, final);
+    await evidence(testInfo, [service], initial, final, [() => page.close()]);
   }
 });
 
 for (const resolution of ["saved", "draft"] as const) {
   test(`two real clients resolve only the overlapping brief field by keeping the ${resolution} value`, async ({ page, context }, testInfo) => {
     const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
-    const peer = await service.peer();
-    const second = await context.newPage();
+    let peer: ScopedChangeService | undefined;
+    let second: Page | undefined;
     let gate: ReturnType<typeof holdNextApply> | undefined;
     let initial: Project | undefined;
     let final: Project | undefined;
     try {
+      peer = await service.peer();
+      second = await context.newPage();
       initial = (await service.bootstrap()).project;
       await service.attachPage(page);
       await peer.attachPage(second);
@@ -458,11 +462,8 @@ for (const resolution of ["saved", "draft"] as const) {
       expect(processB).toBeDefined();
       expect(processA).not.toBe(processB);
     } finally {
-      if (gate) await gate.dispose();
-      await second.close();
-      await peer.close();
-      await service.close();
-      await evidence(testInfo, [service, peer], initial, final);
+      await evidence(testInfo, peer ? [service, peer] : [service], initial, final,
+        [...(gate ? [() => gate!.dispose()] : []), () => page.close(), ...(second ? [() => second!.close()] : [])]);
     }
   });
 }
@@ -508,8 +509,6 @@ test("reopening revokes a real grant without changing the revision or clearing t
     expect(outsideBrief(final)).toEqual(outsideBrief(initial));
     expect(await service.reopen(initial.id)).toEqual(final);
   } finally {
-    if (gate) await gate.dispose();
-    await service.close();
-    await evidence(testInfo, [service], initial, final);
+    await evidence(testInfo, [service], initial, final, [...(gate ? [() => gate!.dispose()] : []), () => page.close()]);
   }
 });

@@ -3,6 +3,7 @@ import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import { applyChange as applySyntheticCanvasChange } from "../src/api";
 import type { Change, Project } from "../src/types";
 import { ScopedChangeService } from "./support/scopedChangeService";
 
@@ -442,6 +443,204 @@ for (const accepted of [true, false]) {
     }
   });
 }
+
+test.describe("Canvas interaction during delayed creation — synthetic UI contract", () => {
+  // The callback runs the existing API simulator in Node, where no Tauri
+  // runtime is installed. Only its response is held. These cases exercise
+  // React selection/draft continuity and the App mutation gate; they do not
+  // certify service CAS, a durable store, native rendering or real grants.
+  async function installDelayedCreation(page: Page, accepted = true) {
+    const initial = structuredClone(fixtureBootstrap);
+    initial.native_sdk.mode = "tauri";
+    let project = structuredClone(initial.project);
+    const requests: Change[] = [];
+    const grants = new Map<string, { revision: number; subject: string }>();
+    let releaseReply: (() => void) | null = null;
+    let creationHeld = false;
+    type Request = {
+      effect?: string; project_id?: string; generation?: string; revision?: number;
+      subject?: string; request_id?: string; effect_grant?: string; change?: Change;
+    };
+    await page.exposeFunction("__canvasInteractionContractInvoke", async (
+      command: string, args?: { request?: Request },
+    ) => {
+      if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
+      const request = args?.request;
+      if (command !== "issue_effect_grant" && command !== "apply_change") {
+        throw new Error("Unsupported synthetic Canvas contract command: " + command);
+      }
+      if (!request || request.project_id !== project.id || request.generation !== project.generation
+        || request.revision !== project.revision) {
+        throw new Error("Synthetic Canvas source scope changed");
+      }
+      if (command === "issue_effect_grant") {
+        if (request.effect !== "project_edit" || !request.subject) {
+          throw new Error("Unexpected synthetic Canvas effect");
+        }
+        const token = "synthetic-ui-only-" + randomUUID();
+        grants.set(token, { revision: project.revision, subject: request.subject });
+        return { token };
+      }
+      const grant = grants.get(request.effect_grant ?? "");
+      if (!grant || grant.revision !== project.revision || grant.subject !== request.request_id) {
+        throw new Error("Synthetic Canvas request does not match its token");
+      }
+      grants.delete(request.effect_grant!);
+      const change = request.change;
+      if (!change || !["add_canvas_node", "update_canvas_text", "transform_canvas_node"].includes(change.type)) {
+        throw new Error("Unexpected synthetic Canvas change");
+      }
+      requests.push(structuredClone(change));
+      if (change.type === "add_canvas_node") {
+        if (creationHeld) throw new Error("A synthetic Canvas create was already sent");
+        creationHeld = true;
+        if (accepted) project = await applySyntheticCanvasChange(project, change);
+        await new Promise<void>(resolve => { releaseReply = resolve; });
+        releaseReply = null;
+        if (!accepted) throw new Error("Synthetic delayed Canvas CAS conflict");
+      } else {
+        project = await applySyntheticCanvasChange(project, change);
+      }
+      return structuredClone(project);
+    });
+    await page.addInitScript(() => {
+      const host = window as unknown as {
+        __canvasInteractionContractInvoke: (command: string, args?: unknown) => Promise<unknown>;
+        __TAURI_INTERNALS__: { invoke: (command: string, args?: unknown) => Promise<unknown> };
+      };
+      host.__TAURI_INTERNALS__ = { invoke: (command, args) => host.__canvasInteractionContractInvoke(command, args) };
+    });
+    return {
+      initial: initial.project,
+      requests,
+      snapshot: () => structuredClone(project),
+      replyHeld: () => releaseReply !== null,
+      release: () => releaseReply?.(),
+    };
+  }
+
+  for (const accepted of [true, false]) {
+    for (const changeSelection of [true, false]) {
+      test(`a ${accepted ? "successful" : "rejected"} create preserves later ${changeSelection ? "selection and text" : "text on the same selected node"}`, async ({ page }) => {
+        const fixture = await installDelayedCreation(page, accepted);
+        const scene = fixture.initial.scenes[0];
+        const editedNode = scene.nodes[changeSelection ? 1 : 0];
+        const laterText = "Authored after the create request — keep this exact text.";
+        await page.goto("/");
+        await page.getByRole("button", { name: "Canvas", exact: true }).click();
+        await expect(page.locator(".canvas-selection-title strong")).toHaveText(scene.nodes[0].name);
+        await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+        await expect.poll(fixture.replyHeld).toBe(true);
+        await expect(page.locator(".saving-state")).toBeVisible();
+        if (changeSelection) {
+          const laterSelection = page.locator(".canvas-tree-row").filter({ hasText: editedNode.name });
+          await expect(laterSelection).toBeEnabled();
+          await laterSelection.click();
+        }
+        const text = page.getByRole("textbox", { name: "Canvas text", exact: true });
+        await expect(text).toBeEditable();
+        await text.fill(laterText);
+        await expect(text).toHaveValue(laterText);
+        fixture.release();
+        await expect(page.locator(".saving-state")).toHaveCount(0);
+        await expect(page.locator(".command-bar .revision-chip")).toHaveText(accepted ? "r13" : "r12");
+        await expect(page.locator(".canvas-tree-row")).toHaveCount(scene.nodes.length + (accepted ? 1 : 0));
+        await expect(page.locator(".canvas-selection-title strong")).toHaveText(editedNode.name);
+        await expect(text).toHaveValue(laterText);
+        const afterCreate = fixture.snapshot();
+        expect(afterCreate.scenes[0].nodes.slice(0, scene.nodes.length)).toEqual(scene.nodes);
+        expect(afterCreate.scenes.slice(1)).toEqual(fixture.initial.scenes.slice(1));
+        expect(fixture.requests).toHaveLength(1);
+        if (!accepted) {
+          await expect(page.locator(".canvas-workspace").getByRole("alert")).toContainText("Synthetic delayed Canvas CAS conflict");
+        }
+        // The surviving text is an unsent edit. Only the author's explicit
+        // follow-up commit changes that original object in the next revision.
+        await page.getByRole("button", { name: "Commit text", exact: true }).click();
+        await expect(page.locator(".command-bar .revision-chip")).toHaveText(accepted ? "r14" : "r13");
+        expect(fixture.requests).toHaveLength(2);
+        expect(fixture.requests[1]).toEqual({
+          type: "update_canvas_text", scene_id: scene.id, node_id: editedNode.id, text: laterText,
+        });
+        expect(fixture.snapshot().scenes[0].nodes.find(node => node.id === editedNode.id)?.text).toBe(laterText);
+        await expect(text).toHaveValue(laterText);
+      });
+    }
+  }
+
+  test("a successful create preserves a later transform on the same selected node", async ({ page }) => {
+    const fixture = await installDelayedCreation(page);
+    const node = fixture.initial.scenes[0].nodes[0];
+    await page.goto("/");
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.locator(".canvas-create-row").getByRole("button", { name: "shape", exact: true }).click();
+    await expect.poll(fixture.replyHeld).toBe(true);
+    const x = page.getByRole("spinbutton", { name: "Canvas X", exact: true });
+    await expect(x).toBeEditable();
+    await x.fill("423");
+    fixture.release();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
+    await expect(page.locator(".canvas-selection-title strong")).toHaveText(node.name);
+    await expect(x).toHaveValue("423");
+    expect(fixture.snapshot().scenes[0].nodes[0]).toEqual(node);
+    await page.getByRole("button", { name: "Commit transform", exact: true }).click();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r14");
+    expect(fixture.snapshot().scenes[0].nodes[0]).toEqual({ ...node, x: 423 });
+  });
+
+  test("a successful create preserves a later motion value on the same selected node", async ({ page }) => {
+    const fixture = await installDelayedCreation(page);
+    const node = fixture.initial.scenes[0].nodes[0];
+    await page.goto("/");
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.locator(".canvas-create-row").getByRole("button", { name: "shape", exact: true }).click();
+    await expect.poll(fixture.replyHeld).toBe(true);
+    const motion = page.getByRole("spinbutton", { name: "Motion keyframe value", exact: true });
+    await expect(motion).toBeEditable();
+    await motion.fill("0.35");
+    fixture.release();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
+    await expect(page.locator(".canvas-selection-title strong")).toHaveText(node.name);
+    await expect(motion).toHaveValue("0.35");
+    expect(fixture.snapshot().scenes[0].nodes[0]).toEqual(node);
+    expect(fixture.requests).toHaveLength(1);
+  });
+
+  test("returning to the original selection still supersedes a delayed create", async ({ page }) => {
+    const fixture = await installDelayedCreation(page);
+    const [original, other] = fixture.initial.scenes[0].nodes;
+    await page.goto("/");
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    await expect.poll(fixture.replyHeld).toBe(true);
+    await page.locator(".canvas-tree-row").filter({ hasText: other.name }).click();
+    await page.locator(".canvas-tree-row").filter({ hasText: original.name }).click();
+    fixture.release();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
+    await expect(page.locator(".canvas-selection-title strong")).toHaveText(original.name);
+    await expect(page.getByRole("textbox", { name: "Canvas text", exact: true })).toHaveValue(original.text ?? "");
+    expect(fixture.requests).toHaveLength(1);
+  });
+
+  test("a successful delayed create selects its saved object when the inspector was untouched", async ({ page }) => {
+    const fixture = await installDelayedCreation(page);
+    const scene = fixture.initial.scenes[0];
+    await page.goto("/");
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    await expect.poll(fixture.replyHeld).toBe(true);
+    await expect(page.locator(".canvas-tree-row")).toHaveCount(scene.nodes.length);
+    fixture.release();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
+    const saved = fixture.snapshot().scenes[0].nodes.at(-1)!;
+    expect(scene.nodes.some(node => node.id === saved.id)).toBe(false);
+    await expect(page.locator(".canvas-tree-row")).toHaveCount(scene.nodes.length + 1);
+    await expect(page.locator(".canvas-selection-title strong")).toHaveText(saved.name);
+    await expect(page.getByRole("textbox", { name: "Canvas text", exact: true })).toHaveValue(saved.text ?? "");
+    await expect(page.getByRole("spinbutton", { name: "Canvas X", exact: true })).toHaveValue(String(saved.x));
+    expect(fixture.requests).toHaveLength(1);
+  });
+});
 
 test("a delayed initial bootstrap cannot roll back a project already published by a mutation", async ({ page }) => {
   const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };

@@ -3,7 +3,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { CreativePatch } from "../src/creativeProduction";
 import type { Project } from "../src/types";
 import { nodeTransform } from "../src/scopedChangeDraft";
-import { ScopedChangeService } from "./support/scopedChangeService";
+import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
 // This opt-in suite uses the real Rust service, SQLite, CAS and grants. The
 // invoke seam is a process test bridge; it does not exercise Tauri or a renderer.
@@ -23,20 +23,27 @@ async function queueText(page: Page, nodeId: string, text: string, reason: strin
   await button(page, "Add to proposal").click();
   await page.getByLabel("Patch rationale").fill(reason);
 }
-async function evidence(testInfo: TestInfo, services: ScopedChangeService[], project?: Project) {
-  for (const [index, service] of services.entries()) {
-    const path = testInfo.outputPath(`service-${index + 1}-transcript.json`);
-    await writeFile(path, JSON.stringify({
-      evidenceScope: "real_service_sqlite_cas; excludes_tauri_installer_native_render",
-      fixture: "synthetic_test_fixture", databasePath: service.databasePath,
-      stderr: service.stderr, transcript: service.transcript,
-    }, null, 2));
-    await testInfo.attach(`real-service-${index + 1}-transcript`, { path, contentType: "application/json" });
-  }
-  if (project) {
+async function evidence(testInfo: TestInfo, services: ScopedChangeService[], project: Project | undefined, prepare: (() => Promise<unknown>)[] = []) {
+  let finalization: StoreFinalization | undefined;
+  try {
+    finalization = await services[0].finalizeClosedStore(testInfo.outputPath("closed-store-1"), project, services.slice(1), prepare);
+  } finally {
+    for (const [index, service] of services.entries()) {
+      const path = testInfo.outputPath(`service-${index + 1}-transcript.json`);
+      await writeFile(path, JSON.stringify({
+        evidenceScope: "real_service_sqlite_cas; excludes_tauri_installer_native_render",
+        fixture: "synthetic_test_fixture", databasePath: service.databasePath,
+        stderr: service.stderr, transcript: service.transcript,
+        processExits: service.processExits, lifecycleTaints: service.lifecycleTaints,
+      }, null, 2));
+      await testInfo.attach(`real-service-${index + 1}-transcript`, { path, contentType: "application/json" });
+    }
     const path = testInfo.outputPath("persisted-project.json");
-    await writeFile(path, JSON.stringify(project, null, 2));
+    await writeFile(path, JSON.stringify(project ?? null, null, 2));
     await testInfo.attach("persisted-project", { path, contentType: "application/json" });
+    const oraclePath = testInfo.outputPath("closed-store-1-outcomes.json");
+    await testInfo.attach("complete-store-finalization", { path: oraclePath, contentType: "application/json" });
+    if (finalization) expect(finalization.oracle?.project).toEqual(project);
   }
 }
 
@@ -154,17 +161,18 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     expect(await service.history(initial.id, initial.revision)).toEqual(journal);
     await page.screenshot({ path: testInfo.outputPath("real-service-completed-editable-project.png"), fullPage: true });
   } finally {
-    await service.close();
-    await evidence(testInfo, [service], final);
+    await evidence(testInfo, [service], final, [() => page.close()]);
   }
 });
 
 test("two Studio clients reject a stale commit and let the author resolve only the overlapping property", async ({ page, context }, testInfo) => {
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
-  const peer = await service.peer();
-  const secondPage = await context.newPage();
+  let peer: ScopedChangeService | undefined;
+  let secondPage: Page | undefined;
   let final: Project | undefined;
   try {
+    peer = await service.peer();
+    secondPage = await context.newPage();
     const initial = (await service.bootstrap()).project;
     const scene = initial.scenes[0];
     const target = scene.nodes.find(item => item.name === "ProductHeroReveal / body")!;
@@ -215,9 +223,7 @@ test("two Studio clients reject a stale commit and let the author resolve only t
     expect(await service.history(initial.id, initial.revision)).toHaveLength(2);
     expect(await peer.reopen(initial.id)).toEqual(final);
   } finally {
-    await secondPage.close();
-    await peer.close();
-    await service.close();
-    await evidence(testInfo, [service, peer], final);
+    await evidence(testInfo, peer ? [service, peer] : [service], final,
+      [() => page.close(), ...(secondPage ? [() => secondPage!.close()] : [])]);
   }
 });
