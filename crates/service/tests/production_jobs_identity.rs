@@ -33,9 +33,9 @@ fn complete(
     command: &str,
     reference: &str,
     state: &str,
-    generation: u64,
-    artifact: bool,
+    observation: (u64, bool),
 ) {
+    let (generation, artifact) = observation;
     put(
         service,
         project,
@@ -84,8 +84,7 @@ fn persisted_manim_start_status_result_reappears_after_service_reopen() {
         &format!("{base}start"),
         "manim:stable",
         "queued",
-        17,
-        false,
+        (17, false),
     );
     complete(
         &service,
@@ -94,8 +93,7 @@ fn persisted_manim_start_status_result_reappears_after_service_reopen() {
         &format!("{base}status"),
         "manim:stable",
         "rendering",
-        17,
-        false,
+        (17, false),
     );
     complete(
         &service,
@@ -104,8 +102,7 @@ fn persisted_manim_start_status_result_reappears_after_service_reopen() {
         &format!("{base}result"),
         "manim:stable",
         "succeeded",
-        17,
-        true,
+        (17, true),
     );
     let before = service.production_receipt_watermark(project.id).unwrap();
     assert_eq!(
@@ -153,8 +150,7 @@ fn identical_job_references_from_two_providers_do_not_merge() {
         "driver.manim-community.render.start",
         "shared-native-ref",
         "queued",
-        11,
-        false,
+        (11, false),
     );
     complete(
         &service,
@@ -163,8 +159,7 @@ fn identical_job_references_from_two_providers_do_not_merge() {
         "driver.motion-canvas.render.start",
         "shared-native-ref",
         "queued",
-        42,
-        false,
+        (42, false),
     );
     complete(
         &service,
@@ -173,8 +168,7 @@ fn identical_job_references_from_two_providers_do_not_merge() {
         "driver.manim-community.render.result",
         "shared-native-ref",
         "succeeded",
-        11,
-        true,
+        (11, true),
     );
     let jobs = service.production_jobs(project.id, 16).unwrap();
     assert_eq!(
@@ -212,8 +206,7 @@ fn foreign_manim_result_reference_cannot_promote_original_job() {
         "driver.manim-community.render.start",
         "manim:original",
         "rendering",
-        17,
-        false,
+        (17, false),
     );
     put(
         &service,
@@ -263,8 +256,7 @@ fn mismatched_manim_provider_generation_does_not_create_terminal_success() {
         "driver.manim-community.render.start",
         "manim:original",
         "rendering",
-        17,
-        false,
+        (17, false),
     );
     complete(
         &service,
@@ -273,8 +265,7 @@ fn mismatched_manim_provider_generation_does_not_create_terminal_success() {
         "driver.manim-community.render.result",
         "manim:original",
         "succeeded",
-        99,
-        true,
+        (99, true),
     );
     let jobs = service.production_jobs(project.id, 16).unwrap();
     assert_eq!(jobs.len(), 1);
