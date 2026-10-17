@@ -32,8 +32,10 @@ on:
         options:
           - all
           - blender-source
+          - blender-authority-source
           - captions
           - original-mix-attempt
+          - original-mix-source
           - manim-source
           - production-source
       source_revision:
@@ -529,7 +531,7 @@ jobs:
 
           root = Path("verification/native-selected-source").resolve()
           root.mkdir(parents=True, exist_ok=False)
-          scopes = {"blender-source", "captions", "original-mix-attempt", "manim-source", "production-source"}
+          scopes = {"blender-source", "blender-authority-source", "captions", "original-mix-attempt", "original-mix-source", "manim-source", "production-source"}
           scope = os.environ["SELECTED_SOURCE_SCOPE"]
           requested = os.environ["SELECTED_SOURCE_REVISION"]
           receipt = {
@@ -614,11 +616,27 @@ jobs:
           requested = receipt["requested_source_revision"]
           PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
           BLENDER_IDS = ["project_admission_rejects_controls_that_a_collection_cannot_preserve","complete_logical_ids_survive_the_native_alias_budget","effective_alpha_is_an_explicit_material_parameter","bounded_source_rejects_identity_name_channel_and_transform_errors","source_roundtrip_rejects_added_controls_or_a_tampered_projection","snapshot_rejects_missing_wrong_or_uneditable_native_state","shader_socket_mutations_fail_when_datablock_metadata_is_unchanged","reopen_requires_a_different_session_and_exact_preserved_source","sdk_serde_preserves_explicit_false_execution_and_provenance_flags","custody_rejects_dry_run_untrusted_or_missing_flags_even_in_matching_rows","genuine_receipt_pairs_do_not_authenticate_a_forged_wrapped_result","custody_rejects_unknown_duplicate_cross_generation_and_missing_journal_rows","full_chain_rejects_detached_artifact_snapshot_or_coverage_claims","typed_report_gate_rejects_wrong_native_method_base_or_unobservable_effects","stored_custody_survives_more_than_256_unrelated_original_receipts","stored_custody_rejects_missing_rows_even_with_a_supplied_completed_receipt","stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch","stored_custody_rejects_a_buried_duplicate_completed_observation","stored_custody_rejects_a_real_receipt_from_another_project","snapshot_page_rejects_journal_growth_even_when_project_revision_is_unchanged","data_only_custody_classifies_every_selected_unknown_before_pair_errors","stored_custody_does_not_reclassify_known_denial_as_unknown"]
+          BLENDER_AUTHORITY_IDS = [
+              "custody_rejects_dry_run_misclassified_driver_or_missing_flags_even_in_matching_rows"
+              if name == "custody_rejects_dry_run_untrusted_or_missing_flags_even_in_matching_rows" else name
+              for name in BLENDER_IDS
+          ] + [
+              "driver_metadata_mark_accepts_a_fully_bound_original_blender_receipt_pair",
+              "matching_original_rows_cannot_forge_blender_driver_execution_authority",
+          ]
           CAPTION_IDS = ["film::film_captions::tests::cross_scene_caption_keeps_source_sidecar_identity_and_exact_coverage","film::film_captions::tests::crossing_32_plus_1_frame_boundary_rebases_only_native_fragment_time","film::film_captions::tests::unfragmented_cue_preserves_legacy_ids_and_timing","film::film_captions::tests::foreign_renderer_interval_is_rejected_without_filling_the_caption","film::film_captions::tests::missing_or_overlapping_native_segments_never_become_a_complete_caption","film::film_captions::tests::fractional_unknown_foreign_source_and_cut_crossing_guards_remain_closed","film::film_captions::tests::caption_fragment_budget_is_enforced_before_film_mutation"]
           selectors = {
               "blender-source": [
                   ("blender", ["cargo", "test", "--locked", "-p", "motionwright-native",
                                "--test", "blender_editable_source"], BLENDER_IDS),
+              ],
+              "blender-authority-source": [
+                  ("blender-authority", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                         "--test", "blender_editable_source"], BLENDER_AUTHORITY_IDS),
+              ],
+              "original-mix-source": [
+                  ("original-mix-source", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                          "--test", "original_mix_av_source"], None),
               ],
               "captions": [
                   ("captions", ["cargo", "test", "--locked", "-p", "motionwright-native",
@@ -650,6 +668,8 @@ jobs:
                    "tooling/public_surface_policy.py", "crates/native/src/production.rs"]
           paths += {
               "blender-source": ["crates/native/src/production/blender_editable.rs", "crates/native/tests/blender_editable_source.rs"],
+              "blender-authority-source": ["crates/native/src/production/blender_editable.rs", "crates/native/tests/blender_editable_source.rs"],
+              "original-mix-source": ["crates/native/src/production/original_mix_av.rs", "crates/native/tests/original_mix_av_source.rs"],
               "captions": ["crates/native/src/film_captions.rs"],
               "original-mix-attempt": ["crates/native/src/production/original_mix_av.rs", "crates/native/tests/original_mix_av_source.rs"],
               "manim-source": ["crates/native/src/production/manim_source.rs", "crates/native/src/multi_renderer.rs",
@@ -797,7 +817,7 @@ jobs:
                       and sum(int(n) for n, _ in totals) == len(ids)
                       and all(int(n) == 0 for _, n in totals), label + "_listing_incomplete_or_ambiguous")
               if label == "original-mix-attempt":
-                  require(len(ids) == 9 and all(name.startswith("original_mix_attempt_") for name in ids),
+                  require(len(ids) == 9 and all(name.startswith("canonical_film_source_custody::original_mix_attempt_classification::original_mix_attempt_") for name in ids),
                           "original_mix_attempt_expected_nine")
               if required_ids is not None:
                   require(set(ids) == set(required_ids) and len(ids) == len(required_ids), label + "_expected_roster_differs")
