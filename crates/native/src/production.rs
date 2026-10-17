@@ -36,6 +36,8 @@ mod path_boundary_tests;
 mod recovery;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
+mod blender_lit;
+pub use blender_lit::{BLENDER_LIT_STILL_SCHEMA, BlenderLitStillProfile};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
 
@@ -94,6 +96,10 @@ const MLT_COMMANDS: &[&str] = &[
 ];
 
 const BLENDER_COMMANDS: &[&str] = &[
+    "driver.blender.scene.inspect",
+    "driver.blender.object.list",
+    "driver.blender.render.settings",
+    "driver.blender.render",
     "driver.blender.collection.create",
     "driver.blender.object.create",
     "driver.blender.object.transform",

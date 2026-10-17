@@ -342,6 +342,10 @@ def main() -> None:
                 offset = next_offset
             ids = {item.get("id") for item in capabilities}
             required = {
+                "driver.blender.scene.inspect",
+                "driver.blender.object.list",
+                "driver.blender.render.settings",
+                "driver.blender.render",
                 "driver.blender.collection.create",
                 "driver.blender.object.create",
                 "driver.blender.object.transform",
@@ -408,6 +412,55 @@ def main() -> None:
             if not any(name and "Motionwright" in name for name in names):
                 raise AssertionError("GLB readback lost Motionwright-authored semantic names")
 
+            # Native pinned Semwright/Cycles output, not an illustration.
+            lit = evidence.get("lit_still")
+            if os.environ.get("MOTIONWRIGHT_TEST_LIT_SHOT") == "1":
+                if not isinstance(lit, dict) or lit.get("native_png_generated") is not True:
+                    raise AssertionError("Pinned Blender did not render the original lit still")
+                for unsafe in ("source_rights_authenticated", "creative_quality_approved",
+                               "physical_video_rendered", "publication_approved",
+                               "camera_or_lights_modified"):
+                    if lit.get(unsafe) is not False:
+                        raise AssertionError("Lit still claimed unverified permission or modified camera/lighting")
+                if lit.get("project_revision") != seeded["revision"] or (
+                    lit.get("scene_id") != seeded["scene_id"] or
+                    lit.get("original_glb_sha256") != observed_digest
+                ):
+                    raise AssertionError("Rendered lit shot is not bound to the original GLB source")
+                if (lit.get("engine"),lit.get("device"),lit.get("width"),lit.get("height"))!=(
+                    "CYCLES","CPU",640,360
+                ):
+                    raise AssertionError("Blender returned different render settings")
+                if not isinstance(lit.get("owner_camera"),str) or not lit.get("owner_lights"):
+                    raise AssertionError("Owner camera and light are not observed")
+                still=lit.get("artifact")
+                if not isinstance(still,dict) or not still["path"].startswith("motionwright-lit-"):
+                    raise AssertionError("Native PNG relative artifact is not source-scoped")
+                still_path=paths["workspace"] / still["path"]
+                if still_path.is_symlink() or not still_path.is_file():
+                    raise AssertionError("Native lit still absent or symlinked")
+                if still_path.stat().st_size!=still["bytes"] or digest(still_path)!=still["sha256"]:
+                    raise AssertionError("Independent PNG file SHA-256 or length mismatch")
+                from PIL import Image, ImageStat
+                with Image.open(still_path) as img:
+                    img.load()
+                    if img.format!="PNG" or img.size!=(640,360) or img.mode not in ("RGB","RGBA"):
+                        raise AssertionError("Physical PNG decode differs from original Cycles settings")
+                    stddev=ImageStat.Stat(img.convert("L")).stddev[0]
+                    if stddev<2.0:
+                        raise AssertionError("Native lit PNG is nearly uniform, not an observed shot")
+                still_copy=EVIDENCE/"motionwright-lit-still.png"
+                shutil.copyfile(still_path,still_copy)
+                if digest(still_copy)!=still["sha256"]:
+                    raise AssertionError("Copied lit shot does not match the verified source")
+                observed_lit={"path":still["path"],"sha256":still["sha256"],
+                              "bytes":still["bytes"],"width":640,"height":360,
+                              "decoded_grayscale_stddev":round(stddev,3),
+                              "owner_camera":lit["owner_camera"],"owner_lights":lit["owner_lights"],
+                              "human_quality_approved":False}
+            else:
+                observed_lit=None
+
             review_glb = EVIDENCE / "motionwright-contribution.glb"
             shutil.copyfile(artifact_path, review_glb)
             write_private_json(
@@ -430,6 +483,7 @@ def main() -> None:
                         "meshes": len(model.get("meshes", [])),
                         "materials": len(model.get("materials", [])),
                     },
+                    "lit_still": observed_lit,
                     "capabilities_checked": sorted(required),
                 },
             )
