@@ -24,6 +24,23 @@ on:
       - ".github/workflows/native-production.yml"
   workflow_dispatch:
     inputs:
+      scope:
+        description: "all preserves ordinary contracts; other scopes run Rust source tests without native dispatch"
+        type: choice
+        required: false
+        default: all
+        options:
+          - all
+          - blender-source
+          - captions
+          - original-mix-attempt
+          - manim-source
+          - production-source
+      source_revision:
+        description: "Exact lowercase 40-hex source commit; required only for a selected source scope"
+        type: string
+        required: false
+        default: ""
       calibrate_original_mix:
         description: "Calibrate synthetic original-mix source with the Rust mixer; no native dispatch"
         type: boolean
@@ -35,9 +52,20 @@ permissions:
 
 jobs:
   production-contracts:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scope == 'all' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Validate ordinary manual inputs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          SELECTED_SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          python3 -B - <<'PY'
+          import os
+          if os.environ["SELECTED_SOURCE_REVISION"]:
+              raise SystemExit("source_revision requires a selected source scope")
+          PY
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -470,5 +498,432 @@ jobs:
             verification/native-original-mix-calibration/receipt.json
             verification/native-original-mix-calibration/*.log
             verification/native-original-mix-calibration/calibration/
+          if-no-files-found: error
+          retention-days: 7
+
+  selected-source-contracts:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope != 'all' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout workflow source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Bind workflow source and validate selection
+        env:
+          SELECTED_SOURCE_SCOPE: ${{ inputs.scope }}
+          SELECTED_SOURCE_REVISION: ${{ inputs.source_revision }}
+          SELECTED_SOURCE_CALIBRATE: ${{ inputs.calibrate_original_mix }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          root = Path("verification/native-selected-source").resolve()
+          root.mkdir(parents=True, exist_ok=False)
+          scopes = {"blender-source", "captions", "original-mix-attempt", "manim-source", "production-source"}
+          scope = os.environ["SELECTED_SOURCE_SCOPE"]
+          requested = os.environ["SELECTED_SOURCE_REVISION"]
+          receipt = {
+              "schema": "motionwright.native.selected-source-gate/1",
+              "scope": scope if scope in scopes else "INVALID",
+              "requested_source_revision": requested if re.fullmatch(r"[0-9a-f]{40}", requested) else None,
+              "status": "NOT_VERIFIED",
+              "native_execution_performed": False,
+              "human_acceptance": False,
+              "commands": [],
+              "event": {name: os.environ.get(name) for name in (
+                  "GITHUB_EVENT_NAME", "GITHUB_SHA", "GITHUB_REF", "GITHUB_WORKFLOW_REF",
+                  "GITHUB_WORKFLOW_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")},
+          }
+          def save():
+              (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False) + "\n")
+          def require(value, reason):
+              if not value:
+                  raise RuntimeError(reason)
+          def git(*args):
+              result = subprocess.run(["git", *args], capture_output=True, check=True, timeout=20)
+              require(len(result.stdout) <= 1024 * 1024 and not result.stderr, "workflow_git_output")
+              return result.stdout.decode().strip()
+          save()
+          try:
+              require(os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch", "manual_event_required")
+              require(scope in scopes, "scope_not_allowed")
+              require(re.fullmatch(r"[0-9a-f]{40}", requested), "exact_lowercase_40_hex_source_required")
+              require(os.environ["SELECTED_SOURCE_CALIBRATE"] == "false", "source_scope_cannot_calibrate")
+              workflow_file = Path(".github/workflows/native-production.yml")
+              data = workflow_file.read_bytes()
+              require(0 < len(data) <= 1024 * 1024, "workflow_source_size")
+              file_record = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+              receipt["workflow"] = {
+                  "head": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+                  "tracked_status": git("status", "--porcelain", "--untracked-files=no"),
+                  "file": file_record,
+              }
+              require(receipt["workflow"]["head"] == os.environ["GITHUB_SHA"] and
+                      receipt["workflow"]["head"] == os.environ["GITHUB_WORKFLOW_SHA"] and
+                      not receipt["workflow"]["tracked_status"], "workflow_checkout_differs_or_dirty")
+              (root / "driver-workflow.yml").write_bytes(data)
+              receipt["preflight"] = "PASS"
+          except Exception as error:
+              receipt["failure"] = str(error)
+              receipt["preflight"] = "FAIL"
+              raise
+          finally:
+              save()
+          PY
+      - name: Checkout exact test source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: _source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "_source -> target"
+      - name: Run and retain selected Rust source contracts
+        run: |
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import signal
+          import subprocess
+          import sys
+          import time
+          import tomllib
+
+          root = Path("verification/native-selected-source").resolve()
+          source = Path("_source").resolve()
+          receipt = json.loads((root / "receipt.json").read_text())
+          scope = receipt["scope"]
+          requested = receipt["requested_source_revision"]
+          PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
+          BLENDER_IDS = ["project_admission_rejects_controls_that_a_collection_cannot_preserve","complete_logical_ids_survive_the_native_alias_budget","effective_alpha_is_an_explicit_material_parameter","bounded_source_rejects_identity_name_channel_and_transform_errors","source_roundtrip_rejects_added_controls_or_a_tampered_projection","snapshot_rejects_missing_wrong_or_uneditable_native_state","shader_socket_mutations_fail_when_datablock_metadata_is_unchanged","reopen_requires_a_different_session_and_exact_preserved_source","sdk_serde_preserves_explicit_false_execution_and_provenance_flags","custody_rejects_dry_run_untrusted_or_missing_flags_even_in_matching_rows","genuine_receipt_pairs_do_not_authenticate_a_forged_wrapped_result","custody_rejects_unknown_duplicate_cross_generation_and_missing_journal_rows","full_chain_rejects_detached_artifact_snapshot_or_coverage_claims","typed_report_gate_rejects_wrong_native_method_base_or_unobservable_effects","stored_custody_survives_more_than_256_unrelated_original_receipts","stored_custody_rejects_missing_rows_even_with_a_supplied_completed_receipt","stored_custody_rejects_unknown_without_appending_a_repair_or_dispatch","stored_custody_rejects_a_buried_duplicate_completed_observation","stored_custody_rejects_a_real_receipt_from_another_project","snapshot_page_rejects_journal_growth_even_when_project_revision_is_unchanged","data_only_custody_classifies_every_selected_unknown_before_pair_errors","stored_custody_does_not_reclassify_known_denial_as_unknown"]
+          CAPTION_IDS = ["film::film_captions::tests::cross_scene_caption_keeps_source_sidecar_identity_and_exact_coverage","film::film_captions::tests::crossing_32_plus_1_frame_boundary_rebases_only_native_fragment_time","film::film_captions::tests::unfragmented_cue_preserves_legacy_ids_and_timing","film::film_captions::tests::foreign_renderer_interval_is_rejected_without_filling_the_caption","film::film_captions::tests::missing_or_overlapping_native_segments_never_become_a_complete_caption","film::film_captions::tests::fractional_unknown_foreign_source_and_cut_crossing_guards_remain_closed","film::film_captions::tests::caption_fragment_budget_is_enforced_before_film_mutation"]
+          selectors = {
+              "blender-source": [
+                  ("blender", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                               "--test", "blender_editable_source"], BLENDER_IDS),
+              ],
+              "captions": [
+                  ("captions", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                "film_captions", "--all-targets"], CAPTION_IDS),
+              ],
+              "original-mix-attempt": [
+                  ("original-mix-attempt", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                           "--test", "original_mix_av_source", "original_mix_attempt_"], None),
+              ],
+              "manim-source": [
+                  ("manim-profile", ["cargo", "test", "--locked", "-p", "motionwright-manim-profile", "--all-targets"], None),
+                  ("manim-driver", ["cargo", "test", "--locked", "-p", "motionwright-manim-community-driver", "--all-targets"], None),
+                  ("manim-source-contract", ["cargo", "test", "--locked", "-p", "motionwright-native",
+                                             "--test", "manim_source_contract"], None),
+                  ("manim-clippy", ["cargo", "clippy", "--locked", "-p", "motionwright-manim-profile",
+                                   "-p", "motionwright-manim-community-driver", "--all-targets", "--", "-D", "warnings"], False),
+              ],
+              "production-source": [
+                  ("production", ["cargo", "test", "--locked", "-p", "motionwright-native", "production::", "--all-targets"], None),
+              ],
+          }
+          package_manifests = {"motionwright-native": "crates/native/Cargo.toml",
+                               "motionwright-manim-profile": "crates/manim-profile/Cargo.toml",
+                               "motionwright-manim-community-driver": "crates/driver-manim-community/Cargo.toml"}
+          selected_packages = {command[i + 1] for _, command, _ in selectors[scope]
+                               for i, arg in enumerate(command) if arg == "-p"}
+          cargo_targets = {}
+          paths = ["Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "tooling/source_policy.py",
+                   "tooling/public_surface_policy.py", "crates/native/src/production.rs"]
+          paths += {
+              "blender-source": ["crates/native/src/production/blender_editable.rs", "crates/native/tests/blender_editable_source.rs"],
+              "captions": ["crates/native/src/film_captions.rs"],
+              "original-mix-attempt": ["crates/native/src/production/original_mix_av.rs", "crates/native/tests/original_mix_av_source.rs"],
+              "manim-source": ["crates/native/src/production/manim_source.rs", "crates/native/src/multi_renderer.rs",
+                               "crates/native/tests/manim_source_contract.rs", "crates/manim-profile/src/lib.rs",
+                               "crates/driver-manim-community/src/main.rs",
+                               "crates/driver-manim-community/src/bin/runtime_runner.rs", "tooling/manim_native_readback.py"],
+              "production-source": [],
+          }[scope]
+          paths += [package_manifests[name] for name in sorted(selected_packages)]
+          receipt["commands"] = []
+          receipt["selected_tests"] = []
+          receipt["status"] = "NOT_VERIFIED"
+          receipt["native_execution_performed"] = False
+          receipt["human_acceptance"] = False
+
+          def save():
+              (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False) + "\n")
+
+          def require(condition, reason):
+              if not condition:
+                  raise RuntimeError(reason)
+
+          def record(path, limit=256 * 1024 * 1024):
+              path = Path(path)
+              before = path.stat()
+              require(path.is_file() and not path.is_symlink() and 0 <= before.st_size <= limit, "record_not_bounded_regular")
+              h = hashlib.sha256()
+              remaining = before.st_size + 1
+              count = 0
+              with path.open("rb") as stream:
+                  while remaining:
+                      chunk = stream.read(min(1024 * 1024, remaining))
+                      if not chunk:
+                          break
+                      remaining -= len(chunk)
+                      count += len(chunk)
+                      h.update(chunk)
+              after = path.stat()
+              require(count == before.st_size and
+                      (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) ==
+                      (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns), "record_changed")
+              return {"bytes": count, "sha256": h.hexdigest()}
+
+          def git(*args):
+              result = subprocess.run(["git", "-C", str(source), *args], check=True, capture_output=True, timeout=20)
+              require(len(result.stdout) <= 1024 * 1024 and not result.stderr, "source_git_output")
+              return result.stdout.decode().strip()
+
+          def binding():
+              return {"C": git("rev-parse", "HEAD"), "T": git("rev-parse", "HEAD^{tree}"),
+                      "parents": git("show", "-s", "--format=%P", "HEAD").split(),
+                      "status": git("status", "--porcelain", "--untracked-files=all"),
+                      "files": {path: record(source / path, 16 * 1024 * 1024) for path in paths}}
+
+          def run(label, command, seconds=1200):
+              row = {"label": label, "argv": command, "state": "NOT_STARTED", "exit_code": None,
+                     "cleanup_exit_code": None, "timeout": False, "output_limit": False}
+              receipt["commands"].append(row)
+              save()
+              out_path, err_path = root / (label + ".stdout.log"), root / (label + ".stderr.log")
+              primary = None
+              process = None
+              with out_path.open("xb") as out, err_path.open("xb") as err:
+                  try:
+                      process = subprocess.Popen(command, cwd=source, stdout=out, stderr=err,
+                                                 stdin=subprocess.DEVNULL, start_new_session=True)
+                      row["state"] = "STARTED"
+                      save()
+                      deadline = time.monotonic() + seconds
+                      while process.poll() is None:
+                          if time.monotonic() >= deadline:
+                              row["timeout"] = True
+                              raise TimeoutError("source_command_deadline")
+                          if max(out_path.stat().st_size, err_path.stat().st_size) > 64 * 1024 * 1024:
+                              row["output_limit"] = True
+                              raise RuntimeError("source_command_output_limit")
+                          time.sleep(.1)
+                      row["exit_code"] = process.wait(timeout=1)
+                      row["state"] = "EXITED"
+                      if max(out_path.stat().st_size, err_path.stat().st_size) > 64 * 1024 * 1024:
+                          row["output_limit"] = True
+                          raise RuntimeError("source_command_output_limit")
+                  except BaseException as error:
+                      primary = error
+                      if row["state"] != "EXITED":
+                          row["state"] = "UNKNOWN" if process is not None else "NOT_STARTED"
+                      row["error"] = type(error).__name__
+                  finally:
+                      if process is not None:
+                          if process.poll() is None:
+                              try:
+                                  os.killpg(process.pid, signal.SIGKILL)
+                              except ProcessLookupError:
+                                  pass
+                              except OSError:
+                                  row["cleanup_signal_unverified"] = True
+                              try:
+                                  row["cleanup_exit_code"] = process.wait(timeout=5)
+                              except BaseException:
+                                  row["cleanup_reap_unverified"] = True
+                          else:
+                              row["cleanup_exit_code"] = process.returncode
+                      # The original exit is never replaced by an exit caused by cleanup.
+                      try:
+                          out.flush()
+                          err.flush()
+                          row["stdout"] = record(out_path, 128 * 1024 * 1024)
+                          row["stderr"] = record(err_path, 128 * 1024 * 1024)
+                          (root / (label + ".exit-code.log")).write_text(
+                              ("UNOBSERVED" if row["exit_code"] is None else str(row["exit_code"])) + "\n")
+                          save()
+                      except BaseException as error:
+                          row["retention_error"] = type(error).__name__
+                          if primary is None:
+                              primary = error
+              if primary is not None:
+                  raise RuntimeError(label + "_not_verified") from primary
+              return row, out_path.read_text(encoding="utf-8", errors="strict")
+
+          def test_artifacts(output, package):
+              result = {}
+              for line in output.splitlines():
+                  if not line.startswith("{"):
+                      continue
+                  try:
+                      value = json.loads(line)
+                  except ValueError:
+                      continue
+                  if value.get("reason") == "compiler-artifact" and value.get("profile", {}).get("test") and value.get("executable"):
+                      target = value["target"]
+                      target_key = (value["package_id"], target["name"], tuple(target["kind"]), target["src_path"])
+                      require(target_key in cargo_targets[package], "compiled_target_not_in_selected_manifest")
+                      path = Path(value["executable"]).resolve()
+                      require(path.is_relative_to(source / "target"), "test_binary_outside_target")
+                      result[path.relative_to(source).as_posix()] = record(path)
+              require(result, "no_compiled_test_artifacts")
+              return result
+
+          def run_tests(label, command, required_ids):
+              listed_row, listed = run(label + "-list", command + ["--message-format=json", "--", "--list"])
+              require(listed_row["exit_code"] == 0, label + "_listing_failed")
+              ids = re.findall(r"^([A-Za-z0-9_:]+): test$", listed, re.MULTILINE)
+              totals = re.findall(r"^(\d+) tests?, (\d+) benchmarks?$", listed, re.MULTILINE)
+              require(ids and len(ids) == len(set(ids)) and totals
+                      and sum(int(n) for n, _ in totals) == len(ids)
+                      and all(int(n) == 0 for _, n in totals), label + "_listing_incomplete_or_ambiguous")
+              if label == "original-mix-attempt":
+                  require(len(ids) == 9 and all(name.startswith("original_mix_attempt_") for name in ids),
+                          "original_mix_attempt_expected_nine")
+              if required_ids is not None:
+                  require(set(ids) == set(required_ids) and len(ids) == len(required_ids), label + "_expected_roster_differs")
+              package = command[command.index("-p") + 1]
+              binaries = test_artifacts(listed, package)
+              observation = {"label": label, "compiled_selected_ids": ids,
+                             "binary_before": binaries, "status": "NOT_VERIFIED"}
+              receipt["selected_tests"].append(observation)
+              save()
+              row, output = run(label, command + ["--message-format=json", "--", "--test-threads=1"])
+              observed = re.findall(r"^test ([A-Za-z0-9_:]+) \.\.\. (ok|FAILED|ignored(?:[^\r\n]*)?)$", output, re.MULTILINE)
+              summaries = re.findall(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                                     r"(\d+) measured; (\d+) filtered out; finished in [0-9.]+s$", output, re.MULTILINE)
+              names = [name for name, _ in observed]
+              passed = [name for name, status in observed if status == "ok"]
+              failed = [name for name, status in observed if status == "FAILED"]
+              ignored = [name for name, status in observed if status.startswith("ignored")]
+              observation.update(exit_code=row["exit_code"], actual_ids=names, passed_ids=passed,
+                                 failed_ids=failed, ignored_ids=ignored, summaries=summaries)
+              observation["binary_after"] = {path: record(source / path) for path in binaries}
+              observation["actual_compiler_artifacts"] = test_artifacts(output, package)
+              save()
+              require(len(names) == len(set(names)) and set(names) == set(ids) and summaries, label + "_actual_roster_differs")
+              require(sum(int(s[1]) for s in summaries) == len(passed)
+                      and sum(int(s[2]) for s in summaries) == len(failed)
+                      and sum(int(s[3]) for s in summaries) == len(ignored)
+                      and all(int(s[4]) == 0 for s in summaries), label + "_summary_differs")
+              require(observation["binary_before"] == observation["binary_after"] ==
+                      observation["actual_compiler_artifacts"], label + "_binary_changed")
+              require(not ignored, label + "_ignored_tests")
+              observation["status"] = "PASS" if row["exit_code"] == 0 and not failed else "FAIL"
+              save()
+              # Expected-failure evidence is assessed separately; the job still records a real failure.
+              # No expected-failure inversion and no continue-on-error.
+              require(observation["status"] == "PASS", label + "_test_failure")
+
+          save()
+          try:
+              before = binding()
+              receipt["source_before"] = before
+              require(before["C"] == requested and re.fullmatch(r"[0-9a-f]{40}", before["T"]) and not before["status"],
+                      "target_checkout_not_exact_or_clean")
+              lock = json.loads((source / "SOURCE_LOCK.json").read_text())
+              require(lock["dependencies"]["semwright"]["revision"] == PIN, "source_lock_sdk_pin_differs")
+              cargo_lock = tomllib.loads((source / "Cargo.lock").read_text())
+              sdk_packages = [p for p in cargo_lock["package"] if p.get("source", "").startswith(
+                  "git+https://github.com/seradotcom/semwright")]
+              require(sdk_packages and any(p["name"] == "semwright-native-sdk" for p in sdk_packages)
+                      and all(p["source"].endswith("#" + PIN) for p in sdk_packages), "cargo_lock_sdk_pin_differs")
+              receipt["sdk_pin"] = PIN
+              # --list must reach libtest, never an example/bin main with harness=false.
+              for package in sorted(selected_packages):
+                  manifest = tomllib.loads((source / package_manifests[package]).read_text())
+                  require(manifest["package"]["name"] == package, "selected_package_name_differs")
+                  for kind in ("lib", "bin", "example", "test", "bench"):
+                      declared = manifest.get(kind, [])
+                      if isinstance(declared, dict):
+                          declared = [declared]
+                      require(isinstance(declared, list) and all(isinstance(t, dict) and
+                              t.get("harness", True) is True and t.get("test", True) is True
+                              for t in declared), "selected_manifest_disables_libtest")
+              row, raw_metadata = run("cargo-metadata", ["cargo", "metadata", "--locked", "--no-deps",
+                                                        "--format-version", "1"], 120)
+              require(row["exit_code"] == 0, "cargo_metadata_failed")
+              metadata = json.loads(raw_metadata)
+              require(Path(metadata["workspace_root"]).resolve() == source and
+                      Path(metadata["target_directory"]).resolve() == source / "target", "cargo_target_root_differs")
+              receipt["cargo_targets"] = {}
+              for package in sorted(selected_packages):
+                  matches = [value for value in metadata["packages"] if value["name"] == package]
+                  require(len(matches) == 1 and
+                          Path(matches[0]["manifest_path"]).resolve() == source / package_manifests[package],
+                          "cargo_selected_package_differs")
+                  item = matches[0]
+                  receipt["cargo_targets"][package] = item["targets"]
+                  cargo_targets[package] = {(item["id"], t["name"], tuple(t["kind"]), t["src_path"])
+                                            for t in item["targets"]}
+              save()
+              print("NATIVE_SELECTED_SOURCE", scope, "WORKFLOW", receipt["workflow"]["head"],
+                    "C", before["C"], "T", before["T"], flush=True)
+              row, version = run("rustc-version", ["rustc", "-Vv"], 20)
+              require(row["exit_code"] == 0 and version.startswith("rustc 1.98.1 "), "rust_toolchain_differs")
+              row, _ = run("source-policy", ["python3", "-B", "tooling/source_policy.py"], 60)
+              require(row["exit_code"] == 0, "source_policy_failed")
+              for label, command, expected in selectors[scope]:
+                  if expected is False:
+                      row, _ = run(label, command)
+                      require(row["exit_code"] == 0, label + "_failed")
+                  else:
+                      run_tests(label, command, expected)
+              receipt["status"] = "PASS_SOURCE_ONLY"
+          except Exception as error:
+              receipt["status"] = "FAIL"
+              receipt["failure"] = str(error)
+          finally:
+              try:
+                  receipt["source_after"] = binding()
+                  require(receipt.get("source_before") == receipt["source_after"], "source_changed_during_gate")
+              except Exception as error:
+                  receipt["source_binding_failure"] = str(error)
+                  receipt["status"] = "NOT_VERIFIED"
+              try:
+                  workflow_file = Path(".github/workflows/native-production.yml")
+                  receipt["workflow_after"] = record(workflow_file, 1024 * 1024)
+                  require(receipt["workflow_after"] == receipt["workflow"]["file"], "workflow_source_changed")
+              except Exception as error:
+                  receipt["workflow_binding_failure"] = str(error)
+                  receipt["status"] = "NOT_VERIFIED"
+              try:
+                  receipt["retained_logs"] = {path.name: record(path, 128 * 1024 * 1024)
+                                              for path in sorted(root.glob("*.log"))}
+              except Exception as error:
+                  receipt["retention_failure"] = str(error)
+                  receipt["status"] = "NOT_VERIFIED"
+              save()
+              print(json.dumps({"native_selected_source": receipt["status"], "scope": scope,
+                                "C": receipt.get("source_before", {}).get("C"),
+                                "T": receipt.get("source_before", {}).get("T"),
+                                "failure": receipt.get("failure")}, sort_keys=True), flush=True)
+          raise SystemExit(0 if receipt["status"] == "PASS_SOURCE_ONLY" else 1)
+          PY
+      - name: Retain selected source logs and partial receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-selected-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/native-selected-source/
           if-no-files-found: error
           retention-days: 7
