@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const CAMERA_REFRAME_VERSION: u32 = 1;
+/// Closed Manim Community source contract; legacy Motion Canvas records stay v1.
+pub const CAMERA_REFRAME_MANIM_VERSION: u32 = 2;
 pub const CAMERA_REFRAME_FPS: i64 = 30;
 pub const CAMERA_REFRAME_MAX: usize = 16;
 pub const CAMERA_REF_CANVAS_WIDTH: f64 = 1920.0;
@@ -30,9 +32,12 @@ pub struct CameraReframe {
 }
 impl CameraReframe {
     pub fn validate(&self, scene: &Scene) -> Result<()> {
-        if self.component_version != CAMERA_REFRAME_VERSION
+        let admitted_pair = (self.component_version == CAMERA_REFRAME_VERSION
+            && scene.renderer == RendererKind::MotionCanvas)
+            || (self.component_version == CAMERA_REFRAME_MANIM_VERSION
+                && scene.renderer == RendererKind::ManimCommunity);
+        if !admitted_pair
             || scene.id != self.scene_id
-            || scene.renderer != RendererKind::MotionCanvas
             || scene.nodes.is_empty()
             || scene.nodes.len() > 32
             || !scene.beats.is_empty()
@@ -48,6 +53,54 @@ impl CameraReframe {
             return Err(DomainError::Invalid(
                 "Planar camera reframe cannot replace unsupported optical zoom or rotation".into(),
             ));
+        }
+        // Manim Community v2 uses the existing bounded static shape source.
+        // A domain-level save must not admit a feature that this native
+        // contributor silently drops (text, opacity, stroke, rotation, font,
+        // hierarchy, non-pixel coordinates or unsupported fill).
+        if self.component_version == CAMERA_REFRAME_MANIM_VERSION {
+            if scene.camera.safe_margin < 0.05 {
+                return Err(DomainError::Invalid(
+                    "Manim camera requires an authored safe margin of at least 0.05".into(),
+                ));
+            }
+            for node in &scene.nodes {
+                if !matches!(node.kind.as_str(), "rectangle" | "circle")
+                    || node.coordinate_space != CoordinateSpace::ProjectPixels
+                    || !node.relations.is_empty()
+                    || node.opacity != 1.0
+                    || node.rotation_deg != 0.0
+                    || node.text.is_some()
+                    || node.style.stroke.is_some()
+                    || node.style.stroke_width != 0.0
+                    || node.style.blend_mode != BlendMode::Normal
+                    || node.style.font_family.is_some()
+                    || node.style.font_size.is_some()
+                    || node.style.font_weight.is_some()
+                    || node.style.line_height.is_some()
+                    || (node.kind == "circle" && node.width != node.height)
+                {
+                    return Err(DomainError::Invalid(format!(
+                        "Manim camera source cannot preserve the authored shape semantics of node {}",
+                        node.id
+                    )));
+                }
+                let fill = node.style.fill.as_deref().ok_or_else(|| {
+                    DomainError::Invalid(format!(
+                        "Manim camera requires explicit opaque hex fill for node {}",
+                        node.id
+                    ))
+                })?;
+                if !fill.starts_with('#')
+                    || fill.len() != 7
+                    || !fill[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(DomainError::Invalid(format!(
+                        "Manim camera requires #RRGGBB fill without inferred alpha on node {}",
+                        node.id
+                    )));
+                }
+            }
         }
         for (label, value, min, max) in [
             ("start x", self.start_center_x, 720.0, 1200.0),
