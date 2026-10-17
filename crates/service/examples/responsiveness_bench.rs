@@ -142,6 +142,33 @@ fn p95(samples: &[u128]) -> u128 {
     sorted[rank - 1]
 }
 
+fn verify_persisted_timeline(
+    project: &motionwright_domain::Project,
+    expected_seconds: i64,
+) -> std::result::Result<(), String> {
+    let mut observed = motionwright_domain::RationalTime::ZERO;
+    for scene in &project.scenes {
+        if scene.start != observed {
+            return Err(format!(
+                "persisted reference scene {} starts at {}/{}; expected {}/{}",
+                scene.id, scene.start.num, scene.start.den, observed.num, observed.den
+            ));
+        }
+        observed = observed
+            .checked_add(scene.duration)
+            .map_err(|error| format!("persisted reference timeline overflow: {error}"))?;
+    }
+    let expected = motionwright_domain::RationalTime::new(expected_seconds, 1)
+        .map_err(|error| format!("invalid reference duration: {error}"))?;
+    if observed != expected {
+        return Err(format!(
+            "persisted reference timeline expected {}/{} seconds; observed {}/{}",
+            expected.num, expected.den, observed.num, observed.den
+        ));
+    }
+    Ok(())
+}
+
 fn main() {
     let commit_budget_ms = env::var("MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS")
         .ok()
@@ -260,6 +287,11 @@ fn main() {
         voice.measured_duration,
         RationalTime::new(VOICE_SECONDS.into(), 1).unwrap()
     );
+    let persisted_reference = service
+        .project(project.id)
+        .expect("read the complete reference project from SQLite");
+    verify_persisted_timeline(&persisted_reference, i64::from(VOICE_SECONDS))
+        .expect("S reference timeline invariant after persisted readback");
     let (master_width, master_height) = {
         let master = project
             .deliverables
