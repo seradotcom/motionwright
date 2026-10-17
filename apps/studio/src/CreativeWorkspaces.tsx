@@ -1,101 +1,11 @@
-import { CircleDashed, LockKeyhole, Sparkles, Type } from "lucide-react";
+import { LockKeyhole, Sparkles, Type } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import ModelContextInspector from "./ModelContextInspector";
 import type { Change, Project, Scene } from "./types";
 
 type Commit = (change: Change) => Promise<void>;
 
-const lines = (value: string) => value.split("\n").map((item) => item.trim()).filter(Boolean);
-const lineText = (value: string[]) => value.join("\n");
-
-export function RichBriefView({ project, commit }: { project: Project; commit: Commit }) {
-  const [title, setTitle] = useState(project.title);
-  const [objective, setObjective] = useState(project.brief.objective);
-  const [audience, setAudience] = useState(project.brief.audience);
-  const [constraints, setConstraints] = useState(lineText(project.brief.constraints));
-  const [exclusions, setExclusions] = useState(lineText(project.brief.exclusions));
-
-  useEffect(() => {
-    setTitle(project.title);
-    setObjective(project.brief.objective);
-    setAudience(project.brief.audience);
-    setConstraints(lineText(project.brief.constraints));
-    setExclusions(lineText(project.brief.exclusions));
-  }, [project]);
-
-  const titleDirty = title.trim() !== project.title && title.trim().length > 0;
-  const briefDirty =
-    objective !== project.brief.objective ||
-    audience !== project.brief.audience ||
-    constraints !== lineText(project.brief.constraints) ||
-    exclusions !== lineText(project.brief.exclusions);
-
-  return (
-    <div className="workspace-scroll document-view">
-      <header className="workspace-heading">
-        <div>
-          <h2>Project brief</h2>
-          <p>Audience, objective and constraints are versioned project state. They are not hidden prompt context.</p>
-        </div>
-        <span className={"status-pill status-" + project.state}>{project.state.toUpperCase()}</span>
-      </header>
-      <div className="document-grid">
-        <section className="document-main">
-          <label className="field-label" htmlFor="project-title-rich">Project title</label>
-          <div className="inline-save-field">
-            <input id="project-title-rich" value={title} onChange={(event) => setTitle(event.target.value)} />
-            <button className="button button-primary" type="button" disabled={!titleDirty}
-              onClick={() => commit({ type: "rename_project", title: title.trim() })}>Save title</button>
-          </div>
-
-          <div className="form-stack">
-            <label>
-              <span className="field-label">Production objective</span>
-              <textarea aria-label="Production objective" rows={5} value={objective} onChange={(event) => setObjective(event.target.value)} />
-            </label>
-            <label>
-              <span className="field-label">Audience</span>
-              <textarea aria-label="Audience" rows={3} value={audience} onChange={(event) => setAudience(event.target.value)} />
-            </label>
-            <div className="two-column-fields">
-              <label>
-                <span className="field-label">Constraints · one per line</span>
-                <textarea aria-label="Constraints" rows={6} value={constraints} onChange={(event) => setConstraints(event.target.value)} />
-              </label>
-              <label>
-                <span className="field-label">Exclusions · one per line</span>
-                <textarea aria-label="Exclusions" rows={6} value={exclusions} onChange={(event) => setExclusions(event.target.value)} />
-              </label>
-            </div>
-            <div className="sheet-actions">
-              <span>{project.brief.claims.length} evidence-linked claims</span>
-              <button className="button button-primary" type="button" disabled={!briefDirty}
-                onClick={() => commit({
-                  type: "set_brief",
-                  objective,
-                  audience,
-                  constraints: lines(constraints),
-                  exclusions: lines(exclusions),
-                })}>Commit brief</button>
-            </div>
-          </div>
-        </section>
-        <aside className="document-side">
-          <h3>Project authority</h3>
-          <div className="brief-facts vertical">
-            <div><span>Revision</span><strong>r{project.revision}</strong></div>
-            <div><span>Claims</span><strong>{project.brief.claims.length}</strong></div>
-            <div><span>Model receipts</span><strong>{project.model_invocations.length}</strong></div>
-          </div>
-          <div className="evidence-callout compact-callout">
-            <CircleDashed size={17} />
-            <div><strong>No invisible approval</strong><span>Missing evidence stays explicit until a source is attached.</span></div>
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
-}
+export { default as RichBriefView } from "./BriefWorkspace";
 
 export function RichNarrativeView({ project, scene, commit }: { project: Project; scene: Scene | null; commit: Commit }) {
   const [premise, setPremise] = useState(project.narrative.premise);
