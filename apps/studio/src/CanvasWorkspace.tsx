@@ -110,6 +110,7 @@ export default function CanvasWorkspace({
   const creationScope = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null]);
   const visibleCreationScope = useRef(creationScope);
   visibleCreationScope.current = creationScope;
+  const localInteractionVersion = useRef(0);
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
   const [formTransform, setFormTransform] = useState<CanvasTransform | null>(scene?.nodes[0] ? nodeTransform(scene.nodes[0]) : null);
   const [textValue, setTextValue] = useState(scene?.nodes[0]?.text ?? "");
@@ -172,9 +173,12 @@ export default function CanvasWorkspace({
     selectedNode?.text,
   ]);
 
+  const selectedMotionValue = selectedNode?.[motionProperty];
   useEffect(() => {
-    if (selectedNode) setMotionValue(nodeTransform(selectedNode)[motionProperty]);
-  }, [selectedNode, motionProperty]);
+    // An unrelated canonical publication can clone the selected object without
+    // changing this property. Preserve its unsent motion input in that case.
+    if (selectedMotionValue !== undefined) setMotionValue(selectedMotionValue);
+  }, [selectedNode?.id, selectedMotionValue, motionProperty]);
 
   useEffect(() => {
     setNativeStartX(selectedNode ? selectedNode.x - 100 : 0);
@@ -226,12 +230,14 @@ export default function CanvasWorkspace({
     setAddBusy(true);
     setAddError(null);
     const submittedScope = creationScope;
+    const submittedInteraction = localInteractionVersion.current;
     const node = createNode(scene, kind);
     try {
       await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
-      // The project change still belongs to its original scene. A later scene
-      // selection is independent and must not be replaced by this continuation.
-      if (visibleCreationScope.current !== submittedScope) return;
+      // Canonical publication is independent of the local inspector. Even in
+      // this same scene, a later selection or edit supersedes auto-selection.
+      if (visibleCreationScope.current !== submittedScope
+        || localInteractionVersion.current !== submittedInteraction) return;
       setSelectedNodeId(node.id);
       setFormTransform(nodeTransform(node));
       setTextValue(node.text ?? "");
@@ -246,6 +252,7 @@ export default function CanvasWorkspace({
   };
 
   const selectNode = (node: CanvasNode) => {
+    localInteractionVersion.current += 1;
     setSelectedNodeId(node.id);
     setFormTransform(draftTransforms[node.id] ?? nodeTransform(node));
     setTextValue(node.text ?? "");
@@ -520,7 +527,8 @@ export default function CanvasWorkspace({
           </div>
         </section>
 
-        <aside className="canvas-properties" aria-label="Canvas properties">
+        <aside className="canvas-properties" aria-label="Canvas properties"
+          onChangeCapture={() => { localInteractionVersion.current += 1; }}>
           <div className="canvas-panel-heading">Object</div>
           {!selectedNode || !formTransform ? (
             <div className="canvas-empty-note">Select an object to inspect its semantic properties.</div>

@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type BrowserContext, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { Project } from "../src/types";
-import { ScopedChangeService } from "./support/scopedChangeService";
+import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
 // Real persisted-service coverage with explicitly synthetic source content and
 // author decisions. An approval entered by this test is a fixture record, not
@@ -63,16 +63,24 @@ async function sourceBytes(service: ScopedChangeService, project: Project) {
   return result.sort((a, b) => a.assetId.localeCompare(b.assetId));
 }
 
-async function evidence(testInfo: TestInfo, services: ScopedChangeService[], snapshots: Record<string, unknown>) {
-  const path = testInfo.outputPath("brief-preservation-evidence.json");
-  await writeFile(path, JSON.stringify({
-    fixture: "synthetic_test_fixture",
-    evidenceScope: "real_service_sqlite_cas_and_ui_consumption; excludes_model_dispatch_film_native_render_tauri_and_human_acceptance",
-    ...snapshots,
-    services: services.map(service => ({ databasePath: service.databasePath, binaryPath: service.binaryPath,
-      stderr: service.stderr, transcript: service.transcript })),
-  }, null, 2));
-  await testInfo.attach("brief-preservation-evidence", { path, contentType: "application/json" });
+async function evidence(testInfo: TestInfo, services: ScopedChangeService[], snapshots: Record<string, unknown>, prepare: (() => Promise<unknown>)[] = []) {
+  let finalization: StoreFinalization | undefined;
+  try {
+    finalization = await services[0].finalizeClosedStore(testInfo.outputPath("closed-store-1"), snapshots.final as Project | undefined, services.slice(1), prepare);
+  } finally {
+    const path = testInfo.outputPath("brief-preservation-evidence.json");
+    await writeFile(path, JSON.stringify({
+      fixture: "synthetic_test_fixture",
+      evidenceScope: "real_service_sqlite_cas_and_ui_consumption; excludes_model_dispatch_film_native_render_tauri_and_human_acceptance",
+      ...snapshots, canonicalOracle: finalization?.oracle,
+      finalizationPath: testInfo.outputPath("closed-store-1-outcomes.json"),
+      services: services.map(service => ({ databasePath: service.databasePath, binaryPath: service.binaryPath,
+        stderr: service.stderr, transcript: service.transcript,
+        processExits: service.processExits, lifecycleTaints: service.lifecycleTaints })),
+    }, null, 2));
+    await testInfo.attach("brief-preservation-evidence", { path, contentType: "application/json" });
+    await testInfo.attach("complete-store-finalization", { path: testInfo.outputPath("closed-store-1-outcomes.json"), contentType: "application/json" });
+  }
 }
 
 test("six real revisions preserve an authored plan, pending text, source bytes and full service reopen", async ({ page, browser }, testInfo) => {
@@ -186,8 +194,8 @@ test("six real revisions preserve an authored plan, pending text, source bytes a
     snapshots.journal = journal;
     await page.screenshot({ path: testInfo.outputPath("six-revisions-keep-pending-title.png"), fullPage: true });
 
-    await peer.close();
-    await service.close();
+    const intermediateCloses = await Promise.allSettled([peer.close(), service.close()]);
+    expect(intermediateCloses.map(outcome => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
     await service.start();
     expect(await service.project(seed.id)).toEqual(final);
     expect(await service.history(seed.id, baseline.revision)).toEqual(journal);
@@ -216,10 +224,8 @@ test("six real revisions preserve an authored plan, pending text, source bytes a
     expect(await service.project(seed.id)).toEqual(final);
     expect(await service.history(seed.id, baseline.revision)).toEqual(journal);
   } finally {
-    if (freshContext) await freshContext.close();
-    if (peer) await peer.close();
-    await service.close();
-    await evidence(testInfo, peer ? [service, peer] : [service], snapshots);
+    await evidence(testInfo, peer ? [service, peer] : [service], snapshots,
+      [() => page.close(), ...(freshContext ? [() => freshContext!.close()] : [])]);
   }
 });
 
@@ -297,7 +303,6 @@ test("a newly saved brief seeds the real initial plan without overwriting a late
     await expect(planField(reopened, "Creative concept")).toHaveValue(savedPlan.concept);
     expect(await service.project(initial.id)).toEqual(final);
   } finally {
-    await service.close();
-    await evidence(testInfo, [service], snapshots);
+    await evidence(testInfo, [service], snapshots, [() => page.close()]);
   }
 });

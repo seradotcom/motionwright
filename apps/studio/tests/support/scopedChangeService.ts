@@ -11,6 +11,7 @@ import { access, cp, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
 import type {
   Bootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
@@ -77,6 +78,32 @@ export interface ServiceProcessExit {
   observedAt: string;
 }
 
+export interface ServiceLifecycleTaint {
+  kind: "pending_at_close" | "request_timeout" | "transport_failure" | "unclean_exit" | "close_deadline" | "unobserved_exit";
+  processId: number | undefined;
+  observedAt: string;
+  message: string;
+  pendingCommands: string[];
+}
+
+export interface StoredProjectOracle {
+  schemaVersion: 1;
+  observedAt: string;
+  project: Project;
+  journal: ProjectEvent[];
+  journalAfterRevisionExclusive: 0;
+  journalComplete: true;
+}
+
+export interface StoreFinalization {
+  schemaVersion: 1;
+  oracle: StoredProjectOracle | null;
+  preparation: { index: number; status: "fulfilled" | "rejected"; error?: string }[];
+  closures: { databasePath: string; status: "fulfilled" | "rejected"; error?: string; exits: ServiceProcessExit[]; taints: ServiceLifecycleTaint[] }[];
+  errors: string[];
+  capture: ClosedStoreCapture | null;
+}
+
 interface StoreEntry {
   path: string;
   kind: "directory" | "file";
@@ -116,7 +143,7 @@ export interface ClosedStoreCapture {
   sourceBeforeSha256: string;
   sourceAfterSha256: string;
   snapshotSha256: string;
-  lifecycle: { databasePath: string; exits: ServiceProcessExit[] }[];
+  lifecycle: { databasePath: string; exits: ServiceProcessExit[]; taints: ServiceLifecycleTaint[] }[];
   evidenceScope: string;
 }
 
@@ -127,6 +154,8 @@ export class ScopedChangeService {
   readonly binaryPath: string;
   readonly transcript: ServiceTranscriptEntry[] = [];
   readonly processExits: ServiceProcessExit[] = [];
+  /** Permanent for this helper, including across close()/start() lifetimes. */
+  readonly lifecycleTaints: ServiceLifecycleTaint[] = [];
   private readonly timeoutMs: number;
   private readonly seedFixture: boolean;
   private readonly desktopInvokeFixture: boolean;
@@ -180,21 +209,29 @@ export class ScopedChangeService {
       await service.bootstrap();
       return service;
     } catch (error) {
-      await service.close();
-      if (service.ownsDirectory) await rm(service.directory, { recursive: true, force: true });
+      const [closed] = await Promise.allSettled([service.close()]);
+      // Failed startup/transport stores remain available for diagnosis. Only
+      // an explicit dispose() of a clean helper removes its owned directory.
+      if (closed.status === "rejected") throw new AggregateError([error, closed.reason], "Service creation and its cleanup failed");
       throw error;
     }
   }
 
   get stderr(): string { return this.stderrText; }
 
+  private taint(kind: ServiceLifecycleTaint["kind"], message: string, child = this.child): void {
+    this.lifecycleTaints.push({ kind, processId: child?.pid, observedAt: new Date().toISOString(),
+      message, pendingCommands: [...this.pending.values()].map(request => request.command) });
+  }
+
   private failure(message: string): Error {
     const tail = this.stderrText.trim();
     return new Error(`${message}${tail ? `\nService stderr:\n${tail}` : ""}`);
   }
 
-  private rejectPending(error: Error): void {
-    for (const pending of this.pending.values()) {
+  private rejectPending(error: Error, ignoreLateResponses = false): void {
+    for (const [id, pending] of this.pending) {
+      if (ignoreLateResponses) this.timedOutIds.add(id);
       clearTimeout(pending.timer);
       pending.reject(error);
     }
@@ -223,6 +260,7 @@ export class ScopedChangeService {
       pending.resolve(response);
     } catch (error) {
       this.lastExit = `Invalid service JSONL response: ${String(error)}`;
+      this.taint("transport_failure", this.lastExit, child);
       this.rejectPending(this.failure(this.lastExit));
       child.kill();
     }
@@ -256,6 +294,8 @@ export class ScopedChangeService {
       child.once("close", (code, signal) => {
         const exit = { processId: child.pid, code, signal, observedAt: new Date().toISOString() };
         this.processExits.push(exit);
+        if (code !== 0 || signal !== null) this.taint("unclean_exit", `Process closed with code ${code}, signal ${signal ?? "none"}`, child);
+        if (this.pending.size) this.taint("transport_failure", "Process closed before all RPC responses were observed", child);
         lines.close();
         if (this.child === child) {
           this.child = null;
@@ -267,10 +307,20 @@ export class ScopedChangeService {
     });
     child.on("error", error => {
       this.lastExit = `Cannot run StudioService test process: ${error.message}`;
+      this.taint("transport_failure", this.lastExit, child);
       this.rejectPending(this.failure(this.lastExit));
     });
     child.stdin.on("error", error => {
+      this.taint("transport_failure", `StudioService stdin failed: ${error.message}`, child);
       this.rejectPending(this.failure(`StudioService stdin failed: ${error.message}`));
+    });
+    child.stdout.on("error", error => {
+      this.taint("transport_failure", `StudioService stdout failed: ${error.message}`, child);
+      this.rejectPending(this.failure(`StudioService stdout failed: ${error.message}`));
+    });
+    lines.on("error", error => {
+      this.taint("transport_failure", `StudioService JSONL reader failed: ${error.message}`, child);
+      this.rejectPending(this.failure(`StudioService JSONL reader failed: ${error.message}`));
     });
     await new Promise<void>((resolveSpawn, rejectSpawn) => {
       child.once("spawn", resolveSpawn);
@@ -282,7 +332,10 @@ export class ScopedChangeService {
 
   async rawRequest<T = unknown>(request: ServiceRpcRequest): Promise<ServiceRpcResponse<T>> {
     const child = this.child;
-    if (!child || this.closing) throw this.failure(`StudioService is not running: ${this.lastExit}`);
+    if (!child || this.closing) {
+      this.taint("transport_failure", `RPC ${request.command} was requested outside a running session`);
+      throw this.failure(`StudioService is not running: ${this.lastExit}`);
+    }
     const id = request.id ?? `${this.sessionId}:${++this.sequence}`;
     if (!((typeof id === "string" && id.length > 0) || (typeof id === "number" && Number.isSafeInteger(id)))) {
       throw new Error("RPC id must be a nonempty string or safe integer");
@@ -295,6 +348,7 @@ export class ScopedChangeService {
     this.transcript.push({ at: new Date().toISOString(), processId: child.pid, direction: "request", payload: JSON.parse(wire) as ServiceRpcRequest });
     return new Promise<ServiceRpcResponse<T>>((resolveResponse, rejectResponse) => {
       const timer = setTimeout(() => {
+        this.taint("request_timeout", `StudioService ${request.command} (id ${key}) timed out after ${this.timeoutMs} ms; its outcome is unconfirmed`, child);
         this.pending.delete(key);
         this.timedOutIds.add(key);
         rejectResponse(this.failure(`StudioService ${request.command} (id ${key}) timed out after ${this.timeoutMs} ms; the request was not retried and may already have committed`));
@@ -307,6 +361,7 @@ export class ScopedChangeService {
       });
       child.stdin.write(wire + "\n", error => {
         if (!error) return;
+        this.taint("transport_failure", `Could not write StudioService ${request.command} (id ${key}): ${error.message}`, child);
         const pending = this.pending.get(key);
         if (!pending) return;
         clearTimeout(pending.timer);
@@ -325,9 +380,11 @@ export class ScopedChangeService {
   async bootstrap(): Promise<ServiceBootstrap> {
     const response = await this.invoke<ServiceBootstrap>("bootstrap");
     if (response.test_transport !== "service-test-jsonl" || response.fixture?.label !== "synthetic_test_fixture") {
+      this.taint("transport_failure", "The executable did not identify the required real-service test transport");
       throw new Error("The executable did not identify the real-service synthetic test transport");
     }
     if (this.desktopInvokeFixture && (!response.desktop_invoke_fixture || response.native_sdk.mode !== "tauri")) {
+      this.taint("transport_failure", "The executable did not identify the requested desktop-invoke fixture");
       throw new Error("The test executable did not enable the explicitly requested browser desktop-invoke fixture");
     }
     return response;
@@ -344,6 +401,28 @@ export class ScopedChangeService {
 
   history(projectId: string, afterRevision = 0, limit = 100): Promise<ProjectEvent[]> {
     return this.invoke<ProjectEvent[]>("project_history", { request: { project_id: projectId, after_revision: afterRevision, limit } });
+  }
+
+  /** Complete canonical comparison, collected before any final store closure. */
+  async observeStoredProject(expected: Project): Promise<StoredProjectOracle> {
+    const project = await this.project(expected.id);
+    if (!isDeepStrictEqual(project, expected)) throw new Error("The current stored Project differs from the final Project observed by the test");
+    const journal: ProjectEvent[] = [];
+    let afterRevision = 0;
+    for (;;) {
+      const page = await this.history(project.id, afterRevision, 100);
+      if (!page.length) break;
+      for (const event of page) {
+        if (!Number.isSafeInteger(event.revision) || event.revision <= afterRevision || event.revision > project.revision) {
+          throw new Error("The full journal is unordered, repeated, or ahead of the observed Project");
+        }
+        afterRevision = event.revision;
+        journal.push(event);
+      }
+    }
+    if (!isDeepStrictEqual(await this.project(expected.id), project)) throw new Error("The stored Project changed while collecting its full journal");
+    return { schemaVersion: 1, observedAt: new Date().toISOString(), project, journal,
+      journalAfterRevisionExclusive: 0, journalComplete: true };
   }
 
   async apply(project: Project, change: Change): Promise<Project> {
@@ -437,18 +516,82 @@ export class ScopedChangeService {
     if (this.starting) await this.starting.catch(() => undefined);
     const child = this.child;
     const exited = this.exited;
-    if (!exited) return;
+    if (!exited) {
+      if (this.lifecycleTaints.length) throw this.failure("StudioService lifecycle is tainted and has no observed exit");
+      return;
+    }
     const requireCleanExit = (exit: ServiceProcessExit): void => {
       if (exit.code !== 0 || exit.signal !== null) {
         throw this.failure(`StudioService did not close cleanly (pid ${exit.processId}, code ${exit.code}, signal ${exit.signal ?? "none"})`);
       }
+      if (this.lifecycleTaints.length) throw this.failure(`StudioService lifecycle is tainted: ${this.lifecycleTaints.map(taint => taint.kind + ": " + taint.message).join("; ")}`);
     };
     if (!child) { requireCleanExit(await exited); return; }
-    this.rejectPending(this.failure("StudioService test session closed before pending RPCs finished"));
-    child.stdin.end();
-    const forceStop = setTimeout(() => child.kill("SIGKILL"), 2_000);
-    try { requireCleanExit(await exited); }
-    finally { clearTimeout(forceStop); }
+    if (this.pending.size) this.taint("pending_at_close", "Close was requested with unresolved RPCs", child);
+    this.rejectPending(this.failure("StudioService test session closed before pending RPCs finished"), true);
+    try { child.stdin.end(); }
+    catch (error) { this.taint("transport_failure", `Could not end StudioService stdin: ${String(error)}`, child); }
+    let forceStop: ReturnType<typeof setTimeout> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const missingExit = new Promise<never>((_resolve, reject) => {
+      forceStop = setTimeout(() => {
+        this.taint("close_deadline", "Graceful close exceeded 2000 ms; forced termination was attempted", child);
+        try { child.kill("SIGKILL"); }
+        catch (error) { this.taint("transport_failure", `Forced termination failed: ${String(error)}`, child); }
+        deadline = setTimeout(() => {
+          this.taint("unobserved_exit", "No close event was observed after the termination grace period", child);
+          reject(this.failure("StudioService close has no observed exit; capture is forbidden"));
+        }, 2_000);
+      }, 2_000);
+    });
+    try { requireCleanExit(await Promise.race([exited, missingExit])); }
+    finally { clearTimeout(forceStop); clearTimeout(deadline); }
+  }
+
+  private storeParticipants(peers: ScopedChangeService[]): ScopedChangeService[] {
+    const identity = (directory: string) => process.platform === "win32" ? resolve(directory).toLowerCase() : resolve(directory);
+    const source = identity(this.directory);
+    return [...new Set([this, ...peers, ...[...ScopedChangeService.instances].filter(service => identity(service.directory) === source)])];
+  }
+
+  /**
+   * One finalization per store: quiesce browser/gates, observe the full oracle,
+   * attempt every peer's close, retain every outcome, then capture only if clean.
+   * The caller's runner still seals the complete capture before returning.
+   */
+  async finalizeClosedStore(destination: string, expected: Project | undefined, peers: ScopedChangeService[] = [], prepare: (() => Promise<unknown>)[] = []): Promise<StoreFinalization> {
+    const participants = this.storeParticipants(peers);
+    const result: StoreFinalization = { schemaVersion: 1, oracle: null, preparation: [], closures: [], errors: [], capture: null };
+    const prepared = await Promise.allSettled(prepare.map(action => Promise.resolve().then(action)));
+    result.preparation = prepared.map((outcome, index) => outcome.status === "fulfilled"
+      ? { index, status: "fulfilled" } : { index, status: "rejected", error: String(outcome.reason) });
+    result.errors.push(...result.preparation.flatMap(outcome => outcome.error ? [outcome.error] : []));
+    try {
+      if (!expected) throw new Error("No final Project oracle was observed by the test before closure");
+      // A final read drains each running peer's earlier JSONL requests; closed
+      // peers are not restarted just to make evidence appear complete.
+      for (const service of participants) if (service !== this && service.child) {
+        if (!isDeepStrictEqual(await service.project(expected.id), expected)) throw new Error("A peer's final stored Project differs from the expected Project");
+      }
+      result.oracle = await this.observeStoredProject(expected);
+    } catch (error) { result.errors.push(String(error)); }
+    const closed = await Promise.allSettled(participants.map(service => service.close()));
+    result.closures = closed.map((outcome, index) => ({ databasePath: participants[index].databasePath,
+      status: outcome.status, ...(outcome.status === "rejected" ? { error: String(outcome.reason) } : {}),
+      exits: structuredClone(participants[index].processExits), taints: structuredClone(participants[index].lifecycleTaints) }));
+    result.errors.push(...result.closures.flatMap(outcome => outcome.error ? [outcome.error] : []));
+    await mkdir(dirname(destination), { recursive: true });
+    const outcomePath = destination + "-outcomes.json";
+    await writeFile(outcomePath, JSON.stringify(result, null, 2), { flag: "wx" });
+    if (result.errors.length) throw new AggregateError(result.errors.map(error => new Error(error)), "Store finalization is incomplete; all peer close outcomes were retained");
+    try {
+      result.capture = await this.captureClosedStore(destination, participants);
+      await writeFile(join(destination, "oracle.json"), JSON.stringify(result.oracle, null, 2), { flag: "wx" });
+    } catch (error) {
+      result.errors.push(String(error));
+      throw error;
+    } finally { await writeFile(outcomePath, JSON.stringify(result, null, 2)); }
+    return result;
   }
 
   /**
@@ -469,12 +612,11 @@ export class ScopedChangeService {
     if (!outside) {
       throw new Error("Closed store capture destination must be outside its source directory");
     }
-    const participants = new Set([this, ...peers, ...[...ScopedChangeService.instances]
-      .filter(service => resolve(service.directory) === sourceDirectory)]);
+    const participants = this.storeParticipants(peers);
     for (const service of participants) {
-      if (service.child || service.starting || service.closing || service.processExits.length === 0 ||
+      if (service.lifecycleTaints.length || service.pending.size || service.child || service.starting || service.closing || service.processExits.length === 0 ||
           service.processExits.some(exit => exit.code !== 0 || exit.signal !== null)) {
-        throw new Error(`Close every service peer cleanly before capturing ${service.databasePath}`);
+        throw new Error(`Close every service peer cleanly and without lifecycle taint before capturing ${service.databasePath}`);
       }
     }
     const before = await storeTree(sourceDirectory);
@@ -499,7 +641,7 @@ export class ScopedChangeService {
       entries: before, sourceBeforeSha256: digest(beforeJson), sourceAfterSha256: digest(afterJson),
       snapshotSha256: digest(copiedJson),
       lifecycle: [...participants].map(service => ({ databasePath: service.databasePath,
-        exits: service.processExits.map(exit => ({ ...exit })) })),
+        exits: service.processExits.map(exit => ({ ...exit })), taints: structuredClone(service.lifecycleTaints) })),
       evidenceScope: "complete_closed_store_copy_with_verified_helper_exits; unopened_snapshot; later_archive_reopen_verification_required",
     };
     await writeFile(join(target, "manifest.json"), JSON.stringify(capture, null, 2), { flag: "wx" });
