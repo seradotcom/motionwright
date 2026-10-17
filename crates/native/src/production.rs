@@ -3589,4 +3589,432 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
     }
+
+    // These subprocesses are deliberately local test fixtures, not a Semwright
+    // provider, a render, a native receipt, or evidence of external effect authority.
+    #[cfg(unix)]
+    fn transport_fixture_envelope(command: &str) -> Envelope {
+        let authority = expected_authority(command).unwrap();
+        let mut envelope = Envelope::finish(
+            "transport-fixture-broker-response".into(),
+            command.into(),
+            authority.provider.into(),
+            Duration::from_millis(1),
+            false,
+            Ok(json!({"fixture_response": true})),
+        );
+        envelope.execution.provenance = Some(InvocationProvenance {
+            provider: authority.provider.into(),
+            source: authority.source,
+            provider_version: "test-fixture".into(),
+            capability_version: "test-fixture".into(),
+            descriptor_sha256: "a4".repeat(32),
+            untrusted_metadata: false,
+            catalog_revision: 1,
+            execution_provider: Some(authority.provider.into()),
+            provider_generation: Some(1),
+        });
+        envelope
+    }
+
+    #[cfg(unix)]
+    fn transport_response_fixture(
+        temp: &tempfile::TempDir,
+        resource: String,
+        response: &[u8],
+        exit_code: i32,
+        effect_marker: bool,
+    ) -> ProductionConnection {
+        let mut connection = fake_connection(temp, resource);
+        let response_path = temp.path().join("transport-response.json");
+        fs::write(&response_path, response).unwrap();
+        let quote = |path: &Path| path.to_str().unwrap().replace('\'', "'\\''");
+        let effect = if effect_marker {
+            format!(
+                "printf 'effect\\n' >> '{}'\n",
+                quote(&temp.path().join("fixture-effect.txt"))
+            )
+        } else {
+            String::new()
+        };
+        let script = format!(
+            "#!/bin/sh\nprintf 'invoked\\n' >> '{}'\n{}cat '{}'\nexit {}\n",
+            quote(&temp.path().join("fixture-invocations.txt")),
+            effect,
+            quote(&response_path),
+            exit_code,
+        );
+        fs::write(&connection.executable, script).unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        connection
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn post_spawn_observation_losses_preserve_original_unknown_after_store_reopen() {
+        const COMMAND: &str = "driver.motion-canvas.composition.apply";
+        let valid = serde_json::to_value(transport_fixture_envelope(COMMAND)).unwrap();
+        let encoded = |value: Value| serde_json::to_vec(&value).unwrap();
+        let mut cases: Vec<(&str, Vec<u8>, i32, ErrorCode, &str)> = vec![
+            ("malformed", b"{broken".to_vec(), 0, ErrorCode::BackendFailed,
+                "Semwright CLI returned an invalid response envelope"),
+            ("missing", vec![], 0, ErrorCode::BackendFailed,
+                "Semwright CLI returned an invalid response envelope"),
+            ("partial-error", br#"{"ok":false,"error":{"code":"BackendFailed","message":"incomplete","outcome_known":true}}"#.to_vec(), 1,
+                ErrorCode::BackendFailed, "Semwright CLI returned an invalid response envelope"),
+            ("budget", vec![b'x'; MAX_OUTPUT_BYTES + 1], 0, ErrorCode::ResourceExhausted,
+                "Semwright CLI response exceeded the transport budget"),
+            ("exit-conflict", encoded(valid.clone()), 1, ErrorCode::BackendFailed,
+                "Semwright CLI success response is inconsistent"),
+        ];
+        for (name, pointer, replacement, message) in [
+            (
+                "foreign-command",
+                "/command",
+                json!("driver.blender.collection.create"),
+                "Semwright CLI response command does not match the request",
+            ),
+            (
+                "missing-request",
+                "/request_id",
+                json!(""),
+                "Semwright CLI response request identity is invalid",
+            ),
+            (
+                "missing-provenance",
+                "/execution/provenance",
+                Value::Null,
+                "Canonical production response has no provenance",
+            ),
+            (
+                "foreign-provenance",
+                "/execution/provenance/provider",
+                json!("driver:blender"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "untrusted-provenance",
+                "/execution/provenance/untrusted_metadata",
+                json!(true),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "dry-run",
+                "/execution/dry_run",
+                json!(true),
+                "Semwright CLI success response is inconsistent",
+            ),
+            (
+                "missing-data",
+                "/data",
+                Value::Null,
+                "Canonical production response has no data",
+            ),
+        ] {
+            let mut changed = valid.clone();
+            *changed.pointer_mut(pointer).unwrap() = replacement;
+            cases.push((name, encoded(changed), 0, ErrorCode::BackendFailed, message));
+        }
+        let mut untyped = valid.clone();
+        untyped["ok"] = json!(false);
+        untyped["data"] = Value::Null;
+        untyped["error"] = Value::Null;
+        cases.push((
+            "missing-typed-error",
+            encoded(untyped),
+            1,
+            ErrorCode::BackendFailed,
+            "Canonical production command failed without a typed error",
+        ));
+        let mut contradictory = valid.clone();
+        contradictory["ok"] = json!(false);
+        contradictory["error"] =
+            serde_json::to_value(Error::new(ErrorCode::PolicyDenied, "denied")).unwrap();
+        cases.push((
+            "failure-with-data",
+            encoded(contradictory),
+            3,
+            ErrorCode::BackendFailed,
+            "Semwright CLI failure response is inconsistent",
+        ));
+
+        // Even a complete typed known denial cannot describe this real
+        // invocation as a dry run. The fixture records its effect before
+        // emitting the contradictory response; the original outcome stays UNKNOWN.
+        let denial = Error::new(ErrorCode::PolicyDenied, "Fixture dry-run denial");
+        assert!(denial.outcome_known);
+        assert_eq!(denial.exit_code(), 3);
+        let dry_run_denial = Envelope::finish(
+            "dry-run-denial".into(),
+            COMMAND.into(),
+            "semwright-core".into(),
+            Duration::from_millis(1),
+            true,
+            Err(denial),
+        );
+        assert!(dry_run_denial.data.is_none());
+        cases.push((
+            "failure-dry-run",
+            serde_json::to_vec(&dry_run_denial).unwrap(),
+            3,
+            ErrorCode::BackendFailed,
+            "Semwright CLI failure response is inconsistent",
+        ));
+        assert_eq!(cases.len(), 15);
+
+        for (name, response, exit_code, code, message) in cases {
+            let (service, project, temp) = fixture_service();
+            let original_project = serde_json::to_value(&project).unwrap();
+            let connection = transport_response_fixture(
+                &temp,
+                project.resource_key(),
+                &response,
+                exit_code,
+                true,
+            );
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let request_id = format!("post-spawn-{name}");
+            let args = json!({"plan_ref":"fixture-only-plan"});
+            let error = coordinator
+                .execute(
+                    project.id,
+                    &project.stamp(),
+                    &request_id,
+                    COMMAND,
+                    args.clone(),
+                    true,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, code, "{name}");
+            assert_eq!(error.message, message, "{name}");
+            assert!(!error.outcome_known, "{name}");
+            assert_eq!(
+                fs::read(temp.path().join("fixture-effect.txt")).unwrap(),
+                b"effect\n",
+                "{name}"
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+                "{name}"
+            );
+            assert_eq!(
+                fs::read_dir(&coordinator.client.connection().output_root)
+                    .unwrap()
+                    .count(),
+                0
+            );
+            drop(coordinator);
+            drop(service);
+
+            // Only reopen and read the original attempt. No execute call retries it.
+            let reopened = StudioService::from_store(
+                Store::open(temp.path().join("motionwright.sqlite3")).unwrap(),
+            );
+            let receipt = reopened
+                .latest_production_receipt(project.id, &request_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(receipt.stage, "outcome_unknown", "{name}");
+            assert_eq!(receipt.command, COMMAND);
+            assert_eq!(receipt.generation, project.generation);
+            assert_eq!(receipt.revision, project.revision);
+            assert_eq!(
+                receipt.request_sha256,
+                request_digest(COMMAND, &args).unwrap()
+            );
+            assert_eq!(receipt.payload["error"]["outcome_known"], false);
+            assert_eq!(receipt.payload["mutation"], true);
+            let rows = reopened.production_receipts(project.id, 10).unwrap();
+            assert_eq!(rows.len(), 2, "{name}");
+            assert_eq!(
+                rows.iter().filter(|row| row.stage == "dispatching").count(),
+                1
+            );
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.stage == "failed_known")
+                    .count(),
+                0
+            );
+            assert_eq!(
+                serde_json::to_value(reopened.project(project.id).unwrap()).unwrap(),
+                original_project
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn complete_typed_denials_keep_their_known_or_unknown_outcome() {
+        const COMMAND: &str = "driver.motion-canvas.composition.apply";
+        for known in [true, false] {
+            let (service, project, temp) = fixture_service();
+            let typed = if known {
+                Error::new(ErrorCode::PolicyDenied, "Fixture policy denied dispatch")
+            } else {
+                Error::new(ErrorCode::Unavailable, "Fixture lost the original response").uncertain()
+            };
+            let exit_code = typed.exit_code();
+            // A genuine pre-dispatch Broker denial need not have Driver provenance.
+            // Envelope::finish is the public pinned SDK constructor for this case.
+            let envelope = Envelope::finish(
+                "typed-denial".into(),
+                COMMAND.into(),
+                "semwright-core".into(),
+                Duration::from_millis(1),
+                false,
+                Err(typed.clone()),
+            );
+            let connection = transport_response_fixture(
+                &temp,
+                project.resource_key(),
+                &serde_json::to_vec(&envelope).unwrap(),
+                exit_code,
+                !known,
+            );
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let error = coordinator
+                .execute(
+                    project.id,
+                    &project.stamp(),
+                    "typed-denial-original",
+                    COMMAND,
+                    json!({}),
+                    true,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, typed.code);
+            assert_eq!(error.message, typed.message);
+            assert_eq!(error.outcome_known, known);
+            let receipt = service
+                .latest_production_receipt(project.id, "typed-denial-original")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                receipt.stage,
+                if known {
+                    "failed_known"
+                } else {
+                    "outcome_unknown"
+                }
+            );
+            assert_eq!(temp.path().join("fixture-effect.txt").exists(), !known);
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_dispatch_rejections_and_readonly_transport_losses_remain_known() {
+        let (service, project, temp) = fixture_service();
+        let connection =
+            transport_response_fixture(&temp, project.resource_key(), b"{broken", 0, false);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let mut stale = project.stamp();
+        stale.revision += 1;
+        let error = coordinator
+            .execute(
+                project.id,
+                &stale,
+                "pre-dispatch-stale",
+                "driver.motion-canvas.composition.apply",
+                json!({}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert!(error.outcome_known);
+        assert!(!temp.path().join("fixture-invocations.txt").exists());
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        let error = coordinator
+            .client
+            .execute(
+                "driver.motion-canvas.composition.apply",
+                json!({"oversized":"x".repeat(MAX_ARGS_BYTES)}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.outcome_known);
+        assert!(!temp.path().join("fixture-invocations.txt").exists());
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "read-only-observation",
+                "driver.motion-canvas.composition.inspect",
+                json!({}),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::BackendFailed);
+        assert!(error.outcome_known);
+        assert!(!temp.path().join("fixture-effect.txt").exists());
+        let receipt = service
+            .latest_production_receipt(project.id, "read-only-observation")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.stage, "failed_known");
+        assert_eq!(receipt.payload["mutation"], false);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workflow_mutation_classification_is_preserved_in_original_receipts() {
+        let (service, project, temp) = fixture_service();
+        let connection =
+            transport_response_fixture(&temp, project.resource_key(), b"{broken", 0, true);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "original-workflow-action",
+                "workflow.replay",
+                json!({}),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(!error.outcome_known);
+        let receipts = service.production_receipts(project.id, 10).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(|row| row.payload["mutation"] == true));
+        assert!(receipts.iter().any(|row| row.stage == "outcome_unknown"));
+        assert_eq!(
+            fs::read(temp.path().join("fixture-effect.txt")).unwrap(),
+            b"effect\n"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+            b"invoked\n"
+        );
+    }
 }
