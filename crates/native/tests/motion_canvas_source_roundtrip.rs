@@ -243,4 +243,83 @@ mod production {
         }));
         assert_eq!(observed.scenes[0].nodes[0].id, node_id);
     }
+    #[test]
+    fn pinned_semwright_managed_binding_rejects_stale_film_and_realization() {
+        let scratch = tempfile::tempdir().unwrap();
+        let service =
+            StudioService::open(scratch.path().join("native-managed-binding.sqlite3")).unwrap();
+        let (project, scene_id, node_id) = add_source(&service);
+        let first_segments = build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &film_options(scene_id),
+        )
+        .unwrap();
+        let original_film = first_segments[0].film.clone();
+        let original_realization = semwright_motion_authoring::realize(&original_film).unwrap();
+        assert!(!original_realization.instructions.is_empty());
+
+        // This is an authoritative pinned-type validation of the source
+        // binding only. It is not an actual provider registration, grant,
+        // native code generation, saved-source reopen, or render receipt.
+        let binding = semwright_motion_authoring::ManagedBinding {
+            schema_version: 1,
+            intent: original_film.clone(),
+            intent_digest: semwright_semantic_composition::canonical_digest(&original_film)
+                .unwrap(),
+            realization: original_realization.clone(),
+            realization_digest: semwright_semantic_composition::canonical_digest(
+                &original_realization,
+            )
+            .unwrap(),
+            projection_digest: semwright_semantic_composition::canonical_digest(
+                &serde_json::json!({"fixture_projection_not_host_verified": true}),
+            )
+            .unwrap(),
+        };
+        binding.validate().unwrap();
+
+        let mut stale_digest = binding.clone();
+        stale_digest.intent.output.width += 1;
+        assert!(
+            stale_digest.validate().is_err(),
+            "a changed Film must never reuse the prior intent digest"
+        );
+        let mut forged_realization = binding.clone();
+        forged_realization.realization.instructions.clear();
+        assert!(
+            forged_realization.validate().is_err(),
+            "a missing native instruction must never pass the old Film binding"
+        );
+        let mut edited_style = project.scenes[0].nodes[0].style.clone();
+        edited_style.fill = Some("#E85A35".into());
+        let edited = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "motion-canvas-source:pinned-binding-edit",
+                &Change::UpdateCanvasStyle {
+                    scene_id,
+                    node_id,
+                    style: edited_style,
+                },
+            )
+            .unwrap()
+            .project;
+        let edited_film = build_motion_canvas_segments(
+            &edited,
+            edited.deliverables[0].id,
+            &film_options(scene_id),
+        )
+        .unwrap()[0]
+            .film
+            .clone();
+        assert_ne!(edited_film, original_film);
+        let mut obsolete = binding;
+        obsolete.intent = edited_film;
+        assert!(
+            obsolete.validate().is_err(),
+            "edits must regenerate the pinned Film digest and realization"
+        );
+    }
 } // mod production

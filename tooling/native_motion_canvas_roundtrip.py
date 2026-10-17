@@ -259,7 +259,7 @@ def managed_node(project: dict, scene_id: str, node_id: str) -> dict:
 
 
 def managed_snapshot(root: Path, record: object, source_inventory: list[dict],
-                     count: int, width: int, height: int) -> dict:
+                     count: int, width: int, height: int, film: dict) -> dict:
     snapshot = checked_json(bounded_file(root, record))
     snapshot = exact(snapshot, {"project", "fingerprint", "refs", "generated"},
                      "invalid_managed_inspection")
@@ -283,6 +283,25 @@ def managed_snapshot(root: Path, record: object, source_inventory: list[dict],
             and (settings["width"], settings["height"], settings["fps"],
                  settings.get("fps_denominator", 1)) == (width, height, 30, 1),
             "managed_renderer_profile_differs_from_film")
+    # The exact pinned Semwright Motion Canvas authoring binding retains the
+    # original Film and digests. Matching generated files alone is insufficient:
+    # a valid unrelated managed project would otherwise be admitted.
+    authoring = managed.get("authoring")
+    authoring = exact(authoring, {
+        "schema_version", "intent", "intent_digest", "realization",
+        "realization_digest", "projection_digest"}, "managed_authoring_binding_missing")
+    require(type(authoring["schema_version"]) is int and authoring["schema_version"] == 1,
+            "managed_authoring_version_mismatch")
+    require(type(authoring["intent"]) is dict and authoring["intent"] == film,
+            "managed_authoring_intent_not_bound_to_film")
+    require(type(authoring["realization"]) is dict,
+            "managed_authoring_realization_missing")
+    for name in ("intent_digest", "realization_digest", "projection_digest"):
+        require(type(authoring[name]) is str and HEX.fullmatch(authoring[name]) is not None,
+                "managed_authoring_digest_malformed")
+    # Semantic validity of these typed digests is the pinned Host verifier's
+    # job. This reader checks shape and Film equality, not implementation
+    # of semwright_semantic_composition::canonical_digest.
     source_rows = snapshot["generated"]
     require(type(source_rows) is list and 1 <= len(source_rows) <= MAX_SOURCE_FILES,
             "managed_source_generated_inventory_required")
@@ -321,6 +340,10 @@ def assert_managed_edit(original: dict, edited: dict, request: dict) -> None:
     expected = copy.deepcopy(before)
     expected["revision"] = after["revision"]
     managed_node(expected, request["native_scene_id"], request["native_node_id"])["properties"]["fill"] = request["to"]
+    # ManagedBinding.intent/realization/digests change when the existing
+    # authorized compositor applies the edited canonical Film. Their exact
+    # recomputation must be verified by the native Host, not this Python gate.
+    expected["authoring"] = copy.deepcopy(after["authoring"])
     require(expected == after, "managed_edit_changed_unrelated_native_state")
     require(original["fingerprint"] != edited["fingerprint"],
             "managed_source_fingerprint_not_changed")
@@ -341,9 +364,14 @@ def one_stage(root: Path, stage: object, expected_count: int,
             and type(output.get("height")) is int
             and (output["width"], output["height"]) == (width, height),
             "film_output_geometry_changed")
+    native_clock = output.get("frame_rate")
+    require(type(native_clock) is dict and set(native_clock) == {"num", "den"}
+            and type(native_clock["num"]) is int and type(native_clock["den"]) is int
+            and (native_clock["num"], native_clock["den"]) == (30, 1),
+            "film_source_frame_rate_mismatch")
     inventory = source_files(root, stage["source_files"])
     native_snapshot = managed_snapshot(
-        root, stage["managed_inspection"], inventory, expected_count, width, height)
+        root, stage["managed_inspection"], inventory, expected_count, width, height, film)
     frames_path = safe_path(root, stage["frames_dir"], directory=True)
     rendered_frames = frames_path / "frames"
     require(rendered_frames.is_dir() and not rendered_frames.is_symlink()
@@ -443,6 +471,8 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
         "embedded_native_png_pts_verified": False,
         "actual_provider_session_and_native_grants_verified": False,
         "no_automatic_native_dispatch": True,
+        "managed_authoring_intent_equal_to_canonical_film": True,
+        "managed_authoring_digest_computation_independently_verified": False,
         "provider_authority_verified": False,
         "permissions_verified": False,
         "rights_verified": False,

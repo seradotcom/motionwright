@@ -73,7 +73,8 @@ def fixture(root: Path) -> dict:
     after["revision"] = 5
     after["updated_at"] = "2026-10-17T12:01:00Z"
     after["scenes"][0]["nodes"][0]["style"]["fill"] = "#E85A35"
-    original_film = {"output": {"width": 2, "height": 2},
+    original_film = {"output": {"width": 2, "height": 2,
+                                "frame_rate": {"num": 30, "den": 1}},
                      "sequences": [{"subject_id": NODE_ID, "color": "#F5F5F2",
                                     "frames": 3, "clock": "30/1"}]}
     edited_film = copy.deepcopy(original_film)
@@ -116,6 +117,15 @@ def fixture(root: Path) -> dict:
                                    "properties": {"fill": "#E85A35" if is_edited else "#F5F5F2"}}],
                         "animations": [], "cues": [], "transition": None}],
             "assets": [], "audio": [], "variables": {},
+            "authoring": {
+                "schema_version": 1,
+                "intent": copy.deepcopy(film),
+                "intent_digest": "d" * 64,
+                "realization": {"version": 1, "scenes": [], "schedule": {},
+                                "instructions": []},
+                "realization_digest": "e" * 64,
+                "projection_digest": "f" * 64,
+            },
         }
         native_source = entry["source_files"][0]
         managed = {
@@ -186,7 +196,8 @@ class PureRoundtripContractTests(unittest.TestCase):
             witness = fixture(root)
             row = witness["stages"]["original"]
             inventory = mc.source_files(root, row["source_files"])
-            native = mc.managed_snapshot(root, row["managed_inspection"], inventory, 3, 2, 2)
+            film = json.loads((root / row["film"]["path"]).read_text())
+            native = mc.managed_snapshot(root, row["managed_inspection"], inventory, 3, 2, 2, film)
             self.assertEqual(native["project"]["generation"], "a" * 32)
             self.assertNotEqual(native["project"]["generation"], GENERATION)
             self.assertEqual(len(native["generated"]), 1)
@@ -197,7 +208,46 @@ class PureRoundtripContractTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     mc.RoundtripRefused, "native_generated_source_does_not_match_retained_files"):
                 mc.managed_snapshot(root, witness["stages"]["original"]["managed_inspection"],
-                                    inventory, 3, 2, 2)
+                                    inventory, 3, 2, 2, film)
+
+    def test_foreign_managed_authoring_intent_is_never_bound_to_canonical_film(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            row = witness["stages"]["original"]
+            film = json.loads((root / row["film"]["path"]).read_text())
+            inventory = mc.source_files(root, row["source_files"])
+            native = mc.checked_json(mc.bounded_file(root, row["managed_inspection"]))
+            native["project"]["authoring"]["intent"]["sequences"][0]["color"] = "#000000"
+            replace_record(root, witness, "original", "managed_inspection",
+                           (json.dumps(native, sort_keys=True) + "\n").encode())
+            with self.assertRaisesRegex(mc.RoundtripRefused,
+                                        "managed_authoring_intent_not_bound_to_film"):
+                mc.managed_snapshot(root, witness["stages"]["original"]["managed_inspection"],
+                                    inventory, 3, 2, 2, film)
+
+    def test_native_binding_requires_full_shape_and_digest_wire(self):
+        for mutation, reason in (
+            (lambda doc: doc["project"].update(authoring=None),
+             "managed_authoring_binding_missing"),
+            (lambda doc: doc["project"]["authoring"].update(intent_digest="0" * 63),
+             "managed_authoring_digest_malformed"),
+            (lambda doc: doc["project"]["authoring"].update(schema_version=True),
+             "managed_authoring_version_mismatch"),
+        ):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                witness = fixture(root)
+                row = witness["stages"]["original"]
+                film = json.loads((root / row["film"]["path"]).read_text())
+                inventory = mc.source_files(root, row["source_files"])
+                native = mc.checked_json(mc.bounded_file(root, row["managed_inspection"]))
+                mutation(native)
+                replace_record(root, witness, "original", "managed_inspection",
+                               (json.dumps(native, sort_keys=True) + "\n").encode())
+                with self.assertRaisesRegex(mc.RoundtripRefused, reason):
+                    mc.managed_snapshot(root, witness["stages"]["original"]["managed_inspection"],
+                                        inventory, 3, 2, 2, film)
 
     def test_relative_path_escape_and_file_truncation_fail_before_decode(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -320,7 +370,9 @@ class RealSourceAndFrameInspection(unittest.TestCase):
         original = (self.root / self.witness["stages"]["original"]["film"]["path"]).read_bytes()
         for stage in ("edited", "edited_reopened"):
             replace_record(self.root, self.witness, stage, "film", original)
-        with self.assertRaisesRegex(mc.RoundtripRefused, "not_realized_in_film"):
+        with self.assertRaisesRegex(
+                mc.RoundtripRefused,
+                "managed_authoring_intent_not_bound_to_film|source_edit_not_realized_in_film"):
             self.inspect()
 
     def test_changed_frame_is_required_for_every_saved_fill_edit_index(self):
