@@ -3,6 +3,7 @@ mod file_import;
 mod jobs;
 mod mlt_cleanup;
 mod models;
+mod portability;
 mod project_creation;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
@@ -36,11 +37,11 @@ use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
-    BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, FileImportIntent, ImportPlan,
-    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
-    ProjectBackup, ProjectBundleManifest, ProjectCreationIntent, ProjectCreationOutcome,
-    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary, RenderWindowCacheKey,
-    RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
+    BundleFingerprint, BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, FileImportIntent,
+    ImportPlan, InspectedProjectBundle, PortableBlob, ProductionReceipt, ProductionReceiptInput,
+    ProductionReceiptWatermark, ProjectBackup, ProjectBundleManifest, ProjectCreationIntent,
+    ProjectCreationOutcome, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };
 use parking_lot::Mutex;
 use std::{
