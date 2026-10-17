@@ -146,6 +146,92 @@ def fixture(root: Path) -> dict:
     return witness
 
 
+class PureRoundtripContractTests(unittest.TestCase):
+    """Reader/source admission only: no subprocess, no native execution."""
+
+    def test_exact_json_rejects_duplicate_keys_and_nonfinite_numbers(self):
+        for data, reason in (
+            (b'{"revision":1,"revision":1}', "duplicate_json_key"),
+            (b'{"a":NaN}', "nonfinite_json_value"),
+            (b'{"a":Infinity}', "nonfinite_json_value"),
+        ):
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                    mc.RoundtripRefused, reason):
+                mc.checked_json(data)
+        self.assertEqual(mc.checked_json(b'{"ok":true}'), {"ok": True})
+
+    def test_production_profile_cannot_accept_three_frame_unit_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            with self.assertRaisesRegex(mc.RoundtripRefused, "required_native_60frame_profile"):
+                mc.inspect(root, witness)
+
+    def test_canonical_change_is_one_revision_and_preserves_source_rights(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            original = json.loads((root / witness["stages"]["original"]["project"]["path"]).read_text())
+            edited = json.loads((root / witness["stages"]["edited"]["project"]["path"]).read_text())
+            result = mc.assert_source_edit(original, edited, witness["edit"])
+            self.assertEqual(result["edited_revision"], result["previous_revision"] + 1)
+            forbidden = copy.deepcopy(edited)
+            forbidden["assets"][0]["rights"] = "unauthorized"
+            with self.assertRaisesRegex(mc.RoundtripRefused, "unrelated_intent_or_rights"):
+                mc.assert_source_edit(original, forbidden, witness["edit"])
+
+    def test_managed_project_and_generated_files_are_separate_pinned_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            row = witness["stages"]["original"]
+            inventory = mc.source_files(root, row["source_files"])
+            native = mc.managed_snapshot(root, row["managed_inspection"], inventory, 3, 2, 2)
+            self.assertEqual(native["project"]["generation"], "a" * 32)
+            self.assertNotEqual(native["project"]["generation"], GENERATION)
+            self.assertEqual(len(native["generated"]), 1)
+            tampered = json.loads((root / row["managed_inspection"]["path"]).read_text())
+            tampered["generated"][0]["sha256"] = "0" * 64
+            replace_record(root, witness, "original", "managed_inspection",
+                           (json.dumps(tampered, sort_keys=True) + "\n").encode())
+            with self.assertRaisesRegex(
+                    mc.RoundtripRefused, "native_generated_source_does_not_match_retained_files"):
+                mc.managed_snapshot(root, witness["stages"]["original"]["managed_inspection"],
+                                    inventory, 3, 2, 2)
+
+    def test_relative_path_escape_and_file_truncation_fail_before_decode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            for name in ("../private", "/absolute", "C:/other", "folder/../../escape"):
+                with self.subTest(name=name), self.assertRaises(mc.RoundtripRefused):
+                    mc.safe_path(root, name)
+            record = witness["stages"]["original"]["source_files"][0]
+            raw = {key: record[key] for key in ("path", "bytes", "sha256")}
+            self.assertEqual(len(mc.bounded_file(root, raw)), record["bytes"])
+            (root / record["path"]).write_bytes(b"short")
+            with self.assertRaisesRegex(mc.RoundtripRefused, "physical_source_size_changed"):
+                mc.bounded_file(root, raw)
+
+    def test_native_managed_edit_rejects_reused_generation_and_unrelated_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            witness = fixture(root)
+            one = witness["stages"]["original"]["managed_inspection"]
+            two = witness["stages"]["edited"]["managed_inspection"]
+            original = mc.checked_json(mc.bounded_file(root, one))
+            edited = mc.checked_json(mc.bounded_file(root, two))
+            mc.assert_managed_edit(original, edited, witness["edit"])
+            wrong = copy.deepcopy(edited)
+            wrong["project"]["generation"] = "f" * 32
+            with self.assertRaisesRegex(mc.RoundtripRefused, "managed_edit_identity_or_revision_changed"):
+                mc.assert_managed_edit(original, wrong, witness["edit"])
+
+
+@unittest.skipUnless(
+    shutil.which("ffmpeg"),
+    "Independent FFmpeg required: execute these 20 physical tests in the A6 multimedia lane; never count skips as acceptance",
+)
 class RealSourceAndFrameInspection(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
