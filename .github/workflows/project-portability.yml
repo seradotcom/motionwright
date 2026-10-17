@@ -29,6 +29,15 @@ on:
       - "docs/reliability/project-process-recovery.md"
       - ".github/workflows/project-portability.yml"
   workflow_dispatch:
+    inputs:
+      scope:
+        description: "all keeps the integration gates; row-cas selects physical blob and row authority regressions on each operating system"
+        type: choice
+        required: false
+        default: all
+        options:
+          - all
+          - row-cas
 
 permissions:
   contents: read
@@ -57,7 +66,7 @@ jobs:
         run: cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
 
   file-import-platforms:
-    name: File import authority and CAS (${{ matrix.os }})
+    name: Storage authority and CAS (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -66,6 +75,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     env:
       CARGO_TERM_COLOR: never
+      SELECTED_STORAGE_SCOPE: "${{ github.event_name == 'workflow_dispatch' && inputs.scope || 'all' }}"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -75,7 +85,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify exact checkout and selective file import contracts
+      - name: Verify exact checkout and selective storage contracts
         shell: python
         run: |
           import hashlib, json, os, re, subprocess
@@ -84,6 +94,9 @@ jobs:
           def git(*args):
               return subprocess.check_output(["git", *args], encoding="utf-8", errors="replace").strip()
 
+          selection = os.environ["SELECTED_STORAGE_SCOPE"]
+          if selection not in {"all", "row-cas"}:
+              raise SystemExit("storage-platform-selection-invalid")
           actual = git("rev-parse", "HEAD")
           if actual != os.environ["GITHUB_SHA"] or git("status", "--porcelain", "--untracked-files=no"):
               raise SystemExit("file-import-platform-checkout-mismatch")
@@ -102,6 +115,7 @@ jobs:
               "pr_base": (pr.get("base") or {}).get("sha"),
               "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "runner_os": os.environ["RUNNER_OS"],
+              "selection": selection,
               "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
               "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
               "results": [],
@@ -128,6 +142,36 @@ jobs:
                   "file_import::staging_tests::dropping_duplicate_stages_and_rejecting_stale_import_preserve_blob",
               }),
           ]
+          cases += [
+              ("row-authority", ["-p", "motionwright-storage", "--test", "project_row_authority"], {
+                  "a_valid_document_in_the_wrong_row_cannot_redirect_a_commit",
+                  "corrupt_current_row_is_rejected_before_receipt_replay",
+                  "corrupt_row_rejection_precedes_missing_cas_source_access",
+                  "cross_project_rejection_preserves_both_receipt_and_cache_streams",
+                  "exact_title_and_column_only_summary_contract_remain_compatible",
+                  "file_import_absence_does_not_bypass_current_row_validation",
+                  "full_project_lists_reject_individually_corrupted_authority_columns",
+                  "full_project_loads_reject_individually_corrupted_authority_columns",
+                  "historical_import_survives_later_edits_and_source_deletion_but_not_row_corruption",
+                  "historical_production_observation_and_exact_recovery_claim_keep_distinct_rules",
+                  "new_commits_reject_individually_corrupted_columns_without_effects",
+                  "ordinary_project_commits_replay_and_reopen_keep_their_own_identity",
+                  "production_append_rejects_corrupt_rows_before_recording_observations",
+                  "recovery_claim_rejects_corrupt_rows_before_allocating_an_attempt",
+              }),
+              ("bounded-cas", ["-p", "motionwright-storage", "--lib", "bounded_blob_read_tests::"], {
+                  "bounded_blob_read_tests::admitted_empty_file_cannot_expand_to_one_valid_digest_byte",
+                  "bounded_blob_read_tests::initially_oversized_file_is_rejected_before_the_capture_boundary",
+                  "bounded_blob_read_tests::physical_mutation_after_capture_cannot_return_pre_mutation_bytes",
+                  "bounded_blob_read_tests::real_growth_stops_at_the_original_length_plus_one",
+                  "bounded_blob_read_tests::real_shrink_cannot_pass_with_the_shorter_matching_digest",
+                  "bounded_blob_read_tests::replacement_with_equal_bytes_length_and_mtime_is_rejected",
+                  "bounded_blob_read_tests::stable_empty_and_multichunk_files_keep_the_exact_budget",
+                  "bounded_blob_read_tests::stable_wrong_digest_still_fails_without_mutation",
+              }),
+          ]
+          if selection == "row-cas":
+              cases = cases[-2:]
           for suite, selector, expected in cases:
               command = ["cargo", "test", "--locked", *selector, "--", "--test-threads=1"]
               result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -164,6 +208,7 @@ jobs:
           if receipt["status"] != "PASS":
               raise SystemExit("file-import-platform-tests-not-verified")
       - name: Build and verify committed recovery after actual process termination
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.scope != 'row-cas' }}
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         shell: python
@@ -464,7 +509,7 @@ jobs:
           path: verification/file-import-platforms
           if-no-files-found: error
       - name: Retain complete process case and source-bound build logs
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.scope != 'row-cas') }}
         uses: actions/upload-artifact@v4
         with:
           name: project-process-platform-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
