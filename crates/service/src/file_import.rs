@@ -120,10 +120,10 @@ impl StudioService {
             return Ok(confirmed.outcome);
         }
 
-        if let FileImportIntent::Voice { media_type, .. } = &intent {
-            if !media_type.starts_with("audio/") {
-                return Err(invalid_import("voice import requires an audio media type"));
-            }
+        if let FileImportIntent::Voice { media_type, .. } = &intent
+            && !media_type.starts_with("audio/")
+        {
+            return Err(invalid_import("voice import requires an audio media type"));
         }
         let staged = self.store.lock().stage_file_import(source)?;
         let source_sha256 = staged.descriptor().sha256.clone();

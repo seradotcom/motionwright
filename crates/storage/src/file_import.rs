@@ -77,12 +77,12 @@ fn verify_import_binding(
         .as_deref()
         .ok_or_else(|| invalid_receipt("import event has no source digest"))?;
     validate_digest(source_sha256).map_err(|_| invalid_receipt("invalid import source digest"))?;
-    if let Some(track) = track {
-        if track.source_sha256 != source_sha256 {
-            return Err(invalid_receipt(
-                "voice track and asset source digests differ",
-            ));
-        }
+    if let Some(track) = track
+        && track.source_sha256 != source_sha256
+    {
+        return Err(invalid_receipt(
+            "voice track and asset source digests differ",
+        ));
     }
     let matches_intent = match (intent, track) {
         (FileImportIntent::Asset { name, media_type }, None) => {
