@@ -5,6 +5,7 @@
  * Every actual cut is rechecked by the Rust domain behind the native SDK.
  */
 import type { Project, RationalTime } from "./types";
+import { validateSfxProject } from "./semanticSfx";
 
 type Fraction = { n: bigint; d: bigint };
 const MAX_TIME = 86_400n;
@@ -109,6 +110,7 @@ export interface MusicCutProposal {
   ripple: RationalTime;
   downstream_scene_ids: string[];
   affected_cue_count: number;
+  affected_sfx_cue_count: number;
   affected_marker_count: number;
   affected_transcript_count: number;
   approval_invalidated: boolean;
@@ -165,27 +167,48 @@ export function inspectMusicCut(
   const cueCount=project.audio.cues.filter(cue=>compare(fraction(cue.at),firstAffected)>=0).length;
   const markerCount=project.markers.filter(marker=>compare(fraction(marker.at),firstAffected)>=0).length;
   const transcriptCount=project.audio.transcript.filter(segment=>compare(fraction(segment.end),firstAffected)>0).length;
+  // Evaluate the actual new scene durations/starts, not the current cue
+  // schedule, before presenting an actionable preview.
+  const projected=structuredClone(project);
+  projected.scenes[index].duration=asTime(newDuration);
+  let projectedCursor:Fraction=ZERO;
+  for(const item of projected.scenes){
+    item.start=asTime(projectedCursor);
+    projectedCursor=add(projectedCursor,fraction(item.duration));
+  }
+  try {validateSfxProject(projected);}
+  catch(e) {throw new Error("Music cut would invalidate semantic SFX tail or mix: "+
+    (e instanceof Error?e.message:String(e)));}
+  const affectedSfx=(project.audio.sfx_cues??[]).filter(cue=>
+    project.scenes.slice(index).some(s=>s.id===cue.scene_id)).length;
   return {
     scene_id:scene.id,beat_index:beatIndex,asset_id:source.id,source_sha256:source.content_sha256,
     original_end:asTime(oldEnd),target_end:asTime(target),
     old_duration:asTime(duration),new_duration:asTime(newDuration),ripple:asTime(delta),
     downstream_scene_ids:affected.slice(1).map(s=>s.id),
-    affected_cue_count:cueCount,affected_marker_count:markerCount,
+    affected_cue_count:cueCount,affected_sfx_cue_count:affectedSfx,
+    affected_marker_count:markerCount,
     affected_transcript_count:transcriptCount,approval_invalidated:!!plan.approval,
-    anchors_need_acknowledgement:cueCount+markerCount+transcriptCount>0,
+    anchors_need_acknowledgement:cueCount+affectedSfx+markerCount+transcriptCount>0,
   };
 }
 
 export function applyMusicCutToProject(project: Project, proposal: MusicCutProposal): void {
   const scene=project.scenes.find(s=>s.id===proposal.scene_id);
   if (!scene) throw new Error("Scene is no longer in the project.");
-  scene.duration=structuredClone(proposal.new_duration);
-  scene.status="draft";
+  const projected=structuredClone(project);
+  const stagedScene=projected.scenes.find(s=>s.id===proposal.scene_id)!;
+  stagedScene.duration=structuredClone(proposal.new_duration);
+  stagedScene.status="draft";
   let cursor: Fraction=ZERO;
-  for (const item of project.scenes) {
+  for (let i=0;i<projected.scenes.length;i++) {
+    const item=projected.scenes[i];
+    if(compare(fraction(project.scenes[i].start),cursor)!==0)item.status="draft";
     item.start=asTime(cursor);
     cursor=add(cursor,fraction(item.duration));
   }
+  validateSfxProject(projected);
+  project.scenes=projected.scenes;
   if (project.production_design?.plan) project.production_design.plan.approval=null;
   // Important: absolute-time cues, markers and transcript segments remain
   // unchanged; the operator must manually resolve the disclosed impacts.
@@ -214,6 +237,7 @@ export interface MusicConformReview {
   original_duration:RationalTime;
   conformed_duration:RationalTime;
   affected_cue_count:number;
+  affected_sfx_cue_count:number;
   affected_marker_count:number;
   affected_transcript_count:number;
   approval_invalidated:boolean;
@@ -305,15 +329,27 @@ export function inspectMusicConform(
     compare(fraction(marker.at),threshold)>=0).length;
   const transcript=project.audio.transcript.filter(segment=>
     compare(fraction(segment.end),threshold)>0).length;
+  const projected=structuredClone(project);
+  for(let i=0;i<changes.length;i++){
+    projected.scenes[i].start=structuredClone(changes[i].new_start);
+    projected.scenes[i].duration=structuredClone(changes[i].new_duration);
+  }
+  try {validateSfxProject(projected);}
+  catch(e) {throw new Error("Music conform would invalidate semantic SFX tail or mix: "+
+    (e instanceof Error?e.message:String(e)));}
+  const affectedSceneIds=new Set(affected.map(scene=>scene.scene_id));
+  const affectedSfx=(project.audio.sfx_cues??[]).filter(cue=>
+    affectedSceneIds.has(cue.scene_id)).length;
   return {
     project_id:project.id,generation:project.generation,base_revision:project.revision,
     asset_id:source.id,source_sha256:expectedDigest,
     targets:targets.map(target=>({...target})),scenes:changes,
     changed_scene_count:affected.length,
     original_duration:asTime(originalEnd),conformed_duration:asTime(cursor),
-    affected_cue_count:cues,affected_marker_count:markers,
+    affected_cue_count:cues,affected_sfx_cue_count:affectedSfx,
+    affected_marker_count:markers,
     affected_transcript_count:transcript,approval_invalidated:!!plan.approval,
-    anchors_need_acknowledgement:cues+markers+transcript>0,
+    anchors_need_acknowledgement:cues+affectedSfx+markers+transcript>0,
   };
 }
 
@@ -324,13 +360,16 @@ export function applyMusicConformToProject(project:Project,review:MusicConformRe
   if(review.scenes.length!==project.scenes.length ||
      review.scenes.some((after,i)=>project.scenes[i]?.id!==after.scene_id))
     throw new Error("Conform scene order became stale.");
-  for(let i=0;i<project.scenes.length;i++){
-    const scene=project.scenes[i],after=review.scenes[i];
-    // All scene identities are checked before entering this loop.
+  const staged=structuredClone(project);
+  for(let i=0;i<staged.scenes.length;i++){
+    const scene=staged.scenes[i],after=review.scenes[i];
     scene.start=structuredClone(after.new_start);
     scene.duration=structuredClone(after.new_duration);
     if(after.changed)scene.status="draft";
   }
+  // No partial mutation if an obsolete UI review strands a newer SFX cue.
+  validateSfxProject(staged);
+  project.scenes=staged.scenes;
   if(project.production_design?.plan)project.production_design.plan.approval=null;
   // Recorded global audio cues/transcripts/markers NEVER move implicitly.
 }

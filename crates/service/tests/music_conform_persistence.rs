@@ -179,3 +179,174 @@ fn failing_second_boundary_never_publishes_any_first_boundary_or_partial_asset()
     assert_eq!(service.project(p.id).unwrap(), p);
     assert_eq!(std::fs::read(&source).unwrap(), original_source);
 }
+
+fn imported_stereo_sfx(
+    service: &StudioService,
+    project: &Project,
+    path: &std::path::Path,
+    scene_index: usize,
+    start_frame: i16,
+    length_frames: u16,
+) -> Project {
+    use uuid::Uuid;
+    let samples = u32::from(length_frames) * 1_600;
+    let size = samples * 4;
+    let mut bytes = Vec::with_capacity(44 + size as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(size + 36).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes()); // stereo
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&192_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&4_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&size.to_le_bytes());
+    for _ in 0..samples {
+        bytes.extend_from_slice(&1200_i16.to_le_bytes());
+        bytes.extend_from_slice(&(-1200_i16).to_le_bytes());
+    }
+    std::fs::write(path, bytes).unwrap();
+    let recorded = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "import-original-sfx",
+            path,
+            "Owner original stereo sound.wav".into(),
+            "audio/wav".into(),
+        )
+        .unwrap()
+        .project;
+    let asset = recorded
+        .assets
+        .iter()
+        .find(|a| a.name == "Owner original stereo sound.wav")
+        .unwrap();
+    let cue = SemanticSfxCue {
+        schema: SFX_CUE_SCHEMA.into(),
+        id: Uuid::new_v4(),
+        scene_id: recorded.scenes[scene_index].id,
+        event: SfxEvent::Transition,
+        anchor: SfxAnchor::SceneStart,
+        offset_frames: start_frame,
+        source_asset_id: asset.id,
+        source_sha256: asset.content_sha256.clone().unwrap(),
+        source_frames: length_frames,
+        gain_milli_db: -18_000,
+        attack_frames: 0,
+        release_frames: 10,
+        original_source_attestation: "Original stereo PCM16 generated from sample values".into(),
+    };
+    service
+        .apply(
+            recorded.id,
+            &recorded.stamp(),
+            "attach-original-sfx",
+            &Change::UpsertSemanticSfx { cue },
+        )
+        .unwrap()
+        .project
+}
+
+#[test]
+fn durable_music_conform_rejects_source_bound_sfx_tail_without_partial_sqlite_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("music-sfx-tail.sqlite3");
+    let soundtrack = temp.path().join("source-music.wav");
+    let original_sfx = temp.path().join("source-sfx.wav");
+    let (service, prior) = seeded_service(&db, &soundtrack);
+    let project = imported_stereo_sfx(&service, &prior, &original_sfx, 0, 30, 180);
+    let contents = std::fs::read(&original_sfx).unwrap();
+    assert_eq!(
+        project.validated_sfx_schedule().unwrap()[0].absolute_end_frame,
+        7 * 30
+    );
+    let audio = project
+        .assets
+        .iter()
+        .find(|a| a.name == "Owner original stereo sound.wav")
+        .unwrap();
+
+    let mut bad = conform(&project, false);
+    if let Change::ConformScenesToMusic {
+        ref mut targets, ..
+    } = bad
+    {
+        targets[0].beat_index = 1; // 7-second scene would end at 5s
+        targets[1].beat_index = 3;
+    }
+    assert!(
+        service
+            .apply(project.id, &project.stamp(), "invalid-sfx-tail", &bad)
+            .is_err()
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(std::fs::read(&original_sfx).unwrap(), contents);
+    assert_eq!(
+        service
+            .verified_semantic_sfx_wav(
+                project.id,
+                &project.stamp(),
+                audio.id,
+                audio.content_sha256.as_deref().unwrap()
+            )
+            .unwrap(),
+        contents
+    );
+    drop(service);
+    let reopened = StudioService::open(&db)
+        .unwrap()
+        .project(project.id)
+        .unwrap();
+    assert_eq!(reopened, project);
+}
+
+#[test]
+fn durable_music_conform_requires_sfx_review_and_repositions_exact_samples() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("music-sfx-success.sqlite3");
+    let soundtrack = temp.path().join("source-music.wav");
+    let original_sfx = temp.path().join("scene-sfx.wav");
+    let (service, prior) = seeded_service(&db, &soundtrack);
+    let project = imported_stereo_sfx(&service, &prior, &original_sfx, 2, 0, 30);
+    let source_sfx = project.audio.sfx_cues.clone();
+    let old_schedule = project.validated_sfx_schedule().unwrap();
+    assert_eq!(old_schedule[0].absolute_start_frame, 16 * 30);
+    assert_eq!(old_schedule[0].first_sample, 16 * 30 * 1600);
+    let forbidden = conform(&project, false);
+    assert!(
+        service
+            .apply(project.id, &project.stamp(), "missing-sfx-ack", &forbidden)
+            .is_err()
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+
+    let mut approved = conform(&project, false);
+    if let Change::ConformScenesToMusic {
+        ref mut acknowledge_absolute_anchors,
+        ..
+    } = approved
+    {
+        *acknowledge_absolute_anchors = true;
+    }
+    let updated = change(&service, &project, "approved-semantic-sfx-ripple", approved);
+    assert_eq!(updated.revision, project.revision + 1);
+    assert_eq!(updated.audio.sfx_cues, source_sfx);
+    assert_eq!(
+        updated.validated_sfx_schedule().unwrap()[0].absolute_start_frame,
+        18 * 30
+    );
+    assert_eq!(
+        updated.validated_sfx_schedule().unwrap()[0].first_sample,
+        18 * 30 * 1600
+    );
+    drop(service);
+    let reopened = StudioService::open(&db)
+        .unwrap()
+        .project(updated.id)
+        .unwrap();
+    assert_eq!(reopened, updated);
+}

@@ -36,8 +36,20 @@ class PublicFframesTests(unittest.TestCase):
             "audio_score_composition": "NOT_RUN_NO_AUDIO_IN_HELLO_FIXTURE",
             "cold_build_measured": True, "warm_build_measured": True,
             "frame_preview_measured": True, "full_video_render_measured": True,
-            "measurements": {phase: {"exit_code": 0, "elapsed_seconds": 2.1}
-                             for phase in pub.PHASES},
+            # Declare the producer contract independently of the publisher.
+            # Otherwise a dropped phase also vanishes from this regression input.
+            "measurements": {
+                "cli_startup_0": {"exit_code": 0, "elapsed_seconds": 0.041},
+                "cli_startup_1": {"exit_code": 0, "elapsed_seconds": 0.027},
+                "cold_release_build": {"exit_code": 0, "elapsed_seconds": 2.1},
+                "warm_release_build": {"exit_code": 0, "elapsed_seconds": 2.1},
+                "cold_headless_native_preview": {
+                    "exit_code": 0, "elapsed_seconds": 2.1},
+                "warm_headless_native_preview": {
+                    "exit_code": 0, "elapsed_seconds": 2.1},
+                "cold_bounded_video_render": {
+                    "exit_code": 0, "elapsed_seconds": 2.1},
+            },
             "preview_png": {"decoded_by_ffprobe": True, "width": 320,
                             "height": 180, "sha256": "a" * 64},
             "video": {"bytes": 4096, "sha256": "b" * 64,
@@ -63,12 +75,49 @@ class PublicFframesTests(unittest.TestCase):
         self.assertFalse(report["v05_release_ready"])
         self.assertEqual(report["audio_fidelity_assessed"], "NOT_RUN")
         self.assertEqual(report["human_creative_acceptance"], "NOT_RUN")
-        self.assertEqual(set(report["actual_measured_seconds"]), set(pub.PHASES))
+        self.assertEqual(set(report["actual_measured_seconds"]), {
+            "cli_startup_0", "cli_startup_1",
+            "cold_release_build", "warm_release_build",
+            "cold_headless_native_preview", "warm_headless_native_preview",
+            "cold_bounded_video_render",
+        })
         self.assertEqual([p.name for p in self.public.iterdir()],
                          ["public-evidence.json"])
         manifest = (self.public / "public-evidence.json").read_text()
         self.assertNotIn("private source workspace", manifest)
         self.assertNotIn("failure_summary", manifest)
+
+    def test_public_retains_each_measured_cli_startup_sample(self):
+        report = pub.publish(self.private, self.public, MW, "success")
+        times = report["actual_measured_seconds"]
+        self.assertEqual(times.get("cli_startup_0"), 0.041)
+        self.assertEqual(times.get("cli_startup_1"), 0.027)
+        retained = json.loads((self.public / "public-evidence.json").read_text())
+        self.assertEqual(retained["actual_measured_seconds"], times)
+        for flag in ("source_code_admitted", "renderer_adoption_authorized",
+                     "upstream_binary_uploaded", "v05_release_ready"):
+            self.assertIs(report[flag], False)
+        self.assertEqual(report["audio_fidelity_assessed"], "NOT_RUN")
+        self.assertEqual(report["same_brief_comparison"], "NOT_RUN")
+
+    def test_missing_each_cli_startup_sample_refuses_success(self):
+        for phase in ("cli_startup_0", "cli_startup_1"):
+            with self.subTest(phase=phase):
+                self.public = self.root / ("public-missing-" + phase)
+                measured = self.report["measurements"].pop(phase)
+                self.save()
+                # Restore only the in-memory fixture before the assertion, so
+                # each RED run subcase still omits exactly one persisted sample.
+                self.report["measurements"][phase] = measured
+                self.refuse("invalid_source_timing")
+
+    def test_help_probe_without_elapsed_is_not_measured_cli_startup(self):
+        self.report["measurements"].pop("cli_startup_0")
+        self.report["measurements"].pop("cli_startup_1")
+        self.report["measurements"]["binary_startup"] = {
+            "exit_code": 0, "elapsed_seconds": None}
+        self.save()
+        self.refuse("invalid_source_timing")
 
     def test_failure_status_does_not_publish_stale_pass(self):
         report = pub.publish(self.private, self.public, MW, "failure")

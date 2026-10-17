@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use motionwright_manim_profile::{
-    ManimRenderProfile, ManimScenePlan, SCENE_CLASS, compile_manim_python, validate_plan,
+    MAX_SOURCE_BUNDLE_BYTES_V2, MAX_SOURCE_ENTRY_BYTES_V2, ManimRenderProfile,
+    ManimSourceClosureV1, ManimStartPlan, SCENE_CLASS, SOURCE_BUNDLE_MIME_V2,
+    inspect_native_source_readback_v2, source_bundle_v2, source_package_v2,
 };
 use semwright_driver_sdk::{
     Capability, Driver, DriverExecutionContext, DriverInterfaces, RuntimeToolArg, RuntimeToolCwd,
@@ -37,7 +39,7 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(300);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StartArgs {
-    plan: ManimScenePlan,
+    plan: ManimStartPlan,
     profile: ManimRenderProfile,
 }
 
@@ -60,6 +62,30 @@ struct RenderArtifact {
     plan_sha256: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SourceArtifact {
+    relative_path: String,
+    sha256: String,
+    bytes: u64,
+    media_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunnerReadback {
+    schema_version: u16,
+    runner: String,
+    manim_version: String,
+    plan_sha256: String,
+    source_sha256: String,
+    executed_source_sha256: String,
+    width: u32,
+    height: u32,
+    fps: u32,
+    native_source_readback: Option<SourceArtifact>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobPhase {
     Rendering,
@@ -67,6 +93,7 @@ enum JobPhase {
     Succeeded,
     Failed,
     Cancelled,
+    Unknown,
 }
 
 impl JobPhase {
@@ -77,11 +104,15 @@ impl JobPhase {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Unknown => "unknown",
         }
     }
 
     fn terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Unknown
+        )
     }
 }
 
@@ -90,6 +121,12 @@ struct RenderJob {
     host_job: RuntimeToolJob,
     phase: JobPhase,
     source_file: String,
+    plan_file: String,
+    source_sha256: String,
+    source_closure: Option<ManimSourceClosureV1>,
+    source_artifact: Option<SourceArtifact>,
+    native_source_readback: Option<SourceArtifact>,
+    original_error: Option<Error>,
     output_relative: String,
     plan_sha256: String,
     profile: ManimRenderProfile,
@@ -102,6 +139,14 @@ struct ManimCommunityDriver {
     output_root: PathBuf,
     jobs: BTreeMap<String, RenderJob>,
     capabilities: Vec<Capability>,
+}
+
+fn failed_job_phase(error: &Error) -> JobPhase {
+    if error.outcome_known {
+        JobPhase::Failed
+    } else {
+        JobPhase::Unknown
+    }
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -127,9 +172,143 @@ fn canonical_root(name: &str) -> Result<PathBuf> {
     fs::canonicalize(root).map_err(Into::into)
 }
 
-fn plan_digest(plan: &ManimScenePlan) -> Result<String> {
-    let bytes = serde_json::to_vec(plan)?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+fn write_new_source(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    // Names are private tokens made by the driver, never imported filenames.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(name))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn verify_job_source(work_root: &Path, output_root: &Path, job: &RenderJob) -> Result<()> {
+    for (name, digest, limit) in [
+        (
+            &job.source_file,
+            &job.source_sha256,
+            MAX_SOURCE_BYTES as u64,
+        ),
+        (&job.plan_file, &job.plan_sha256, MAX_SOURCE_BYTES as u64),
+    ] {
+        let (path, bytes) = safe_output_file(work_root, name)?;
+        if bytes > limit || sha256_file(&path)? != *digest {
+            return Err(backend("Manim source custody changed after native start"));
+        }
+    }
+    if let Some(artifact) = &job.source_artifact {
+        let (path, bytes) = safe_output_file(output_root, &artifact.relative_path)?;
+        if bytes != artifact.bytes
+            || bytes > MAX_SOURCE_BUNDLE_BYTES_V2 as u64
+            || sha256_file(&path)? != artifact.sha256
+        {
+            return Err(backend(
+                "Manim editable source carrier changed after native start",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_runner_readback(stdout: &[u8], job: &RenderJob) -> Result<RunnerReadback> {
+    let stdout =
+        std::str::from_utf8(stdout).map_err(|_| backend("Manim runner stdout is not UTF-8"))?;
+    const PREFIX: &str = "MOTIONWRIGHT_MANIM_RUNNER_RESULT=";
+    let mut rows = stdout.lines().filter_map(|line| line.strip_prefix(PREFIX));
+    let line = rows
+        .next()
+        .ok_or_else(|| backend("Manim runner returned no source custody observation"))?;
+    if rows.next().is_some() || line.len() > 4096 {
+        return Err(backend(
+            "Manim runner returned ambiguous source custody observations",
+        ));
+    }
+    let observed: RunnerReadback = serde_json::from_str(line)
+        .map_err(|_| backend("Manim runner source custody observation is malformed"))?;
+    if observed.schema_version != 2
+        || observed.runner != "motionwright-manim-runner"
+        || observed.manim_version != MANIM_VERSION
+        || observed.plan_sha256 != job.plan_sha256
+        || observed.source_sha256 != job.source_sha256
+        || observed.executed_source_sha256 != job.source_sha256
+        || (observed.width, observed.height, observed.fps)
+            != (
+                job.profile.width,
+                job.profile.height,
+                job.profile.frame_rate,
+            )
+    {
+        return Err(backend(
+            "Manim runner source custody does not match the original job",
+        ));
+    }
+    Ok(observed)
+}
+
+fn read_source_bytes(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > maximum {
+        return Err(backend("Manim source observation exceeds its byte budget"));
+    }
+    Ok(bytes)
+}
+
+fn validate_native_readback_artifact(
+    work_root: &Path,
+    output_root: &Path,
+    job: &RenderJob,
+    artifact: Option<SourceArtifact>,
+) -> Result<Option<SourceArtifact>> {
+    let plan_document = read_source_bytes(&work_root.join(&job.plan_file), MAX_SOURCE_BYTES)?;
+    if plan_document.len() > MAX_SOURCE_BYTES
+        || hex::encode(Sha256::digest(&plan_document)) != job.plan_sha256
+    {
+        return Err(backend("Manim source plan changed during native readback"));
+    }
+    let plan: ManimStartPlan = serde_json::from_slice(&plan_document)?;
+    match plan {
+        ManimStartPlan::V1(_) => {
+            if artifact.is_some() {
+                return Err(backend("Legacy Manim job returned a v2 readback"));
+            }
+            Ok(None)
+        }
+        ManimStartPlan::V2(plan) => {
+            let artifact = artifact
+                .ok_or_else(|| backend("Manim v2 job returned no native getter readback"))?;
+            let name = job
+                .source_file
+                .strip_suffix(".py")
+                .ok_or_else(|| backend("Manim source filename is invalid"))?;
+            if artifact.relative_path != format!("{name}.objects.json")
+                || artifact.media_type != "application/json"
+                || artifact.bytes == 0
+                || artifact.bytes > MAX_SOURCE_ENTRY_BYTES_V2 as u64
+            {
+                return Err(backend("Manim native getter readback has foreign metadata"));
+            }
+            let (path, size) = safe_output_file(output_root, &artifact.relative_path)?;
+            if size != artifact.bytes || sha256_file(&path)? != artifact.sha256 {
+                return Err(backend(
+                    "Manim native getter readback changed before observation",
+                ));
+            }
+            let bytes = read_source_bytes(&path, MAX_SOURCE_ENTRY_BYTES_V2)?;
+            if bytes.len() as u64 != artifact.bytes
+                || hex::encode(Sha256::digest(&bytes)) != artifact.sha256
+            {
+                return Err(backend(
+                    "Manim native getter bytes changed during bounded observation",
+                ));
+            }
+            inspect_native_source_readback_v2(&plan, &bytes).map_err(map_profile_error)?;
+            Ok(Some(artifact))
+        }
+    }
 }
 
 fn strict_job_ref(value: &str) -> Result<()> {
@@ -147,6 +326,11 @@ fn job_view(job_ref: &str, job: &RenderJob) -> Value {
         "job_ref": job_ref,
         "state": job.phase.as_str(),
         "source_file": job.source_file,
+        "source_sha256": job.source_sha256,
+        "source_closure": job.source_closure,
+        "source_artifact": job.source_artifact,
+        "native_source_readback": job.native_source_readback,
+        "original_error": job.original_error,
         "plan_sha256": job.plan_sha256,
         "profile": job.profile,
         "artifact": job.artifact,
@@ -254,20 +438,34 @@ impl ManimCommunityDriver {
             ));
         }
         let args: StartArgs = serde_json::from_value(args)?;
-        validate_plan(&args.plan).map_err(map_profile_error)?;
-        args.profile.validate().map_err(map_profile_error)?;
+        args.plan
+            .validate_for_profile(args.profile)
+            .map_err(map_profile_error)?;
 
-        let source = compile_manim_python(&args.plan).map_err(map_profile_error)?;
+        let source = args.plan.compile().map_err(map_profile_error)?;
         if source.len() > MAX_SOURCE_BYTES {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "Generated Manim source exceeds the bounded source budget",
             ));
         }
-        let plan_sha256 = plan_digest(&args.plan)?;
+        let plan_document = args.plan.plan_document().map_err(map_profile_error)?;
+        if plan_document.len() > MAX_SOURCE_BYTES {
+            return Err(invalid("Manim plan exceeds its source budget"));
+        }
+        let plan_sha256 = args.plan.plan_sha256().map_err(map_profile_error)?;
+        let source_sha256 = hex::encode(Sha256::digest(source.as_bytes()));
+        let source_package = match &args.plan {
+            ManimStartPlan::V1(_) => None,
+            ManimStartPlan::V2(plan) => Some((
+                source_package_v2(plan).map_err(map_profile_error)?,
+                source_bundle_v2(plan).map_err(map_profile_error)?,
+            )),
+        };
         let token = Uuid::now_v7().simple().to_string();
         let job_ref = format!("manim-{token}");
         let source_file = format!("mw_{token}.py");
+        let plan_file = format!("mw_{token}.plan.json");
         let output_name = format!("mw_{token}");
         let output_relative = format!(
             "videos/mw_{token}/{}/{}.mp4",
@@ -275,13 +473,22 @@ impl ManimCommunityDriver {
             output_name
         );
 
-        let source_path = self.work_root.join(&source_file);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&source_path)?;
-        file.write_all(source.as_bytes())?;
-        file.sync_all()?;
+        write_new_source(&self.work_root, &source_file, source.as_bytes())?;
+        write_new_source(&self.work_root, &plan_file, &plan_document)?;
+        let (source_closure, source_artifact) = match source_package {
+            None => (None, None),
+            Some((package, bundle)) => {
+                let relative_path = format!("mw_{token}.mwmsrc.zip");
+                write_new_source(&self.output_root, &relative_path, &bundle)?;
+                let artifact = SourceArtifact {
+                    relative_path,
+                    sha256: hex::encode(Sha256::digest(&bundle)),
+                    bytes: bundle.len() as u64,
+                    media_type: SOURCE_BUNDLE_MIME_V2.into(),
+                };
+                (Some(package.closure), Some(artifact))
+            }
+        };
 
         let literal = |value: String| RuntimeToolArg::Literal { value };
         let host_job = context
@@ -319,6 +526,12 @@ impl ManimCommunityDriver {
                     },
                     literal("--source".into()),
                     literal(source_file.clone()),
+                    literal("--plan".into()),
+                    literal(plan_file.clone()),
+                    literal("--plan-sha256".into()),
+                    literal(plan_sha256.clone()),
+                    literal("--source-sha256".into()),
+                    literal(source_sha256.clone()),
                     literal("--scene".into()),
                     literal(SCENE_CLASS.into()),
                     literal("--output-name".into()),
@@ -345,6 +558,12 @@ impl ManimCommunityDriver {
                 host_job,
                 phase: JobPhase::Rendering,
                 source_file,
+                plan_file,
+                source_sha256,
+                source_closure,
+                source_artifact,
+                native_source_readback: None,
+                original_error: None,
                 output_relative,
                 plan_sha256,
                 profile: args.profile,
@@ -379,8 +598,9 @@ impl ManimCommunityDriver {
             RuntimeToolJobStatus::Cancelling => job.phase = JobPhase::Cancelling,
             RuntimeToolJobStatus::Cancelled => job.phase = JobPhase::Cancelled,
             RuntimeToolJobStatus::Failed { error } => {
-                job.phase = JobPhase::Failed;
+                job.phase = failed_job_phase(&error);
                 job.diagnostic = Some(format!("{:?}: {}", error.code, error.message));
+                job.original_error = Some(error);
             }
             RuntimeToolJobStatus::Succeeded { output } => {
                 if output.exit_code != 0 {
@@ -392,6 +612,25 @@ impl ManimCommunityDriver {
                         output.stderr.len()
                     ));
                 } else {
+                    let custody =
+                        validate_runner_readback(&output.stdout, job).and_then(|observed| {
+                            verify_job_source(&self.work_root, &self.output_root, job)?;
+                            validate_native_readback_artifact(
+                                &self.work_root,
+                                &self.output_root,
+                                job,
+                                observed.native_source_readback,
+                            )
+                        });
+                    match custody {
+                        Ok(readback) => job.native_source_readback = readback,
+                        Err(error) => {
+                            job.phase = JobPhase::Failed;
+                            job.diagnostic = Some(error.message.clone());
+                            job.original_error = Some(error);
+                            return Ok(job_view(job_ref, job));
+                        }
+                    }
                     let (path, bytes) = safe_output_file(&self.output_root, &job.output_relative)?;
                     let sha256 = sha256_file(&path)?;
                     job.artifact = Some(RenderArtifact {
@@ -433,7 +672,9 @@ impl ManimCommunityDriver {
             RuntimeToolJobStatus::Succeeded { .. } => JobPhase::Rendering,
             RuntimeToolJobStatus::Failed { error } => {
                 job.diagnostic = Some(format!("{:?}: {}", error.code, error.message));
-                JobPhase::Failed
+                let phase = failed_job_phase(&error);
+                job.original_error = Some(error);
+                phase
             }
         };
         Ok(job_view(job_ref, job))
@@ -447,7 +688,15 @@ impl ManimCommunityDriver {
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Manim job is absent"))?;
         match job.phase {
             JobPhase::Succeeded => Ok(view),
-            JobPhase::Failed => Err(backend("Manim render failed; inspect status diagnostics")),
+            JobPhase::Failed => Err(job
+                .original_error
+                .clone()
+                .unwrap_or_else(|| backend("Manim render failed; inspect status diagnostics"))),
+            JobPhase::Unknown => Err(job
+                .original_error
+                .clone()
+                .unwrap_or_else(|| backend("Manim original native render outcome is unknown"))
+                .uncertain()),
             JobPhase::Cancelled => Err(Error::new(
                 ErrorCode::Cancelled,
                 "Manim render was cancelled",
@@ -565,7 +814,12 @@ fn capability(spec: CapabilitySpec<'_>) -> Capability {
     Capability {
         descriptor: CommandDescriptor {
             name: spec.name.into(),
-            version: "1".into(),
+            version: if spec.name.contains(".render.") {
+                "2"
+            } else {
+                "1"
+            }
+            .into(),
             description: spec.description.into(),
             input_schema,
             output_schema,
@@ -597,19 +851,24 @@ fn job_output_schema() -> Value {
         "type":"object",
         "properties":{
             "job_ref":{"type":"string"},
-            "state":{"enum":["rendering","cancelling","succeeded","failed","cancelled"]},
+            "state":{"enum":["rendering","cancelling","succeeded","failed","cancelled","unknown"]},
             "source_file":{"type":"string"},
+            "source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "source_closure":{"type":["object","null"]},
+            "source_artifact":{"type":["object","null"]},
+            "native_source_readback":{"type":["object","null"]},
+            "original_error":{"type":["object","null"]},
             "plan_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
             "profile":{"type":"object"},
             "artifact":{"type":["object","null"]},
             "diagnostic":{"type":["string","null"]}
         },
-        "required":["job_ref","state","source_file","plan_sha256","profile","artifact","diagnostic"],
+        "required":["job_ref","state","source_file","source_sha256","source_closure","source_artifact","native_source_readback","original_error","plan_sha256","profile","artifact","diagnostic"],
         "additionalProperties":false
     })
 }
 
-fn start_schema() -> Value {
+fn legacy_start_schema() -> Value {
     let primitive_common = json!({
         "node_id":{"type":"string","format":"uuid"},
         "x":{"type":"number"},
@@ -696,6 +955,46 @@ fn start_schema() -> Value {
     })
 }
 
+fn start_schema() -> Value {
+    let mut schema = legacy_start_schema();
+    let legacy = schema["properties"]["plan"].take();
+    let rational = json!({"type":"object","properties":{
+        "num":{"type":"string","pattern":"^-?(0|[1-9][0-9]*)$"},
+        "den":{"type":"string","pattern":"^[1-9][0-9]*$"}},
+        "required":["num","den"],"additionalProperties":false});
+    let uuid = json!({"type":"string","format":"uuid"});
+    let integer = json!({"type":"integer","minimum":0});
+    let v2 = json!({"type":"object","properties":{
+        "schema_version":{"const":2},"profile_id":{"const":"mw-manim-static-shapes-v2"},
+        "output_role":{"const":"scene_video_contribution_without_audio_or_captions"},
+        "binding":{"type":"object","properties":{
+            "project_id":uuid,"generation":uuid,"revision":integer,"scene_id":uuid,"deliverable_id":uuid},
+            "required":["project_id","generation","revision","scene_id","deliverable_id"],"additionalProperties":false},
+        "clock":{"type":"object","properties":{
+            "timeline_start":rational,"duration":rational,"frame_rate":rational,
+            "project_start_frame":integer,"project_end_frame_exclusive":integer,
+            "local_start_frame":{"const":0},"frame_count":{"type":"integer","minimum":1,"maximum":3600}},
+            "required":["timeline_start","duration","frame_rate","project_start_frame","project_end_frame_exclusive","local_start_frame","frame_count"],"additionalProperties":false},
+        "render_profile":schema["properties"]["profile"].clone(),
+        "canvas":{"type":"object","properties":{
+            "width":{"const":1920},"height":{"const":1080},"coordinate_space":{"const":"project_pixels"}},
+            "required":["width","height","coordinate_space"],"additionalProperties":false},
+        "background":{"type":"object","properties":{
+            "kind":{"const":"solid"},"color":{"const":"#000000"},"opacity":{"const":1}},
+            "required":["kind","color","opacity"],"additionalProperties":false},
+        "nodes":{"type":"array","minItems":1,"maxItems":512,"items":{
+            "type":"object","properties":{
+                "node_id":uuid,"display_name":{"type":"string","minLength":1,"maxLength":160},
+                "source_kind":{"enum":["shape","rectangle","circle"]},"canonical_ordinal":integer,
+                "z_index":{"type":"integer"},"x_px":{"type":"number"},"y_px":{"type":"number"},
+                "width_px":{"type":"number","exclusiveMinimum":0},"height_px":{"type":"number","exclusiveMinimum":0},
+                "fill_hex":{"type":"string","pattern":"^#[0-9A-Fa-f]{6}$"}},
+            "required":["node_id","display_name","source_kind","canonical_ordinal","z_index","x_px","y_px","width_px","height_px","fill_hex"],"additionalProperties":false}}
+        },"required":["schema_version","profile_id","output_role","binding","clock","render_profile","canvas","background","nodes"],"additionalProperties":false});
+    schema["properties"]["plan"] = json!({"oneOf":[legacy,v2]});
+    schema
+}
+
 fn capability_catalog() -> Result<Vec<Capability>> {
     Ok(vec![
         capability(CapabilitySpec {
@@ -773,7 +1072,19 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use motionwright_manim_profile::ManimPrimitive;
+    use motionwright_manim_profile::{ManimPrimitive, ManimScenePlan};
+
+    #[test]
+    fn host_unknown_is_terminal_without_erasing_known_failure_classification() {
+        let known = Error::new(ErrorCode::PolicyDenied, "known original denial");
+        assert_eq!(failed_job_phase(&known), JobPhase::Failed);
+        let uncertain =
+            Error::new(ErrorCode::Unavailable, "lost original runtime observation").uncertain();
+        assert_eq!(failed_job_phase(&uncertain), JobPhase::Unknown);
+        assert!(failed_job_phase(&uncertain).terminal());
+        assert_eq!(failed_job_phase(&uncertain).as_str(), "unknown");
+        assert!(!uncertain.outcome_known);
+    }
 
     #[test]
     fn catalog_never_exposes_python_or_shell_execution() {
@@ -809,7 +1120,7 @@ mod tests {
             }],
         };
         let value = serde_json::to_value(StartArgs {
-            plan,
+            plan: ManimStartPlan::V1(plan),
             profile: ManimRenderProfile::default(),
         })
         .unwrap();

@@ -5,12 +5,18 @@
 //! project/model data can never select an executable, module, source program, shell
 //! fragment, environment variable, or arbitrary Manim CLI option.
 
+use motionwright_manim_profile::{
+    MAX_SOURCE_ENTRY_BYTES_V2, ManimRenderProfile, ManimStartPlan,
+    inspect_native_source_readback_v2,
+};
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -36,6 +42,9 @@ struct RenderArgs {
     work_root: PathBuf,
     output_root: PathBuf,
     source: String,
+    plan: String,
+    plan_sha256: String,
+    source_sha256: String,
     scene: String,
     output_name: String,
     width: u32,
@@ -87,23 +96,108 @@ fn sealed_executable(path: &Path, label: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn source_file(root: &Path, name: &str) -> Result<PathBuf, String> {
-    direct_component(name, "Manim source filename")?;
-    if !name.starts_with("mw_") || !name.ends_with(".py") {
-        return Err("Manim source filename is outside the generated profile".into());
-    }
+fn bounded_regular_bytes(root: &Path, name: &str) -> Result<Vec<u8>, String> {
+    direct_component(name, "Manim source member")?;
     let path = root.join(name);
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|_| "generated Manim source is unavailable".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("generated Manim source must be a regular non-symlink file".into());
+    let meta = fs::symlink_metadata(&path).map_err(|_| "Manim source member is unavailable")?;
+    if meta.file_type().is_symlink()
+        || !meta.is_file()
+        || meta.len() == 0
+        || meta.len() > MAX_SOURCE_ENTRY_BYTES_V2 as u64
+    {
+        return Err("Manim source member is not a bounded regular file".into());
     }
-    let canonical = fs::canonicalize(path)
-        .map_err(|_| "generated Manim source could not be canonicalized".to_string())?;
+    let canonical =
+        fs::canonicalize(path).map_err(|_| "Manim source member cannot be canonicalized")?;
     if !canonical.starts_with(root) {
-        return Err("generated Manim source escaped the work root".into());
+        return Err("Manim source member escaped its owner root".into());
     }
-    Ok(canonical)
+    let mut data = Vec::new();
+    fs::File::open(canonical)
+        .map_err(|_| "Manim source member cannot be opened")?
+        .take(MAX_SOURCE_ENTRY_BYTES_V2 as u64 + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| "Manim source member could not be read")?;
+    if data.len() as u64 != meta.len() {
+        return Err("Manim source member changed during observation".into());
+    }
+    Ok(data)
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| "Manim private source destination already exists or cannot be created")?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| "Manim private source cannot be retained".into())
+}
+
+struct PreparedSource {
+    root: PathBuf,
+    path: PathBuf,
+    plan: ManimStartPlan,
+    trusted_source: Vec<u8>,
+}
+
+fn prepare_trusted_source(args: &RenderArgs, work_root: &Path) -> Result<PreparedSource, String> {
+    let document = bounded_regular_bytes(work_root, &args.plan)?;
+    if sha256(&document) != args.plan_sha256 {
+        return Err("Manim source plan changed before execution".into());
+    }
+    let plan: ManimStartPlan = serde_json::from_slice(&document)
+        .map_err(|_| "Manim source plan is not a strict supported schema")?;
+    plan.validate_for_profile(ManimRenderProfile {
+        width: args.width,
+        height: args.height,
+        frame_rate: args.fps,
+    })
+    .map_err(|error| error.to_string())?;
+    if plan.plan_document().map_err(|error| error.to_string())? != document {
+        return Err(
+            "Manim source plan document encoding differs from its versioned contract".into(),
+        );
+    }
+    let trusted_source = plan
+        .compile()
+        .map_err(|error| error.to_string())?
+        .into_bytes();
+    if sha256(&trusted_source) != args.source_sha256
+        || bounded_regular_bytes(work_root, &args.source)? != trusted_source
+    {
+        return Err("Manim source does not match the trusted compiler projection".into());
+    }
+    // Regenerate into a new private directory. The imported source bytes never
+    // select the program executed by Python, nor can an old attempt be reused.
+    let root = work_root.join(format!("{}_execution", args.output_name));
+    fs::create_dir(&root)
+        .map_err(|_| "Manim original execution directory already exists or cannot be created")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Manim execution directory permissions cannot be set")?;
+    }
+    let root = real_directory(&root, "Manim original execution directory")?;
+    let path = root.join(&args.source);
+    write_new(&path, &trusted_source)?;
+    Ok(PreparedSource {
+        root,
+        path,
+        plan,
+        trusted_source,
+    })
 }
 
 fn parse_u32(value: &str, label: &str, min: u32, max: u32) -> Result<u32, String> {
@@ -121,7 +215,7 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
         return Err("runner operation must be render".into());
     }
     let rest = &raw[1..];
-    if rest.len() != 24 {
+    if rest.len() != 30 {
         return Err("runner requires the exact bounded render argument set".into());
     }
     let mut values = BTreeMap::new();
@@ -136,6 +230,9 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
                 | "--work-root"
                 | "--output-root"
                 | "--source"
+                | "--plan"
+                | "--plan-sha256"
+                | "--source-sha256"
                 | "--scene"
                 | "--output-name"
                 | "--width"
@@ -174,6 +271,33 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
     }
     let source = required("--source")?;
     direct_component(&source, "Manim source filename")?;
+    let stem = source
+        .strip_suffix(".py")
+        .ok_or("Manim source needs its .py suffix")?;
+    if stem != output_name
+        || stem.len() != 35
+        || !stem.starts_with("mw_")
+        || !stem[3..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("Manim source identity does not match the generated output identity".into());
+    }
+    let plan = required("--plan")?;
+    if plan != format!("{stem}.plan.json") {
+        return Err("Manim plan filename does not match its source".into());
+    }
+    let plan_sha256 = required("--plan-sha256")?;
+    let source_sha256 = required("--source-sha256")?;
+    for digest in [&plan_sha256, &source_sha256] {
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("Manim source digest is malformed".into());
+        }
+    }
 
     Ok(RenderArgs {
         runtime_root: PathBuf::from(required("--runtime-root")?),
@@ -183,6 +307,9 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
         work_root: PathBuf::from(required("--work-root")?),
         output_root: PathBuf::from(required("--output-root")?),
         source,
+        plan,
+        plan_sha256,
+        source_sha256,
         scene,
         output_name,
         width,
@@ -252,6 +379,7 @@ fn command_environment(
         .ok_or_else(|| "sealed FFmpeg has no parent directory".to_string())?;
     let cache = ensure_private_dir(work_root, ".cache")?;
     let mpl = ensure_private_dir(work_root, ".matplotlib")?;
+    let temporary = ensure_private_dir(work_root, ".tmp")?;
     command.env_clear();
     command.env("PYTHONPATH", site_packages);
     command.env("PYTHONNOUSERSITE", "1");
@@ -262,6 +390,9 @@ fn command_environment(
     command.env("HOME", work_root);
     command.env("XDG_CACHE_HOME", cache);
     command.env("MPLCONFIGDIR", mpl);
+    command.env("TMPDIR", &temporary);
+    command.env("TMP", &temporary);
+    command.env("TEMP", &temporary);
     command.env("LANG", "C.UTF-8");
     command.env("LC_ALL", "C.UTF-8");
     Ok(())
@@ -362,13 +493,13 @@ fn render(args: RenderArgs) -> Result<(), String> {
     let python = sealed_executable(&args.python, "sealed Python")?;
     let ffmpeg = sealed_executable(&args.ffmpeg, "sealed FFmpeg")?;
     let site_packages = runtime_site_packages(&runtime_root)?;
-    let source = source_file(&work_root, &args.source)?;
+    let prepared = prepare_trusted_source(&args, &work_root)?;
     validate_runtime_version(
         &python,
         &site_packages,
         &ffmpeg,
         &fontconfig_root,
-        &work_root,
+        &prepared.root,
     )?;
 
     let mut command = Command::new(&python);
@@ -395,16 +526,16 @@ fn render(args: RenderArgs) -> Result<(), String> {
         OsString::from(args.fps.to_string()),
         OsString::from("--output_file"),
         OsString::from(args.output_name.clone()),
-        source.into_os_string(),
+        prepared.path.clone().into_os_string(),
         OsString::from(args.scene.clone()),
     ]);
-    command.current_dir(&work_root);
+    command.current_dir(&prepared.root);
     command_environment(
         &mut command,
         &site_packages,
         &ffmpeg,
         &fontconfig_root,
-        &work_root,
+        &prepared.root,
     )?;
 
     let status: ExitStatus = command
@@ -413,16 +544,36 @@ fn render(args: RenderArgs) -> Result<(), String> {
     if !status.success() {
         return Err(format!("Manim Community render failed with {status}"));
     }
-    let artifact = validate_artifact(&args, &output_root)?;
+    validate_artifact(&args, &output_root)?;
+    if bounded_regular_bytes(&work_root, &args.source)? != prepared.trusted_source
+        || bounded_regular_bytes(&prepared.root, &args.source)? != prepared.trusted_source
+        || sha256(&bounded_regular_bytes(&work_root, &args.plan)?) != args.plan_sha256
+    {
+        return Err("Manim source custody changed during the original render".into());
+    }
+    let native_source_readback = match &prepared.plan {
+        ManimStartPlan::V1(_) => None,
+        ManimStartPlan::V2(plan) => {
+            let name = format!("{}.objects.json", args.output_name);
+            let bytes = bounded_regular_bytes(&prepared.root, &name)?;
+            inspect_native_source_readback_v2(plan, &bytes).map_err(|error| error.to_string())?;
+            write_new(&output_root.join(&name), &bytes)?;
+            Some(
+                json!({"relative_path":name,"sha256":sha256(&bytes),"bytes":bytes.len(),"media_type":"application/json"}),
+            )
+        }
+    };
     println!(
-        "{}",
+        "MOTIONWRIGHT_MANIM_RUNNER_RESULT={}",
         json!({
+            "schema_version": 2,
             "runner": "motionwright-manim-runner",
             "manim_version": MANIM_VERSION,
-            "artifact": artifact,
-            "width": args.width,
-            "height": args.height,
-            "fps": args.fps
+            "plan_sha256": args.plan_sha256,
+            "source_sha256": args.source_sha256,
+            "executed_source_sha256": sha256(&prepared.trusted_source),
+            "width": args.width, "height": args.height, "fps": args.fps,
+            "native_source_readback": native_source_readback
         })
     );
     Ok(())
@@ -453,5 +604,105 @@ mod tests {
             assert!(direct_component(value, "fixture").is_err());
         }
         assert!(direct_component("mw_0123456789abcdef", "fixture").is_ok());
+    }
+    struct SourceTestDirectory(PathBuf);
+    impl SourceTestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "motionwright-manim-source-test-{}",
+                uuid::Uuid::now_v7()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for SourceTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn source_fixture(root: &Path) -> RenderArgs {
+        use motionwright_manim_profile::{ManimPrimitive, ManimScenePlan};
+        let plan = ManimStartPlan::V1(ManimScenePlan {
+            project_id: uuid::Uuid::from_u128(1),
+            generation: uuid::Uuid::from_u128(2),
+            revision: 3,
+            scene_id: uuid::Uuid::from_u128(4),
+            primitives: vec![ManimPrimitive::Rectangle {
+                node_id: uuid::Uuid::from_u128(5),
+                x: 0.0,
+                y: 0.0,
+                width: 2.0,
+                height: 1.0,
+                color: "#E02040".into(),
+            }],
+        });
+        let document = plan.plan_document().unwrap();
+        let source = plan.compile().unwrap().into_bytes();
+        let stem = "mw_0123456789abcdef0123456789abcdef";
+        write_new(&root.join(format!("{stem}.py")), &source).unwrap();
+        write_new(&root.join(format!("{stem}.plan.json")), &document).unwrap();
+        RenderArgs {
+            runtime_root: root.into(),
+            python: root.join("not-executed-python"),
+            ffmpeg: root.join("not-executed-ffmpeg"),
+            fontconfig_root: root.into(),
+            work_root: root.into(),
+            output_root: root.into(),
+            source: format!("{stem}.py"),
+            plan: format!("{stem}.plan.json"),
+            plan_sha256: sha256(&document),
+            source_sha256: sha256(&source),
+            scene: SCENE_CLASS.into(),
+            output_name: stem.into(),
+            width: 640,
+            height: 360,
+            fps: 12,
+        }
+    }
+
+    #[test]
+    fn runner_regenerates_a_new_private_program_without_executing_input_source() {
+        let folder = SourceTestDirectory::new();
+        let args = source_fixture(&folder.0);
+        let prepared = prepare_trusted_source(&args, &folder.0).unwrap();
+        assert_ne!(prepared.path, folder.0.join(&args.source));
+        assert_eq!(
+            fs::read(&prepared.path).unwrap(),
+            prepared.plan.compile().unwrap().as_bytes()
+        );
+        assert_eq!(
+            fs::read(folder.0.join(&args.source)).unwrap(),
+            prepared.trusted_source
+        );
+        assert!(prepare_trusted_source(&args, &folder.0).is_err());
+    }
+
+    #[test]
+    fn runner_rejects_rehashed_program_and_plan_drift_before_creating_execution_directory() {
+        for case in 0..3 {
+            let folder = SourceTestDirectory::new();
+            let mut args = source_fixture(&folder.0);
+            if case == 0 {
+                let malicious = b"raise RuntimeError('untrusted input source')\n";
+                fs::write(folder.0.join(&args.source), malicious).unwrap();
+                args.source_sha256 = sha256(malicious);
+            } else if case == 1 {
+                let mut plan = fs::read(folder.0.join(&args.plan)).unwrap();
+                plan.push(b' ');
+                fs::write(folder.0.join(&args.plan), &plan).unwrap();
+                args.plan_sha256 = sha256(&plan);
+            } else {
+                args.plan_sha256 = "0".repeat(64);
+            }
+            assert!(prepare_trusted_source(&args, &folder.0).is_err());
+            assert!(
+                !folder
+                    .0
+                    .join(format!("{}_execution", args.output_name))
+                    .exists()
+            );
+        }
     }
 }

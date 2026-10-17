@@ -13,6 +13,8 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_mlt_sequence_e2e.py'
+      - 'tooling/native_mlt_mix_readback.py'
+      - 'tooling/tests/test_native_mlt_mix_readback.py'
       - 'tooling/tests/test_native_mlt_ci_audio.py'
       - 'tooling/native_mlt_caption_pixels.py'
       - 'tooling/tests/test_native_mlt_caption_pixels.py'
@@ -50,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ['pcm', 'video-only', 'final-mp4', 'captioned-mp4']
+        mode: ['pcm', 'video-only', 'final-mp4', 'captioned-mp4', 'original-mix-mp4']
     env:
       MOTIONWRIGHT_MLT_MODE: ${{ matrix.mode }}
     steps:
@@ -162,6 +164,48 @@ jobs:
       - name: Reject forged or absent decoded caption pixels before native execution
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_mlt_caption_pixels.py' -v
 
+      - name: Require all four real AAC controls with zero skips
+        if: matrix.mode == 'original-mix-mp4'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, sys, unittest
+          from pathlib import Path
+          sys.path[:0] = ['tooling', 'tooling/tests']
+          from native_mlt_public_artifact import (
+              ORIGINAL_MIX_AAC_TEST_IDS, ORIGINAL_MIX_READER_SHA256,
+              ORIGINAL_MIX_READER_TEST_SHA256,
+          )
+          from test_native_mlt_mix_readback import RealAacCalibrationTests
+          for path, expected in (
+              ('tooling/native_mlt_mix_readback.py', ORIGINAL_MIX_READER_SHA256),
+              ('tooling/tests/test_native_mlt_mix_readback.py', ORIGINAL_MIX_READER_TEST_SHA256),
+          ):
+              assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == expected
+          suite = unittest.defaultTestLoader.loadTestsFromTestCase(RealAacCalibrationTests)
+          ids = sorted(test.id() for test in suite)
+          assert ids == sorted(ORIGINAL_MIX_AAC_TEST_IDS) and suite.countTestCases() == 4
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.wasSuccessful() and result.testsRun == 4
+          assert not result.skipped and not result.errors and not result.failures
+          report = {
+              'schema': 'motionwright.native-original-mix-real-aac-tests/1',
+              'motionwright_sha': os.environ['GITHUB_SHA'],
+              'reader_sha256': ORIGINAL_MIX_READER_SHA256,
+              'reader_tests_sha256': ORIGINAL_MIX_READER_TEST_SHA256,
+              'test_ids': ids, 'tests_run': result.testsRun, 'skipped': len(result.skipped),
+              'failures': len(result.failures), 'errors': len(result.errors),
+          }
+          path = Path('verification/native-mlt-sequence-e2e/native-original-mix-aac-test-gate.json')
+          with os.fdopen(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'w') as stream:
+              json.dump(report, stream, indent=2, sort_keys=True)
+              stream.write('\n')
+              stream.flush()
+              os.fsync(stream.fileno())
+          print('original-mix-real-aac testsRun=4 skipped=0 failures=0 errors=0 source='
+                + os.environ['GITHUB_SHA'])
+          PY
+
       - name: Produce exact two-segment native FFV1 intermediary through pinned Driver Host
         run: |
           set -euo pipefail
@@ -173,7 +217,7 @@ jobs:
           root="verification/native-mlt-sequence-e2e/$GITHUB_SHA"
           test -s "$root/result.json"
           test -s "$root/native-multisegment-timeline-evidence.json"
-          if [[ "$MOTIONWRIGHT_MLT_MODE" = 'video-only' || "$MOTIONWRIGHT_MLT_MODE" = 'final-mp4' || "$MOTIONWRIGHT_MLT_MODE" = 'captioned-mp4' ]]; then
+          if [[ "$MOTIONWRIGHT_MLT_MODE" != 'pcm' ]]; then
             test -s "$root/native-two-segment-video-only.mkv"
           else
             test -s "$root/native-two-segment-lossless.mkv"
@@ -184,7 +228,7 @@ jobs:
           sys.path.insert(0, 'tooling')
           from native_mlt_public_artifact import (
               SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
-              strict_object, verify_staged_source_receipt,
+              strict_object, verify_staged_source_receipt, verify_private_source,
           )
           mode = os.environ['MOTIONWRIGHT_MLT_MODE']
           contract = mode_contract(mode)
@@ -197,7 +241,7 @@ jobs:
           assert result["rendered_source_frames"] == list(contract.source_segment_frames)
           assert result["assembled_video_codec"] == "ffv1"
           assert result["mode"] == mode
-          video_only = mode in ("video-only", "final-mp4", "captioned-mp4")
+          video_only = mode != "pcm"
           assert result["assembled_video_has_audio"] is (not video_only)
           assert result["transport_audio_codec"] == (None if video_only else "pcm_s16le")
           assert evidence["transport_pcm_audio"] is (not video_only)
@@ -275,6 +319,16 @@ jobs:
                   assert result["captioned_master_decoded_pixels"] == "PASS"
                   assert proof["original_ffv1_sha256"] == result["video_sha256"]
                   assert proof["actual_master_mp4_sha256"] == result["final_master_sha256"]
+          if mode == "original-mix-mp4":
+              # The same closed file admission checks the retained original WAV,
+              # native canonical receipt, actual reader result and C/T/tool binding.
+              admitted = verify_private_source(
+                  root, mode, os.environ["GITHUB_SHA"], result["semwright_sha"]
+              )
+              assert set(admitted) == {
+                  "native-two-segment-video-only.mkv",
+                  "native-multisegment-master.mp4", SOURCE_WAV_NAME,
+              }
           PY
 
       - name: Publish only verified v0.1 MLT media, not owner/Broker receipts

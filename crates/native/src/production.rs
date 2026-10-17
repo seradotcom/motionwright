@@ -28,16 +28,46 @@ use tokio::{
 };
 use uuid::Uuid;
 
+pub mod blender_editable;
+mod manim_source;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
+mod mlt_multisegment_sfx;
 mod mlt_timeline;
+mod original_mix_av;
 #[cfg(test)]
 mod path_boundary_tests;
 mod recovery;
+mod semantic_sfx_av;
+pub use manim_source::{
+    ManimSourceImportPreviewV2, ManimSourceInspectionV2, ManimSourceSelectionV2,
+    apply_saved_manim_source_transform, inspect_saved_manim_source,
+    preview_saved_manim_source_transform,
+};
+
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
+pub use mlt_multisegment_sfx::{
+    MltMultisegmentOriginalSfxReadiness, MltMultisegmentSfxMasterEvidence,
+    MltMultisegmentSfxMasterRequest, MltMultisegmentSfxSourceRequest,
+    preflight_multisegment_original_sfx_clock,
+};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
+pub use original_mix_av::{
+    CanonicalMotionCanvasFilmSource, CanonicalOriginalMixAttemptClassification,
+    CanonicalOriginalMixAttemptReason, CanonicalOriginalMixAttemptState,
+    MltMultisegmentOriginalMixMasterEvidence, MltMultisegmentOriginalMixMasterRequest,
+    OriginalMixSemanticSfxProof, OriginalMixSfxSourceReceipt, OriginalMixSourceReadiness,
+    OriginalMixSourceRequest, PreparedOriginalMixWav, canonical_original_mix_film_options,
+    original_mix_sample_clock, prepare_original_mix_av_audio, resolve_canonical_original_mix_plan,
+    verify_original_mix_av_source,
+};
+
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
+pub use semantic_sfx_av::{
+    PreparedSemanticSfxWav, SemanticSfxAvSourceProof, prepare_semantic_sfx_av_audio,
+    verify_semantic_sfx_av_source,
+};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -101,6 +131,12 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+    "driver.blender.composition.inspect",
+    "driver.blender.composition.plan",
+    "driver.blender.composition.apply",
+    "driver.blender.composition.verify",
+    "driver.blender.composition.persist",
+    "driver.blender.composition.reopen",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
@@ -640,6 +676,27 @@ pub struct MltAvMasterRequest<'a> {
     pub sync: Option<&'a AvSyncSpec>,
 }
 
+/// A saved original mix selects its canonical three-bus master. Legacy
+/// finalizers must not silently replace that recipe with an unchanged source
+/// WAV, even when its gains and mastering targets would otherwise be admitted.
+fn reject_saved_original_mix_for_legacy_master(
+    project: &motionwright_domain::Project,
+    deliverable_id: Uuid,
+) -> NativeResult<()> {
+    if project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_id)
+        .is_some_and(|recipe| recipe.original_mix.is_some())
+    {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "The selected deliverable requires its canonical original mix master",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MltAvMasterEvidence {
@@ -793,14 +850,20 @@ impl ProductionClient {
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
+        // A successful spawn is the last locally observed pre-dispatch boundary.
+        // An incomplete response cannot prove that the original mutation failed.
+        // Preserve that attempt for read-only reconciliation; never authorize replay.
+        let unobserved = |error: Error| {
+            if mutation { error.uncertain() } else { error }
+        };
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| backend("Semwright CLI stdout unavailable"))?;
+            .ok_or_else(|| unobserved(backend("Semwright CLI stdout unavailable")))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
+            .ok_or_else(|| unobserved(backend("Semwright CLI stderr unavailable")))?;
         let stdout_task = tokio::spawn(read_bounded(stdout));
         let stderr_task = tokio::spawn(read_bounded(stderr));
         let deadline = if command.starts_with("driver.mlt-video.")
@@ -813,7 +876,9 @@ impl ProductionClient {
         };
 
         let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
-            Ok(result) => result.map_err(|_| backend("Semwright CLI process failed"))?,
+            Ok(result) => {
+                result.map_err(|_| unobserved(backend("Semwright CLI process failed")))?
+            }
             Err(_) => {
                 let _ = child.kill().await;
                 let error =
@@ -823,49 +888,83 @@ impl ProductionClient {
         };
         let stdout = stdout_task
             .await
-            .map_err(|_| backend("Semwright CLI output task failed"))?
-            .map_err(|_| backend("Semwright CLI output could not be read"))?;
+            .map_err(|_| unobserved(backend("Semwright CLI output task failed")))?
+            .map_err(|_| unobserved(backend("Semwright CLI output could not be read")))?;
         let stderr = stderr_task
             .await
-            .map_err(|_| backend("Semwright CLI diagnostic task failed"))?
-            .map_err(|_| backend("Semwright CLI diagnostics could not be read"))?;
+            .map_err(|_| unobserved(backend("Semwright CLI diagnostic task failed")))?
+            .map_err(|_| unobserved(backend("Semwright CLI diagnostics could not be read")))?;
         if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(Error::new(
+            return Err(unobserved(Error::new(
                 ErrorCode::ResourceExhausted,
                 "Semwright CLI response exceeded the transport budget",
-            ));
+            )));
         }
 
-        let envelope: Envelope = serde_json::from_slice(&stdout)
-            .map_err(|_| backend("Semwright CLI returned an invalid response envelope"))?;
+        let envelope: Envelope = serde_json::from_slice(&stdout).map_err(|_| {
+            unobserved(backend(
+                "Semwright CLI returned an invalid response envelope",
+            ))
+        })?;
         if envelope.command != command {
-            return Err(backend(
+            return Err(unobserved(backend(
                 "Semwright CLI response command does not match the request",
-            ));
+            )));
         }
-        if !status.success() || !envelope.ok {
-            let error = envelope.error.unwrap_or_else(|| {
-                backend("Canonical production command failed without a typed error")
-            });
+        if envelope.request_id.is_empty()
+            || envelope.request_id.len() > 256
+            || envelope.request_id.chars().any(char::is_control)
+        {
+            return Err(unobserved(backend(
+                "Semwright CLI response request identity is invalid",
+            )));
+        }
+        if !envelope.ok {
+            let error = envelope.error.ok_or_else(|| {
+                unobserved(backend(
+                    "Canonical production command failed without a typed error",
+                ))
+            })?;
+            // The pinned CLI returns Error::exit_code for a complete typed
+            // denial. Its declared uncertainty is preserved verbatim. A partial
+            // envelope, contradictory exit status or unexpected dry run is only
+            // an observation loss; this client does not request a dry run.
+            if envelope.data.is_some()
+                || status.code() != Some(error.exit_code())
+                || envelope.execution.dry_run
+            {
+                return Err(unobserved(backend(
+                    "Semwright CLI failure response is inconsistent",
+                )));
+            }
             return Err(error);
         }
-        let provenance = envelope
-            .execution
-            .provenance
-            .as_ref()
-            .ok_or_else(|| backend("Canonical production response has no provenance"))?;
+        if !status.success() || envelope.error.is_some() || envelope.execution.dry_run {
+            return Err(unobserved(backend(
+                "Semwright CLI success response is inconsistent",
+            )));
+        }
+        let provenance = envelope.execution.provenance.as_ref().ok_or_else(|| {
+            unobserved(backend("Canonical production response has no provenance"))
+        })?;
         if provenance.provider != expected.provider
             || provenance.source != expected.source
             || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
+            // SDK Metadata::for_provider marks external provider metadata as
+            // untrusted. This flag classifies descriptions, not execution
+            // authority; all authority bindings above remain mandatory.
+            || provenance.untrusted_metadata != (expected.source == SourceKind::Driver)
+            || (expected.source == SourceKind::Driver
+                && provenance.execution_provider.as_deref() != Some(expected.provider))
         {
-            return Err(backend(
+            return Err(unobserved(backend(
                 "Canonical response provenance does not match the expected authority",
-            ));
+            )));
         }
         let value = envelope
             .data
-            .ok_or_else(|| backend("Canonical production response has no data"))?;
+            .ok_or_else(|| unobserved(backend("Canonical production response has no data")))?;
         Ok(BrokerResult {
             value: json!({
                 "data": value,
@@ -963,16 +1062,143 @@ fn motion_failure_class(data: &Value) -> &'static str {
 /// and native diagnostic, but keep the *render operation* outcome UNKNOWN.
 /// Never interpret an Unavailable provider generation as a known render fail
 /// or generate a replacement render.start with a fresh mutation identity.
-fn unconfirmed_started_motion_render(mut error: Error) -> Error {
+fn unconfirmed_started_motion_render(error: Error) -> Error {
+    unconfirmed_started_native_render(error, "Motion Canvas", "driver.motion-canvas.render.start")
+}
+
+/// Retain an acknowledged native render when a later observation is lost.
+/// The renderer label and start command are app-owned static values.
+fn unconfirmed_started_native_render(
+    mut error: Error,
+    renderer: &'static str,
+    start_command: &'static str,
+) -> Error {
     error.message = format!(
-        "Motion Canvas render started but its terminal result is unconfirmed ({:?}). \
+        "{renderer} render started but its terminal result is unconfirmed ({:?}). \
          Reconcile the original job/request receipt with canonical Broker/Driver Host evidence; \
          do not redispatch a render automatically.",
         error.code
     );
-    error
-        .uncertain()
-        .recipe_progress(1, "driver.motion-canvas.render.start")
+    error.uncertain().recipe_progress(1, start_command)
+}
+
+fn unconfirmed_started_manim_render(error: Error) -> Error {
+    unconfirmed_started_native_render(
+        error,
+        "Manim Community",
+        "driver.manim-community.render.start",
+    )
+}
+
+fn retained_manim_job_failure(data: &Value, unknown_state: bool) -> Error {
+    let original = data
+        .get("original_error")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Error>(value).ok())
+        .unwrap_or_else(|| backend("Manim Community original render reported failure"));
+    if unknown_state || !original.outcome_known {
+        unconfirmed_started_manim_render(original)
+    } else {
+        original
+    }
+}
+
+fn retryable_manim_status_error(error: &Error) -> bool {
+    // A new read may observe an already-started job after an ordinary timeout.
+    // An uncertain response or any other observation failure needs reconciliation.
+    error.code == ErrorCode::Timeout && error.outcome_known
+}
+
+/// Only the existing validated Broker client can supply production views here.
+/// These bindings never create a grant, native receipt, or replacement job.
+#[derive(Debug)]
+struct AcknowledgedManimRender {
+    job_ref: String,
+    provider_generation: u64,
+    plan_sha256: String,
+    profile: Value,
+}
+
+impl AcknowledgedManimRender {
+    fn from_start(started: &Value, plan_sha256: &str, profile: Value) -> NativeResult<Self> {
+        let data = response_data(started).map_err(unconfirmed_started_manim_render)?;
+        let job_ref = required_string(
+            data,
+            "/job_ref",
+            "Manim render did not return a job reference",
+        )
+        .map_err(unconfirmed_started_manim_render)?;
+        if !job_ref.strip_prefix("manim-").is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim render start returned an invalid job reference",
+            )));
+        }
+        let provider_generation = Self::generation(started)?;
+        let binding = Self {
+            job_ref,
+            provider_generation,
+            plan_sha256: plan_sha256.to_owned(),
+            profile,
+        };
+        let data = binding.observe(started, "start")?;
+        if data.get("state").and_then(Value::as_str) != Some("rendering") {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim render start returned an unsupported initial state",
+            )));
+        }
+        Ok(binding)
+    }
+
+    fn generation(response: &Value) -> NativeResult<u64> {
+        response
+            .pointer("/result/execution/provenance/provider_generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                unconfirmed_started_manim_render(backend(
+                    "Manim observation has no canonical provider generation",
+                ))
+            })
+    }
+
+    fn observe<'a>(
+        &self,
+        response: &'a Value,
+        observation: &'static str,
+    ) -> NativeResult<&'a Value> {
+        if Self::generation(response)? != self.provider_generation {
+            return Err(unconfirmed_started_manim_render(Error::new(
+                ErrorCode::StaleReference,
+                "Manim observation belongs to a different provider generation",
+            )));
+        }
+        let data = response_data(response).map_err(unconfirmed_started_manim_render)?;
+        if !matches!(
+            data.get("state").and_then(Value::as_str),
+            Some("rendering" | "cancelling" | "succeeded" | "failed" | "cancelled" | "unknown")
+        ) {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim observation returned no supported canonical state",
+            )));
+        }
+        if data.get("job_ref").and_then(Value::as_str) != Some(self.job_ref.as_str()) {
+            return Err(unconfirmed_started_manim_render(backend(format!(
+                "Manim {observation} does not identify the acknowledged native render job"
+            ))));
+        }
+        if data.get("plan_sha256").and_then(Value::as_str) != Some(self.plan_sha256.as_str())
+            || data.get("profile") != Some(&self.profile)
+        {
+            return Err(unconfirmed_started_manim_render(backend(format!(
+                "Manim {observation} does not preserve the acknowledged plan and profile"
+            ))));
+        }
+        Ok(data)
+    }
 }
 
 /// A provider status/result is evidence only for the *same* render job
@@ -1439,6 +1665,18 @@ impl ProductionCoordinator {
             .iter()
             .find(|profile| profile.id == deliverable_id)
             .ok_or_else(|| invalid("Deliverable profile not found"))?;
+        reject_saved_original_mix_for_legacy_master(&project, deliverable_id)?;
+        // Encoding and muxing preserve this source WAV; neither operation
+        // realizes authored loudness or true-peak targets. Keep the saved
+        // intent intact and reject before the first native effect.
+        if project.audio.mix.target_lufs.is_some()
+            || project.audio.mix.target_true_peak_dbfs.is_some()
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "MLT audiovisual mastering does not support LUFS or true-peak targets",
+            ));
+        }
         if deliverable.video_codec != VideoCodec::H264
             || deliverable.audio_codec != AudioCodec::Aac
             || deliverable.audio_sample_rate_hz != 48_000
@@ -1733,6 +1971,20 @@ impl ProductionCoordinator {
             ));
         }
         let plan = build_blender_contribution(&project, scene_id)?;
+        // The legacy material.create path does not realize the Principled
+        // Alpha input. Reject before collection.create can mutate the scene.
+        // The Collection profile has its own explicit material-opacity source
+        // contract; this guard does not claim raster transparency fidelity.
+        if plan
+            .objects
+            .iter()
+            .any(|object| object.color_rgba[3] != 1.0)
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Legacy Blender GLB production cannot preserve non-opaque material alpha",
+            ));
+        }
         let collection = self
             .execute(
                 project_id,
@@ -1896,12 +2148,30 @@ impl ProductionCoordinator {
         }))
     }
 
+    /// Legacy bounded contribution. It retains its original v1 timing behavior;
+    /// source/clock-complete production callers select the explicit v2 route.
     pub async fn realize_manim_scene(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
         request_id: &str,
         scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let plan =
+            motionwright_manim_profile::ManimStartPlan::V1(build_manim_plan(&project, scene_id)?);
+        self.realize_manim_plan(project_id, expected, request_id, scene_id, plan, profile)
+            .await
+    }
+
+    async fn realize_manim_plan(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        plan: motionwright_manim_profile::ManimStartPlan,
         profile: ManimRenderProfile,
     ) -> NativeResult<Value> {
         if request_id.trim().is_empty()
@@ -1925,17 +2195,37 @@ impl ProductionCoordinator {
             ));
         }
 
-        let projected = build_manim_plan(&project, scene_id)?;
-        let plan_value = serde_json::to_value(&projected)
-            .map_err(|_| invalid("Manim scene plan could not be encoded"))?;
-        let plan: motionwright_manim_profile::ManimScenePlan =
-            serde_json::from_value(plan_value.clone())
-                .map_err(|_| invalid("Manim scene plan does not match the Driver SDK profile"))?;
-        motionwright_manim_profile::validate_plan(&plan)
-            .map_err(|error| invalid(format!("Manim scene plan is invalid: {error}")))?;
-        let plan_bytes = serde_json::to_vec(&plan)
-            .map_err(|_| invalid("Manim scene plan could not be digested"))?;
-        let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
+        plan.validate_for_profile(profile)
+            .map_err(|error| invalid(error.to_string()))?;
+        let expected_source = match &plan {
+            motionwright_manim_profile::ManimStartPlan::V1(source) => {
+                if *source != build_manim_plan(&project, scene_id)? {
+                    return Err(invalid(
+                        "Manim legacy plan does not match the current Project",
+                    ));
+                }
+                None
+            }
+            motionwright_manim_profile::ManimStartPlan::V2(source) => {
+                let current = crate::multi_renderer::build_manim_plan_v2(
+                    &project,
+                    scene_id,
+                    source.binding.deliverable_id,
+                )?;
+                if **source != current {
+                    return Err(invalid("Manim v2 plan does not match the current Project"));
+                }
+                Some(
+                    motionwright_manim_profile::source_package_v2(source)
+                        .map_err(|error| invalid(error.to_string()))?,
+                )
+            }
+        };
+        let plan_value = serde_json::to_value(&plan)
+            .map_err(|_| invalid("Manim source plan cannot be encoded"))?;
+        let plan_sha256 = plan
+            .plan_sha256()
+            .map_err(|error| invalid(error.to_string()))?;
 
         let started = self
             .execute(
@@ -1947,21 +2237,21 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let job_ref = required_string(
-            response_data(&started)?,
-            "/job_ref",
-            "Manim render did not return a job reference",
-        )?;
+        let binding = AcknowledgedManimRender::from_start(&started, &plan_sha256, json!(profile))?;
+        let job_ref = &binding.job_ref;
+        let source_binding = expected_source
+            .as_ref()
+            .map(|package| manim_source::ManimSourceJobBinding::from_start(package, &started))
+            .transpose()?;
 
         let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
         let mut poll = 0_u32;
         loop {
             if Instant::now() >= deadline {
-                return Err(Error::new(
+                return Err(unconfirmed_started_manim_render(Error::new(
                     ErrorCode::Timeout,
                     "Manim render did not reach a terminal state before the bounded deadline",
-                )
-                .uncertain());
+                )));
             }
             let status = match self
                 .execute(
@@ -1975,19 +2265,28 @@ impl ProductionCoordinator {
                 .await
             {
                 Ok(status) => status,
-                Err(error) if error.code == ErrorCode::Timeout => {
-                    poll = poll
-                        .checked_add(1)
-                        .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+                Err(error) if retryable_manim_status_error(&error) => {
+                    poll = poll.checked_add(1).ok_or_else(|| {
+                        unconfirmed_started_manim_render(backend(
+                            "Manim render poll counter overflowed",
+                        ))
+                    })?;
                     sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(unconfirmed_started_manim_render(error)),
             };
-            match response_data(&status)?.get("state").and_then(Value::as_str) {
+            let data = binding.observe(&status, "status")?;
+            if let Some(source) = &source_binding {
+                source.observe(data)?;
+            }
+            match data.get("state").and_then(Value::as_str) {
                 Some("succeeded") => break,
+                Some("unknown") => {
+                    return Err(retained_manim_job_failure(data, true));
+                }
                 Some("failed") => {
-                    return Err(backend("Manim Community render reported failure"));
+                    return Err(retained_manim_job_failure(data, false));
                 }
                 Some("cancelled") => {
                     return Err(Error::new(
@@ -1997,15 +2296,19 @@ impl ProductionCoordinator {
                 }
                 Some("rendering") | Some("cancelling") => {}
                 Some(_) => {
-                    return Err(backend("Manim Community returned an unsupported job state"));
+                    return Err(unconfirmed_started_manim_render(backend(
+                        "Manim Community returned an unsupported job state",
+                    )));
                 }
                 None => {
-                    return Err(backend("Manim Community render status returned no state"));
+                    return Err(unconfirmed_started_manim_render(backend(
+                        "Manim Community render status returned no state",
+                    )));
                 }
             }
-            poll = poll
-                .checked_add(1)
-                .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
+            poll = poll.checked_add(1).ok_or_else(|| {
+                unconfirmed_started_manim_render(backend("Manim render poll counter overflowed"))
+            })?;
             sleep(Duration::from_millis(MANIM_RENDER_POLL_INTERVAL_MS)).await;
         }
 
@@ -2018,27 +2321,34 @@ impl ProductionCoordinator {
                 json!({"job_ref": job_ref}),
                 false,
             )
-            .await?;
-        let result_data = response_data(&result)?;
-        if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
-            return Err(backend(
-                "Manim render result is not a successful terminal artifact",
-            ));
+            .await
+            .map_err(unconfirmed_started_manim_render)?;
+        let result_data = binding.observe(&result, "result")?;
+        if let Some(source) = &source_binding {
+            source.observe(result_data)?;
         }
-        let artifact = result_data
-            .get("artifact")
-            .cloned()
-            .ok_or_else(|| backend("Manim render result has no artifact"))?;
+        if result_data.get("state").and_then(Value::as_str) != Some("succeeded") {
+            return Err(unconfirmed_started_manim_render(backend(
+                "Manim render result is not a successful terminal artifact",
+            )));
+        }
+        let artifact = result_data.get("artifact").cloned().ok_or_else(|| {
+            unconfirmed_started_manim_render(backend("Manim render result has no artifact"))
+        })?;
         let relative_path = required_string(
             &artifact,
             "/relative_path",
             "Manim render artifact has no relative path",
-        )?;
-        let sha256 = required_string(&artifact, "/sha256", "Manim render artifact has no digest")?;
+        )
+        .map_err(unconfirmed_started_manim_render)?;
+        let sha256 = required_string(&artifact, "/sha256", "Manim render artifact has no digest")
+            .map_err(unconfirmed_started_manim_render)?;
         let bytes = artifact
             .get("bytes")
             .and_then(Value::as_u64)
-            .ok_or_else(|| backend("Manim render artifact has no size"))?;
+            .ok_or_else(|| {
+                unconfirmed_started_manim_render(backend("Manim render artifact has no size"))
+            })?;
         if artifact.get("media_type").and_then(Value::as_str) != Some("video/mp4")
             || artifact.get("width").and_then(Value::as_u64) != Some(u64::from(profile.width))
             || artifact.get("height").and_then(Value::as_u64) != Some(u64::from(profile.height))
@@ -2048,9 +2358,9 @@ impl ProductionCoordinator {
             || bytes == 0
             || bytes > MANIM_VIDEO_MAX_BYTES
         {
-            return Err(backend(
+            return Err(unconfirmed_started_manim_render(backend(
                 "Manim render artifact does not match the bounded Motionwright scene plan",
-            ));
+            )));
         }
         let verified_path = verify_output_artifact(
             &self.client.connection().output_root,
@@ -2058,6 +2368,18 @@ impl ProductionCoordinator {
             &sha256,
             MANIM_VIDEO_MAX_BYTES,
         )?;
+
+        let source_observation = source_binding
+            .as_ref()
+            .map(|source| source.finish(&self.client.connection().output_root, result_data))
+            .transpose()?;
+        let current = self.service.project(project_id).map_err(storage_error)?;
+        if RevisionStamp::from(&current) != *expected {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Project changed while the original Manim artifact was being verified",
+            ));
+        }
 
         Ok(json!({
             "renderer": "manim-community",
@@ -2068,6 +2390,7 @@ impl ProductionCoordinator {
             "job_ref": job_ref,
             "plan_sha256": plan_sha256,
             "profile": profile,
+            "source": source_observation,
             "result": result,
             "artifact": {
                 "relative_path": relative_path,
@@ -2087,6 +2410,9 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
+        // Keep durable receipts and persistence failures aligned with the
+        // existing client-side workflow classification even if a caller passes false.
+        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
             || expected.generation != project.generation
@@ -2235,6 +2561,703 @@ fn storage_error(error: motionwright_storage::StorageError) -> Error {
 }
 
 #[cfg(test)]
+mod tests_final_master_admission {
+    use super::*;
+    use crate::{
+        assembly::preflight_multi_segment_mlt, mlt_av_audio::preflight_multi_segment_audio,
+        mlt_edit_plan::mlt_native_video_recipe,
+    };
+    use motionwright_domain::{
+        AlignmentEvidence, BlendMode, CanvasNode, Change, CoordinateSpace, DeliveryArchetype,
+        DeliveryNarrativeRole, DeliveryRecipe, DeliveryRecipeSchema, DeliverySceneIntent,
+        NodeStyle, OriginalMixRecipe, Project, RationalTime, TranscriptSegment,
+    };
+    use motionwright_service::VoiceImportMetadata;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const CANONICAL_MASTER_REQUIRED: &str =
+        "The selected deliverable requires its canonical original mix master";
+    const SINGLE_MASTER_TARGET_UNSUPPORTED: &str =
+        "MLT audiovisual mastering does not support LUFS or true-peak targets";
+
+    #[derive(Clone, Copy)]
+    enum LegacyMaster {
+        Single,
+        MultisegmentVoice,
+        MultisegmentSfx,
+    }
+
+    #[derive(Clone, Copy)]
+    enum MasteringTarget {
+        Lufs,
+        TruePeak,
+    }
+
+    struct AdmissionFixture {
+        service: StudioService,
+        project: Project,
+        connection: ProductionConnection,
+        options: FilmBuildOptions,
+        rendered: MotionCanvasRenderEvidence,
+        visual: Option<MltVerifiedLosslessTimeline>,
+        audio: MltAudioArtifact,
+        // Release SQLite and source handles before removing their directory.
+        root: tempfile::TempDir,
+    }
+
+    fn apply(service: &StudioService, project: &Project, key: &str, change: Change) -> Project {
+        service
+            .apply(project.id, &project.stamp(), key, &change)
+            .unwrap()
+            .project
+    }
+
+    fn original_wav(bus: usize) -> Vec<u8> {
+        let data_size = 96_000_u32 * 4;
+        let mut wav = Vec::with_capacity(44 + data_size as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&192_000_u32.to_le_bytes());
+        wav.extend_from_slice(&4_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        for frame in 0..96_000 {
+            for channel in 0..2 {
+                let value = (i16::try_from((frame + channel * 31) % 251).unwrap() - 125)
+                    * i16::try_from(bus + 1).unwrap()
+                    * 3;
+                wav.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        wav
+    }
+
+    fn no_dispatch_connection(root: &Path, resource: String) -> ProductionConnection {
+        let executable = root.join(if cfg!(windows) {
+            "master-admission-must-not-run.cmd"
+        } else {
+            "master-admission-must-not-run"
+        });
+        // This program can only mark an accidental dispatch and fail. It
+        // cannot emit a provider envelope, native receipt or successful media.
+        let script: &[u8] = if cfg!(windows) {
+            b"@echo off\r\n> \"%~dp0native-dispatch-marker\" echo unexpected\r\nexit /b 97\r\n"
+        } else {
+            b"#!/bin/sh\n: > \"${0%/*}/native-dispatch-marker\"\nexit 97\n"
+        };
+        let socket = root.join("broker.sock");
+        let session_file = root.join("session.json");
+        let output_root = root.join("output");
+        fs::create_dir(&output_root).unwrap();
+        fs::write(&executable, script).unwrap();
+        fs::write(&socket, b"").unwrap();
+        fs::write(&session_file, b"{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in [
+                (&executable, 0o700),
+                (&socket, 0o600),
+                (&session_file, 0o600),
+                (&output_root, 0o700),
+            ] {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            }
+        }
+        ProductionConnection {
+            schema: CONNECTION_SCHEMA.into(),
+            executable_sha256: hex::encode(Sha256::digest(script)),
+            executable,
+            socket,
+            session_file,
+            output_root,
+            resource,
+        }
+    }
+
+    fn fixture(
+        entry: LegacyMaster,
+        canonical_mix: bool,
+        target: Option<MasteringTarget>,
+    ) -> AdmissionFixture {
+        let root = tempfile::Builder::new()
+            .prefix("final-master-admission-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        let mut project = service.create_project("Final master admission").unwrap();
+        let scene_count = if matches!(entry, LegacyMaster::Single) {
+            1
+        } else {
+            33
+        };
+        for index in 0..scene_count {
+            project = apply(
+                &service,
+                &project,
+                &format!("admission-scene-{index}"),
+                Change::AddScene {
+                    name: format!("Admission source {index}"),
+                    objective: "Saved source and exact frame clock".into(),
+                    duration_seconds: 1,
+                },
+            );
+            let scene_id = project.scenes.last().unwrap().id;
+            let frames = if scene_count == 1 {
+                60
+            } else if index == 32 {
+                28
+            } else {
+                1
+            };
+            project = apply(
+                &service,
+                &project,
+                &format!("admission-clock-{index}"),
+                Change::SetSceneDuration {
+                    scene_id,
+                    duration: RationalTime::new(frames, 30).unwrap(),
+                },
+            );
+            project = apply(
+                &service,
+                &project,
+                &format!("admission-node-{index}"),
+                Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::new_v4(),
+                        name: "Admission rectangle".into(),
+                        kind: "rectangle".into(),
+                        parent_id: None,
+                        x: 400.0,
+                        y: 250.0,
+                        width: 160.0,
+                        height: 120.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: None,
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 1,
+                        style: NodeStyle {
+                            fill: Some("#F5F5F2".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: None,
+                            font_size: None,
+                            font_weight: None,
+                            line_height: None,
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            );
+        }
+        let paths = [0, 1, 2].map(|bus| root.path().join(format!("original-bus-{bus}.wav")));
+        for (bus, path) in paths.iter().enumerate() {
+            fs::write(path, original_wav(bus)).unwrap();
+        }
+        project = service
+            .import_voice_file(
+                project.id,
+                &project.stamp(),
+                "admission-voice",
+                &paths[0],
+                VoiceImportMetadata {
+                    name: "Original admission signal".into(),
+                    label: "Measured numerical source, not speech".into(),
+                    media_type: "audio/wav".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let track = project.audio.voice_tracks[0].clone();
+        let mut source_ids = [track.asset_id, Uuid::nil(), Uuid::nil()];
+        for bus in 1..3 {
+            project = service
+                .import_asset_file(
+                    project.id,
+                    &project.stamp(),
+                    &format!("admission-bus-{bus}"),
+                    &paths[bus],
+                    format!("Original admission bus {bus}"),
+                    "audio/wav".into(),
+                )
+                .unwrap()
+                .project;
+            source_ids[bus] = project.assets.last().unwrap().id;
+        }
+        let mut profile = project.deliverables[0].clone();
+        profile.width = 1280;
+        profile.height = 720;
+        profile.frame_rate = RationalTime::new(30, 1).unwrap();
+        profile.audio_sample_rate_hz = 48_000;
+        profile.language = "en".into();
+        profile.voice_track_id = Some(track.id);
+        profile.video_codec = VideoCodec::H264;
+        profile.audio_codec = AudioCodec::Aac;
+        profile.container = OutputContainer::Mp4;
+        profile.color_space = OutputColorSpace::Rec709;
+        profile.captions = false;
+        profile.burn_in_captions = false;
+        profile.included_scene_ids.clear();
+        let deliverable_id = profile.id;
+        project = apply(
+            &service,
+            &project,
+            "admission-profile",
+            Change::UpsertDeliverable { profile },
+        );
+        project = apply(
+            &service,
+            &project,
+            "admission-reviewed-window",
+            Change::AddTranscriptSegment {
+                segment: TranscriptSegment {
+                    id: Uuid::new_v4(),
+                    voice_track_id: track.id,
+                    start: RationalTime::new(6, 5).unwrap(),
+                    end: RationalTime::new(3, 2).unwrap(),
+                    text: "Authored timing for a numerical test signal".into(),
+                    speaker: None,
+                    alignment: AlignmentEvidence::Manual,
+                },
+            },
+        );
+        let mut mix = project.audio.mix.clone();
+        mix.voice_gain_db = 0.0;
+        mix.music_gain_db = -12.0;
+        mix.target_lufs = match target {
+            Some(MasteringTarget::Lufs) => Some(-14.0),
+            _ => None,
+        };
+        mix.target_true_peak_dbfs = match target {
+            Some(MasteringTarget::TruePeak) => Some(-1.0),
+            _ => None,
+        };
+        project = apply(
+            &service,
+            &project,
+            "admission-mix-intent",
+            Change::SetMixIntent { mix },
+        );
+        let recipe = DeliveryRecipe {
+            schema: DeliveryRecipeSchema::V1,
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| DeliverySceneIntent {
+                    scene_id: scene.id,
+                    role: Some(DeliveryNarrativeRole::Mechanism),
+                    archetype: Some(DeliveryArchetype::Statement),
+                })
+                .collect(),
+            original_mix: canonical_mix.then_some(OriginalMixRecipe {
+                music_asset_id: Some(source_ids[1]),
+                sfx_asset_id: Some(source_ids[2]),
+                sfx_gain_db: -3.0,
+                duck_attenuation_db: 12.0,
+                duck_attack_samples: 2_400,
+                duck_release_samples: 4_800,
+            }),
+        };
+        recipe.validate(&project.scenes, &project.assets).unwrap();
+        project = apply(
+            &service,
+            &project,
+            "admission-delivery-recipe",
+            Change::SetDeliveryRecipe {
+                deliverable_profile_id: deliverable_id,
+                recipe: Some(recipe),
+            },
+        );
+        for path in paths {
+            fs::remove_file(path).unwrap();
+        }
+        project.validate().unwrap();
+        assert_eq!(project.audio.mix.voice_gain_db, 0.0);
+        assert_eq!(project.audio.mix.music_gain_db, -12.0);
+        if canonical_mix {
+            assert!(project.audio.mix.target_lufs.is_none());
+            assert!(project.audio.mix.target_true_peak_dbfs.is_none());
+            let plan = resolve_canonical_original_mix_plan(
+                &service,
+                project.id,
+                &project.stamp(),
+                deliverable_id,
+            )
+            .unwrap();
+            assert_eq!(plan.sample_frames, 96_000);
+            assert_eq!(plan.measured_voice.asset_id, source_ids[0]);
+            assert_eq!(plan.original_music.asset_id, source_ids[1]);
+            assert_eq!(plan.original_sfx.asset_id, source_ids[2]);
+        } else {
+            assert!(
+                project.production_design.delivery_recipes[&deliverable_id]
+                    .original_mix
+                    .is_none()
+            );
+        }
+        let connection = no_dispatch_connection(root.path(), project.resource_key());
+        let options = canonical_original_mix_film_options(&project, deliverable_id).unwrap();
+        let rendered =
+            admitted_manifest_fixture(&project, deliverable_id, &options, &connection.output_root);
+        let visual = if matches!(entry, LegacyMaster::Single) {
+            assert_eq!(rendered.segments.len(), 1);
+            assert_eq!(rendered.segments[0].frame_count, 60);
+            None
+        } else {
+            assert_eq!(rendered.segments.len(), 2);
+            Some(admitted_visual_fixture(
+                &project,
+                &options,
+                &rendered,
+                &connection.output_root,
+            ))
+        };
+        let voice = service
+            .verified_master_voice(project.id, &project.stamp(), track.id)
+            .unwrap();
+        let audio = MltAudioArtifact {
+            relative_path: "staged-voice.wav".into(),
+            sha256: voice.sha256.clone(),
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        fs::copy(
+            &voice.path,
+            connection.output_root.join(&audio.relative_path),
+        )
+        .unwrap();
+        verify_output_artifact(
+            &connection.output_root,
+            &audio.relative_path,
+            &audio.sha256,
+            MLT_MASTER_MAX_BYTES,
+        )
+        .unwrap();
+        if let Some(visual) = &visual {
+            let recipe = mlt_multisegment_av::verify_multisegment_visual_source(
+                &project,
+                deliverable_id,
+                &options,
+                &rendered,
+                visual,
+                &connection.output_root,
+            )
+            .unwrap();
+            // The actual CAS/WAV, source clock and ordinary voice gain all
+            // pass independently. These checks do not decode the synthetic
+            // visual files below or turn them into native render evidence.
+            let source = preflight_multi_segment_audio(
+                &project,
+                deliverable_id,
+                &recipe,
+                &visual.source,
+                &voice,
+                &connection.output_root,
+            )
+            .unwrap();
+            assert_eq!(source.total_frames, 60);
+            assert_eq!(source.audio_pcm_frames, 96_000);
+        }
+        AdmissionFixture {
+            service,
+            project,
+            connection,
+            options,
+            rendered,
+            visual,
+            audio,
+            root,
+        }
+    }
+
+    // Complete, digest-checked manifests and typed visual records exercise
+    // the existing source-admission contract. The indexed PNG/FFV1 content
+    // is synthetic; no renderer is invoked or native success claimed.
+    fn admitted_manifest_fixture(
+        project: &Project,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+        output_root: &Path,
+    ) -> MotionCanvasRenderEvidence {
+        let source = build_motion_canvas_segments(project, deliverable_id, options).unwrap();
+        let mut segments = Vec::new();
+        for (index, segment) in source.iter().enumerate() {
+            let directory = format!("render-{index:032x}");
+            let manifest_path = format!("{directory}/artifact-manifest.json");
+            fs::create_dir(output_root.join(&directory)).unwrap();
+            let manifest = json!({
+                "plan": {
+                    "width": 1280, "height": 720, "fps": 30, "fps_denominator": 1,
+                    "frame_count": segment.frame_count, "first_frame": 0,
+                    "end_frame_exclusive": segment.frame_count,
+                },
+                "frames": (0..segment.frame_count).map(|frame| json!({
+                    "index": frame, "file": format!("frames/{frame:06}.png"),
+                    "bytes": 128, "sha256": "a".repeat(64),
+                })).collect::<Vec<_>>(),
+            });
+            let bytes = serde_json::to_vec(&manifest).unwrap();
+            let digest = hex::encode(Sha256::digest(&bytes));
+            fs::write(output_root.join(&manifest_path), bytes).unwrap();
+            verify_output_artifact(output_root, &manifest_path, &digest, 8 * 1024 * 1024).unwrap();
+            segments.push(MotionCanvasSegmentEvidence {
+                segment_id: segment.id.clone(), scene_ids: segment.scene_ids.clone(),
+                frame_count: segment.frame_count, plan_ref: format!("admission-plan-{index}"),
+                fingerprint: format!("admission-fingerprint-{index}"),
+                job_ref: format!("admission-job-{index}"),
+                artifact: json!({
+                    "directory": directory, "manifest": manifest_path,
+                    "manifest_sha256": digest, "frame_count": segment.frame_count,
+                }),
+                verification: json!({
+                    "report": {"execution_status": "completed", "support_level": "native"},
+                    "measurement": {"findings": [], "validation": {"checks": [{"verdict": "PASS"}]}},
+                }),
+            });
+        }
+        MotionCanvasRenderEvidence {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            frame_rate: options.frame_rate,
+            segments,
+        }
+    }
+
+    fn admitted_visual_fixture(
+        project: &Project,
+        options: &FilmBuildOptions,
+        rendered: &MotionCanvasRenderEvidence,
+        output_root: &Path,
+    ) -> MltVerifiedLosslessTimeline {
+        let deliverable_id = rendered.deliverable_id;
+        let checked =
+            preflight_multi_segment_mlt(project, deliverable_id, options, rendered, output_root)
+                .unwrap();
+        let recipe = mlt_native_video_recipe(&checked).unwrap();
+        assert_eq!(recipe.total_frames, 60);
+        let verified_video_segments = recipe
+            .clips
+            .iter()
+            .enumerate()
+            .map(|(index, clip)| {
+                let bytes = format!("synthetic admission-only segment {index}").into_bytes();
+                fs::write(output_root.join(&clip.ffv1_output_path), &bytes).unwrap();
+                MltVerifiedMezzanine {
+                    segment_id: clip.segment_id.clone(),
+                    scene_ids: clip.scene_ids.clone(),
+                    output_start_frame: clip.start_frame,
+                    frame_count: clip.source_out_exclusive,
+                    native_render_job_ref: clip.source_native_job_ref.clone(),
+                    source_manifest_sha256: clip.source_manifest_sha256.clone(),
+                    artifact_path: clip.ffv1_output_path.clone(),
+                    artifact_sha256: hex::encode(Sha256::digest(&bytes)),
+                    artifact_bytes: bytes.len() as u64,
+                }
+            })
+            .collect();
+        let source = MltPreparedMezzanines {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            input_sha256: recipe.input_sha256.clone(),
+            fps_num: 30,
+            fps_den: 1,
+            total_frames: 60,
+            verified_video_segments,
+            evidence_scope: "real-source-ffv1-segments-not-composited".into(),
+        };
+        let bytes = b"synthetic admission-only combined visual";
+        let artifact_path = format!(
+            "{}-sequence-video-only-ffv1.mkv",
+            recipe.owner_output_namespace
+        );
+        fs::write(output_root.join(&artifact_path), bytes).unwrap();
+        MltVerifiedLosslessTimeline {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            recipe_sha256: recipe.input_sha256,
+            frame_count: 60,
+            native_frame_count_observed: Some(60),
+            transport_pcm_audio: false,
+            native_render_profile: "lossless-video-only".into(),
+            provider_project_cleanup: "not_requested_requires_foreground_broker_consent".into(),
+            native_job_ref: "render:admission-only-synthetic".into(),
+            provider_revision: "admission-only-synthetic".into(),
+            artifact_path,
+            artifact_sha256: hex::encode(Sha256::digest(bytes)),
+            artifact_bytes: bytes.len() as u64,
+            source,
+            evidence_scope: "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+                .into(),
+        }
+    }
+
+    fn output_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn visit(root: &Path, folder: &Path, result: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            for entry in fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                let key = path.strip_prefix(root).unwrap().to_path_buf();
+                let kind = fs::symlink_metadata(&path).unwrap();
+                assert!(!kind.file_type().is_symlink());
+                if kind.is_dir() {
+                    result.insert(key, None);
+                    visit(root, &path, result);
+                } else {
+                    assert!(kind.is_file());
+                    result.insert(key, Some(fs::read(path).unwrap()));
+                }
+            }
+        }
+        let mut result = BTreeMap::new();
+        visit(root, root, &mut result);
+        result
+    }
+
+    async fn assert_admission_rejected(
+        entry: LegacyMaster,
+        canonical_mix: bool,
+        target: Option<MasteringTarget>,
+        expected_message: &str,
+    ) {
+        let f = fixture(entry, canonical_mix, target);
+        let before = output_snapshot(&f.connection.output_root);
+        let coordinator =
+            ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+        assert!(coordinator.receipts(f.project.id, 256).unwrap().is_empty());
+        let error = match entry {
+            LegacyMaster::Single => coordinator
+                .assemble_mlt_av_master(
+                    f.project.id,
+                    &f.project.stamp(),
+                    MltAvMasterRequest {
+                        request_id: "legacy-final-admission-single",
+                        deliverable_id: f.rendered.deliverable_id,
+                        motion: &f.rendered,
+                        audio: &f.audio,
+                        sync: None,
+                    },
+                )
+                .await
+                .unwrap_err(),
+            LegacyMaster::MultisegmentVoice => coordinator
+                .assemble_native_mlt_multisegment_av_master(
+                    f.project.id,
+                    &f.project.stamp(),
+                    MltMultisegmentAvMasterRequest {
+                        request_id: "legacy-final-admission-voice",
+                        deliverable_id: f.rendered.deliverable_id,
+                        options: &f.options,
+                        rendered: &f.rendered,
+                        visual: f.visual.as_ref().unwrap(),
+                        audio: &f.audio,
+                    },
+                )
+                .await
+                .unwrap_err(),
+            LegacyMaster::MultisegmentSfx => coordinator
+                .assemble_native_mlt_multisegment_sfx_master(
+                    f.project.id,
+                    &f.project.stamp(),
+                    MltMultisegmentSfxMasterRequest {
+                        request_id: "legacy-final-admission-sfx",
+                        deliverable_id: f.rendered.deliverable_id,
+                        options: &f.options,
+                        rendered: &f.rendered,
+                        visual: f.visual.as_ref().unwrap(),
+                        audio: &f.audio,
+                    },
+                )
+                .await
+                .unwrap_err(),
+        };
+        // Check effects before the error details, so a failing baseline also
+        // exposes an accidental dispatch instead of hiding it behind its error.
+        assert!(coordinator.receipts(f.project.id, 256).unwrap().is_empty());
+        assert_eq!(output_snapshot(&f.connection.output_root), before);
+        assert_eq!(
+            fs::symlink_metadata(f.root.path().join("native-dispatch-marker"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound,
+        );
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert_eq!(error.message, expected_message);
+        assert!(error.outcome_known);
+    }
+
+    #[tokio::test]
+    async fn r1_single_master_rejects_saved_original_mix_before_any_effect() {
+        assert_admission_rejected(LegacyMaster::Single, true, None, CANONICAL_MASTER_REQUIRED)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn r1_multisegment_voice_rejects_saved_original_mix_before_any_effect() {
+        assert_admission_rejected(
+            LegacyMaster::MultisegmentVoice,
+            true,
+            None,
+            CANONICAL_MASTER_REQUIRED,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn r1_multisegment_sfx_rejects_saved_original_mix_before_any_effect() {
+        // Canonical three-bus and semantic-SFX-only are mutually exclusive
+        // source classes. A valid canonical recipe must select the canonical
+        // route before a later SFX-only guard reports a missing/foreign cue.
+        assert_admission_rejected(
+            LegacyMaster::MultisegmentSfx,
+            true,
+            None,
+            CANONICAL_MASTER_REQUIRED,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn r2_single_master_rejects_lufs_without_original_mix_before_any_effect() {
+        assert_admission_rejected(
+            LegacyMaster::Single,
+            false,
+            Some(MasteringTarget::Lufs),
+            SINGLE_MASTER_TARGET_UNSUPPORTED,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn r2_single_master_rejects_true_peak_without_original_mix_before_any_effect() {
+        assert_admission_rejected(
+            LegacyMaster::Single,
+            false,
+            Some(MasteringTarget::TruePeak),
+            SINGLE_MASTER_TARGET_UNSUPPORTED,
+        )
+        .await;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use motionwright_domain::{BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle};
@@ -2279,7 +3302,7 @@ mod tests {
                 provider_version: "test".into(),
                 capability_version: "test".into(),
                 descriptor_sha256: "ab".repeat(32),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(1),
@@ -2343,7 +3366,7 @@ mod tests {
                 provider_version: "test".into(),
                 capability_version: "test".into(),
                 descriptor_sha256: "cd".repeat(32),
-                untrusted_metadata: false,
+                untrusted_metadata: true,
                 catalog_revision: 1,
                 execution_provider: Some("driver:motion-canvas".into()),
                 provider_generation: Some(2),
@@ -2672,6 +3695,202 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(!timed_out.outcome_known);
     }
 
+    // These are pure view-validation inputs. They are not Broker envelopes,
+    // native execution receipts, persisted project state, or production proof.
+    #[test]
+    fn manim_original_host_failure_preserves_known_denial_and_unknown_code() {
+        let denial = Error::new(ErrorCode::PolicyDenied, "original host denial");
+        let kept = retained_manim_job_failure(&json!({"original_error":denial}), false);
+        assert_eq!(kept.code, ErrorCode::PolicyDenied);
+        assert!(kept.outcome_known);
+        let missing =
+            Error::new(ErrorCode::Unavailable, "original host observation lost").uncertain();
+        let kept = retained_manim_job_failure(&json!({"original_error":missing}), true);
+        assert_eq!(kept.code, ErrorCode::Unavailable);
+        assert!(!kept.outcome_known);
+        let inconsistent = retained_manim_job_failure(&json!({"original_error":missing}), false);
+        assert!(!inconsistent.outcome_known);
+    }
+
+    fn manim_lifecycle_view(state: &str) -> Value {
+        json!({
+            "result": {
+                "data": {
+                    "job_ref": "manim-0123456789abcdef0123456789abcdef",
+                    "state": state,
+                    "plan_sha256": "a".repeat(64),
+                    "profile": {"width": 640, "height": 360, "frame_rate": 12},
+                },
+                "execution": {
+                    "provenance": {"provider_generation": 7},
+                },
+            },
+        })
+    }
+
+    fn manim_lifecycle_binding() -> AcknowledgedManimRender {
+        AcknowledgedManimRender::from_start(
+            &manim_lifecycle_view("rendering"),
+            &"a".repeat(64),
+            json!({"width": 640, "height": 360, "frame_rate": 12}),
+        )
+        .expect("pure start-view fixture matches its explicit binding")
+    }
+
+    #[test]
+    fn manim_observations_require_the_original_job_generation_plan_and_profile() {
+        let binding = manim_lifecycle_binding();
+        assert!(
+            binding
+                .observe(&manim_lifecycle_view("rendering"), "status")
+                .is_ok()
+        );
+        assert!(
+            binding
+                .observe(&manim_lifecycle_view("succeeded"), "result")
+                .is_ok()
+        );
+
+        let cases = [
+            (
+                "/result/data/job_ref",
+                json!("manim-ffffffffffffffffffffffffffffffff"),
+            ),
+            ("/result/data/job_ref", Value::Null),
+            ("/result/data/state", Value::Null),
+            ("/result/data/state", json!("unsupported-state")),
+            ("/result/execution/provenance/provider_generation", json!(8)),
+            (
+                "/result/execution/provenance/provider_generation",
+                Value::Null,
+            ),
+            (
+                "/result/execution/provenance/provider_generation",
+                json!(-1),
+            ),
+            ("/result/data/plan_sha256", json!("b".repeat(64))),
+            ("/result/data/plan_sha256", Value::Null),
+            ("/result/data/profile/frame_rate", json!(30)),
+            ("/result/data/profile", Value::Null),
+            ("/result/data", Value::Null),
+        ];
+        for (pointer, replacement) in cases {
+            let mut view = manim_lifecycle_view("succeeded");
+            *view.pointer_mut(pointer).expect("fixture pointer exists") = replacement;
+            for observation in ["status", "result"] {
+                let error = binding.observe(&view, observation).unwrap_err();
+                assert!(
+                    !error.outcome_known,
+                    "foreign observation at {pointer} became known"
+                );
+                assert_eq!(
+                    error
+                        .progress
+                        .expect("acknowledged start must remain visible")
+                        .failed_step,
+                    "driver.manim-community.render.start",
+                );
+                assert!(!error.message.contains("ffffffffffffffff"));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_manim_start_acknowledgements_cannot_authorize_a_replacement_job() {
+        for (pointer, replacement) in [
+            ("/result/data/job_ref", json!("unbound-job")),
+            ("/result/data/job_ref", Value::Null),
+            ("/result/data/state", json!("succeeded")),
+            ("/result/data/plan_sha256", json!("b".repeat(64))),
+            ("/result/data/profile/frame_rate", json!(30)),
+            (
+                "/result/execution/provenance/provider_generation",
+                Value::Null,
+            ),
+        ] {
+            let mut view = manim_lifecycle_view("rendering");
+            *view.pointer_mut(pointer).expect("fixture pointer exists") = replacement;
+            let error = AcknowledgedManimRender::from_start(
+                &view,
+                &"a".repeat(64),
+                json!({"width": 640, "height": 360, "frame_rate": 12}),
+            )
+            .unwrap_err();
+            assert!(!error.outcome_known);
+            assert!(error.message.contains("do not redispatch"));
+            assert!(!error.message.contains("unbound-job"));
+        }
+    }
+
+    #[test]
+    fn manim_post_start_observation_errors_preserve_unknown_and_the_original_code() {
+        for (error, code) in [
+            (
+                Error::new(ErrorCode::Unavailable, "private provider detail"),
+                ErrorCode::Unavailable,
+            ),
+            (
+                Error::new(ErrorCode::NotFound, "private job detail"),
+                ErrorCode::NotFound,
+            ),
+            (
+                Error::new(ErrorCode::StaleReference, "private revision detail"),
+                ErrorCode::StaleReference,
+            ),
+            (
+                Error::new(ErrorCode::BackendFailed, "private protocol detail"),
+                ErrorCode::BackendFailed,
+            ),
+            (
+                Error::new(ErrorCode::Cancelled, "private transport detail"),
+                ErrorCode::Cancelled,
+            ),
+            (
+                Error::new(ErrorCode::Timeout, "private deadline detail"),
+                ErrorCode::Timeout,
+            ),
+        ] {
+            let retained = unconfirmed_started_manim_render(error);
+            assert_eq!(retained.code, code);
+            assert!(!retained.outcome_known);
+            assert!(retained.message.contains("Manim Community render started"));
+            assert!(
+                retained
+                    .message
+                    .contains("Reconcile the original job/request receipt")
+            );
+            assert!(!retained.message.contains("private"));
+            assert_eq!(
+                retained
+                    .progress
+                    .expect("render start is acknowledged")
+                    .failed_step,
+                "driver.manim-community.render.start",
+            );
+        }
+    }
+
+    #[test]
+    fn manim_status_retry_is_limited_to_an_ordinary_known_read_timeout() {
+        assert!(retryable_manim_status_error(&Error::new(
+            ErrorCode::Timeout,
+            "read timeout"
+        )));
+        assert!(!retryable_manim_status_error(
+            &Error::new(ErrorCode::Timeout, "uncertain observation").uncertain(),
+        ));
+        for code in [
+            ErrorCode::Unavailable,
+            ErrorCode::StaleReference,
+            ErrorCode::BackendFailed,
+        ] {
+            assert!(!retryable_manim_status_error(&Error::new(
+                code,
+                "read failed"
+            )));
+        }
+    }
+
     #[test]
     fn production_allowlist_binds_blender_to_the_native_driver() {
         for command in BLENDER_COMMANDS {
@@ -2681,6 +3900,25 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             assert!(authority.provider_generation_required);
         }
         assert!(expected_authority("driver.blender.python.exec").is_none());
+        for command in [
+            "driver.blender.composition.inspect",
+            "driver.blender.composition.plan",
+            "driver.blender.composition.apply",
+            "driver.blender.composition.verify",
+            "driver.blender.composition.persist",
+            "driver.blender.composition.reopen",
+        ] {
+            assert!(BLENDER_COMMANDS.contains(&command));
+        }
+        for command in [
+            "driver.blender.file.save",
+            "driver.blender.file.open",
+            "driver.blender.render.frame",
+            "driver.blender.scene.create",
+            "driver.blender.composition.delete",
+        ] {
+            assert!(expected_authority(command).is_none());
+        }
 
         let manim = expected_authority("driver.manim-community.render.start")
             .expect("bounded Manim render start must be explicitly enabled");
@@ -2689,6 +3927,118 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(manim.provider_generation_required);
         assert!(expected_authority("driver.manim-community.python.exec").is_none());
         assert!(expected_authority("driver.manim.render").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_blender_alpha_is_rejected_before_native_dispatch() {
+        let (service, initial, temp) = fixture_service();
+        let mut project = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "blender-alpha-fixture-scene",
+                &Change::AddScene {
+                    name: "Alpha contract fixture".into(),
+                    objective: "Reject unpreserved material alpha before mutation".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = project.scenes[0].id;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-fixture-renderer",
+                &Change::SetSceneRenderer {
+                    scene_id,
+                    renderer: motionwright_domain::RendererKind::Blender,
+                },
+            )
+            .unwrap()
+            .project;
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-fixture-node",
+                &Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::from_u128(40),
+                        name: "Partially transparent rectangle".into(),
+                        kind: "rectangle".into(),
+                        parent_id: None,
+                        x: 240.0,
+                        y: 180.0,
+                        width: 600.0,
+                        height: 360.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: None,
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 0,
+                        style: NodeStyle {
+                            fill: Some("#E0204080".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: None,
+                            font_size: None,
+                            font_weight: None,
+                            line_height: None,
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            )
+            .unwrap()
+            .project;
+
+        let mut connection = fake_connection(&temp, project.resource_key());
+        let marker = connection.output_root.join("unexpected-native-dispatch");
+        fs::write(
+            &connection.executable,
+            "#!/bin/sh\n: > \"$(dirname \"$0\")/output/unexpected-native-dispatch\"\nexit 97\n",
+        )
+        .unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        let output_root = connection.output_root.clone();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let before = serde_json::to_value(&project).unwrap();
+        let error = coordinator
+            .realize_blender_scene(
+                project.id,
+                &RevisionStamp::from(&project),
+                "blender-alpha-original-attempt",
+                scene_id,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.outcome_known);
+        assert!(error.message.contains("non-opaque material alpha"));
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
+        assert!(
+            !marker.exists(),
+            "rejecting alpha must not invoke a native process"
+        );
+        assert_eq!(fs::read_dir(output_root).unwrap().count(), 0);
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before
+        );
+
+        // Source parameter support is separate from the legacy GLB production
+        // route. Admitting its typed Alpha does not assert measured pixels.
+        let source =
+            blender_editable::prepare_blender_editable_project_source(&project, scene_id).unwrap();
+        assert_eq!(source.spec.materials[0].opacity, 128.0 / 255.0);
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
     }
 
     #[test]
@@ -2838,5 +4188,536 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    // These subprocesses are deliberately local test fixtures, not a Semwright
+    // provider, a render, a native receipt, or evidence of external effect authority.
+    #[cfg(unix)]
+    fn transport_fixture_envelope(command: &str) -> Envelope {
+        let authority = expected_authority(command).unwrap();
+        // Exact SDK54 Metadata::for_provider classification, carried into
+        // typed InvocationProvenance without promoting provider descriptions.
+        let untrusted_metadata = authority.source != SourceKind::Builtin;
+        let mut envelope = Envelope::finish(
+            "transport-fixture-broker-response".into(),
+            command.into(),
+            authority.provider.into(),
+            Duration::from_millis(1),
+            false,
+            Ok(json!({"fixture_response": true})),
+        );
+        envelope.execution.provenance = Some(InvocationProvenance {
+            provider: authority.provider.into(),
+            source: authority.source,
+            provider_version: "test-fixture".into(),
+            capability_version: "test-fixture".into(),
+            descriptor_sha256: "a4".repeat(32),
+            untrusted_metadata,
+            catalog_revision: 1,
+            execution_provider: Some(authority.provider.into()),
+            provider_generation: Some(1),
+        });
+        envelope
+    }
+
+    #[cfg(unix)]
+    fn transport_response_fixture(
+        temp: &tempfile::TempDir,
+        resource: String,
+        response: &[u8],
+        exit_code: i32,
+        effect_marker: bool,
+    ) -> ProductionConnection {
+        let mut connection = fake_connection(temp, resource);
+        let response_path = temp.path().join("transport-response.json");
+        fs::write(&response_path, response).unwrap();
+        let quote = |path: &Path| path.to_str().unwrap().replace('\'', "'\\''");
+        let effect = if effect_marker {
+            format!(
+                "printf 'effect\\n' >> '{}'\n",
+                quote(&temp.path().join("fixture-effect.txt"))
+            )
+        } else {
+            String::new()
+        };
+        let script = format!(
+            "#!/bin/sh\nprintf 'invoked\\n' >> '{}'\n{}cat '{}'\nexit {}\n",
+            quote(&temp.path().join("fixture-invocations.txt")),
+            effect,
+            quote(&response_path),
+            exit_code,
+        );
+        fs::write(&connection.executable, script).unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        connection
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdk54_metadata_classification_accepts_bound_drivers_and_builtin() {
+        for (command, driver) in [
+            ("driver.motion-canvas.composition.inspect", true),
+            ("driver.mlt-video.sequence.list", true),
+            ("driver.blender.collection.create", true),
+            ("driver.manim-community.render.status", true),
+            ("workflow.traces.list", false),
+        ] {
+            let (_, project, temp) = fixture_service();
+            let mut envelope = transport_fixture_envelope(command);
+            let provenance = envelope.execution.provenance.as_mut().unwrap();
+            assert_eq!(provenance.untrusted_metadata, driver);
+            if !driver {
+                // Builtin authority does not require a driver worker or generation.
+                provenance.execution_provider = None;
+                provenance.provider_generation = None;
+            }
+            let response = serde_json::to_vec(&envelope).unwrap();
+            let connection =
+                transport_response_fixture(&temp, project.resource_key(), &response, 0, false);
+            let result = ProductionClient::new(connection)
+                .unwrap()
+                .execute(command, json!({}), false)
+                .await
+                .unwrap();
+            assert_eq!(result.value["provenance_checked"], true, "{command}");
+            assert_eq!(
+                result.value["execution"]["provenance"]["untrusted_metadata"], driver,
+                "{command}",
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdk54_metadata_classification_rejects_driver_builtin_inversions() {
+        for command in [
+            "driver.motion-canvas.composition.inspect",
+            "driver.mlt-video.sequence.list",
+            "driver.blender.collection.create",
+            "driver.manim-community.render.status",
+            "workflow.traces.list",
+        ] {
+            let (_, project, temp) = fixture_service();
+            let mut envelope = transport_fixture_envelope(command);
+            let provenance = envelope.execution.provenance.as_mut().unwrap();
+            provenance.untrusted_metadata = !provenance.untrusted_metadata;
+            let response = serde_json::to_vec(&envelope).unwrap();
+            let connection =
+                transport_response_fixture(&temp, project.resource_key(), &response, 0, false);
+            let error = ProductionClient::new(connection)
+                .unwrap()
+                .execute(command, json!({}), true)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::BackendFailed, "{command}");
+            assert!(!error.outcome_known, "post-spawn authority loss: {command}");
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn post_spawn_observation_losses_preserve_original_unknown_after_store_reopen() {
+        const COMMAND: &str = "driver.motion-canvas.composition.apply";
+        let valid = serde_json::to_value(transport_fixture_envelope(COMMAND)).unwrap();
+        let encoded = |value: Value| serde_json::to_vec(&value).unwrap();
+        let mut cases: Vec<(&str, Vec<u8>, i32, ErrorCode, &str)> = vec![
+            ("malformed", b"{broken".to_vec(), 0, ErrorCode::BackendFailed,
+                "Semwright CLI returned an invalid response envelope"),
+            ("missing", vec![], 0, ErrorCode::BackendFailed,
+                "Semwright CLI returned an invalid response envelope"),
+            ("partial-error", br#"{"ok":false,"error":{"code":"BackendFailed","message":"incomplete","outcome_known":true}}"#.to_vec(), 1,
+                ErrorCode::BackendFailed, "Semwright CLI returned an invalid response envelope"),
+            ("budget", vec![b'x'; MAX_OUTPUT_BYTES + 1], 0, ErrorCode::ResourceExhausted,
+                "Semwright CLI response exceeded the transport budget"),
+            ("exit-conflict", encoded(valid.clone()), 1, ErrorCode::BackendFailed,
+                "Semwright CLI success response is inconsistent"),
+        ];
+        for (name, pointer, replacement, message) in [
+            (
+                "foreign-command",
+                "/command",
+                json!("driver.blender.collection.create"),
+                "Semwright CLI response command does not match the request",
+            ),
+            (
+                "missing-request",
+                "/request_id",
+                json!(""),
+                "Semwright CLI response request identity is invalid",
+            ),
+            (
+                "missing-provenance",
+                "/execution/provenance",
+                Value::Null,
+                "Canonical production response has no provenance",
+            ),
+            (
+                "foreign-provenance",
+                "/execution/provenance/provider",
+                json!("driver:blender"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "driver-claimed-builtin-metadata",
+                "/execution/provenance/untrusted_metadata",
+                json!(false),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "foreign-source",
+                "/execution/provenance/source",
+                serde_json::to_value(SourceKind::Builtin).unwrap(),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "missing-generation",
+                "/execution/provenance/provider_generation",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "invalid-descriptor",
+                "/execution/provenance/descriptor_sha256",
+                json!("not-a-sha256"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "missing-execution-provider",
+                "/execution/provenance/execution_provider",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "foreign-execution-provider",
+                "/execution/provenance/execution_provider",
+                json!("driver:blender"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "dry-run",
+                "/execution/dry_run",
+                json!(true),
+                "Semwright CLI success response is inconsistent",
+            ),
+            (
+                "missing-data",
+                "/data",
+                Value::Null,
+                "Canonical production response has no data",
+            ),
+        ] {
+            let mut changed = valid.clone();
+            *changed.pointer_mut(pointer).unwrap() = replacement;
+            cases.push((name, encoded(changed), 0, ErrorCode::BackendFailed, message));
+        }
+        let mut untyped = valid.clone();
+        untyped["ok"] = json!(false);
+        untyped["data"] = Value::Null;
+        untyped["error"] = Value::Null;
+        cases.push((
+            "missing-typed-error",
+            encoded(untyped),
+            1,
+            ErrorCode::BackendFailed,
+            "Canonical production command failed without a typed error",
+        ));
+        let mut contradictory = valid.clone();
+        contradictory["ok"] = json!(false);
+        contradictory["error"] =
+            serde_json::to_value(Error::new(ErrorCode::PolicyDenied, "denied")).unwrap();
+        cases.push((
+            "failure-with-data",
+            encoded(contradictory),
+            3,
+            ErrorCode::BackendFailed,
+            "Semwright CLI failure response is inconsistent",
+        ));
+
+        // Even a complete typed known denial cannot describe this real
+        // invocation as a dry run. The fixture records its effect before
+        // emitting the contradictory response; the original outcome stays UNKNOWN.
+        let denial = Error::new(ErrorCode::PolicyDenied, "Fixture dry-run denial");
+        assert!(denial.outcome_known);
+        assert_eq!(denial.exit_code(), 3);
+        let dry_run_denial = Envelope::finish(
+            "dry-run-denial".into(),
+            COMMAND.into(),
+            "semwright-core".into(),
+            Duration::from_millis(1),
+            true,
+            Err(denial),
+        );
+        assert!(dry_run_denial.data.is_none());
+        cases.push((
+            "failure-dry-run",
+            serde_json::to_vec(&dry_run_denial).unwrap(),
+            3,
+            ErrorCode::BackendFailed,
+            "Semwright CLI failure response is inconsistent",
+        ));
+        assert_eq!(cases.len(), 20);
+
+        for (name, response, exit_code, code, message) in cases {
+            let (service, project, temp) = fixture_service();
+            let original_project = serde_json::to_value(&project).unwrap();
+            let connection = transport_response_fixture(
+                &temp,
+                project.resource_key(),
+                &response,
+                exit_code,
+                true,
+            );
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let request_id = format!("post-spawn-{name}");
+            let args = json!({"plan_ref":"fixture-only-plan"});
+            let error = coordinator
+                .execute(
+                    project.id,
+                    &project.stamp(),
+                    &request_id,
+                    COMMAND,
+                    args.clone(),
+                    true,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, code, "{name}");
+            assert_eq!(error.message, message, "{name}");
+            assert!(!error.outcome_known, "{name}");
+            assert_eq!(
+                fs::read(temp.path().join("fixture-effect.txt")).unwrap(),
+                b"effect\n",
+                "{name}"
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+                "{name}"
+            );
+            assert_eq!(
+                fs::read_dir(&coordinator.client.connection().output_root)
+                    .unwrap()
+                    .count(),
+                0
+            );
+            drop(coordinator);
+            drop(service);
+
+            // Only reopen and read the original attempt. No execute call retries it.
+            let reopened = StudioService::from_store(
+                Store::open(temp.path().join("motionwright.sqlite3")).unwrap(),
+            );
+            let receipt = reopened
+                .latest_production_receipt(project.id, &request_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(receipt.stage, "outcome_unknown", "{name}");
+            assert_eq!(receipt.command, COMMAND);
+            assert_eq!(receipt.generation, project.generation);
+            assert_eq!(receipt.revision, project.revision);
+            assert_eq!(
+                receipt.request_sha256,
+                request_digest(COMMAND, &args).unwrap()
+            );
+            assert_eq!(receipt.payload["error"]["outcome_known"], false);
+            assert_eq!(receipt.payload["mutation"], true);
+            let rows = reopened.production_receipts(project.id, 10).unwrap();
+            assert_eq!(rows.len(), 2, "{name}");
+            assert_eq!(
+                rows.iter().filter(|row| row.stage == "dispatching").count(),
+                1
+            );
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.stage == "failed_known")
+                    .count(),
+                0
+            );
+            assert_eq!(
+                serde_json::to_value(reopened.project(project.id).unwrap()).unwrap(),
+                original_project
+            );
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n",
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn complete_typed_denials_keep_their_known_or_unknown_outcome() {
+        const COMMAND: &str = "driver.motion-canvas.composition.apply";
+        for known in [true, false] {
+            let (service, project, temp) = fixture_service();
+            let typed = if known {
+                Error::new(ErrorCode::PolicyDenied, "Fixture policy denied dispatch")
+            } else {
+                Error::new(ErrorCode::Unavailable, "Fixture lost the original response").uncertain()
+            };
+            let exit_code = typed.exit_code();
+            // A genuine pre-dispatch Broker denial need not have Driver provenance.
+            // Envelope::finish is the public pinned SDK constructor for this case.
+            let envelope = Envelope::finish(
+                "typed-denial".into(),
+                COMMAND.into(),
+                "semwright-core".into(),
+                Duration::from_millis(1),
+                false,
+                Err(typed.clone()),
+            );
+            let connection = transport_response_fixture(
+                &temp,
+                project.resource_key(),
+                &serde_json::to_vec(&envelope).unwrap(),
+                exit_code,
+                !known,
+            );
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let error = coordinator
+                .execute(
+                    project.id,
+                    &project.stamp(),
+                    "typed-denial-original",
+                    COMMAND,
+                    json!({}),
+                    true,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, typed.code);
+            assert_eq!(error.message, typed.message);
+            assert_eq!(error.outcome_known, known);
+            let receipt = service
+                .latest_production_receipt(project.id, "typed-denial-original")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                receipt.stage,
+                if known {
+                    "failed_known"
+                } else {
+                    "outcome_unknown"
+                }
+            );
+            assert_eq!(temp.path().join("fixture-effect.txt").exists(), !known);
+            assert_eq!(
+                fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+                b"invoked\n"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_dispatch_rejections_and_readonly_transport_losses_remain_known() {
+        let (service, project, temp) = fixture_service();
+        let connection =
+            transport_response_fixture(&temp, project.resource_key(), b"{broken", 0, false);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let mut stale = project.stamp();
+        stale.revision += 1;
+        let error = coordinator
+            .execute(
+                project.id,
+                &stale,
+                "pre-dispatch-stale",
+                "driver.motion-canvas.composition.apply",
+                json!({}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert!(error.outcome_known);
+        assert!(!temp.path().join("fixture-invocations.txt").exists());
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        let error = coordinator
+            .client
+            .execute(
+                "driver.motion-canvas.composition.apply",
+                json!({"oversized":"x".repeat(MAX_ARGS_BYTES)}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.outcome_known);
+        assert!(!temp.path().join("fixture-invocations.txt").exists());
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "read-only-observation",
+                "driver.motion-canvas.composition.inspect",
+                json!({}),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::BackendFailed);
+        assert!(error.outcome_known);
+        assert!(!temp.path().join("fixture-effect.txt").exists());
+        let receipt = service
+            .latest_production_receipt(project.id, "read-only-observation")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.stage, "failed_known");
+        assert_eq!(receipt.payload["mutation"], false);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workflow_mutation_classification_is_preserved_in_original_receipts() {
+        let (service, project, temp) = fixture_service();
+        let connection =
+            transport_response_fixture(&temp, project.resource_key(), b"{broken", 0, true);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "original-workflow-action",
+                "workflow.replay",
+                json!({}),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(!error.outcome_known);
+        let receipts = service.production_receipts(project.id, 10).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(|row| row.payload["mutation"] == true));
+        assert!(receipts.iter().any(|row| row.stage == "outcome_unknown"));
+        assert_eq!(
+            fs::read(temp.path().join("fixture-effect.txt")).unwrap(),
+            b"effect\n"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("fixture-invocations.txt")).unwrap(),
+            b"invoked\n"
+        );
     }
 }

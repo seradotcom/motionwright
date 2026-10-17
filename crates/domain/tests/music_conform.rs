@@ -314,3 +314,154 @@ fn semantic_change_roundtrip_has_fixed_bounded_fields() {
     next.apply_change(&decoded).unwrap();
     assert_eq!(next.scenes[1].start, at(8));
 }
+
+fn scene_linked_sfx(project: &mut Project, scene_id: Uuid, offset: i16, frames: u16) -> Uuid {
+    let id = Uuid::new_v4();
+    let source_asset_id = project
+        .assets
+        .iter()
+        .find(|asset| asset.content_sha256.as_deref() == Some(AUDIO_SHA))
+        .unwrap()
+        .id;
+    project.audio.sfx_cues.push(SemanticSfxCue {
+        schema: SFX_CUE_SCHEMA.into(),
+        id,
+        scene_id,
+        event: SfxEvent::Transition,
+        anchor: SfxAnchor::SceneStart,
+        offset_frames: offset,
+        source_asset_id,
+        source_sha256: AUDIO_SHA.into(),
+        source_frames: frames,
+        gain_milli_db: -18_000,
+        attack_frames: 0,
+        release_frames: 10,
+        original_source_attestation: "Original owner-authored edit fixture".into(),
+    });
+    project.validate().unwrap();
+    id
+}
+
+#[test]
+fn shortening_batch_cut_rejects_truncated_semantic_sfx_tail_before_mutation() {
+    let (mut project, ids) = setup();
+    let cue_id = scene_linked_sfx(&mut project, ids[0], 30, 180);
+    let original = project.clone();
+    let shortening = vec![
+        MusicConformTarget {
+            scene_id: ids[0],
+            beat_index: 1,
+        }, // 7s -> 5s
+        MusicConformTarget {
+            scene_id: ids[1],
+            beat_index: 3,
+        }, // 16s -> 13s
+    ];
+    let err = project
+        .inspect_music_conform(&shortening, AUDIO_SHA)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("semantic SFX tail"), "{err}");
+    assert!(
+        project
+            .apply_change(&Change::ConformScenesToMusic {
+                targets: shortening,
+                source_sha256: AUDIO_SHA.into(),
+                base_revision: project.revision,
+                acknowledge_absolute_anchors: true,
+            })
+            .is_err()
+    );
+    assert_eq!(project, original, "no partial scene or cue mutation");
+    assert_eq!(project.audio.sfx_cues[0].id, cue_id);
+}
+
+#[test]
+fn valid_ripple_discloses_scene_bound_sfx_and_keeps_its_original_source() {
+    let (mut project, ids) = setup();
+    let cue_id = scene_linked_sfx(&mut project, ids[2], 0, 90);
+    let original = project.clone();
+    let before = project.validated_sfx_schedule().unwrap();
+    assert_eq!(before[0].absolute_start_frame, 16 * 30);
+    let preview = project
+        .inspect_music_conform(&targets(&ids), AUDIO_SHA)
+        .unwrap();
+    assert_eq!(preview.affected_sfx_cue_count, 1);
+    assert!(preview.anchors_need_acknowledgement());
+    assert!(
+        project
+            .apply_change(&change(&project, &ids, false))
+            .is_err()
+    );
+    assert_eq!(project, original);
+    project.apply_change(&change(&project, &ids, true)).unwrap();
+    assert_eq!(project.audio.sfx_cues, original.audio.sfx_cues);
+    let after = project.validated_sfx_schedule().unwrap();
+    assert_eq!(after[0].cue_id, cue_id);
+    assert_eq!(after[0].absolute_start_frame, 18 * 30);
+    assert_eq!(after[0].sample_count, before[0].sample_count);
+}
+
+#[test]
+fn single_cut_preview_and_apply_preserve_sfx_tail_without_partial_write() {
+    let (mut project, ids) = setup();
+    scene_linked_sfx(&mut project, ids[0], 30, 180);
+    let original = project.clone();
+    assert!(
+        project
+            .inspect_music_cut(ids[0], 1, AUDIO_SHA)
+            .unwrap_err()
+            .to_string()
+            .contains("semantic SFX tail")
+    );
+    assert!(
+        project
+            .apply_change(&Change::SnapSceneCutToMusic {
+                scene_id: ids[0],
+                beat_index: 1,
+                source_sha256: AUDIO_SHA.into(),
+                base_revision: project.revision,
+                acknowledge_absolute_anchors: true,
+            })
+            .is_err()
+    );
+    assert_eq!(project, original);
+}
+
+#[test]
+fn single_cut_discloses_rippled_sfx_and_requires_acknowledgement() {
+    let (mut project, ids) = setup();
+    scene_linked_sfx(&mut project, ids[2], 0, 30);
+    project.scenes[2].status = SceneStatus::Approved;
+    let before = project.clone();
+    let review = project.inspect_music_cut(ids[0], 2, AUDIO_SHA).unwrap();
+    assert_eq!(review.affected_sfx_cue_count, 1);
+    assert!(review.anchors_need_acknowledgement());
+    assert!(
+        project
+            .apply_change(&Change::SnapSceneCutToMusic {
+                scene_id: ids[0],
+                beat_index: 2,
+                source_sha256: AUDIO_SHA.into(),
+                base_revision: project.revision,
+                acknowledge_absolute_anchors: false,
+            })
+            .is_err()
+    );
+    assert_eq!(project, before);
+    project
+        .apply_change(&Change::SnapSceneCutToMusic {
+            scene_id: ids[0],
+            beat_index: 2,
+            source_sha256: AUDIO_SHA.into(),
+            base_revision: project.revision,
+            acknowledge_absolute_anchors: true,
+        })
+        .unwrap();
+    assert_eq!(project.audio.sfx_cues, before.audio.sfx_cues);
+    assert_eq!(
+        project.validated_sfx_schedule().unwrap()[0].absolute_start_frame,
+        17 * 30
+    );
+    assert_eq!(project.scenes[2].status, SceneStatus::Draft);
+}

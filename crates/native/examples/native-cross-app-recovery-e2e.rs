@@ -206,6 +206,195 @@ fn private_evidence(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum NativeFailureObservation {
+    NativeCall,
+    ReceiptCollectionFailed,
+    BlenderReexecutionDetected,
+    RetryableCheckpointMissing,
+    EvidenceWriteFailed,
+}
+
+impl NativeFailureObservation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NativeCall => "native_call_failed",
+            Self::ReceiptCollectionFailed => "receipt_collection_failed",
+            Self::BlenderReexecutionDetected => "blender_reexecution_detected",
+            Self::RetryableCheckpointMissing => "retryable_checkpoint_missing",
+            Self::EvidenceWriteFailed => "evidence_write_failed",
+        }
+    }
+}
+
+fn is_expected_font_evidence_failure(error: &semwright_native_sdk::Error) -> bool {
+    error.outcome_known
+        && error.code == ErrorCode::BackendFailed
+        && error.message == "Motion Canvas segment 1 render failed (category: font_evidence)"
+}
+
+/// The original SDK enum and outcome bit remain authoritative even when a
+/// subsequent receipt read, recovery check, or evidence write also fails.
+fn native_failure_envelope(
+    error: &semwright_native_sdk::Error,
+    receipts: &[motionwright_storage::ProductionReceipt],
+    phase: &str,
+    observation: NativeFailureObservation,
+) -> serde_json::Value {
+    let closed_error =
+        |code: semwright_native_sdk::ErrorCode, known: Option<bool>, message: &str| {
+            let mut value = json!({ "code": code });
+            if let Some(known) = known {
+                value["outcome_known"] = json!(known);
+            }
+            if message.contains("Provider capability generation is inactive") {
+                // This existing consumer category is fixed; provider text, paths,
+                // candidates, capabilities and job references are never forwarded.
+                value["message"] = json!("Provider capability generation is inactive");
+            }
+            value
+        };
+    let safe_receipts = receipts
+        .iter()
+        .take(256)
+        .filter_map(|receipt| {
+            let command = match receipt.command.as_str() {
+                "driver.blender.collection.create" => "driver.blender.collection.create",
+                "driver.blender.object.create" => "driver.blender.object.create",
+                "driver.blender.object.transform" => "driver.blender.object.transform",
+                "driver.blender.collection.link" => "driver.blender.collection.link",
+                "driver.blender.material.create" => "driver.blender.material.create",
+                "driver.blender.material.assign" => "driver.blender.material.assign",
+                "driver.blender.export.glb" => "driver.blender.export.glb",
+                "driver.motion-canvas.composition.inspect" => {
+                    "driver.motion-canvas.composition.inspect"
+                }
+                "driver.motion-canvas.composition.plan" => "driver.motion-canvas.composition.plan",
+                "driver.motion-canvas.composition.apply" => {
+                    "driver.motion-canvas.composition.apply"
+                }
+                "driver.motion-canvas.composition.verify" => {
+                    "driver.motion-canvas.composition.verify"
+                }
+                "driver.motion-canvas.render.start" => "driver.motion-canvas.render.start",
+                "driver.motion-canvas.render.status" => "driver.motion-canvas.render.status",
+                "driver.motion-canvas.render.result" => "driver.motion-canvas.render.result",
+                "motionwright.recovery.motion-canvas" => "motionwright.recovery.motion-canvas",
+                _ => return None,
+            };
+            let stage = match receipt.stage.as_str() {
+                "dispatching" => "dispatching",
+                "completed" => "completed",
+                "failed_known" => "failed_known",
+                "failed" => "failed",
+                "outcome_unknown" => "outcome_unknown",
+                _ => "unrecognized",
+            };
+            let mut payload = json!({});
+            // Use the SDK's typed enum, never a second error-code roster.
+            if let Some(observed) = receipt.payload.get("error")
+                && let Some(code) = observed.get("code").and_then(|value| {
+                    serde_json::from_value::<semwright_native_sdk::ErrorCode>(value.clone()).ok()
+                })
+            {
+                payload["error"] = closed_error(
+                    code,
+                    observed
+                        .get("outcome_known")
+                        .and_then(serde_json::Value::as_bool),
+                    observed
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(""),
+                );
+            }
+            Some(json!({ "command": command, "stage": stage, "payload": payload }))
+        })
+        .collect::<Vec<_>>();
+    let phase = match phase {
+        "stop" => "stop",
+        "fail" => "fail",
+        "resume" => "resume",
+        "repeat" => "repeat",
+        _ => "unrecognized",
+    };
+    json!({
+        "native_cross_app_recovery_e2e": "FAIL",
+        "phase": phase,
+        "error": closed_error(error.code, Some(error.outcome_known), &error.message),
+        "receipts": safe_receipts,
+        "observation": observation.as_str(),
+        "native_media_verified": false,
+        "automatic_mutating_retry": false,
+    })
+}
+
+fn write_native_failure_response(
+    stream: &mut impl Write,
+    response: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    serde_json::to_writer(&mut *stream, response)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+/// Emit and flush the complete public result before optional owner-local
+/// retention. None means retention was already attempted: never retry it here.
+fn emit_native_failure(
+    stream: &mut impl Write,
+    diagnostic_path: Option<&Path>,
+    phase: &str,
+    error: &semwright_native_sdk::Error,
+    receipts: &[motionwright_storage::ProductionReceipt],
+    observation: NativeFailureObservation,
+) -> Box<dyn std::error::Error> {
+    let response = native_failure_envelope(error, receipts, phase, observation);
+    let written = write_native_failure_response(stream, &response).is_ok();
+    if let Some(path) = diagnostic_path {
+        let retained = private_evidence(
+            path,
+            &json!({
+                "public_response": response,
+                "original_error": error,
+                "receipts": receipts,
+            }),
+        );
+        if retained.is_err() {
+            eprintln!("native-owner-diagnostic=NOT_WRITTEN");
+        }
+    }
+    if written {
+        "native-cross-app-recovery-e2e failed; typed failure emitted on stdout".into()
+    } else {
+        "native-cross-app-recovery-e2e failed; stdout write failed".into()
+    }
+}
+
+fn report_native_call_failure(
+    coordinator: &ProductionCoordinator,
+    project_id: Uuid,
+    evidence_path: &Path,
+    phase: &str,
+    error: &semwright_native_sdk::Error,
+) -> Box<dyn std::error::Error> {
+    let (receipts, observation) = match coordinator.receipts(project_id, 256) {
+        Ok(receipts) => (receipts, NativeFailureObservation::NativeCall),
+        Err(_) => (
+            Vec::new(),
+            NativeFailureObservation::ReceiptCollectionFailed,
+        ),
+    };
+    emit_native_failure(
+        &mut std::io::stdout().lock(),
+        Some(evidence_path),
+        phase,
+        error,
+        &receipts,
+        observation,
+    )
+}
+
 async fn phase(
     database: &Path,
     connection_path: &Path,
@@ -250,10 +439,17 @@ async fn phase(
             archetype: Archetype::Statement,
         }],
     };
+    let mut expected_native_failure: Option<(
+        semwright_native_sdk::Error,
+        Vec<motionwright_storage::ProductionReceipt>,
+    )> = None;
     let report = if phase == "stop" {
         let (disposition, proof) = coordinator
             .checkpoint_blender_for_cross_app(project.id, &expected, "reddit-demo", blender.id)
-            .await?;
+            .await
+            .map_err(|error| {
+                report_native_call_failure(&coordinator, project.id, evidence_path, phase, &error)
+            })?;
         let after = coordinator.receipts(project.id, 256)?;
         if after
             .iter()
@@ -278,19 +474,33 @@ async fn phase(
             )
             .await;
         match failed {
-            Err(error)
-                if error.outcome_known
-                    && error.code == ErrorCode::BackendFailed
-                    && error.message
-                        == "Motion Canvas segment 1 render failed (category: font_evidence)" =>
-            {
-                let after = coordinator.receipts(project.id, 256)?;
+            Err(error) if is_expected_font_evidence_failure(&error) => {
+                let after = match coordinator.receipts(project.id, 256) {
+                    Ok(receipts) => receipts,
+                    Err(_) => {
+                        return Err(emit_native_failure(
+                            &mut std::io::stdout().lock(),
+                            Some(evidence_path),
+                            phase,
+                            &error,
+                            &[],
+                            NativeFailureObservation::ReceiptCollectionFailed,
+                        ));
+                    }
+                };
                 let blender_calls_after = after
                     .iter()
                     .filter(|r| r.command.starts_with("driver.blender.") && r.stage == "completed")
                     .count();
                 if blender_calls_after != blender_calls_before {
-                    return Err("native failure reexecuted Blender commands".into());
+                    return Err(emit_native_failure(
+                        &mut std::io::stdout().lock(),
+                        Some(evidence_path),
+                        phase,
+                        &error,
+                        &after,
+                        NativeFailureObservation::BlenderReexecutionDetected,
+                    ));
                 }
                 let failed_stage = after.iter().find(|r| {
                     r.command == "motionwright.recovery.motion-canvas"
@@ -299,8 +509,16 @@ async fn phase(
                         && r.payload.get("attempt").and_then(|v| v.as_u64()) == Some(1)
                 });
                 if failed_stage.is_none() {
-                    return Err("real native failure was not durably marked retryable".into());
+                    return Err(emit_native_failure(
+                        &mut std::io::stdout().lock(),
+                        Some(evidence_path),
+                        phase,
+                        &error,
+                        &after,
+                        NativeFailureObservation::RetryableCheckpointMissing,
+                    ));
                 }
+                expected_native_failure = Some((error, after));
                 json!({
                     "phase":"fail",
                     "expected_native_failure": true,
@@ -319,10 +537,13 @@ async fn phase(
                 );
             }
             Err(error) => {
-                return Err(format!(
-                    "native failure was not a known terminal font_evidence result: {error:?}"
-                )
-                .into());
+                return Err(report_native_call_failure(
+                    &coordinator,
+                    project.id,
+                    evidence_path,
+                    phase,
+                    &error,
+                ));
             }
         }
     } else {
@@ -335,7 +556,10 @@ async fn phase(
                 deliverable.id,
                 &options,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                report_native_call_failure(&coordinator, project.id, evidence_path, phase, &error)
+            })?;
         let afterwards = coordinator.receipts(project.id, 256)?;
         let blender_calls_after = afterwards
             .iter()
@@ -363,7 +587,19 @@ async fn phase(
             "project":project.resource_key(),
         })
     };
-    private_evidence(evidence_path, &report)?;
+    if let Err(write_error) = private_evidence(evidence_path, &report) {
+        if let Some((error, receipts)) = &expected_native_failure {
+            return Err(emit_native_failure(
+                &mut std::io::stdout().lock(),
+                None,
+                phase,
+                error,
+                receipts,
+                NativeFailureObservation::EvidenceWriteFailed,
+            ));
+        }
+        return Err(write_error);
+    }
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -400,4 +636,174 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         usage();
     }
     phase(&database, &connection, &evidence, &command).await
+}
+
+#[cfg(test)]
+mod native_cross_app_failure_stdout_tests {
+    use super::*;
+    use semwright_native_sdk::{Error, ErrorCode};
+
+    const PRIVATE: &str = "job_ref=private-job ticket=secret /owner/private/source.blend";
+    const FONT_FAILURE: &str = "Motion Canvas segment 1 render failed (category: font_evidence)";
+
+    fn receipt(
+        command: &str,
+        stage: &str,
+        payload: serde_json::Value,
+    ) -> motionwright_storage::ProductionReceipt {
+        // In-memory negative fixtures, never appended to a native journal.
+        motionwright_storage::ProductionReceipt {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            generation: Uuid::nil(),
+            revision: 1,
+            request_id: PRIVATE.into(),
+            request_sha256: "a".repeat(64),
+            command: command.into(),
+            stage: stage.into(),
+            payload,
+            created_at: PRIVATE.into(),
+        }
+    }
+
+    fn complete_response(stdout: &[u8]) -> serde_json::Value {
+        assert_eq!(stdout.last(), Some(&b'\n'));
+        assert_eq!(stdout.iter().filter(|byte| **byte == b'\n').count(), 1);
+        assert!(!std::str::from_utf8(stdout).unwrap().contains(PRIVATE));
+        serde_json::from_slice(stdout).unwrap()
+    }
+
+    #[test]
+    fn complete_stdout_preserves_sdk_code_and_unknown_in_every_native_phase() {
+        for phase in ["stop", "fail", "resume", "repeat"] {
+            for code in [
+                ErrorCode::BackendFailed,
+                ErrorCode::InvalidArgument,
+                ErrorCode::Unsupported,
+                ErrorCode::Timeout,
+            ] {
+                let mut error = Error::new(code, PRIVATE).uncertain();
+                error.candidates.push(PRIVATE.into());
+                let mut stdout = Vec::new();
+                let terminal = emit_native_failure(
+                    &mut stdout,
+                    None,
+                    phase,
+                    &error,
+                    &[],
+                    NativeFailureObservation::NativeCall,
+                );
+                let parsed = complete_response(&stdout);
+                assert_eq!(parsed["phase"], phase);
+                assert_eq!(parsed["error"]["code"], serde_json::to_value(code).unwrap());
+                assert_eq!(parsed["error"]["outcome_known"], false);
+                assert_eq!(parsed["native_cross_app_recovery_e2e"], "FAIL");
+                assert_eq!(parsed["native_media_verified"], false);
+                assert_eq!(parsed["automatic_mutating_retry"], false);
+                assert_eq!(
+                    terminal.to_string(),
+                    "native-cross-app-recovery-e2e failed; typed failure emitted on stdout"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn secondary_receipts_and_exclusive_retention_failure_cannot_strengthen_unknown() {
+        let error = Error::new(ErrorCode::BackendFailed, PRIVATE).uncertain();
+        let receipts = [
+            receipt(
+                "driver.blender.export.glb",
+                "completed",
+                json!({ "job_ref": PRIVATE }),
+            ),
+            receipt(
+                "driver.motion-canvas.render.status",
+                "failed_known",
+                json!({ "error": {
+                    "code": "Unavailable", "outcome_known": true,
+                    "message": format!("Provider capability generation is inactive {PRIVATE}"),
+                }}),
+            ),
+            receipt(PRIVATE, PRIVATE, json!({ "error": { "code": PRIVATE } })),
+        ];
+        let temporary = tempfile::tempdir().unwrap();
+        let diagnostic = temporary.path().join("existing-evidence.json");
+        std::fs::write(&diagnostic, b"existing evidence must remain unchanged").unwrap();
+        let mut stdout = Vec::new();
+        let terminal = emit_native_failure(
+            &mut stdout,
+            Some(&diagnostic),
+            "resume",
+            &error,
+            &receipts,
+            NativeFailureObservation::NativeCall,
+        );
+        let parsed = complete_response(&stdout);
+        assert_eq!(parsed["error"]["code"], "BackendFailed");
+        assert_eq!(parsed["error"]["outcome_known"], false);
+        assert_eq!(parsed["receipts"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            parsed["receipts"][1]["payload"]["error"]["code"],
+            "Unavailable"
+        );
+        assert_eq!(
+            std::fs::read(&diagnostic).unwrap(),
+            b"existing evidence must remain unchanged"
+        );
+        assert!(!terminal.to_string().contains(PRIVATE));
+        // Receipt read failure is an empty observation, never a new SDK result.
+        let unobserved = native_failure_envelope(
+            &error,
+            &[],
+            "resume",
+            NativeFailureObservation::ReceiptCollectionFailed,
+        );
+        assert_eq!(unobserved["error"], parsed["error"]);
+        assert_eq!(unobserved["observation"], "receipt_collection_failed");
+    }
+
+    #[test]
+    fn expected_font_failure_gate_never_accepts_unknown_or_other_native_error() {
+        assert!(is_expected_font_evidence_failure(&Error::new(
+            ErrorCode::BackendFailed,
+            FONT_FAILURE,
+        )));
+        for error in [
+            Error::new(ErrorCode::BackendFailed, FONT_FAILURE).uncertain(),
+            Error::new(ErrorCode::Unavailable, FONT_FAILURE),
+            Error::new(
+                ErrorCode::BackendFailed,
+                format!("{FONT_FAILURE} {PRIVATE}"),
+            ),
+            Error::new(ErrorCode::BackendFailed, "different native failure"),
+        ] {
+            assert!(!is_expected_font_evidence_failure(&error));
+        }
+    }
+
+    #[test]
+    fn failed_expected_failure_retention_still_reports_the_original_native_result() {
+        let error = Error::new(ErrorCode::BackendFailed, FONT_FAILURE);
+        let temporary = tempfile::tempdir().unwrap();
+        let diagnostic = temporary.path().join("absent-parent/evidence.json");
+        assert!(
+            private_evidence(&diagnostic, &json!({ "expected_native_failure": true })).is_err()
+        );
+        let mut stdout = Vec::new();
+        let _terminal = emit_native_failure(
+            &mut stdout,
+            None,
+            "fail",
+            &error,
+            &[],
+            NativeFailureObservation::EvidenceWriteFailed,
+        );
+        let parsed = complete_response(&stdout);
+        assert_eq!(parsed["native_cross_app_recovery_e2e"], "FAIL");
+        assert_eq!(parsed["error"]["code"], "BackendFailed");
+        assert_eq!(parsed["error"]["outcome_known"], true);
+        assert_eq!(parsed["observation"], "evidence_write_failed");
+        assert!(!diagnostic.exists());
+    }
 }

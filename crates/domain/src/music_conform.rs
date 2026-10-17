@@ -43,6 +43,8 @@ pub struct MusicConformReview {
     pub original_duration: RationalTime,
     pub conformed_duration: RationalTime,
     pub affected_cue_count: usize,
+    /// Scene-bound SFX that need listening review after a cut or ripple.
+    pub affected_sfx_cue_count: usize,
     pub affected_marker_count: usize,
     pub affected_transcript_count: usize,
     pub approval_invalidated: bool,
@@ -51,6 +53,7 @@ pub struct MusicConformReview {
 impl MusicConformReview {
     pub fn anchors_need_acknowledgement(&self) -> bool {
         self.affected_cue_count > 0
+            || self.affected_sfx_cue_count > 0
             || self.affected_marker_count > 0
             || self.affected_transcript_count > 0
     }
@@ -236,6 +239,31 @@ impl Project {
         }
         let threshold = earliest_cut_change
             .ok_or_else(|| DomainError::Invalid("no selected music boundary changes".into()))?;
+
+        // Preview must be as strict as the eventual CAS mutation. Otherwise a
+        // shortened scene can appear conformable while its authored SFX release
+        // tail would actually be truncated by the new boundary.
+        let mut projected = self.clone();
+        for (scene, mapped) in projected.scenes.iter_mut().zip(&changes) {
+            scene.start = mapped.new_start;
+            scene.duration = mapped.new_duration;
+        }
+        projected.validated_sfx_schedule().map_err(|error| {
+            DomainError::Invalid(format!(
+                "music conform would invalidate a semantic SFX tail or mix: {error}"
+            ))
+        })?;
+        let affected_sfx_cue_count = self
+            .audio
+            .sfx_cues
+            .iter()
+            .filter(|cue| {
+                changes
+                    .iter()
+                    .any(|change| change.changed && change.scene_id == cue.scene_id)
+            })
+            .count();
+
         Ok(MusicConformReview {
             project_id: self.id,
             generation: self.generation,
@@ -247,6 +275,7 @@ impl Project {
             changed_scene_count: changed_count,
             original_duration: source_end,
             conformed_duration: cursor,
+            affected_sfx_cue_count,
             affected_cue_count: self
                 .audio
                 .cues
@@ -283,7 +312,7 @@ impl Project {
         let review = self.inspect_music_conform(targets, source_sha256)?;
         if review.anchors_need_acknowledgement() && !acknowledge_absolute_anchors {
             return Err(DomainError::Invalid(
-                "global cues/markers/transcripts remain on absolute time; acknowledge the impact"
+                "music conform affects fixed-time anchors or scene-linked SFX; acknowledge the impact"
                     .into(),
             ));
         }
