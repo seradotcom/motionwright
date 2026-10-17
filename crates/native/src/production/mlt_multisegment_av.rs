@@ -6,8 +6,9 @@ use super::*;
 use crate::{
     assembly::preflight_multi_segment_mlt,
     mlt_av_audio::{MultiSegmentAudioReadiness, preflight_multi_segment_audio},
-    mlt_edit_plan::mlt_native_video_recipe,
+    mlt_edit_plan::{MltNativeVideoRecipe, mlt_native_video_recipe},
 };
+use motionwright_domain::Project;
 
 /// Caller-owned, typed and non-deserializable; never accept a filesystem
 /// path or codec selector directly from a browser or an LLM.
@@ -190,134 +191,50 @@ fn verify_exact_native_mux(response: &Value, expected: &MuxExpected<'_>) -> Nati
     Ok(())
 }
 
+// The native coordinator must independently reject an SFX-bearing project
+// through the old voice-only interface, even if a future WebView accidentally
+// bypasses the desktop's source-only guard.
+fn refuse_unmixed_source_sfx(project: &Project) -> NativeResult<()> {
+    if !project.audio.sfx_cues.is_empty() {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "Native multisegment measured-voice master cannot silently omit original authored SFX",
+        ));
+    }
+    Ok(())
+}
+
+/// A trusted typed native-only mux context. Both callers must already have
+/// verified their distinct original source classes independently: measured
+/// voice from StudioService CAS, or original semantic SFX from source CAS.
+pub(super) struct VerifiedMuxInputs<'a> {
+    pub(super) project_id: Uuid,
+    pub(super) expected: &'a RevisionStamp,
+    pub(super) request_id: &'a str,
+    pub(super) project: &'a Project,
+    pub(super) recipe: &'a MltNativeVideoRecipe,
+    pub(super) visual: &'a MltVerifiedLosslessTimeline,
+    pub(super) audio: &'a MltAudioArtifact,
+}
+
 impl ProductionCoordinator {
-    /// Finalize ONLY the existing verified no-audio MLT semantic cut against
-    /// a project-selected measured voice WAV. This never assembles/shadows
-    /// another visual timeline. Real AV media must pass the pinned av.mux Host.
-    pub async fn assemble_native_mlt_multisegment_av_master(
+    /// Single inherited Semwright MLT H264/AAC mux and media verifier for
+    /// already-admitted original owner sources. No class of audio can call
+    /// this without its own upstream CAS/scene/FFV1 preflight.
+    pub(super) async fn mux_verified_multisegment_av_source(
         &self,
-        project_id: Uuid,
-        expected: &RevisionStamp,
-        request: MltMultisegmentAvMasterRequest<'_>,
-    ) -> NativeResult<MltMultisegmentAvMasterEvidence> {
-        let MltMultisegmentAvMasterRequest {
+        input: VerifiedMuxInputs<'_>,
+    ) -> NativeResult<(Value, Value)> {
+        let VerifiedMuxInputs {
+            project_id,
+            expected,
             request_id,
-            deliverable_id,
-            options,
-            rendered,
+            project,
+            recipe,
             visual,
             audio,
-        } = request;
-        if request_id.is_empty()
-            || request_id.len() > 54
-            || !request_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(invalid(
-                "Native multisegment AV requires bounded stable request identity",
-            ));
-        }
-        let project = self.service.project(project_id).map_err(storage_error)?;
-        if expected.resource != project.resource_key()
-            || expected.generation != project.generation
-            || expected.revision != project.revision
-            || self.client.connection().resource != project.resource_key()
-        {
-            return Err(Error::new(
-                ErrorCode::StaleReference,
-                "Native multisegment AV project or Broker owner root is stale",
-            ));
-        }
-        let checked = preflight_multi_segment_mlt(
-            &project,
-            deliverable_id,
-            options,
-            rendered,
-            &self.client.connection().output_root,
-        )?;
-        let recipe = mlt_native_video_recipe(&checked)?;
-        let expected_video_path = format!(
-            "{}-sequence-video-only-ffv1.mkv",
-            recipe.owner_output_namespace
-        );
-        if visual.project_resource != project.resource_key()
-            || visual.generation != project.generation
-            || visual.revision != project.revision
-            || visual.deliverable_id != deliverable_id
-            || visual.recipe_sha256 != recipe.input_sha256
-            || visual.frame_count != recipe.total_frames
-            || visual.native_frame_count_observed != Some(recipe.total_frames)
-            || visual.native_render_profile != "lossless-video-only"
-            || visual.transport_pcm_audio
-            || visual.evidence_scope
-                != "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
-            || visual.artifact_path != expected_video_path
-            || !visual.native_job_ref.starts_with("render:")
-            || visual.provider_project_cleanup != "not_requested_requires_foreground_broker_consent"
-        {
-            return Err(Error::new(
-                ErrorCode::StaleReference,
-                "Native MLT video-only intermediary is not exact source-verified content",
-            ));
-        }
+        } = input;
         let output_root = &self.client.connection().output_root;
-        let source_video = verify_output_artifact(
-            output_root,
-            &visual.artifact_path,
-            &visual.artifact_sha256,
-            MLT_MASTER_MAX_BYTES,
-        )?;
-        if fs::metadata(source_video)
-            .map_err(|_| backend("Native no-audio FFV1 is inaccessible"))?
-            .len()
-            != visual.artifact_bytes
-        {
-            return Err(backend(
-                "Native no-audio FFV1 bytes disagree with source receipt",
-            ));
-        }
-        let voice_track_id = project
-            .deliverables
-            .iter()
-            .find(|profile| profile.id == deliverable_id)
-            .and_then(|profile| profile.voice_track_id)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Unsupported,
-                    "A measured voice take must be selected for this deliverable",
-                )
-            })?;
-        let voice = self
-            .service
-            .verified_master_voice(project_id, expected, voice_track_id)
-            .map_err(storage_error)?;
-        let audio_readiness = preflight_multi_segment_audio(
-            &project,
-            deliverable_id,
-            &recipe,
-            &visual.source,
-            &voice,
-            output_root,
-        )?;
-        if !sha256_literal(&audio.sha256)
-            || voice.sha256 != audio.sha256
-            || audio.sample_rate != 48_000
-            || audio.channels != 2
-            || audio_readiness.audio_sha256 != audio.sha256
-            || audio_readiness.total_frames != visual.frame_count
-        {
-            return Err(Error::new(
-                ErrorCode::StaleReference,
-                "Native staged 48k stereo voice does not match the measured CAS source",
-            ));
-        }
-        verify_output_artifact(
-            output_root,
-            &audio.relative_path,
-            &audio.sha256,
-            MLT_MASTER_MAX_BYTES,
-        )?;
         let token = hex::encode(Sha256::digest(request_id.as_bytes()));
         let output_path = format!(
             "mw-{}-r{}-{}-multisegment-master.mp4",
@@ -422,6 +339,148 @@ impl ProductionCoordinator {
                 "Project revision changed during native multisegment AV mux",
             ));
         }
+        Ok((master, decoded_audio))
+    }
+
+    /// Finalize ONLY the existing verified no-audio MLT semantic cut against
+    /// a project-selected measured voice WAV. This never assembles/shadows
+    /// another visual timeline. Real AV media must pass the pinned av.mux Host.
+    pub async fn assemble_native_mlt_multisegment_av_master(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request: MltMultisegmentAvMasterRequest<'_>,
+    ) -> NativeResult<MltMultisegmentAvMasterEvidence> {
+        let MltMultisegmentAvMasterRequest {
+            request_id,
+            deliverable_id,
+            options,
+            rendered,
+            visual,
+            audio,
+        } = request;
+        if request_id.is_empty()
+            || request_id.len() > 54
+            || !request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(invalid(
+                "Native multisegment AV requires bounded stable request identity",
+            ));
+        }
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+            || self.client.connection().resource != project.resource_key()
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Native multisegment AV project or Broker owner root is stale",
+            ));
+        }
+        refuse_unmixed_source_sfx(&project)?;
+        let checked = preflight_multi_segment_mlt(
+            &project,
+            deliverable_id,
+            options,
+            rendered,
+            &self.client.connection().output_root,
+        )?;
+        let recipe = mlt_native_video_recipe(&checked)?;
+        let expected_video_path = format!(
+            "{}-sequence-video-only-ffv1.mkv",
+            recipe.owner_output_namespace
+        );
+        if visual.project_resource != project.resource_key()
+            || visual.generation != project.generation
+            || visual.revision != project.revision
+            || visual.deliverable_id != deliverable_id
+            || visual.recipe_sha256 != recipe.input_sha256
+            || visual.frame_count != recipe.total_frames
+            || visual.native_frame_count_observed != Some(recipe.total_frames)
+            || visual.native_render_profile != "lossless-video-only"
+            || visual.transport_pcm_audio
+            || visual.evidence_scope
+                != "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+            || visual.artifact_path != expected_video_path
+            || !visual.native_job_ref.starts_with("render:")
+            || visual.provider_project_cleanup != "not_requested_requires_foreground_broker_consent"
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Native MLT video-only intermediary is not exact source-verified content",
+            ));
+        }
+        let output_root = &self.client.connection().output_root;
+        let source_video = verify_output_artifact(
+            output_root,
+            &visual.artifact_path,
+            &visual.artifact_sha256,
+            MLT_MASTER_MAX_BYTES,
+        )?;
+        if fs::metadata(source_video)
+            .map_err(|_| backend("Native no-audio FFV1 is inaccessible"))?
+            .len()
+            != visual.artifact_bytes
+        {
+            return Err(backend(
+                "Native no-audio FFV1 bytes disagree with source receipt",
+            ));
+        }
+        let voice_track_id = project
+            .deliverables
+            .iter()
+            .find(|profile| profile.id == deliverable_id)
+            .and_then(|profile| profile.voice_track_id)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unsupported,
+                    "A measured voice take must be selected for this deliverable",
+                )
+            })?;
+        let voice = self
+            .service
+            .verified_master_voice(project_id, expected, voice_track_id)
+            .map_err(storage_error)?;
+        let audio_readiness = preflight_multi_segment_audio(
+            &project,
+            deliverable_id,
+            &recipe,
+            &visual.source,
+            &voice,
+            output_root,
+        )?;
+        if !sha256_literal(&audio.sha256)
+            || voice.sha256 != audio.sha256
+            || audio.sample_rate != 48_000
+            || audio.channels != 2
+            || audio_readiness.audio_sha256 != audio.sha256
+            || audio_readiness.total_frames != visual.frame_count
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Native staged 48k stereo voice does not match the measured CAS source",
+            ));
+        }
+        verify_output_artifact(
+            output_root,
+            &audio.relative_path,
+            &audio.sha256,
+            MLT_MASTER_MAX_BYTES,
+        )?;
+        let (master, decoded_audio) = self
+            .mux_verified_multisegment_av_source(VerifiedMuxInputs {
+                project_id,
+                expected,
+                request_id,
+                project: &project,
+                recipe: &recipe,
+                visual,
+                audio,
+            })
+            .await?;
         let captioned = audio_readiness.caption_cue_count.is_some();
         Ok(MltMultisegmentAvMasterEvidence {
             project_resource: project.resource_key(),
@@ -450,6 +509,29 @@ impl ProductionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn voice_only_native_multisegment_cannot_silently_drop_original_sfx() {
+        use motionwright_domain::{SFX_CUE_SCHEMA, SemanticSfxCue, SfxAnchor, SfxEvent};
+        let mut source = Project::new("Owned audio").unwrap();
+        assert!(refuse_unmixed_source_sfx(&source).is_ok());
+        source.audio.sfx_cues.push(SemanticSfxCue {
+            schema: SFX_CUE_SCHEMA.into(),
+            id: Uuid::new_v4(),
+            scene_id: Uuid::new_v4(),
+            event: SfxEvent::UiFocus,
+            anchor: SfxAnchor::SceneStart,
+            offset_frames: 0,
+            source_asset_id: Uuid::new_v4(),
+            source_sha256: "a".repeat(64),
+            source_frames: 24,
+            gain_milli_db: -12_000,
+            attack_frames: 3,
+            release_frames: 6,
+            original_source_attestation: "Original owner WAV".into(),
+        });
+        assert!(refuse_unmixed_source_sfx(&source).is_err());
+    }
+
     #[test]
     fn closed_mux_verifier_refuses_wrong_output_audio_or_frame_count() {
         let mut r = json!({
