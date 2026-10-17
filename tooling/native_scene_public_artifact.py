@@ -328,6 +328,10 @@ def source_case_directory(name):
         return
     if re.fullmatch(r"work/" + SOURCE_TOKEN + r"_execution(?:/\.(?:cache|matplotlib|tmp)(?:/.+)?)?", name):
         return
+    # The pinned runtime creates this empty directory even for movie output.
+    # Files beneath it remain outside the closed source custody contract.
+    if re.fullmatch(r"output/images(?:/" + SOURCE_TOKEN + r")?", name):
+        return
     if re.fullmatch(r"output/videos(?:/" + SOURCE_TOKEN + r"(?:/360p(?:12|25)(?:/partial_movie_files(?:/MotionwrightScene)?)?)?)?", name):
         return
     raise PublicationError("unapproved_manim_case_directory")

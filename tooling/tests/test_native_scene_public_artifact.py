@@ -460,6 +460,44 @@ class ManimSourceCustodyTests(unittest.TestCase):
         with self.assertRaises(pub.PublicationError):
             pub.source_tree_inventory(self.private / "snapshot")
 
+
+    def test_empty_native_image_directories_survive_complete_custody(self):
+        roots = self.roots()
+        module_name = "mw_" + "a" * 32
+        image_directory = roots["output"] / "images" / module_name
+        image_directory.mkdir(parents=True)
+        before = pub.snapshot_live_inventory(roots)
+        destination = self.private / "snapshot-images"
+        copied = pub.copy_source_snapshot(roots, destination, ())
+        self.assertEqual(before, copied)
+        self.assertEqual(copied, pub.source_tree_inventory(destination))
+        self.assertEqual(before, pub.snapshot_live_inventory(roots))
+        self.assertIn("output/images", copied["directories"])
+        self.assertIn("output/images/" + module_name, copied["directories"])
+        self.assertEqual(list(image_directory.iterdir()), [])
+        self.assertEqual(list((destination / "output/images" / module_name).iterdir()), [])
+
+    def test_image_directory_custody_keeps_unknown_paths_and_files_rejected(self):
+        module_name = "mw_" + "a" * 32
+        for name in (
+            "output/images/foreign", "output/images/" + module_name + "/child",
+            "output/images/" + module_name + ".py", "output/owner",
+            "output/images/" + module_name + "/../owner",
+        ):
+            with self.subTest(path=name), self.assertRaises(pub.PublicationError):
+                pub.source_case_directory(name)
+        roots = self.roots()
+        image_directory = roots["output"] / "images" / module_name
+        image_directory.mkdir(parents=True)
+        unexpected = image_directory / "MotionwrightScene.png"
+        original = b"UNAPPROVED IMAGE FILE CONTROL"
+        unexpected.write_bytes(original)
+        with self.assertRaises(pub.PublicationError):
+            pub.snapshot_live_inventory(roots)
+        with self.assertRaises(pub.PublicationError):
+            pub.copy_source_snapshot(roots, self.private / "refused-image-snapshot", ())
+        self.assertEqual(unexpected.read_bytes(), original)
+
     def test_missing_or_changed_cas_identity_is_not_repaired_by_custody(self):
         roots = self.roots()
         cas = next((roots["data"] / "original" / "blobs" / "sha256").glob("*/*"))
