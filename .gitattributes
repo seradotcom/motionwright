@@ -1,2 +1,3 @@
 # Preserve checked upstream crate bytes and the exact glib FFI patch across OS checkouts.
 vendor/glib-0.18.5/** -text whitespace=-blank-at-eof
+crates/storage/tests/fixtures/pre_delivery_recipe_backup.json -text
