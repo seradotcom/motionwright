@@ -79,21 +79,14 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current: Option<(String, i64)> = tx
-            .query_row(
-                "SELECT generation,revision FROM projects WHERE id=?1",
-                params![input.project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let (generation, revision) = current.ok_or(StorageError::NotFound)?;
-        if generation != input.generation.to_string() {
+        let current = super::load_project_from_row(&tx, input.project_id)?;
+        if current.generation != input.generation {
             return Err(StorageError::GenerationConflict);
         }
-        if revision != i64::try_from(input.revision).unwrap_or(-1) {
+        if current.revision != input.revision {
             return Err(StorageError::Conflict {
                 expected: input.revision,
-                actual: u64::try_from(revision).unwrap_or(0),
+                actual: current.revision,
             });
         }
         // A changed input fingerprint (or newly named workflow) must NOT
@@ -220,16 +213,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let project_json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [input.project_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let current: motionwright_domain::Project = serde_json::from_str(&project_json)?;
-        current.validate()?;
+        let current = super::load_project_from_row(&tx, input.project_id)?;
         if current.generation != input.generation {
             return Err(StorageError::GenerationConflict);
         }

@@ -329,6 +329,56 @@ fn parse_measured_source_rows(source: &[u8]) -> Result<Vec<motionwright_domain::
     Ok(rows)
 }
 
+// A valid document is not authority to redirect the row that contains it.
+// Every full-document consumer decodes the SQL identity and JSON together.
+struct StoredProjectRow {
+    id: String,
+    generation: String,
+    revision: i64,
+    title: String,
+    document_json: String,
+}
+
+impl StoredProjectRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            generation: row.get(1)?,
+            revision: row.get(2)?,
+            title: row.get(3)?,
+            document_json: row.get(4)?,
+        })
+    }
+
+    fn into_project(self) -> Result<Project> {
+        let project: Project = serde_json::from_str(&self.document_json)?;
+        project.validate()?;
+        if project.id.to_string() != self.id
+            || project.generation.is_nil()
+            || project.generation.to_string() != self.generation
+            || i64::try_from(project.revision).ok() != Some(self.revision)
+            || project.title != self.title
+        {
+            return Err(DomainError::Invalid(
+                "stored project authority columns differ from the document".into(),
+            )
+            .into());
+        }
+        Ok(project)
+    }
+}
+
+fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
+    conn.query_row(
+        "SELECT id,generation,revision,title,document_json FROM projects WHERE id=?1",
+        [id.to_string()],
+        StoredProjectRow::read,
+    )
+    .optional()?
+    .ok_or(StorageError::NotFound)?
+    .into_project()
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -715,31 +765,19 @@ impl Store {
     }
 
     pub fn load_project(&self, id: Uuid) -> Result<Project> {
-        let json: String = self
-            .conn
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
-        Ok(project)
+        load_project_from_row(&self.conn, id)
     }
 
     pub fn list_projects(&self, limit: usize) -> Result<Vec<Project>> {
         let limit = limit.clamp(1, 100);
-        let mut stmt = self
-            .conn
-            .prepare("SELECT document_json FROM projects ORDER BY updated_at DESC, id LIMIT ?1")?;
-        let rows = stmt.query_map([limit as i64], |row| row.get::<_, String>(0))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id,generation,revision,title,document_json
+             FROM projects ORDER BY updated_at DESC, id LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], StoredProjectRow::read)?;
         let mut projects = Vec::new();
         for row in rows {
-            let project: Project = serde_json::from_str(&row?)?;
-            project.validate()?;
-            projects.push(project);
+            projects.push(row?.into_project()?);
         }
         Ok(projects)
     }
@@ -944,16 +982,7 @@ impl Store {
 
         // Durable results retain their original revision, but cannot grant
         // access across a different resource or project generation.
-        let json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let mut project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
+        let mut project = load_project_from_row(&tx, id)?;
 
         if expected.resource != project.resource_key() || expected.generation != project.generation
         {
@@ -1291,17 +1320,246 @@ fn checked_existing_blob_path_from_root(blob_root: &Path, digest: &str) -> Resul
         Err(error) => Err(error.into()),
     }
 }
+// Identity is obtained from the selected open file, not inferred from size or time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlobFileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume_serial: u64,
+    #[cfg(windows)]
+    file_id: [u8; 16],
+}
+
+#[cfg(unix)]
+fn blob_file_identity(file: &File) -> Result<BlobFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(BlobFileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn blob_file_identity(file: &File) -> Result<BlobFileIdentity> {
+    use std::{ffi::c_void, os::windows::io::AsRawHandle};
+
+    // FILE_ID_INFO / FileIdInfo (18): a 64-bit volume plus the complete 128-bit ID.
+    // https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_info
+    // https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex
+    #[repr(C)]
+    struct FileIdInfo {
+        volume_serial: u64,
+        file_id: [u8; 16],
+    }
+    const _: [(); 24] = [(); std::mem::size_of::<FileIdInfo>()];
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "GetFileInformationByHandleEx"]
+        fn get_file_information_by_handle_ex(
+            file: *mut c_void,
+            information_class: i32,
+            information: *mut c_void,
+            information_bytes: u32,
+        ) -> i32;
+    }
+
+    let mut information = FileIdInfo {
+        volume_serial: 0,
+        file_id: [0; 16],
+    };
+    // SAFETY: the File owns a live handle throughout this call. FileIdInfo has the
+    // documented C layout and the writable buffer remains valid for all 24 bytes.
+    let success = unsafe {
+        get_file_information_by_handle_ex(
+            file.as_raw_handle(),
+            18,
+            std::ptr::from_mut(&mut information).cast(),
+            std::mem::size_of::<FileIdInfo>() as u32,
+        )
+    };
+    if success == 0 {
+        // Unsupported filesystems or OS classes do not authorize a weaker ID.
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(BlobFileIdentity {
+        volume_serial: information.volume_serial,
+        file_id: information.file_id,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn blob_file_identity(_file: &File) -> Result<BlobFileIdentity> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "stable content-addressed file identity is unavailable on this platform",
+    )
+    .into())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BlobReadMetadata {
+    size: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    mode: u32,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    #[cfg(windows)]
+    attributes: u32,
+    #[cfg(windows)]
+    created: u64,
+}
+
+fn blob_read_metadata(metadata: &fs::Metadata) -> Result<BlobReadMetadata> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::MetadataExt;
+
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(StorageError::UnsafeSourcePath(
+            "content-addressed blob must remain an ordinary file".into(),
+        ));
+    }
+    #[cfg(windows)]
+    if metadata.file_attributes() & 0x400 != 0 {
+        return Err(StorageError::UnsafeSourcePath(
+            "content-addressed blob must not be a reparse point".into(),
+        ));
+    }
+
+    Ok(BlobReadMetadata {
+        size: metadata.len(),
+        modified: metadata.modified()?,
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        mode: metadata.mode(),
+        #[cfg(unix)]
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+        #[cfg(windows)]
+        attributes: metadata.file_attributes(),
+        #[cfg(windows)]
+        created: metadata.creation_time(),
+    })
+}
+
+fn blob_changed_during_read() -> StorageError {
+    StorageError::InvalidBackup("content-addressed blob changed during bounded read".into())
+}
+
 fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
     let path = checked_existing_blob_path_from_root(blob_root, digest)?;
-    let size = ensure_regular_file(&path, "content-addressed blob")?.len();
+    let initial = ensure_regular_file(&path, "content-addressed blob")?;
+    let size = initial.len();
     if size > limit {
         return Err(StorageError::BlobTooLarge { size, limit });
     }
-    let bytes = fs::read(path)?;
+    let read_limit = size.checked_add(1).ok_or_else(|| {
+        StorageError::InvalidBackup("captured blob length cannot be bounded".into())
+    })?;
+    let expected_metadata = blob_read_metadata(&initial)?;
+    let mut input = File::open(&path)?;
+    let identity = blob_file_identity(&input)?;
+    if blob_read_metadata(&input.metadata()?)? != expected_metadata
+        || blob_read_metadata(&ensure_regular_file(&path, "content-addressed blob")?)?
+            != expected_metadata
+    {
+        return Err(blob_changed_during_read());
+    }
+
+    #[cfg(test)]
+    bounded_blob_read_tests::observe(bounded_blob_read_tests::Phase::BeforeRead, &path, size, 0);
+
+    let mut limited = (&mut input).take(read_limit);
+    let mut bytes = Vec::new();
+    let mut captured = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = match limited.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if count == 0 {
+            break;
+        }
+        captured += count as u64;
+        if captured > size {
+            #[cfg(test)]
+            bounded_blob_read_tests::observe(
+                bounded_blob_read_tests::Phase::AfterRead,
+                &path,
+                size,
+                captured,
+            );
+            return Err(StorageError::InvalidBackup(
+                "content-addressed blob grew beyond its captured length".into(),
+            ));
+        }
+        bytes.try_reserve(count).map_err(|_| {
+            StorageError::InvalidBackup("bounded blob bytes do not fit available memory".into())
+        })?;
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+
+    #[cfg(test)]
+    bounded_blob_read_tests::observe(
+        bounded_blob_read_tests::Phase::AfterRead,
+        &path,
+        size,
+        captured,
+    );
+
+    if captured != size {
+        return Err(StorageError::InvalidBackup(
+            "content-addressed blob ended before its captured length".into(),
+        ));
+    }
     if hex::encode(Sha256::digest(&bytes)) != digest {
         return Err(StorageError::InvalidBackup(
             "content-addressed blob failed digest verification".into(),
         ));
+    }
+    if blob_file_identity(&input)? != identity
+        || blob_read_metadata(&input.metadata()?)? != expected_metadata
+    {
+        return Err(blob_changed_during_read());
+    }
+
+    // Revalidate the existing CAS path rules and bind its current opened object
+    // to the original handle. This second handle reads metadata only, never bytes.
+    let current_path = checked_existing_blob_path_from_root(blob_root, digest)?;
+    if current_path != path
+        || blob_read_metadata(&ensure_regular_file(
+            &current_path,
+            "content-addressed blob",
+        )?)? != expected_metadata
+    {
+        return Err(blob_changed_during_read());
+    }
+    let current = File::open(&current_path)?;
+    if blob_file_identity(&current)? != identity
+        || blob_read_metadata(&current.metadata()?)? != expected_metadata
+        || blob_read_metadata(&ensure_regular_file(
+            &current_path,
+            "content-addressed blob",
+        )?)? != expected_metadata
+        || blob_file_identity(&input)? != identity
+        || blob_read_metadata(&input.metadata()?)? != expected_metadata
+    {
+        return Err(blob_changed_during_read());
     }
     Ok(bytes)
 }
@@ -1401,6 +1659,247 @@ fn hash_file(path: &Path) -> Result<BlobDescriptor> {
 fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
     let bytes = portability::read_bundle_manifest_bytes(source)?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod bounded_blob_read_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Phase {
+        BeforeRead,
+        AfterRead,
+    }
+
+    type Observer = Box<dyn FnMut(Phase, &Path, u64, u64)>;
+    thread_local! {
+        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn observe(phase: Phase, path: &Path, admitted: u64, captured: u64) {
+        OBSERVER.with(|slot| {
+            if let Some(observer) = slot.borrow_mut().as_mut() {
+                observer(phase, path, admitted, captured);
+            }
+        });
+    }
+
+    struct ResetObserver;
+    impl Drop for ResetObserver {
+        fn drop(&mut self) {
+            OBSERVER.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+
+    type Observations = Rc<RefCell<Vec<(Phase, u64, u64)>>>;
+
+    fn observing(mut action: impl FnMut(Phase, &Path) + 'static) -> (Observations, ResetObserver) {
+        let observations = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&observations);
+        OBSERVER.with(|slot| {
+            assert!(
+                slot.borrow_mut()
+                    .replace(Box::new(move |phase, path, admitted, captured| {
+                        action(phase, path);
+                        recorded.borrow_mut().push((phase, admitted, captured));
+                    }))
+                    .is_none()
+            );
+        });
+        (observations, ResetObserver)
+    }
+
+    fn captured(observations: &Observations, admitted: u64) -> u64 {
+        let observations = observations.borrow();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0], (Phase::BeforeRead, admitted, 0));
+        assert_eq!(observations[1].0, Phase::AfterRead);
+        assert_eq!(observations[1].1, admitted);
+        eprintln!(
+            "bounded-blob-read admitted={} captured={}",
+            admitted, observations[1].2
+        );
+        observations[1].2
+    }
+
+    struct Fixture {
+        _temporary: tempfile::TempDir,
+        root: PathBuf,
+        path: PathBuf,
+        digest: String,
+    }
+
+    impl Fixture {
+        fn new(initial_bytes: &[u8], expected_bytes: &[u8]) -> Self {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("blobs");
+            let digest = hex::encode(Sha256::digest(expected_bytes));
+            let path = root.join("sha256").join(&digest[..2]).join(&digest);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, initial_bytes).unwrap();
+            Self {
+                _temporary: temporary,
+                root,
+                path,
+                digest,
+            }
+        }
+
+        fn read(&self, limit: u64) -> Result<Vec<u8>> {
+            read_verified_blob_from_root(&self.root, &self.digest, limit)
+        }
+    }
+
+    #[test]
+    fn stable_empty_and_multichunk_files_keep_the_exact_budget() {
+        for bytes in [Vec::new(), vec![0x5a; 64 * 1024 + 17]] {
+            let fixture = Fixture::new(&bytes, &bytes);
+            let (observations, _reset) = observing(|_, _| {});
+            assert_eq!(fixture.read(bytes.len() as u64).unwrap(), bytes);
+            assert_eq!(
+                captured(&observations, bytes.len() as u64),
+                bytes.len() as u64
+            );
+            assert_eq!(fs::read(&fixture.path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn initially_oversized_file_is_rejected_before_the_capture_boundary() {
+        let fixture = Fixture::new(b"abc", b"abc");
+        let (observations, _reset) = observing(|_, _| {
+            panic!("an initially oversized source must not reach capture");
+        });
+        assert!(matches!(
+            fixture.read(2),
+            Err(StorageError::BlobTooLarge { size: 3, limit: 2 })
+        ));
+        assert!(observations.borrow().is_empty());
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn real_growth_stops_at_the_original_length_plus_one() {
+        let initial = b"abc";
+        let grown = vec![b'G'; 64 * 1024 + 19];
+        // The final bytes deliberately match the requested digest: only the
+        // admitted-size boundary distinguishes this from a valid stable source.
+        let fixture = Fixture::new(initial, &grown);
+        let changed = grown.clone();
+        let (observations, _reset) = observing(move |phase, path| {
+            if phase == Phase::BeforeRead {
+                fs::write(path, &changed).unwrap();
+            }
+        });
+        let result = fixture.read(grown.len() as u64 + 4096);
+        assert_eq!(
+            captured(&observations, initial.len() as u64),
+            initial.len() as u64 + 1
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), grown);
+    }
+
+    #[test]
+    fn real_shrink_cannot_pass_with_the_shorter_matching_digest() {
+        let initial = b"longer initial content";
+        let shorter = b"short";
+        let fixture = Fixture::new(initial, shorter);
+        let (observations, _reset) = observing(|phase, path| {
+            if phase == Phase::BeforeRead {
+                fs::write(path, b"short").unwrap();
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(
+            captured(&observations, initial.len() as u64),
+            shorter.len() as u64
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), shorter);
+    }
+
+    #[test]
+    fn admitted_empty_file_cannot_expand_to_one_valid_digest_byte() {
+        let fixture = Fixture::new(b"", b"x");
+        let (observations, _reset) = observing(|phase, path| {
+            if phase == Phase::BeforeRead {
+                fs::write(path, b"x").unwrap();
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(captured(&observations, 0), 1);
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"x");
+    }
+
+    #[test]
+    fn stable_wrong_digest_still_fails_without_mutation() {
+        let fixture = Fixture::new(b"actual bytes", b"other bytes");
+        let (observations, _reset) = observing(|_, _| {});
+        let result = fixture.read(4096);
+        assert_eq!(captured(&observations, 12), 12);
+        assert!(matches!(result, Err(StorageError::InvalidBackup(message))
+            if message == "content-addressed blob failed digest verification"));
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"actual bytes");
+    }
+
+    #[test]
+    fn replacement_with_equal_bytes_length_and_mtime_is_rejected() {
+        let bytes = b"same source bytes";
+        let fixture = Fixture::new(bytes, bytes);
+        let original_modified = fs::metadata(&fixture.path).unwrap().modified().unwrap();
+        let retained = fixture.path.with_extension("original-retained");
+        let moved = retained.clone();
+        let (observations, _reset) = observing(move |phase, path| {
+            if phase == Phase::BeforeRead {
+                // This must be a real rename and a different newly created file;
+                // an OS refusal is a failed test, never a simulated replacement.
+                fs::rename(path, &moved).unwrap();
+                fs::write(path, b"same source bytes").unwrap();
+                OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_modified(original_modified)
+                    .unwrap();
+                assert_eq!(
+                    fs::metadata(path).unwrap().modified().unwrap(),
+                    original_modified
+                );
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(
+            captured(&observations, bytes.len() as u64),
+            bytes.len() as u64
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), bytes);
+        assert_eq!(fs::read(&retained).unwrap(), bytes);
+    }
+
+    #[test]
+    fn physical_mutation_after_capture_cannot_return_pre_mutation_bytes() {
+        let initial = b"already captured";
+        let changed = b"changed source after the read";
+        let fixture = Fixture::new(initial, initial);
+        let (observations, _reset) = observing(|phase, path| {
+            if phase == Phase::AfterRead {
+                fs::write(path, b"changed source after the read").unwrap();
+            }
+        });
+        let result = fixture.read(4096);
+        assert_eq!(
+            captured(&observations, initial.len() as u64),
+            initial.len() as u64
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+        assert_eq!(fs::read(&fixture.path).unwrap(), changed);
+    }
 }
 
 #[cfg(test)]
