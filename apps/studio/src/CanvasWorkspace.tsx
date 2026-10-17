@@ -90,6 +90,7 @@ export default function CanvasWorkspace({
   project,
   scene,
   commit,
+  commitRequired,
   playhead,
   onSeek,
   profile,
@@ -97,11 +98,18 @@ export default function CanvasWorkspace({
   project: Project;
   scene: Scene | null;
   commit: Commit;
+  commitRequired: Commit;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
   profile: Project["deliverables"][number] | null;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
+  const [addBusy, setAddBusy] = useState(false);
+  const addPending = useRef(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const creationScope = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null]);
+  const visibleCreationScope = useRef(creationScope);
+  visibleCreationScope.current = creationScope;
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
   const [formTransform, setFormTransform] = useState<CanvasTransform | null>(scene?.nodes[0] ? nodeTransform(scene.nodes[0]) : null);
   const [textValue, setTextValue] = useState(scene?.nodes[0]?.text ?? "");
@@ -125,6 +133,8 @@ export default function CanvasWorkspace({
     at: number;
     interpolation: MotionInterpolation;
   } | null>(null);
+
+  useEffect(() => { setAddError(null); }, [creationScope]);
 
   useEffect(() => {
     const next = scene?.nodes[0] ?? null;
@@ -211,11 +221,28 @@ export default function CanvasWorkspace({
   };
 
   const addNode = async (kind: "text" | "shape" | "group") => {
+    if (addPending.current) return;
+    addPending.current = true;
+    setAddBusy(true);
+    setAddError(null);
+    const submittedScope = creationScope;
     const node = createNode(scene, kind);
-    await commit({ type: "add_canvas_node", scene_id: scene.id, node });
-    setSelectedNodeId(node.id);
-    setFormTransform(nodeTransform(node));
-    setTextValue(node.text ?? "");
+    try {
+      await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
+      // The project change still belongs to its original scene. A later scene
+      // selection is independent and must not be replaced by this continuation.
+      if (visibleCreationScope.current !== submittedScope) return;
+      setSelectedNodeId(node.id);
+      setFormTransform(nodeTransform(node));
+      setTextValue(node.text ?? "");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setAddError(visibleCreationScope.current === submittedScope ? message
+        : "Creating " + kind + " in “" + scene.name + "” needs attention: " + message);
+    } finally {
+      addPending.current = false;
+      setAddBusy(false);
+    }
   };
 
   const selectNode = (node: CanvasNode) => {
@@ -393,7 +420,7 @@ export default function CanvasWorkspace({
                 type="button"
                 className="canvas-create-button"
                 key={kind}
-                disabled={sceneContentLocked || scenePositionLocked}
+                disabled={sceneContentLocked || scenePositionLocked || addBusy}
                 onClick={() => void addNode(kind)}
               >
                 <Plus size={10} />
@@ -401,6 +428,7 @@ export default function CanvasWorkspace({
               </button>
             ))}
           </div>
+          {addError && <p className="production-error" role="alert">{addError}</p>}
           {scene.nodes.length === 0 ? (
             <div className="canvas-empty-note">This scene has no semantic canvas objects yet.</div>
           ) : (

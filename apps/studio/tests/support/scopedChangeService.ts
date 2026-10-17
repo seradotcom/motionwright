@@ -5,13 +5,17 @@
  * installer, a native renderer, or creative acceptance. No command is mocked.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { access, cp, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Page } from "@playwright/test";
-import type { Bootstrap, Change, EffectGrantReceipt, Project, ProjectEvent } from "../../src/types";
+import type {
+  Bootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
+  PortableBundlePlan, Project, ProjectEvent, WaveformPage,
+} from "../../src/types";
 
 type RpcId = string | number;
 type InvokeArgs = Record<string, unknown>;
@@ -29,6 +33,8 @@ export type ServiceRpcResponse<T = unknown> =
 export interface ServiceBootstrap extends Bootstrap {
   test_transport: "service-test-jsonl";
   evidence_scope: string;
+  /** Explicit browser fixture routing, never a claim of installed Tauri. */
+  desktop_invoke_fixture: boolean;
   fixture: {
     label: "synthetic_test_fixture";
     scene_id: string | null;
@@ -46,6 +52,8 @@ export interface ScopedChangeServiceOptions {
   timeoutMs?: number;
   /** A peer/reopen should not create a new fixture in an empty database. */
   seedFixture?: boolean;
+  /** Opt into local import/bundle UI routes via JSONL; no native render authority. */
+  desktopInvokeFixture?: boolean;
 }
 
 export interface ServiceTranscriptEntry {
@@ -62,18 +70,71 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+export interface ServiceProcessExit {
+  processId: number | undefined;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  observedAt: string;
+}
+
+interface StoreEntry {
+  path: string;
+  kind: "directory" | "file";
+  sizeBytes?: number;
+  sha256?: string;
+}
+
+/** Every entry is included; unsupported/symlink entries fail instead of disappearing. */
+async function storeTree(directory: string): Promise<StoreEntry[]> {
+  const entries: StoreEntry[] = [];
+  const visit = async (path: string, name: string): Promise<void> => {
+    const info = await lstat(path);
+    if (info.isSymbolicLink()) throw new Error(`Closed store capture refuses a symlink: ${name || "."}`);
+    if (info.isDirectory()) {
+      entries.push({ path: name, kind: "directory" });
+      const children = (await readdir(path)).sort();
+      for (const child of children) await visit(join(path, child), name ? `${name}/${child}` : child);
+    } else if (info.isFile()) {
+      const digest = createHash("sha256");
+      let sizeBytes = 0;
+      for await (const chunk of createReadStream(path)) { digest.update(chunk); sizeBytes += chunk.length; }
+      if (sizeBytes !== info.size) throw new Error(`Store file changed size during capture: ${name}`);
+      entries.push({ path: name, kind: "file", sizeBytes, sha256: digest.digest("hex") });
+    } else throw new Error(`Closed store capture refuses a non-regular entry: ${name || "."}`);
+  };
+  await visit(directory, "");
+  return entries;
+}
+
+export interface ClosedStoreCapture {
+  schemaVersion: 1;
+  capturedAt: string;
+  sourceDirectory: string;
+  snapshotDirectory: string;
+  databaseRelativePath: string;
+  entries: StoreEntry[];
+  sourceBeforeSha256: string;
+  sourceAfterSha256: string;
+  snapshotSha256: string;
+  lifecycle: { databasePath: string; exits: ServiceProcessExit[] }[];
+  evidenceScope: string;
+}
+
 export class ScopedChangeService {
+  private static readonly instances = new Set<ScopedChangeService>();
   readonly databasePath: string;
   readonly directory: string;
   readonly binaryPath: string;
   readonly transcript: ServiceTranscriptEntry[] = [];
+  readonly processExits: ServiceProcessExit[] = [];
   private readonly timeoutMs: number;
   private readonly seedFixture: boolean;
+  private readonly desktopInvokeFixture: boolean;
   private readonly ownsDirectory: boolean;
   private child: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<this> | null = null;
   private closing: Promise<void> | null = null;
-  private exited: Promise<void> | null = null;
+  private exited: Promise<ServiceProcessExit> | null = null;
   private stderrText = "";
   private lastExit = "Process has not started";
   private sequence = 0;
@@ -89,9 +150,11 @@ export class ScopedChangeService {
     this.ownsDirectory = ownsDirectory;
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.seedFixture = options.seedFixture ?? true;
+    this.desktopInvokeFixture = options.desktopInvokeFixture ?? false;
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new Error("Service RPC timeoutMs must be a positive finite number");
     }
+    ScopedChangeService.instances.add(this);
   }
 
   static async create(options: ScopedChangeServiceOptions = {}): Promise<ScopedChangeService> {
@@ -182,21 +245,24 @@ export class ScopedChangeService {
     this.timedOutIds.clear();
     const args = ["--database", this.databasePath];
     if (this.seedFixture) args.push("--synthetic-fixture");
+    if (this.desktopInvokeFixture) args.push("--desktop-invoke-fixture");
     const child = spawn(this.binaryPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.child = child;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => { this.stderrText = (this.stderrText + chunk).slice(-16_384); });
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     lines.on("line", line => this.receive(child, line));
-    this.exited = new Promise<void>(resolveExit => {
+    this.exited = new Promise<ServiceProcessExit>(resolveExit => {
       child.once("close", (code, signal) => {
+        const exit = { processId: child.pid, code, signal, observedAt: new Date().toISOString() };
+        this.processExits.push(exit);
         lines.close();
         if (this.child === child) {
           this.child = null;
           this.lastExit = `StudioService test process exited (code ${code}, signal ${signal ?? "none"})`;
           this.rejectPending(this.failure(this.lastExit));
         }
-        resolveExit();
+        resolveExit(exit);
       });
     });
     child.on("error", error => {
@@ -261,6 +327,9 @@ export class ScopedChangeService {
     if (response.test_transport !== "service-test-jsonl" || response.fixture?.label !== "synthetic_test_fixture") {
       throw new Error("The executable did not identify the real-service synthetic test transport");
     }
+    if (this.desktopInvokeFixture && (!response.desktop_invoke_fixture || response.native_sdk.mode !== "tauri")) {
+      throw new Error("The test executable did not enable the explicitly requested browser desktop-invoke fixture");
+    }
     return response;
   }
 
@@ -284,9 +353,57 @@ export class ScopedChangeService {
     return this.invoke<Project>("apply_change", { request: { ...scope, request_id: requestId, effect_grant: grant.token, change } });
   }
 
+  /** Fixture setup uses the same real grant and invoke payloads as api.ts. */
+  grant(effect: EffectKind, project: Project | null, subject: string): Promise<EffectGrantReceipt> {
+    return this.invoke<EffectGrantReceipt>("issue_effect_grant", { request: {
+      effect, project_id: project?.id ?? null, generation: project?.generation ?? null,
+      revision: project?.revision ?? null, subject: subject.trim(),
+    } });
+  }
+
+  async importAsset(project: Project, path: string, name?: string, mediaType?: string): Promise<Project> {
+    const grant = await this.grant("import_local", project, path);
+    return this.invoke<Project>("import_asset_file", { request: {
+      project_id: project.id, generation: project.generation, revision: project.revision,
+      effect_grant: grant.token, path, name: name ?? null, media_type: mediaType ?? null,
+    } });
+  }
+
+  async importVoice(project: Project, path: string, label?: string): Promise<Project> {
+    const grant = await this.grant("import_local", project, path);
+    return this.invoke<Project>("import_voice_file", { request: {
+      project_id: project.id, generation: project.generation, revision: project.revision,
+      effect_grant: grant.token, path, name: null, media_type: null, label: label ?? null,
+    } });
+  }
+
+  waveform(projectId: string, trackId: string, pageIndex = 0, pageSize = 192): Promise<WaveformPage> {
+    return this.invoke<WaveformPage>("waveform_page", { request: {
+      project_id: projectId, track_id: trackId, page_index: pageIndex, page_size: pageSize,
+    } });
+  }
+
+  async exportBundle(project: Project, path: string): Promise<PortableBundleExport> {
+    const grant = await this.grant("deliver_local", project, path);
+    return this.invoke<PortableBundleExport>("export_project_bundle", { request: {
+      project_id: project.id, generation: project.generation, revision: project.revision,
+      effect_grant: grant.token, path,
+    } });
+  }
+
+  inspectBundle(path: string): Promise<PortableBundlePlan> {
+    return this.invoke<PortableBundlePlan>("inspect_project_bundle", { request: { path } });
+  }
+
+  async importBundle(path: string): Promise<Project> {
+    const grant = await this.grant("import_local", null, path);
+    return this.invoke<Project>("import_project_bundle", { request: { path, effect_grant: grant.token } });
+  }
+
   /** An independent process and grant registry, sharing only the SQLite/CAS. */
   peer(): Promise<ScopedChangeService> {
-    return ScopedChangeService.create({ databasePath: this.databasePath, timeoutMs: this.timeoutMs, seedFixture: false });
+    return ScopedChangeService.create({ databasePath: this.databasePath, timeoutMs: this.timeoutMs,
+      seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture });
   }
 
   /** Install before page.goto; every invoke crosses into the real process. */
@@ -320,12 +437,73 @@ export class ScopedChangeService {
     if (this.starting) await this.starting.catch(() => undefined);
     const child = this.child;
     const exited = this.exited;
-    if (!child || !exited) return;
+    if (!exited) return;
+    const requireCleanExit = (exit: ServiceProcessExit): void => {
+      if (exit.code !== 0 || exit.signal !== null) {
+        throw this.failure(`StudioService did not close cleanly (pid ${exit.processId}, code ${exit.code}, signal ${exit.signal ?? "none"})`);
+      }
+    };
+    if (!child) { requireCleanExit(await exited); return; }
     this.rejectPending(this.failure("StudioService test session closed before pending RPCs finished"));
     child.stdin.end();
     const forceStop = setTimeout(() => child.kill("SIGKILL"), 2_000);
-    try { await exited; }
+    try { requireCleanExit(await exited); }
     finally { clearTimeout(forceStop); }
+  }
+
+  /**
+   * Capture a quiescent, complete test store in a new exclusive directory.
+   * All supplied peers and every known helper sharing this store directory must
+   * have clean exits. Hashes detect any source change during copying. This does
+   * not claim to discover unrelated external processes or open SQLite here.
+   * WAL/SHM, when present, are copied and hashed like every other regular file.
+   * The runner must archive this capture before its execution returns, then
+   * verify/extract/reopen a separate copy; never normalize the original store.
+   */
+  async captureClosedStore(destination: string, peers: ScopedChangeService[] = []): Promise<ClosedStoreCapture> {
+    if (!isAbsolute(destination)) throw new Error("Closed store capture needs an absolute destination");
+    const sourceDirectory = resolve(this.directory);
+    const target = resolve(destination);
+    const relation = relative(sourceDirectory, target);
+    const outside = relation === ".." || relation.startsWith("../") || relation.startsWith("..\\") || isAbsolute(relation);
+    if (!outside) {
+      throw new Error("Closed store capture destination must be outside its source directory");
+    }
+    const participants = new Set([this, ...peers, ...[...ScopedChangeService.instances]
+      .filter(service => resolve(service.directory) === sourceDirectory)]);
+    for (const service of participants) {
+      if (service.child || service.starting || service.closing || service.processExits.length === 0 ||
+          service.processExits.some(exit => exit.code !== 0 || exit.signal !== null)) {
+        throw new Error(`Close every service peer cleanly before capturing ${service.databasePath}`);
+      }
+    }
+    const before = await storeTree(sourceDirectory);
+    await mkdir(dirname(target), { recursive: true });
+    await mkdir(target); // Fails if anything already occupies this destination.
+    const snapshotDirectory = join(target, "store");
+    await cp(sourceDirectory, snapshotDirectory, {
+      recursive: true, force: false, errorOnExist: true, dereference: false, preserveTimestamps: true,
+    });
+    const copied = await storeTree(snapshotDirectory);
+    const after = await storeTree(sourceDirectory);
+    const beforeJson = JSON.stringify(before);
+    const afterJson = JSON.stringify(after);
+    const copiedJson = JSON.stringify(copied);
+    if (beforeJson !== afterJson || beforeJson !== copiedJson) {
+      throw new Error("Closed store capture differs from its source, or the source changed; evidence is incomplete");
+    }
+    const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+    const capture: ClosedStoreCapture = {
+      schemaVersion: 1, capturedAt: new Date().toISOString(), sourceDirectory, snapshotDirectory,
+      databaseRelativePath: relative(sourceDirectory, this.databasePath).split("\\").join("/"),
+      entries: before, sourceBeforeSha256: digest(beforeJson), sourceAfterSha256: digest(afterJson),
+      snapshotSha256: digest(copiedJson),
+      lifecycle: [...participants].map(service => ({ databasePath: service.databasePath,
+        exits: service.processExits.map(exit => ({ ...exit })) })),
+      evidenceScope: "complete_closed_store_copy_with_verified_helper_exits; unopened_snapshot; later_archive_reopen_verification_required",
+    };
+    await writeFile(join(target, "manifest.json"), JSON.stringify(capture, null, 2), { flag: "wx" });
+    return capture;
   }
 
   /** Call after peers close; only helper-created temporary directories are removed. */
