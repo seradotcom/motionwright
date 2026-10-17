@@ -294,11 +294,6 @@ fn main() {
     }
     let commit_p95 = p95(&commit_samples);
     let commit_max = commit_samples.iter().copied().max().unwrap_or_default();
-    let budget_micros = commit_budget_ms * 1_000;
-    assert!(
-        commit_p95 < budget_micros,
-        "S-profile small commit p95 {commit_p95}us exceeds {budget_micros}us budget"
-    );
 
     let setup_revision = project.revision;
     drop(service);
@@ -309,11 +304,6 @@ fn main() {
         .expect("reopen responsiveness project");
     let reopen_micros = reopen_started.elapsed().as_micros();
     assert_eq!(reopened.revision, setup_revision);
-    assert!(
-        reopen_micros < reopen_budget_ms * 1_000,
-        "S-profile reopen {reopen_micros}us exceeds {}us budget",
-        reopen_budget_ms * 1_000
-    );
 
     let report = ResponsivenessReport {
         schema: "motionwright.responsiveness.v1",
@@ -345,6 +335,21 @@ fn main() {
         human_feedback: "NOT_RUN: responsiveness evidence contains no fabricated human review.",
         comparative_claims: "NONE: measurements are Motionwright-only and runner-specific.",
     };
-    serde_json::to_writer_pretty(std::io::stdout(), &report).expect("write responsiveness report");
-    println!();
+    // Record every commit sample and the actual reopen before enforcing budgets.
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    serde_json::to_writer_pretty(&mut output, &report).expect("write responsiveness report");
+    writeln!(output).expect("finish responsiveness report");
+    output.flush().expect("flush responsiveness report");
+
+    let budget_micros = commit_budget_ms * 1_000;
+    assert!(
+        commit_p95 < budget_micros,
+        "S-profile small commit p95 {commit_p95}us exceeds {budget_micros}us budget"
+    );
+    assert!(
+        reopen_micros < reopen_budget_ms * 1_000,
+        "S-profile reopen {reopen_micros}us exceeds {}us budget",
+        reopen_budget_ms * 1_000
+    );
 }

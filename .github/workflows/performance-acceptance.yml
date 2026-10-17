@@ -52,14 +52,31 @@ jobs:
         run: python3 -m unittest discover -s tooling/tests -p test_creative_stage_cost.py -v
       - name: Reject first editable scene and ten-revision evidence tampering
         run: python3 -m unittest discover -s tooling/tests -p test_first_scene_reuse.py -v
+      - name: Build revision-ten benchmark before runtime measurement
+        run: |
+          mkdir -p verification/performance
+          git rev-parse HEAD > verification/performance/checkout-sha.txt
+          git rev-parse 'HEAD^{tree}' > verification/performance/checkout-tree.txt
+          status=0
+          cargo build -p motionwright-service --example acceptance_bench --release \
+            > verification/performance/build.stdout.log 2> verification/performance/build.stderr.log || status=$?
+          printf '%s\n' "$status" > verification/performance/build-exit-code.txt
+          cat verification/performance/build.stdout.log
+          cat verification/performance/build.stderr.log >&2
+          exit "$status"
       - name: S M L × three unrelated briefs × revision ten
         env:
           MOTIONWRIGHT_LATENCY_BUDGET_MS: "2000"
         run: |
           mkdir -p verification/performance
+          sha256sum target/release/examples/acceptance_bench > verification/performance/benchmark-sha256.txt
+          status=0
           /usr/bin/time -v -o verification/performance/resource-usage.txt \
-            cargo run -p motionwright-service --example acceptance_bench --release \
-            > verification/performance/report.json
+            target/release/examples/acceptance_bench \
+            > verification/performance/report.json 2> verification/performance/stderr.log || status=$?
+          printf '%s\n' "$status" > verification/performance/exit-code.txt
+          cat verification/performance/stderr.log >&2
+          exit "$status"
       - name: Validate evidence shape
         run: |
           python3 - <<'PY'
@@ -89,9 +106,52 @@ jobs:
           assert all(len(r["cache"]["fingerprint_sha256"])==64 for r in rows)
           print(
               "performance-evidence=ok datasets=9 revision-ten=10 "
-              f"cache_hits={cache['hits']} avoided_units={cache['avoided_work_count']} "
+              f"cache_hits={cache['hits']} declared_index_scene_units={cache['avoided_work_count']} "
               "human=NOT_RUN"
           )
+          PY
+      - name: Retain all revision-ten measurements after a forced budget failure
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          directory=Path("verification/performance/budget-failure")
+          directory.mkdir(parents=True, exist_ok=True)
+          environment={**os.environ, "MOTIONWRIGHT_LATENCY_BUDGET_MS": "0"}
+          with (directory/"report.json").open("wb") as stdout, (directory/"stderr.log").open("wb") as stderr:
+              result=subprocess.run(
+                  ["target/release/examples/acceptance_bench"],
+                  env=environment, stdout=stdout, stderr=stderr, check=False)
+          (directory/"exit-code.txt").write_text(f"{result.returncode}\n", encoding="utf-8")
+          diagnostic=(directory/"stderr.log").read_text(encoding="utf-8")
+          assert result.returncode != 0, "zero budget unexpectedly passed"
+          assert "measured commit budget exceeded:" in diagnostic
+          report=json.loads((directory/"report.json").read_text(encoding="utf-8"))
+          assert report["schema"]=="motionwright.performance.v1"
+          assert report["source_sha"]==subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True).strip()
+          assert report["latency_budget_ms"]==0
+          assert report["datasets"]==9 and report["briefs"]==3
+          rows=report["results"]
+          expected={(brief, size, scenes)
+                    for brief in ("harbor-safety", "museum-night", "bike-route")
+                    for size, scenes in (("S", 8), ("M", 32), ("L", 96))}
+          assert len(rows)==9
+          assert {(r["brief"], r["size"], r["scene_count"]) for r in rows}==expected
+          assert all(r["revision_delta"]==10 for r in rows)
+          assert all(len(r["operations"])==10 for r in rows)
+          assert all(len({op["name"] for op in r["operations"]})==10 for r in rows)
+          assert all(r["max_commit_micros"]==max(op["micros"] for op in r["operations"])
+                     for r in rows)
+          assert any(r["max_commit_micros"]>0 for r in rows)
+          assert all(r["first_scene_preserved_after_revision_ten"] is True for r in rows)
+          assert all(r["reopen_micros"]>0 for r in rows)
+          assert report["human_feedback"].startswith("NOT_RUN")
+          assert report["comparative_claims"].startswith("NONE")
+          print(f"expected-budget-failure=revision-ten exit={result.returncode} datasets=9 operations=90")
           PY
       - name: Account for measured creative stage costs without invented render savings
         run: |
@@ -137,6 +197,7 @@ jobs:
           print("first-scene-reuse=source_verified human=NOT_RUN first_value=NOT_MEASURED")
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: performance-acceptance-evidence
           path: verification/performance
@@ -155,13 +216,28 @@ jobs:
           python3 tooling/source_policy.py
           python3 tooling/acceptance_policy.py
       - name: Build bounded-memory waveform benchmark
-        run: cargo build -p motionwright-service --example waveform_bench --release
+        run: |
+          mkdir -p verification/waveform
+          git rev-parse HEAD > verification/waveform/checkout-sha.txt
+          git rev-parse 'HEAD^{tree}' > verification/waveform/checkout-tree.txt
+          status=0
+          cargo build -p motionwright-service --example waveform_bench --release \
+            > verification/waveform/build.stdout.log 2> verification/waveform/build.stderr.log || status=$?
+          printf '%s\n' "$status" > verification/waveform/build-exit-code.txt
+          cat verification/waveform/build.stdout.log
+          cat verification/waveform/build.stderr.log >&2
+          exit "$status"
       - name: One-hour audio proxy and paged read
         run: |
           mkdir -p verification/waveform
+          sha256sum target/release/examples/waveform_bench > verification/waveform/benchmark-sha256.txt
+          status=0
           /usr/bin/time -v -o verification/waveform/resource-usage.txt \
             target/release/examples/waveform_bench \
-            > verification/waveform/report.json
+            > verification/waveform/report.json 2> verification/waveform/stderr.log || status=$?
+          printf '%s\n' "$status" > verification/waveform/exit-code.txt
+          cat verification/waveform/stderr.log >&2
+          exit "$status"
       - name: Validate lazy waveform evidence
         run: |
           python3 - <<'PY'
@@ -197,6 +273,7 @@ jobs:
           )
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: waveform-performance-evidence
           path: verification/waveform
@@ -215,16 +292,31 @@ jobs:
           python3 tooling/source_policy.py
           python3 tooling/acceptance_policy.py
       - name: Build S-profile responsiveness benchmark
-        run: cargo build -p motionwright-service --example responsiveness_bench --release
+        run: |
+          mkdir -p verification/responsiveness
+          git rev-parse HEAD > verification/responsiveness/checkout-sha.txt
+          git rev-parse 'HEAD^{tree}' > verification/responsiveness/checkout-tree.txt
+          status=0
+          cargo build -p motionwright-service --example responsiveness_bench --release \
+            > verification/responsiveness/build.stdout.log 2> verification/responsiveness/build.stderr.log || status=$?
+          printf '%s\n' "$status" > verification/responsiveness/build-exit-code.txt
+          cat verification/responsiveness/build.stdout.log
+          cat verification/responsiveness/build.stderr.log >&2
+          exit "$status"
       - name: Measure small commits and S-profile reopen
         env:
           MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS: "250"
           MOTIONWRIGHT_S_REOPEN_BUDGET_MS: "2000"
         run: |
           mkdir -p verification/responsiveness
+          sha256sum target/release/examples/responsiveness_bench > verification/responsiveness/benchmark-sha256.txt
+          status=0
           /usr/bin/time -v -o verification/responsiveness/resource-usage.txt \
             target/release/examples/responsiveness_bench \
-            > verification/responsiveness/service.json
+            > verification/responsiveness/service.json 2> verification/responsiveness/stderr.log || status=$?
+          printf '%s\n' "$status" > verification/responsiveness/exit-code.txt
+          cat verification/responsiveness/stderr.log >&2
+          exit "$status"
       - name: Validate service responsiveness evidence
         run: |
           python3 - <<'PY'
@@ -242,6 +334,7 @@ jobs:
           assert dataset["frame_rate"]=="30/1"
           commit=report["small_commit"]
           assert commit["samples"]==40
+          assert len(commit["samples_micros"])==40
           assert commit["budget_ms"]==250
           assert commit["p95_micros"] < 250_000
           assert report["reopen_budget_ms"]==2000
@@ -255,7 +348,59 @@ jobs:
               f"db_bytes={report['database_bytes']}"
           )
           PY
+      - name: Retain all responsiveness measurements after each forced budget failure
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          cases=(
+              ("commit-budget-failure", "0", "2000", "S-profile small commit p95 "),
+              ("reopen-budget-failure", "60000", "0", "S-profile reopen "),
+          )
+          for label, commit_budget, reopen_budget, expected_diagnostic in cases:
+              directory=Path("verification/responsiveness")/label
+              directory.mkdir(parents=True, exist_ok=True)
+              environment={
+                  **os.environ,
+                  "MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS": commit_budget,
+                  "MOTIONWRIGHT_S_REOPEN_BUDGET_MS": reopen_budget,
+              }
+              with (directory/"report.json").open("wb") as stdout, (directory/"stderr.log").open("wb") as stderr:
+                  result=subprocess.run(
+                      ["target/release/examples/responsiveness_bench"],
+                      env=environment, stdout=stdout, stderr=stderr, check=False)
+              (directory/"exit-code.txt").write_text(f"{result.returncode}\n", encoding="utf-8")
+              diagnostic=(directory/"stderr.log").read_text(encoding="utf-8")
+              assert result.returncode != 0, f"{label} unexpectedly passed"
+              assert expected_diagnostic in diagnostic and "exceeds 0us budget" in diagnostic
+              report=json.loads((directory/"report.json").read_text(encoding="utf-8"))
+              assert report["schema"]=="motionwright.responsiveness.v1"
+              assert report["source_sha"]==subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"], text=True).strip()
+              dataset=report["dataset"]
+              assert (dataset["scenes"], dataset["beats"], dataset["canvas_nodes"])==(12, 80, 300)
+              assert (dataset["voice_seconds"], dataset["voice_sample_rate_hz"])==(300, 8000)
+              assert (dataset["width"], dataset["height"], dataset["frame_rate"])==(1920, 1080, "30/1")
+              commit=report["small_commit"]
+              samples=commit["samples_micros"]
+              assert commit["samples"]==40 and len(samples)==40
+              assert all(type(value) is int and value>=0 for value in samples)
+              assert commit["p95_micros"]==sorted(samples)[37]
+              assert commit["max_micros"]==max(samples)
+              assert commit["budget_ms"]==int(commit_budget)
+              assert report["reopen_budget_ms"]==int(reopen_budget)
+              assert report["reopen_micros"]>0
+              if label=="reopen-budget-failure":
+                  assert commit["p95_micros"]<int(commit_budget)*1000
+              assert report["human_feedback"].startswith("NOT_RUN")
+              assert report["comparative_claims"].startswith("NONE")
+              print(f"expected-budget-failure={label} exit={result.returncode} samples=40 reopen=recorded")
+          PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: responsiveness-service-evidence
           path: verification/responsiveness
