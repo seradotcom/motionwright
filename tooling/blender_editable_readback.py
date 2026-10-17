@@ -630,12 +630,15 @@ def validate_evidence(evidence):
         response = proof["response"]
         result, receipt = _get(response, "result"), _get(response, "receipt")
         execution, provenance = _get(result, "execution"), _get(result, "execution", "provenance")
+        # SDK Driver metadata is labelled untrusted by its owner registry.
+        # Authority still requires every provider, generation and descriptor
+        # binding below; this reader never authenticates the original journal.
         require(response.get("replayed") is False and result.get("provenance_checked") is True
                 and execution.get("backend") == "driver:blender" and execution.get("dry_run") is False
                 and execution.get("policy_decision") == "allow"
                 and provenance.get("provider") == "driver:blender" and provenance.get("source") == "driver"
                 and provenance.get("execution_provider") == "driver:blender"
-                and provenance.get("untrusted_metadata") is False
+                and provenance.get("untrusted_metadata") is True
                 and same_json(provenance.get("provider_generation"), proof["provider_generation"])
                 and provenance.get("descriptor_sha256") == proof["descriptor_sha256"],
                 "input stage does not claim a fresh trusted command")
@@ -1159,7 +1162,7 @@ def synthetic_evidence(phase):
         result = {"data": copy.deepcopy(payloads[stage]), "provenance_checked": True,
                   "execution": {"backend": "driver:blender", "dry_run": False, "policy_decision": "allow",
                                 "provenance": {"provider": "driver:blender", "source": "driver",
-                                               "execution_provider": "driver:blender", "untrusted_metadata": False,
+                                               "execution_provider": "driver:blender", "untrusted_metadata": True,
                                                "provider_generation": generation, "descriptor_sha256": proof["descriptor_sha256"]}}}
         receipt = {key: proof[key] for key in ("command", "request_id", "request_sha256")}
         receipt.update({key: stamp[key] for key in ("project_id", "generation", "revision")})
@@ -1384,6 +1387,86 @@ class OracleSelfTests(unittest.TestCase):
         for phase in PHASE_STAGES:
             evidence = parse_json(json_bytes(synthetic_evidence(phase)))
             self.assertEqual(validate_evidence(evidence), evidence["source"]["spec"])
+
+    def test_driver_metadata_mark_accepts_bound_external_driver_declarations(self):
+        # Synthetic declarations test the reader's contract, never Store authority.
+        for phase in PHASE_STAGES:
+            with self.subTest(phase=phase):
+                evidence = parse_json(json_bytes(synthetic_evidence(phase)))
+                for proof in evidence["stages"]:
+                    provenance = proof["response"]["result"]["execution"]["provenance"]
+                    self.assertIs(provenance["untrusted_metadata"], True)
+                    self.assertEqual(provenance["source"], "driver")
+                    self.assertEqual(provenance["provider"], "driver:blender")
+                    self.assertEqual(provenance["execution_provider"], "driver:blender")
+                self.assertEqual(validate_evidence(evidence), evidence["source"]["spec"])
+        self.assertNotIn("bpy", sys.modules)
+
+    def test_driver_metadata_mark_rejects_missing_false_or_nonbool_in_matching_rows(self):
+        cases = [("missing", None), ("false", False), ("null", None),
+                 ("integer_zero", 0), ("integer_one", 1),
+                 ("string_true", "true"), ("string_false", "false")]
+        for label, value in cases:
+            with self.subTest(label=label):
+                evidence = synthetic_evidence("source_persisted")
+                proof = evidence["stages"][2]
+                result = proof["response"]["result"]
+                provenance = result["execution"]["provenance"]
+                if label == "missing":
+                    del provenance["untrusted_metadata"]
+                else:
+                    provenance["untrusted_metadata"] = value
+                proof["response"]["receipt"]["payload"]["result"] = copy.deepcopy(result)
+                self.rejected(lambda: validate_evidence(evidence), "source_mismatch")
+        self.assertNotIn("bpy", sys.modules)
+
+    def test_driver_metadata_mark_does_not_replace_owner_provenance_binding(self):
+        # Alter both copies so rejection cannot be explained by a detached result.
+        # The True marker is mandatory metadata, not a substitute for these joins.
+        cases = [
+            ("source_builtin", ("execution", "provenance", "source"), "builtin"),
+            ("source_plugin", ("execution", "provenance", "source"), "plugin"),
+            ("foreign_provider", ("execution", "provenance", "provider"), "driver:other"),
+            ("foreign_executor", ("execution", "provenance", "execution_provider"), "driver:other"),
+            ("missing_executor_value", ("execution", "provenance", "execution_provider"), None),
+            ("foreign_generation", ("execution", "provenance", "provider_generation"), 8),
+            ("boolean_generation", ("execution", "provenance", "provider_generation"), True),
+            ("foreign_descriptor", ("execution", "provenance", "descriptor_sha256"), "a" * 64),
+            ("dry_run", ("execution", "dry_run"), True),
+            ("nonbool_dry_run", ("execution", "dry_run"), 0),
+            ("denied_policy", ("execution", "policy_decision"), "deny"),
+            ("foreign_backend", ("execution", "backend"), "driver:other"),
+            ("unchecked_provenance", ("provenance_checked",), False),
+        ]
+        for label, path, value in cases:
+            with self.subTest(label=label):
+                evidence = synthetic_evidence("source_persisted")
+                proof = evidence["stages"][2]
+                result = proof["response"]["result"]
+                target = result
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                proof["response"]["receipt"]["payload"]["result"] = copy.deepcopy(result)
+                self.rejected(lambda: validate_evidence(evidence), "source_mismatch")
+        for field in ("source", "provider", "provider_generation", "execution_provider", "descriptor_sha256"):
+            with self.subTest(missing=field):
+                evidence = synthetic_evidence("source_persisted")
+                proof = evidence["stages"][2]
+                result = proof["response"]["result"]
+                del result["execution"]["provenance"][field]
+                proof["response"]["receipt"]["payload"]["result"] = copy.deepcopy(result)
+                self.rejected(lambda: validate_evidence(evidence), "source_mismatch")
+        evidence = synthetic_evidence("source_persisted")
+        proof = evidence["stages"][2]
+        del proof["response"]["result"]["execution"]["dry_run"]
+        proof["response"]["receipt"]["payload"]["result"] = copy.deepcopy(proof["response"]["result"])
+        self.rejected(lambda: validate_evidence(evidence), "source_mismatch")
+        evidence = synthetic_evidence("source_persisted")
+        evidence["stages"][2]["response"]["replayed"] = True
+        self.rejected(lambda: validate_evidence(evidence), "source_mismatch")
+        self.assertNotIn("bpy", sys.modules)
+
 
     def test_evidence_rejects_missing_duplicate_and_reordered_stages(self):
         for kind in ("missing", "duplicate", "reordered"):
