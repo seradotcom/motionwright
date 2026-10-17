@@ -1,10 +1,10 @@
 //! Versioned, source-only planar camera contribution for pinned Manim 0.21 Cairo.
 //! The existing Manim compiler and original production coordinator remain the
 //! sole realization and effect authorities; plans here never permit a job start.
-use super::planar_motion::{ManimPlanarCameraV3, ManimPlanarNodeV3};
 use super::{
     MAX_SOURCE_ENTRY_BYTES_V2, ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2,
     ManimProfileError, ManimRenderProfile, ManimSceneBindingV2, ManimSourceShapeKindV2,
+    ManimStaticShapeV2,
 };
 use semwright_media_time::Rational;
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,16 @@ pub struct CameraMoveV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct ManimCameraPoseV1 {
+    pub center_x: f64,
+    pub center_y: f64,
+    pub zoom: f64,
+    pub rotation_deg: f64,
+    pub safe_margin: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ManimCameraScenePlanV1 {
     pub schema_version: u16,
     pub profile_id: ManimCameraProfileIdV1,
@@ -71,9 +81,9 @@ pub struct ManimCameraScenePlanV1 {
     pub render_profile: ManimRenderProfile,
     pub canvas: ManimCanvasV2,
     pub background: ManimMatteV2,
-    pub camera: ManimPlanarCameraV3,
+    pub camera: ManimCameraPoseV1,
     pub reframe: CameraMoveV1,
-    pub nodes: Vec<ManimPlanarNodeV3>,
+    pub nodes: Vec<ManimStaticShapeV2>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,15 +98,20 @@ pub struct ManimCameraFrameV1 {
     pub world_frame_height: f64,
 }
 
-fn pose_within_camera(node: &ManimPlanarNodeV3, center_x: f64, center_y: f64, margin: f64) -> bool {
-    let x = node.base.x + CANVAS_WIDTH / 2.0 - center_x;
-    let y = node.base.y + CANVAS_HEIGHT / 2.0 - center_y;
+fn pose_within_camera(
+    node: &ManimStaticShapeV2,
+    center_x: f64,
+    center_y: f64,
+    margin: f64,
+) -> bool {
+    let x = node.x_px + CANVAS_WIDTH / 2.0 - center_x;
+    let y = node.y_px + CANVAS_HEIGHT / 2.0 - center_y;
     let margin_x = CANVAS_WIDTH * margin;
     let margin_y = CANVAS_HEIGHT * margin;
     x >= margin_x
         && y >= margin_y
-        && x + node.base.width <= CANVAS_WIDTH - margin_x
-        && y + node.base.height <= CANVAS_HEIGHT - margin_y
+        && x + node.width_px <= CANVAS_WIDTH - margin_x
+        && y + node.height_px <= CANVAS_HEIGHT - margin_y
 }
 
 impl ManimCameraScenePlanV1 {
@@ -193,19 +208,16 @@ impl ManimCameraScenePlanV1 {
             require(
                 !node.node_id.is_nil()
                     && ids.insert(node.node_id)
-                    && node.keyframes.is_empty()
                     && matches!(
                         node.source_kind,
                         ManimSourceShapeKindV2::Rectangle | ManimSourceShapeKindV2::Circle
                     )
-                    && node.base.x.is_finite()
-                    && node.base.y.is_finite()
-                    && node.base.width.is_finite()
-                    && node.base.height.is_finite()
-                    && node.base.width > 0.0
-                    && node.base.height > 0.0
-                    && node.base.rotation_deg == 0.0
-                    && node.base.opacity == 1.0
+                    && node.x_px.is_finite()
+                    && node.y_px.is_finite()
+                    && node.width_px.is_finite()
+                    && node.height_px.is_finite()
+                    && node.width_px > 0.0
+                    && node.height_px > 0.0
                     && node.fill_hex.starts_with('#')
                     && node.fill_hex.len() == 7
                     && node.fill_hex[1..].bytes().all(|b| b.is_ascii_hexdigit()),
@@ -213,7 +225,7 @@ impl ManimCameraScenePlanV1 {
             )?;
             if matches!(node.source_kind, ManimSourceShapeKindV2::Circle) {
                 require(
-                    node.base.width == node.base.height,
+                    node.width_px == node.height_px,
                     "manim_camera_circle_not_square",
                 )?;
             }

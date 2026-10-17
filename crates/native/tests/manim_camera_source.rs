@@ -1,12 +1,9 @@
 //! Source-only tests for the exact closed Manim Community planar camera profile.
 //! New native renderer, dispatch or source compiler behavior is NOT assumed.
-use motionwright_manim_profile::planar_motion;
-use motionwright_manim_profile::planar_motion::{
-    ManimPlanarCameraV3, ManimPlanarNodeV3, ManimPlanarPoseV3,
-};
 use motionwright_manim_profile::{
     MAX_SOURCE_ENTRY_BYTES_V2, ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2,
     ManimProfileError, ManimRenderProfile, ManimSceneBindingV2, ManimSourceShapeKindV2,
+    ManimStaticShapeV2,
 };
 use semwright_media_time::Rational;
 use uuid::Uuid;
@@ -18,8 +15,8 @@ mod camera_source;
 mod production {
     use super::*;
     use camera_source::{
-        CAMERA_PROFILE_V1, CAMERA_SCHEMA_V1, CameraMoveV1, ManimCameraProfileIdV1,
-        ManimCameraScenePlanV1,
+        CAMERA_PROFILE_V1, CAMERA_SCHEMA_V1, CameraMoveV1, ManimCameraPoseV1,
+        ManimCameraProfileIdV1, ManimCameraScenePlanV1,
     };
 
     fn clock() -> ManimFrameClockV2 {
@@ -38,23 +35,18 @@ mod production {
         h: f64,
         color: &str,
         ordinal: u32,
-    ) -> ManimPlanarNodeV3 {
-        ManimPlanarNodeV3 {
+    ) -> ManimStaticShapeV2 {
+        ManimStaticShapeV2 {
             node_id: Uuid::new_v4(),
             display_name: format!("source object {ordinal}"),
             source_kind: kind,
             canonical_ordinal: ordinal,
             z_index: ordinal as i32,
-            base: ManimPlanarPoseV3 {
-                x,
-                y,
-                width: w,
-                height: h,
-                rotation_deg: 0.0,
-                opacity: 1.0,
-            },
+            x_px: x,
+            y_px: y,
+            width_px: w,
+            height_px: h,
             fill_hex: color.into(),
-            keyframes: vec![],
         }
     }
     fn finite_fixture() -> ManimCameraScenePlanV1 {
@@ -78,7 +70,7 @@ mod production {
             },
             canvas: ManimCanvasV2::default(),
             background: ManimMatteV2::default(),
-            camera: ManimPlanarCameraV3 {
+            camera: ManimCameraPoseV1 {
                 center_x: 1000.0,
                 center_y: 520.0,
                 zoom: 1.0,
@@ -151,8 +143,8 @@ mod production {
             .unwrap();
         assert_eq!(before, [140.0, 90.0]);
         assert_eq!(after, [126.66666666666667, 96.66666666666667]);
-        assert_eq!(plan.nodes[0].base.x, 420.0);
-        assert_eq!(plan.nodes[1].base.x, 1125.0);
+        assert_eq!(plan.nodes[0].x_px, 420.0);
+        assert_eq!(plan.nodes[1].x_px, 1125.0);
         assert!(plan.sample(30).is_err());
     }
 
@@ -227,13 +219,13 @@ mod production {
         neg.camera.center_x += 1.0;
         assert!(neg.validate_source_only().is_err());
         let mut neg = plan.clone();
-        neg.nodes[0].base.rotation_deg = 8.0;
+        neg.nodes[0].source_kind = ManimSourceShapeKindV2::Shape;
         assert!(neg.validate_source_only().is_err());
         let mut neg = plan.clone();
-        neg.nodes[0].base.x = 5.0;
+        neg.nodes[0].x_px = 5.0;
         assert!(neg.validate_source_only().is_err());
         let mut neg = plan.clone();
-        neg.nodes[1].base.width = 190.0;
+        neg.nodes[1].width_px = 190.0;
         assert!(neg.validate_source_only().is_err());
         let mut neg = plan.clone();
         neg.render_profile.width = 1920;
