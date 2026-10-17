@@ -1,41 +1,39 @@
-# Creative expansion ownership and integration
+# Creative production: state and runtime ownership
 
-## Source boundaries
+Motionwright is responsible for authored creative projects, revisions, persistence, and editable Studio state. Semwright remains responsible for native runtime capabilities, Broker and Driver Host execution, policy and effect authorization, and source-bound receipts. The SDK dependency is pinned by [SOURCE_LOCK.json](../../SOURCE_LOCK.json).
 
-The expansion branch is `feat/v05-creative-production`. It began at Motionwright `330e27e22c7d6cba0d555d4b2fed74d9de57e758` and incorporated upstream `d848657ed78ba73a2c925c7c3eceecce8e4f9054` into the feature branch. This did not merge the feature branch into main. Work was isolated from the original working checkout and the other implementation worktrees.
+## Project state and migration
 
-Semwright remains pinned to `8fa191250ae68274182570c65f067f7a60f85625` in `SOURCE_LOCK.json`. No private Core, Broker, scheduler or native driver implementation is copied into Motionwright. New domain commands run through the existing StudioService transaction and Native SDK application handler.
+Creative documents use a versioned project format so older writers cannot silently discard newer fields. Legacy source documents are admitted through explicit migration and serialized inside the same transactional project boundary. Unsupported formats are rejected rather than partially rewritten.
 
-Upstream receipt pagination, static camera pan and frame-bound linear XY motion retain their own history and tests. The creative entrance profile handles synchronized opacity/Y/rotation keys; the existing exact linear profile handles its admitted XY keys. These are separate explicit admissions, not permissive catch-all fallbacks. Project camera or unsupported motion still causes a diagnostic where the provider contract cannot preserve it.
+Project changes retain stable scene, component and object identities. Mutations are revision-bound and applied through StudioService and the existing SQLite compare-and-swap transactions. Source assets, rights declarations, locks, generation identity and prior user changes remain authoritative.
 
-## Owned implementation surfaces
+Exact round-trip serialization is required for persisted component geometry and editorial state. Floating-point round-trip decoding is intentional: source values are compared after database reopen, not weakened by tolerance-based migration claims.
 
-The new modules are `domain/hero.rs`, `domain/production_design.rs`, `domain/creative_revisions.rs`, `native/expressive.rs`, `native/component_text.rs`, and the Production/inspection/undo Studio modules. Integration edits in `domain/lib.rs`, `domain/history.rs`, `native/film.rs`, `native/lib.rs`, Studio `api.ts`, `types.ts` and `App.tsx` connect them to existing contracts.
+## Rendering and native capabilities
 
-Project format 2 is necessary because an older format-1 writer ignores unknown creative fields before reserialization. The existing old-format version check rejects format 2 rather than silently dropping its content. New code reads genuine format-1 documents and upgrades them only inside the first successful write. Preserve this boundary when resolving future integration conflicts.
+The public integration surfaces include authored production plans, components, scoped creative changes and source-bound native observations. Semwright Native SDK calls preserve explicit resource identity, revision, output bounds, capability and effect-grant constraints. Imported creative capsules are data, not executable plugins.
 
-`serde_json/float_roundtrip` is intentional. The component baseline and live geometry are compared exactly after database reopen. Default float decoding changed some values by one representable float and broke baseline fidelity. Do not replace the exact test with tolerance to hide persistence drift.
+Creative movement, camera and composition are admitted only where the target renderer can preserve their declared semantics. Existing linear position, bounded entrance motion and native media realization have distinct validation rules. Unsupported motion or missing authority must produce an explicit diagnostic instead of inventing an approximation.
 
-## Public native additions
+## Native creative operations
 
-The branch adds six operations to the preexisting application catalog:
+The public application catalog includes these revision-bound operations:
 
-- `driver.motionwright.product-hero.upsert` and `.product-hero.detach`.
-- `driver.motionwright.production-plan.set` and `.native-capsule.upsert`.
-- `driver.motionwright.creative.patch.apply` and `.creative.patch.undo`.
+- `driver.motionwright.product-hero.upsert` and `driver.motionwright.product-hero.detach`.
+- `driver.motionwright.production-plan.set` and `driver.motionwright.native-capsule.upsert`.
+- `driver.motionwright.creative.patch.apply` and `driver.motionwright.creative.patch.undo`.
 
-The corresponding `production-plan`, `components`, `native-capsules` and `creative-patches` observations are bounded, revision-bound pages. Existing project refs, caller authority, effect grants and idempotency remain authoritative. Undo is explicit domain behavior; the generic Native SDK automatic-undo contract is not falsely advertised as implemented.
+Their observations retain explicit project references, caller authority, effect grants, idempotency and bounded receipt pages. Creative undo is an explicit domain operation checked against the current revision. The Native SDK integration declares `UndoSemantics::None`; it does not advertise the SDK's generic automatic-undo contract as implemented.
 
-No imported capsule is executable. No model credentials are read or transmitted. No third-party account, paid generation batch, plugin installation or publication is performed by these operations.
+## Source traceability
 
-## Validation ownership
+The [migration contracts](README.md#data-and-migration-contracts) document the format-1 to format-2 boundary and the [motion and typography contracts](README.md#native-motion-and-typography-boundary) record the source reconciliation for the separate motion admissions. [Original acceptance records](../acceptance/README.md) and the [creative requirement ledger](requirements-status.json) preserve the inherited IDs and distinguish implementation scope from independent acceptance.
 
-Fast formatting/source checks run without local compilation. Rust/TypeScript builds, browser acceptance, portable bundles and native rendering run in remote CI. `product-hero-e2e.yml` is the selected heavy proof for this component. Its exact source pin, actual provider jobs and copied frame/master digests are essential; an editorial SVG or DOM screenshot is not a substitute.
+The [source-pinned creative record](https://github.com/seradotcom/motionwright/blob/9061f58f06ce231a9b3247f8f33a23a700e7a801/docs/creative-production/requirements-status.json) retains the historical scope and open criteria. Current dependency identity comes from SOURCE_LOCK.json; a historical source reference does not certify a later package or mark an unexecuted criterion as passed.
 
-The original acceptance ledger is not rewritten or promoted by this expansion. The separate 64-ID status file records an implemented slice and open scope. Keep automated preservation tests distinct from ten real human revisions and keep an internal graphic study distinct from observed software evidence.
+## Verification and evidence
 
-## Integration follow-through
+Domain, storage, native and Studio tests exercise serialization, conflict handling, source identity and bounded render contracts. Native outputs and package artifacts require the exact source revision and independently checked bytes. Tests and examples never substitute for original-media rights, installed-device acceptance or human creative review.
 
-Resolve shared-file conflicts by preserving both the bounded creative grammar and upstream exact-linear grammar, all new command variants, the document-version guard, branch-state capture and per-generation receipt pagination. Rerun the complete core/Studio suite and the selected native component lane for the combined SHA. An older successful native run does not certify a changed projection or runtime pin.
-
-Do not publish a release or install an experimental renderer solely because this branch compiles. HyperFrames/fframes admission, third-party project editing, sound production, remaining components and user/competitive acceptance need their own concrete implementations and evidence.
+The source-linked requirement ledger is [requirements-status.json](requirements-status.json). Technical evidence, implementation scope and independent product acceptance are deliberately distinct. The integration does not create a second scheduler, a parallel persistence authority, automatic third-party model execution, or hidden publication rights.

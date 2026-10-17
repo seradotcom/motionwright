@@ -1,6 +1,6 @@
 # Native component design review
 
-Status: **protocol prepared; human review not performed by the implementation agent**.
+Status: **review protocol defined; independent human review NOT_RUN**.
 
 Use the `hero.motionwright` portable sample from a successful native lane for the candidate SHA. Keep the source project, the chosen output profile, the source commit and each new render receipt with the session. The sample is a typographic graphic study with a silent test soundtrack. It is not a finished launch film or a software-capture demo.
 
@@ -17,7 +17,7 @@ The corrected native text adapter keeps the component's text positions outside t
 3. Edit the supporting copy directly as a human override. Save and reopen it.
 4. Update the component accent. Verify that the deliberate supporting-copy override remains unchanged.
 5. Ask for a component copy change that conflicts with that override. Confirm that the existing work is retained and the conflict identifies the affected field.
-6. Lock the supporting-copy text, stage a scoped replacement and inspect the rejection. A lock is not overridden because the agent's rationale sounds reasonable.
+6. Lock the supporting-copy text, stage a scoped replacement and inspect the rejection. A lock is not overridden solely because a proposal's rationale sounds reasonable.
 7. Unlock the text intentionally, stage a valid bounded proposal and inspect the before/after at the same playhead time. Decline one proposal, then accept a different one as a single revision.
 8. Preview undo, add an unrelated style change, and verify that the inverse preserves it. Separately create a conflicting later text change and verify that undo refuses to overwrite it.
 9. Switch among output aspects. Verify actual native frames after reflow. Test an ambiguous human position override: preserve it or expose the conflict instead of silently recentering it.
