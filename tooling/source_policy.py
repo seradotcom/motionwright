@@ -4,12 +4,21 @@ import pathlib
 import re
 import sys
 
+from public_surface_policy import (
+    PublicSurfaceError, iter_source_files, verify_public_surface,
+)
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text())
 REV = LOCK["dependencies"]["semwright"]["revision"]
 VERSION = LOCK["dependencies"]["semwright"]["version"]
 
 errors = []
+
+try:
+    errors.extend(verify_public_surface(ROOT))
+except PublicSurfaceError as exc:
+    errors.append("public source hygiene unavailable: " + str(exc))
 
 cargo = (ROOT / "Cargo.toml").read_text()
 if f'rev = "{REV}"' not in cargo:
@@ -77,12 +86,8 @@ automatic_publish_tokens = [
 if any(token in workflow_text for token in automatic_publish_tokens):
     errors.append("repository workflows must not automatically publish packages or releases")
 
-for path in ROOT.rglob("*"):
-    if not path.is_file() or ".git" in path.parts or "node_modules" in path.parts:
-        continue
+for path in iter_source_files(ROOT):
     rel = path.relative_to(ROOT).as_posix()
-    if any(part in {"target", "dist", "test-results", "playwright-report"} for part in path.parts):
-        continue
     if re.search(r"(^|/)(MASTER_[^/]*|plantillas_agentes)(/|$)", rel, re.IGNORECASE):
         errors.append(f"private coordination material must not be published: {rel}")
     try:

@@ -8,7 +8,7 @@ Motionwright consumes the public Semwright source repository at an exact revisio
 
 ## Impeccable
 
-Project-local design guidance is installed from `pbakaus/impeccable`. Its source declares Apache-2.0 licensing. Generated Motionwright product design and code remain part of this repository; the upstream skill retains its own notices.
+Development-only design guidance may use `pbakaus/impeccable` under its Apache-2.0 license. That tooling is not a Motionwright runtime dependency or part of the distributed application. Original third-party licensing remains applicable to any reused material.
 
 ## gtk-rs glib 0.18.5 — source-bound v0.1 security backport
 

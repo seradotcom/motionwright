@@ -63,5 +63,5 @@ camera-safe-area edit in Chromium. CI executes unit/build, browser
 and full existing native E2E workflows at the exact PR SHA.
 
 The control uses the existing Cut Room Ledger theme tokens and
-project-installed Impeccable styling. It is a compact expandable
+the editor styles documented in [DESIGN.md](../../DESIGN.md). It is a compact expandable
 inspector, not a dashboard, modal takeover or decorative review score.

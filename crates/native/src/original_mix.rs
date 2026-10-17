@@ -4,8 +4,8 @@
 //! Sample-accurate, source-bound, explicit music ducking. No unlicensed media,
 //! speech generation, implicit ASR authority, clipping repair or automatic
 //! normalization. EBU R128 / intersample true peak need an independent decode.
-//! Source-only, deterministic 3-bus PCM mixer, reused from PR #87 under
-//! the **existing** motionwright-native pinned Semwright SDK consumer.
+//! This 3-bus PCM implementation remains inside motionwright-native and
+//! uses the same pinned Semwright SDK authority as other production paths.
 use motionwright_domain::{AlignmentEvidence, Project, RationalTime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

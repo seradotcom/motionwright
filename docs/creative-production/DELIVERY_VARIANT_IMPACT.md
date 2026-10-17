@@ -42,9 +42,9 @@ changed fields:
 These are **conservative editorial possibilities**. They are NOT the
 physical derived-cache invalidation oracle, an exact renderer dirty-tail
 contract, automatic multi-scene recomposition, a hash-verified source
-dependency computation or performance benchmarks. Another agent may be
-implementing those layers separately. There is no change to the pinned
-Semwright Native SDK or any Broker/Driver Host dispatch path.
+dependency computation or performance benchmarks. Those capabilities have
+separate contracts and require independent evidence. This comparison does
+not change the Semwright Native SDK pin or any Broker/Driver Host dispatch.
 
 ## Failure and evidence semantics
 

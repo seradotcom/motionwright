@@ -46,3 +46,11 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# Machine-local tools and working material (not distributed with Motionwright)
+/.agents/
+/.codex/
+/knowledge/
+/worktrees/
+/.worktrees/
+/verification/
