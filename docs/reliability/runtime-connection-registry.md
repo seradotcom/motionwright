@@ -31,7 +31,7 @@ Run the actual desktop test module with its normal build prerequisites:
 cargo test --locked -p motionwright-desktop --bin motionwright-desktop runtime_setup::tests -- --nocapture
 ```
 
-The existing first-use workflow executes the Rust module on Windows. Its Python preflights on Linux/macOS do not execute the Unix Rust regressions. Before integration, record the exact fixed source SHA and applicable executed platform results in the PR and private handoff. Linux/macOS Rust execution and a real Windows junction fixture require the coordinated A6 lane; an omitted test is not a platform pass.
+The existing first-use workflow executes the Rust module on Windows. Its Python preflights on Linux/macOS do not execute the Unix Rust regressions. Platform evidence must identify the exact tested source SHA. Linux/macOS Rust execution and a real Windows junction fixture are required to verify their respective scenarios; an omitted test is not a platform pass.
 
 ## Requirement scope and limits
 
