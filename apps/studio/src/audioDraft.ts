@@ -291,4 +291,3 @@ export function writeAudioRecovery(storage: Storage, recovery: AudioRecovery) {
   storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) throw new Error("The audio recovery write could not be read back.");
 }
-
