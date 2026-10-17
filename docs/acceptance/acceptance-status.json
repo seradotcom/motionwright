@@ -20271,6 +20271,17 @@
           },
           "superseded_at_utc": "2026-10-17T17:09:12.079634+00:00",
           "technical_status": "not_run"
+        },
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T22:56:21.096240+00:00",
+          "technical_status": "not_run"
         }
       ],
       "evidence": [],
@@ -20283,15 +20294,15 @@
       "status": "NOT_RUN",
       "technical_assessment": {
         "artifact_verification": {
-          "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
-          "status": "not_admitted"
+          "media_persistence_or_installed_artifacts": "External NLE receiver, edit/reimport and installed product are unverified.",
+          "retained": "SHA-bound original synthetic OTIO and execution excerpts; H264 bytes retained outside Git under A5 private evidence.",
+          "status": "scoped_original_media_and_OTIO_admitted"
         },
         "contract_acceptance": {
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
             "A05-E11-03#/scenario",
-            "A05-E11-03#/negative_scenario",
             "A05-E11-03#/evidence_required/0",
             "A05-E11-03#/evidence_required/1",
             "A05-E11-03#/evidence_required/2",
@@ -20313,14 +20324,16 @@
             "status": "not_run"
           },
           {
-            "evidence_ids": [],
-            "id": "A05-E11-03#/negative_scenario",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "otio-real-media-main-ce22"
             ],
-            "scope_notes": [],
+            "id": "A05-E11-03#/negative_scenario",
+            "missing_assertions": [],
+            "scope_notes": [
+              "The original synthetic OTIO retains MissingReference; current-source negative parser cases passed. No receiving NLE is asserted."
+            ],
             "source_clause_sha256": "4ecf5ea42f7b303f26a62a2c8abd1d5a1bf0af73e92be956aa2dd1268f4ae28f",
-            "status": "not_run"
+            "status": "pass"
           },
           {
             "evidence_ids": [],
@@ -20394,7 +20407,9 @@
           ]
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "otio-real-media-main-ce22"
+          ],
           "current_source": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
@@ -20422,9 +20437,13 @@
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "otio-real-media-main-ce22"
+          ],
+          "execution_kinds": [
+            "native"
+          ],
+          "status": "partial"
         }
       }
     },
@@ -23468,6 +23487,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "395cf8ae55b494bccc588624c3461a29de1c7c98885c68b9b4bcc8a485461104"
+    "sha256": "6384fc5310441ddf331398190109527757d640474a95bd3f4349e5d905814384"
   }
 }

@@ -6849,6 +6849,19 @@
           },
           "superseded_at_utc": "2026-10-17T17:09:12.079634+00:00",
           "technical_status": "partial"
+        },
+        {
+          "contract_status": "open",
+          "evidence_ids": [
+            "otio-native-video-main-4a2"
+          ],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T22:56:21.096240+00:00",
+          "technical_status": "stale"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -6881,37 +6894,37 @@
       "source_record_sha256": "6c6cd35a081f34bc6d5115cc9717539b90c9800d74b98d95410285742f099e58",
       "technical_assessment": {
         "artifact_verification": {
-          "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
-          "status": "scoped_logs_retained"
+          "media_persistence_or_installed_artifacts": "External NLE receiver, edit/reimport and installed product are unverified.",
+          "retained": "SHA-bound original synthetic OTIO and execution excerpts; H264 bytes retained outside Git under A5 private evidence.",
+          "status": "scoped_original_media_and_OTIO_admitted"
         },
         "contract_acceptance": {
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
             "MW05-E11-03#/requirement",
-            "MW05-E11-03#/acceptance",
-            "MW05-E11-03#/negative_case"
+            "MW05-E11-03#/acceptance"
           ],
           "status": "open"
         },
         "criteria": [
           {
             "evidence_ids": [
-              "otio-native-video-main-4a2"
+              "otio-native-video-main-4a2",
+              "otio-real-media-main-ce22"
             ],
             "historical_evidence_ids": [
               "otio-native-video-main-4a2"
             ],
             "id": "MW05-E11-03#/requirement",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted",
-              "historical_execution_requires_current_source_reassessment"
+              "external_NLE_receipt_and_positive_bounded_cut_reimport_missing"
             ],
             "scope_notes": [
-              "Related observed assertions remain bounded by their evidence record limitations."
+              "Current synthetic OTIO export/source references are verified; the complete native NLE exchange is not."
             ],
             "source_clause_sha256": "ec48c6db3e8104c6f76c7cd9500fbf9886e7b52e082b8c73d72d700d18c93b66",
-            "status": "stale"
+            "status": "partial"
           },
           {
             "evidence_ids": [],
@@ -6924,14 +6937,16 @@
             "status": "not_run"
           },
           {
-            "evidence_ids": [],
-            "id": "MW05-E11-03#/negative_case",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "otio-real-media-main-ce22"
             ],
-            "scope_notes": [],
+            "id": "MW05-E11-03#/negative_case",
+            "missing_assertions": [],
+            "scope_notes": [
+              "The original synthetic OTIO retains MissingReference; current-source negative parser cases passed. No receiving NLE is asserted."
+            ],
             "source_clause_sha256": "4ecf5ea42f7b303f26a62a2c8abd1d5a1bf0af73e92be956aa2dd1268f4ae28f",
-            "status": "not_run"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -6945,7 +6960,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "otio-real-media-main-ce22"
+          ],
           "current_source": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
           "historical_record_ids": [
             "otio-native-video-main-4a2"
@@ -6997,12 +7014,13 @@
         },
         "technical_verification": {
           "evidence_ids": [
-            "otio-native-video-main-4a2"
+            "otio-native-video-main-4a2",
+            "otio-real-media-main-ce22"
           ],
           "execution_kinds": [
             "native"
           ],
-          "status": "stale"
+          "status": "partial"
         }
       }
     },
@@ -9558,7 +9576,7 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "395cf8ae55b494bccc588624c3461a29de1c7c98885c68b9b4bcc8a485461104"
+    "sha256": "6384fc5310441ddf331398190109527757d640474a95bd3f4349e5d905814384"
   },
   "upstream_integrated_sha": "d848657ed78ba73a2c925c7c3eceecce8e4f9054",
   "v05_release_ready": false

@@ -5632,6 +5632,9 @@
     "ffmpeg-h264-admission": {
       "kind": "native"
     },
+    "otio-h264-source-missing-reference": {
+      "kind": "native"
+    },
     "source-declaration-inspection": {
       "kind": "source"
     },
@@ -13777,6 +13780,100 @@
           "sha256": "c26087eba7efd09a26b5a2dde8ee2244086891c75334f352db600c0e1fe505fc"
         }
       ]
+    },
+    {
+      "artifact_scope": "Hash-bound original CI OTIO + public evidence + exact selected test log observations; actual H264 remains outside repository.",
+      "artifacts": [
+        {
+          "member": "original-public-evidence.json",
+          "member_sha256": "7915303d9a9a7001578bd0396f106fdf8d917deb039b9b029b5af289c5959bba",
+          "path": "docs/acceptance/evidence/conformance-observations-otio-ce22.zip",
+          "sha256": "f25e11246504c123aa52c5fb65cc786df008cad21999e05c4feb893639a171e5"
+        },
+        {
+          "member": "original-timeline.otio",
+          "member_sha256": "eb5b391fd63f8a8196bc8e837620ee18f537b5a04fed3ea77633e0fd13f16068",
+          "path": "docs/acceptance/evidence/conformance-observations-otio-ce22.zip",
+          "sha256": "f25e11246504c123aa52c5fb65cc786df008cad21999e05c4feb893639a171e5"
+        },
+        {
+          "member": "otio-real-media-main-ce22.json",
+          "member_sha256": "e8255c2164a09cc45294e502db7f07c186eb31ef7470f1738425c4f01ac33590",
+          "path": "docs/acceptance/evidence/conformance-observations-otio-ce22.zip",
+          "sha256": "f25e11246504c123aa52c5fb65cc786df008cad21999e05c4feb893639a171e5"
+        }
+      ],
+      "assertions": [
+        "The integrated workflow bound to ce22 emits a synthetic OTIO with exactly 2 ExternalReference records and exactly 1 MissingReference for the unbound scene.",
+        "The original public H264 file and OTIO file match their stated physical SHA-256 and sizes; no placeholder for the unbound scene exists.",
+        "Selected CI cases reject converted gaps, omitted MissingReference, tampered media and independently exercise native H264 source admission."
+      ],
+      "complete_criterion_ids": [
+        "MW05-E11-03#/negative_case",
+        "A05-E11-03#/negative_scenario"
+      ],
+      "criterion_ids": [
+        "MW05-E11-03#/requirement",
+        "MW05-E11-03#/negative_case",
+        "A05-E11-03#/negative_scenario"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/v05-otio-real-media.yml",
+          "sha256": "c51fde834fb9e9037a52a85bab8436445eaf24e48488458e66d474cf5126943a"
+        },
+        {
+          "path": "tooling/otio-media/test_bridge.py",
+          "sha256": "140a69e712d21e0c5ae431369b5700c3b2276402a2a0e89c59eb883dbf004578"
+        },
+        {
+          "path": "tooling/otio-media/test_native_media.py",
+          "sha256": "95185caa630785610fb109617658fde1a1d81b950ee2072d0e51d2ef51417b34"
+        },
+        {
+          "path": "tooling/otio-media/test_public_artifact.py",
+          "sha256": "55239e9319c91589d307af9386835d415c34b4607dc1a000474067b423b0f240"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117442310453,
+        "kind": "native",
+        "passed": 4,
+        "profile": "otio-h264-source-missing-reference",
+        "run_id": 39048610833,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39048610833/job/117442310453"
+      },
+      "id": "otio-real-media-main-ce22",
+      "limitations": [
+        "No receiving application such as Kdenlive has been opened and verified.",
+        "No native edit committed back to Motionwright from a receiving NLE, nor complete editable master round-trip.",
+        "Source H264 is a synthetic 160x90 two-second fixture without audio; rights and real owner footage are not verified.",
+        "Original MP4 bytes are retained in private A5 evidence; this public archive holds the original OTIO and text result, not private media or the MP4."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/domain/src/delivery.rs",
+          "sha256": "79a04e63a888b0bf00808fac6c3dafe13addbbeb2b6289683f28a16fd38a1fa0"
+        },
+        {
+          "path": "tooling/otio-media/bridge.py",
+          "sha256": "5b58982bdb1575ec1a8d8c54fd057bcc2cc8703ed7e0103353eaf62c1a434e97"
+        },
+        {
+          "path": "tooling/otio-media/public_artifact.py",
+          "sha256": "91a077022d127f55b3e65b7fd5aba7b0d1379f6cbfb662d426dfdae1a3f509e8"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -16906,6 +17003,92 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2"
+    },
+    {
+      "criterion_id": "MW05-E11-03#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "otio-real-media-main-ce22": "50d309b9d5bceeed1504e903f68ec76f6e63c912093d8a66f8f0a149c980dce7"
+      },
+      "id": "technical-mw05-e11-03-negative_case-ce22",
+      "limitations": [
+        "This covers only the unbound-media MissingReference prohibition. External NLE acceptance, positive cut reimport, input-rights review and scenario-wide acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "The original CI timeline contains exactly one MissingReference and two real hashed ExternalReferences; no fabricated media output exists.",
+          "evidence_ids": [
+            "otio-real-media-main-ce22"
+          ],
+          "id": "missing_reference_in_original_artifact",
+          "status": "pass"
+        },
+        {
+          "basis": "Current-source tests explicitly reject filling an OTIO gap or omitting the native MissingReference.",
+          "evidence_ids": [
+            "otio-real-media-main-ce22"
+          ],
+          "id": "closed_gap_import_regressions",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "4e9e57661b6a485e22f22cb796db7962bd150803869b2350679a40916ce9c297",
+      "reviewed_at_utc": "2026-10-17T22:56:21.096240+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "original-otio-physical-structure-and-current-job-inspection-ce22"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "4ecf5ea42f7b303f26a62a2c8abd1d5a1bf0af73e92be956aa2dd1268f4ae28f"
+    },
+    {
+      "criterion_id": "A05-E11-03#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "otio-real-media-main-ce22": "50d309b9d5bceeed1504e903f68ec76f6e63c912093d8a66f8f0a149c980dce7"
+      },
+      "id": "technical-a05-e11-03-negative_scenario-ce22",
+      "limitations": [
+        "This covers only the unbound-media MissingReference prohibition. External NLE acceptance, positive cut reimport, input-rights review and scenario-wide acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "The exact first-party synthetic artifact physically retains an unresolved scene as MissingReference.",
+          "evidence_ids": [
+            "otio-real-media-main-ce22"
+          ],
+          "id": "missing_reference_in_original_artifact",
+          "status": "pass"
+        },
+        {
+          "basis": "The executed bounded NLE cut parser refuses omitted MissingReference or conversion to placeholder frames.",
+          "evidence_ids": [
+            "otio-real-media-main-ce22"
+          ],
+          "id": "closed_gap_import_regressions",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "4e9e57661b6a485e22f22cb796db7962bd150803869b2350679a40916ce9c297",
+      "reviewed_at_utc": "2026-10-17T22:56:21.096240+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "original-otio-physical-structure-and-current-job-inspection-ce22"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "4ecf5ea42f7b303f26a62a2c8abd1d5a1bf0af73e92be956aa2dd1268f4ae28f"
     }
   ],
   "verification_profiles": {
@@ -16919,6 +17102,21 @@
         "open-project-preserved": {
           "execution_profiles": [
             "sqlite-bundle-import-reopen"
+          ]
+        }
+      },
+      "schema_version": 1
+    },
+    "A05-E11-03#/negative_scenario": {
+      "obligations": {
+        "closed_gap_import_regressions": {
+          "execution_profiles": [
+            "otio-h264-source-missing-reference"
+          ]
+        },
+        "missing_reference_in_original_artifact": {
+          "execution_profiles": [
+            "otio-h264-source-missing-reference"
           ]
         }
       },
@@ -16964,6 +17162,21 @@
         "open-project-preserved": {
           "execution_profiles": [
             "sqlite-bundle-import-reopen"
+          ]
+        }
+      },
+      "schema_version": 1
+    },
+    "MW05-E11-03#/negative_case": {
+      "obligations": {
+        "closed_gap_import_regressions": {
+          "execution_profiles": [
+            "otio-h264-source-missing-reference"
+          ]
+        },
+        "missing_reference_in_original_artifact": {
+          "execution_profiles": [
+            "otio-h264-source-missing-reference"
           ]
         }
       },

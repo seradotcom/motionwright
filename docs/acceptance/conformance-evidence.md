@@ -70,3 +70,7 @@ The canonical public inputs are requirements-status.json and acceptance-status.j
 ## Retained archive members
 
 A retained archive is verified both as a file and at each cited member. Member names must be safe relative paths, occur exactly once, and have the recorded SHA-256. A correct archive digest alone cannot admit a missing, duplicate or modified cited member.
+
+## Current OTIO negative reference verification
+
+The ce22 main CI execution 39048610833/job/117442310453 produced a first-party synthetic OTIO carrying two hash-bound ExternalReferences and one retained MissingReference. Original public media bytes were independently hashed and the native test log bound to the exact checkout. The MissingReference prohibition fields of MW05-E11-03 and A05-E11-03 have source-scoped sufficiency reviews. The receiving NLE, native edit import, real-world rights and overall scenarios remain open; no acceptance or release is granted.
