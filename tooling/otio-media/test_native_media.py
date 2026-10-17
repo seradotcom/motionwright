@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from bridge import (
     BridgeRefused, SCHEMA, export_portable, file_probe, import_preview, trange,
-    preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA,
+    preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, _nle_local_media,
 )
 
 
@@ -307,6 +309,69 @@ class NativeMediaAdmissionTests(unittest.TestCase):
         self.assertEqual(result["native_change_proposals"], [])
         self.assertEqual(foreign.read_bytes(), self.truncated_bytes)
         self.assertEqual((self.output / "media" / original_name).read_bytes(), self.original_bytes)
+
+
+@unittest.skipUnless(os.name == "nt", "Real junction admission requires Windows")
+class WindowsReparsePathTests(unittest.TestCase):
+    """Real filesystem junctions only; no FFmpeg fixture, NLE or media decode."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="mw-otio-junction-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve(strict=True)
+        self.bundle = self.root / "bundle"
+        self.raw = self.root / "raw"
+        self.external = self.root / "external"
+        for path in (self.bundle, self.raw, self.external):
+            path.mkdir()
+        self.original = self.external / "source.mp4"
+        self.original.write_bytes(b"Path admission fixture only; not encoded media")
+
+    def junction(self, link, target):
+        # Exactly one filesystem fixture creation; no retry after timeout/error.
+        observed = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True, timeout=10, check=False,
+        )
+        self.assertEqual(observed.returncode, 0, "Windows junction fixture creation failed")
+        # Remove the directory entry itself before TemporaryDirectory cleanup.
+        self.addCleanup(link.rmdir)
+        self.assertTrue(link.lstat().st_file_attributes & 0x400)
+        self.assertFalse(link.is_symlink(), "Fixture must exercise junction metadata")
+
+    def assert_root_rejected_before_data_read(self, root):
+        request = {
+            "schema": KDENLIVE_REQUEST_SCHEMA, "capsule_manifest_sha256": "0" * 64,
+            "received_otio": "received.otio", "received_sha256": "0" * 64,
+            "edited_otio": "edited.otio", "edited_sha256": "0" * 64,
+        }
+        with patch("bridge.owner_file", side_effect=AssertionError("Root admission must precede data reads")) as files, \
+             patch("bridge.file_probe", side_effect=AssertionError("Root admission must precede decode")) as probe:
+            with self.assertRaisesRegex(BridgeRefused, "^Invalid backend-authorized media root$"):
+                preview_kdenlive_cut(self.bundle, self.raw, request,
+                    self.bundle / "source-project.json", authorized_media_roots=(root,))
+            files.assert_not_called()
+            probe.assert_not_called()
+        self.assertEqual(self.original.read_bytes(), b"Path admission fixture only; not encoded media")
+
+    def test_authorized_root_junction_is_rejected(self):
+        link = self.root / "linked-root"
+        self.junction(link, self.external)
+        self.assert_root_rejected_before_data_read(link)
+
+    def test_authorized_root_ancestor_junction_is_rejected(self):
+        (self.external / "nested").mkdir()
+        link = self.root / "linked-parent"
+        self.junction(link, self.external)
+        self.assert_root_rejected_before_data_read(link / "nested")
+
+    def test_candidate_junction_cannot_escape_plain_authorized_root(self):
+        link = self.raw / "linked-media"
+        self.junction(link, self.external)
+        with self.assertRaises(BridgeRefused) as error:
+            _nle_local_media(self.raw, str(link / "source.mp4"), (self.raw,))
+        self.assertEqual(error.exception.code, "unsafe_media_target")
+        self.assertEqual(self.original.read_bytes(), b"Path admission fixture only; not encoded media")
 
 
 if __name__ == "__main__":

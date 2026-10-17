@@ -9,12 +9,13 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
 from bridge import (
     BridgeRefused, export_portable, file_probe, import_preview, rtc, trange, SCHEMA,
-    _probe_output, preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, fingerprint,
+    _probe_output, preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, fingerprint, _nle_local_media,
 )
 
 ID=lambda number:f"00000000-0000-4000-8000-{number:012x}"
@@ -506,6 +507,104 @@ class BoundedKdenliveCutTests(unittest.TestCase):
         except OSError:self.skipTest("Platform did not permit the symlink fixture")
         ref["target_url"]=str(link)
         self.assert_loss("unsafe_media_target")
+
+    def reparse_at(self, flagged):
+        original=Path.lstat
+        def observed(path,*args,**kwargs):
+            value=original(path,*args,**kwargs)
+            if path==flagged:
+                # A junction/reparse point need not have POSIX symlink mode.
+                return SimpleNamespace(st_mode=value.st_mode,
+                    st_file_attributes=getattr(value,"st_file_attributes",0)|0x400)
+            return value
+        return patch.object(Path,"lstat",new=observed)
+
+    def assert_reparse_root_rejected(self, flagged):
+        request=self.raw_request()
+        before={p:p.read_bytes()for p in (*self.raw.glob("*.otio"),
+            self.out/"source-project.json",self.out/"timeline.otio",self.out/"bridge-manifest.json")}
+        with self.reparse_at(flagged),patch("bridge.file_probe",return_value=VIDEO_INFO)as probe:
+            self.assertFalse(flagged.is_symlink())
+            with self.assertRaisesRegex(BridgeRefused,"^Invalid backend-authorized media root$"):
+                preview_kdenlive_cut(self.out,self.raw,request,self.out/"source-project.json",
+                    authorized_media_roots=(self.out,self.raw))
+            probe.assert_not_called()
+        for path,data in before.items():self.assertEqual(path.read_bytes(),data)
+
+    def test_path_reparse_authorized_root_is_rejected_before_probe(self):
+        self.prepare()
+        self.assert_reparse_root_rejected(self.out)
+
+    def test_path_reparse_ancestor_of_authorized_root_is_rejected_before_probe(self):
+        self.prepare()
+        self.assert_reparse_root_rejected(self.root)
+
+    def assert_reparse_candidate_rejected(self, *, ancestor):
+        self.prepare()
+        parent=self.raw/"nested" if ancestor else self.raw
+        if ancestor:parent.mkdir()
+        source=Path(self.ref(self.children()[0])["target_url"])
+        candidate=parent/"relocated.mp4"
+        candidate.write_bytes(source.read_bytes())
+        self.ref(self.children()[0])["target_url"]=str(candidate)
+        self.children().reverse()
+        self.write_raw()
+        request=self.raw_request()
+        before={p:p.read_bytes()for p in (*self.raw.glob("*.otio"),candidate,
+            self.out/"source-project.json",self.out/"timeline.otio",self.out/"bridge-manifest.json")}
+        flagged=parent if ancestor else candidate
+        with self.reparse_at(flagged),patch("bridge.file_probe",return_value=VIDEO_INFO)as probe:
+            self.assertFalse(flagged.is_symlink())
+            result=preview_kdenlive_cut(self.out,self.raw,request,self.out/"source-project.json",
+                authorized_media_roots=(self.out,self.raw))
+        self.assertEqual(result["status"],"REJECTED_LOSS")
+        self.assertEqual(result["rejection_code"],"unsafe_media_target")
+        self.assertEqual(result["native_change_proposals"],[])
+        self.assertFalse(result["edit_imported"])
+        self.assertFalse(result["raw_files_rewritten"])
+        self.assertNotIn(candidate,[call.args[0]for call in probe.call_args_list])
+        for path,data in before.items():self.assertEqual(path.read_bytes(),data)
+
+    def test_path_reparse_candidate_file_is_rejected_before_its_probe(self):
+        self.assert_reparse_candidate_rejected(ancestor=False)
+
+    def test_path_reparse_candidate_ancestor_is_rejected_before_its_probe(self):
+        self.assert_reparse_candidate_rejected(ancestor=True)
+
+    def test_path_resolved_target_must_remain_in_authorized_root(self):
+        self.prepare()
+        candidate=self.raw/"relocated.mp4"
+        candidate.write_bytes(self.media.read_bytes())
+        outside=self.src/"outside.mp4"
+        outside.write_bytes(candidate.read_bytes())
+        original=Path.resolve
+        def resolve(path,*,strict=False):
+            if path==candidate:
+                self.assertTrue(strict)
+                return outside
+            return original(path,strict=strict)
+        with patch.object(Path,"resolve",new=resolve):
+            with self.assertRaises(BridgeRefused)as error:
+                _nle_local_media(self.raw,str(candidate),(self.raw,))
+        self.assertEqual(error.exception.code,"unauthorized_media_root")
+
+    def test_path_missing_candidate_is_rejected_by_strict_admission(self):
+        self.prepare()
+        with self.assertRaises(BridgeRefused)as error:
+            _nle_local_media(self.raw,"absent.mp4",(self.raw,))
+        self.assertEqual(error.exception.code,"unsafe_media_target")
+
+    def test_path_unavailable_lstat_is_a_bounded_refusal(self):
+        self.prepare()
+        original=Path.lstat
+        def denied(path,*args,**kwargs):
+            if path==self.media:raise PermissionError("private-owner-path-must-not-leak")
+            return original(path,*args,**kwargs)
+        with patch.object(Path,"lstat",new=denied):
+            with self.assertRaises(BridgeRefused)as error:
+                _nle_local_media(self.src,str(self.media),(self.src,))
+        self.assertEqual(error.exception.code,"unsafe_media_target")
+        self.assertNotIn("private-owner-path",str(error.exception))
 
     def test_metadata_effects_markers_audio_tracks_and_unknown_fields_are_closed(self):
         self.prepare()

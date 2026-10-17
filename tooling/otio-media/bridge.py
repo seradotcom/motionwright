@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -779,6 +780,19 @@ def _nle_clips(timeline:dict)->list[dict]:
                      "Native global clock is shifted or has a different rate")
     return observations
 
+def _nle_resolve_plain_path(path:Path,message:str,*,directory:bool=False)->Path:
+    try:
+        # Inspect from the filesystem root down before resolve can erase a
+        # junction. Windows reparse points need not use symlink mode.
+        for item in (*reversed(path.parents),path):
+            observed=item.lstat()
+            insist(not stat.S_ISLNK(observed.st_mode)
+                   and not getattr(observed,"st_file_attributes",0)&0x400,message)
+        insist(not directory or stat.S_ISDIR(observed.st_mode),message)
+        return path.resolve(strict=True)
+    except (OSError,RuntimeError,ValueError):
+        raise BridgeRefused(message)from None
+
 def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...])->Path:
     _nle_require(isinstance(target,str) and 1<=len(target)<=250
                  and not any(ord(c)<32 for c in target),"unsafe_media_target",
@@ -805,8 +819,13 @@ def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...])->Path:
     path=path.absolute()
     _nle_require(any(path.is_relative_to(root)for root in roots),"unauthorized_media_root",
                  "Native media target lies outside the backend-authorized roots")
-    _nle_require(not any(item.is_symlink() for item in (path,*path.parents)),
-                 "unsafe_media_target","Symlinked native media is not admitted")
+    try:
+        path=_nle_resolve_plain_path(path,"Native media target cannot be resolved safely")
+    except BridgeRefused:
+        raise _NleCutLoss("unsafe_media_target",
+            "Native media target contains a link, reparse point or unavailable path")from None
+    _nle_require(any(path.is_relative_to(root)for root in roots),"unauthorized_media_root",
+                 "Resolved native media target lies outside the backend-authorized roots")
     _nle_require(path.suffix.lower()==".mp4","unsupported_media_reference",
                  "Native source must remain the admitted MP4")
     return path
@@ -831,10 +850,10 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
            "Backend must supply one to eight authorized local media roots")
     roots=[]
     for root in authorized_media_roots:
-        insist(isinstance(root,Path) and root.is_absolute() and root.is_dir()
-               and not any(item.is_symlink()for item in (root,*root.parents)),
+        insist(isinstance(root,Path) and root.is_absolute(),
                "Invalid backend-authorized media root")
-        roots.append(root.resolve(strict=True))
+        roots.append(_nle_resolve_plain_path(root,
+            "Invalid backend-authorized media root",directory=True))
     roots=tuple(roots)
     snapshots={}
     def read_bound(root:Path,name:str,expected:object)->tuple[dict,Path]:
