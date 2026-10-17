@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stdout
 from fractions import Fraction
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -113,6 +115,29 @@ class PhysicalClockProfileTests(unittest.TestCase):
         self.assertEqual(gate.validate_probe(*data, 75, profile(),
                          {"mode": "nearest_tick", "container_tick": "1/1000"})["frames"], 75)
 
+    def test_duplicate_or_decreasing_dts_is_refused_in_demux_order(self):
+        for offset in (0, -512):
+            data = probe_fixture(75)
+            data[2]["packets"][37]["dts"] = data[2]["packets"][36]["dts"] + offset
+            with self.subTest(offset=offset), self.assertRaisesRegex(gate.GateRefused, "packet_dts_not_increasing"):
+                gate.validate_probe(*data, 75, profile(), {"mode": "exact", "container_tick": None})
+
+    def test_negative_initial_dts_and_b_frame_presentation_reorder_remain_admitted(self):
+        data = probe_fixture(90)
+        data[0]["streams"][0]["codec_name"] = "h264"
+        source_profile = {**profile(), "codec": "h264", "demuxer": "mov"}
+        presentation_order = [0, 3, 1, 2] + list(range(4, 90))
+        packets = [copy.deepcopy(data[2]["packets"][at]) for at in presentation_order]
+        for at, packet in enumerate(packets):
+            packet["dts"] = (at - 2) * 512
+        data[2]["packets"] = packets
+        report = gate.validate_probe(*data, 90, source_profile,
+                                     {"mode": "exact", "container_tick": None})
+        self.assertEqual(report["input_pts"], [at * 512 for at in range(90)])
+        self.assertEqual(report["packet_pts_duration"], [(at * 512, 512) for at in range(90)])
+        self.assertTrue(report["all_frames_and_packets_checked"])
+        self.assertNotEqual([p["pts"] for p in packets], report["input_pts"])
+
     def test_one_frame_offset_and_small_accumulated_drift_are_not_rounded_away(self):
         for change in (512, 1):
             data = probe_fixture()
@@ -208,6 +233,133 @@ class FileAndLossBoundaryTests(unittest.TestCase):
             self.assertFalse((root / "readback").exists())
 
 
+class PrepareCaptureBoundaryTests(unittest.TestCase):
+    """Exercise preparation I/O; the marked fixture is not an admitted source."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.ids = ["00000000-0000-0000-0000-00000000000" + str(at) for at in (1, 2, 3)]
+        fixture = {"project": {"inspector_fixture": True},
+                   "original_otio": {"inspector_fixture": True}, "owner_media_asset_id": self.ids[0]}
+        runtime = {"controlled_roots": [str(self.root)], "source_profile": profile(),
+                   "preset": {**profile(), "extension": ".mkv"}}
+        self.payloads = {"fixture.json": gate.encoded(fixture) + b" " * 32,
+                         "runtime.json": gate.encoded(runtime) + b" " * 32,
+                         "source.mp4": b"INSPECTOR CAPTURE ONLY; NOT A MEDIA FILE\n" * 3}
+        for name, data in self.payloads.items():
+            (self.root / name).write_bytes(data)
+
+    def attempt(self, name, change):
+        # Only the input named here is changed. Fingerprinting retains its own
+        # real byte-bounded reader; the race is at the next non-fingerprint open.
+        for file, data in self.payloads.items():
+            (self.root / file).write_bytes(data)
+        target = self.root / name
+        original_open, original_record = Path.open, gate.file_record
+        trace = {"depth": 0, "armed": False, "opened": False, "read_requests": []}
+        decoder = mock.Mock(return_value={"frame_hashes": source_hashes(),
+                                          "synthetic_reader_fixture_not_media_evidence": True})
+        validator = mock.Mock(return_value=self.ids)
+        runtime_validator = mock.Mock(side_effect=lambda value: value)
+
+        def tracked_record(path, budget=gate.MAX_FILE):
+            trace["depth"] += 1
+            try:
+                result = original_record(path, budget)
+            finally:
+                trace["depth"] -= 1
+            if path == target and not trace["opened"]:
+                trace["armed"] = True
+                trace["captured_bytes"] = result["bytes"]
+            return result
+
+        class TrackingReader:
+            def __init__(self, stream):
+                self.stream = stream
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+            def read(self, size=-1):
+                trace["read_requests"].append(size)
+                return self.stream.read(size)
+            def __getattr__(self, key):
+                return getattr(self.stream, key)
+
+        def tracked_open(path, mode="r", *args, **kwargs):
+            outside_digest = path == target and mode == "rb" and trace["depth"] == 0
+            if outside_digest and trace["armed"] and not trace["opened"]:
+                trace["opened"] = True
+                changed = self.payloads[name]
+                if change == "growth":
+                    changed += b" " * 65536
+                elif change == "truncate":
+                    changed = changed[:-7]
+                elif change == "same_size":
+                    changed = changed[:-1] + (b"\t" if changed[-1:] != b"\t" else b" ")
+                if change is not None:
+                    with original_open(path, "wb") as stream:
+                        stream.write(changed)
+            stream = original_open(path, mode, *args, **kwargs)
+            return TrackingReader(stream) if outside_digest else stream
+
+        output = self.root / (name + "-" + (change or "stable"))
+        result, failure = None, None
+        with mock.patch.object(gate, "file_record", side_effect=tracked_record), \
+                mock.patch.object(Path, "open", new=tracked_open), \
+                mock.patch.object(gate, "validate_runtime", runtime_validator), \
+                mock.patch.object(gate, "validate_fixture", validator), \
+                mock.patch.object(gate, "inspect_video", decoder), \
+                mock.patch.object(bridge, "export_portable", return_value={"inspector_fixture": True}):
+            try:
+                result = gate.prepare_case(self.root / "fixture.json",
+                    hashlib.sha256(self.payloads["fixture.json"]).hexdigest(), self.root / "source.mp4",
+                    self.root / "runtime.json", hashlib.sha256(self.payloads["runtime.json"]).hexdigest(),
+                    output, {"owner": "inspector", "license": "fixture-only", "authorized": True,
+                             "redistributable": True},
+                    {"reviewer": "inspector", "synthetic_source_allowed": True})
+            except (gate.GateRefused, bridge.BridgeRefused) as error:
+                failure = error
+        return trace, result, failure, output, decoder, validator, runtime_validator
+
+    def assert_capture_change_refused(self, change):
+        for name in self.payloads:
+            with self.subTest(input=name):
+                trace, _, failure, output, decoder, _, _ = self.attempt(name, change)
+                self.assertIsInstance(failure, gate.GateRefused)
+                self.assertEqual(trace["captured_bytes"], len(self.payloads[name]))
+                self.assertEqual(trace["read_requests"][0], len(self.payloads[name]) + 1)
+                self.assertNotIn(-1, trace["read_requests"])
+                self.assertEqual(decoder.call_count, 0)
+                self.assertFalse(output.exists())
+
+    def test_growth_between_fingerprint_and_open_is_bounded_before_case_creation(self):
+        self.assert_capture_change_refused("growth")
+
+    def test_truncation_between_fingerprint_and_open_is_refused_before_case_creation(self):
+        self.assert_capture_change_refused("truncate")
+
+    def test_same_size_byte_change_between_fingerprint_and_open_is_refused(self):
+        self.assert_capture_change_refused("same_size")
+
+    def test_stable_exact_capture_is_the_same_payload_parsed_and_copied(self):
+        for name in self.payloads:
+            with self.subTest(input=name):
+                trace, plan, failure, output, decoder, validator, runtime_validator = self.attempt(name, None)
+                self.assertIsNone(failure)
+                self.assertEqual(trace["read_requests"], [len(self.payloads[name]) + 1, 1])
+                for dest, source in (("fixture.json", "fixture.json"), ("source.mp4", "source.mp4"),
+                                     ("runtime-lock.json", "runtime.json")):
+                    self.assertEqual((output / "owner" / dest).read_bytes(), self.payloads[source])
+                self.assertEqual(validator.call_args.args[0], json.loads(self.payloads["fixture.json"]))
+                self.assertEqual(runtime_validator.call_args.args[0], json.loads(self.payloads["runtime.json"]))
+                self.assertEqual(decoder.call_count, 1)  # Mock only; no decoder process.
+                self.assertEqual(plan["native_runs_started"], 0)
+                self.assertFalse(plan["runtime_lock_is_product_authority"])
+
+
 class ObservationCustodyTests(unittest.TestCase):
     """An observed action record is never turned into a product authorization."""
     def setUp(self):
@@ -274,7 +426,7 @@ class ObservationCustodyTests(unittest.TestCase):
         result = self.check()
         self.assertTrue(result["reported_save_close_reopen_edit_chain_consistent"])
         self.assertFalse(result["native_execution_authenticated_by_this_json"])
-        self.assertEqual(result["observation_authentication"], "REQUIRES_A6_OBSERVER_ADMISSION")
+        self.assertEqual(result["observation_authentication"], "REQUIRES_OBSERVER_ADMISSION")
 
     def test_unknown_import_save_edit_or_render_requires_original_reconciliation(self):
         for stage in ("import", "save_received", "native_tail_edit", "render_edited"):
@@ -322,6 +474,203 @@ class ObservationCustodyTests(unittest.TestCase):
         edit["details"]["external_xml_edit"] = True
         with self.assertRaisesRegex(gate.GateRefused, "native_tail_edit_profile_changed"):
             self.check()
+
+    def test_duplicate_required_file_binding_is_ambiguous(self):
+        render = next(a for a in self.actions if a["stage"] == "render_received")
+        render["outputs"].append(copy.deepcopy(render["outputs"][0]))
+        with self.assertRaisesRegex(gate.GateRefused, "native_action_file_join_ambiguous"):
+            self.check()
+
+    def assert_detail_values_refused(self, stages, changes, code):
+        for stage in stages:
+            action = next(a for a in self.actions if a["stage"] == stage)
+            for key, value in changes:
+                original = copy.deepcopy(action["details"])
+                action["details"][key] = value
+                try:
+                    with self.subTest(stage=stage, key=key, value=value, scalar_type=type(value).__name__), \
+                            self.assertRaisesRegex(gate.GateRefused, code):
+                        self.check()
+                finally:
+                    action["details"] = original
+
+    def test_render_details_keep_boolean_integer_and_float_types_distinct(self):
+        self.assert_detail_values_refused(("render_received", "render_edited"), (
+            ("native_jobs_created", True), ("native_jobs_created", 1.0), ("native_jobs_created", False),
+            ("exit_code", False), ("exit_code", 0.0), ("exit_code", True),
+            ("render_async", 0), ("render_async", 0.0), ("render_async", 1)),
+            "native_render_not_bound_to_observed_job")
+
+    def test_close_details_keep_boolean_integer_and_float_types_distinct(self):
+        self.assert_detail_values_refused(("close_received", "close_edited"), (
+            ("process_exited", 1), ("process_exited", 1.0), ("process_exited", False),
+            ("exit_code", False), ("exit_code", 0.0), ("exit_code", 1)),
+            "native_close_not_observed")
+
+    def test_edit_details_keep_boolean_integer_and_float_types_distinct(self):
+        self.assert_detail_values_refused(("native_tail_edit",), (
+            ("scene_ordinal", 2.0), ("selected_clips", True), ("selected_clips", 1.0),
+            ("m_pos_frames", 60.0), ("m_cropStart_frames", 60.0), ("m_dur_frames", 15.0),
+            ("external_xml_edit", 0), ("external_xml_edit", 0.0)), "native_tail_edit_profile_changed")
+
+
+class VerifyCustodyFinalizationTests(unittest.TestCase):
+    """Mocks isolate custody/control flow; no fixture is native-media evidence."""
+    def setUp(self):
+        self.case = ObservationCustodyTests()
+        self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        root = self.case.root
+        (root / "owner").mkdir()
+        (root / "owner/source.mp4").write_bytes(b"INSPECTOR ARRAY FIXTURE; NOT A MEDIA FILE")
+        (root / "owner/source-project.json").write_text('{"synthetic_inspector_fixture":true}\n')
+        lock = {**self.case.lock,
+                "source_profile": {**profile(), "codec": "h264", "demuxer": "mov"},
+                "preset": {**profile(), "name": "inspector-only", "extension": ".mkv"},
+                "clock": {"mode": "exact", "container_tick": None}}
+        (root / "owner/runtime-lock.json").write_bytes(gate.encoded(lock))
+        for kind in ("complete", "missing"):
+            (root / kind / "bridge-manifest.json").write_text('{"synthetic_inspector_fixture":true}\n')
+            (root / kind / "media").mkdir()
+        (root / "input-only.txt").write_text("INSPECTOR ACTION INPUT ONLY")
+        self.case.actions[0]["inputs"].append(self.case.row("input-only.txt"))
+        inventory = [self.case.row(name) for name in (
+            "owner/source.mp4", "owner/source-project.json", "owner/runtime-lock.json",
+            "complete/timeline.otio", "missing/timeline.otio",
+            "complete/bridge-manifest.json", "missing/bridge-manifest.json")]
+        plan = {"schema": gate.SCHEMA,
+                "runtime_lock_sha256": gate.file_record(root / "owner/runtime-lock.json")["sha256"],
+                "fixture_sha256": digest("inspector fixture"),
+                "source_sha256": gate.file_record(root / "owner/source.mp4")["sha256"],
+                "scene_ids": ["00000000-0000-0000-0000-00000000000" + str(at) for at in (1, 2, 3)],
+                "immutable_files": inventory, "source_frame_hashes": source_hashes(),
+                "capsule_results": {}, "outputs": self.case.paths, "native_runs_started": 0,
+                "runtime_lock_is_product_authority": False}
+        self.case.plan, self.case.lock = plan, lock
+        (root / "receiver-plan.json").write_bytes(gate.encoded(plan))
+        (root / "observations.json").write_bytes(gate.encoded(self.case.observation()))
+        self.late_change_name = None
+        self.early_raw_change = False
+        self.foreign_render_metadata = False
+        self.foreign_preview_hash = None
+        self.missing_rejection = "original_missing_reference_not_receivable"
+        self.preview_requests = []
+        for patcher in (
+            mock.patch.object(gate, "validate_runtime", side_effect=lambda value: value),
+            mock.patch.object(gate, "inspect_video", side_effect=self.decoded_fixture),
+            mock.patch.object(bridge, "preview_kdenlive_cut", side_effect=self.preview_fixture),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def decoded_fixture(self, path, count, profile, clock, lock, output):
+        # The clock/pixel reader is deliberately not exercised by these mocks.
+        if path.name == "source.mp4" and self.early_raw_change:
+            changed = self.case.root / self.case.paths["received_raw"]
+            changed.write_bytes(changed.read_bytes() + b"\nCHANGED AFTER INITIAL VALIDATION\n")
+        media = gate.file_record(path)
+        if path.name == "received.mkv" and self.foreign_render_metadata:
+            media = {**media, "sha256": digest("different bytes inspected before a path was restored")}
+        return {"frames": count, "frame_hashes": source_hashes()[:count], "media": media,
+                "synthetic_reader_fixture_not_media_evidence": True}
+
+    def preview_fixture(self, bundle, raw_root, request, project, **kwargs):
+        self.preview_requests.append(copy.deepcopy(request))
+        hashes = {"received_otio_sha256": request["received_sha256"],
+                  "edited_otio_sha256": request["edited_sha256"]}
+        if self.foreign_preview_hash and bundle.name == self.foreign_preview_hash[0]:
+            hashes[self.foreign_preview_hash[1]] = digest("different RAW bytes used by preview")
+        if bundle.name == "complete":
+            return {**hashes, "status": "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED",
+                    "native_change_proposals": [{"type": "set_scene_duration",
+                        "scene_id": self.case.plan["scene_ids"][2], "duration": {"num": "1", "den": "2"}}],
+                    "nle_receiver_acceptance": "NOT_VERIFIED", "native_project_reopened": "NOT_VERIFIED",
+                    "native_final_frames_verified": False, "edit_imported": False, "publication_approved": False,
+                    "loss_report": ["AUTHORED INSPECTOR SHAPE; NOT NLE EVIDENCE"]}
+        if self.late_change_name:
+            changed = self.case.root / self.late_change_name
+            changed.write_bytes(changed.read_bytes() + b"\nCHANGED AFTER LAST READER\n")
+        return {**hashes, "status": "REJECTED_LOSS", "rejection_code": self.missing_rejection,
+                "native_change_proposals": []}
+
+    def verify(self, name="custody-readback"):
+        return gate.verify_case(self.case.root,
+            gate.file_record(self.case.root / "receiver-plan.json")["sha256"],
+            self.case.row("observations.json"), self.case.root / name)
+
+    def test_every_observed_file_role_is_rechecked_after_the_last_reader(self):
+        names = list(self.case.paths.values()) + ["input-only.txt", "observer.txt"]
+        for at, name in enumerate(names):
+            with self.subTest(name=name):
+                path = self.case.root / name
+                original = path.read_bytes()
+                self.late_change_name = name
+                try:
+                    with self.assertRaisesRegex(gate.GateRefused, "evidence_bytes_changed"):
+                        self.verify("late-change-" + str(at))
+                    self.assertFalse((self.case.root / ("late-change-" + str(at)) / "receiver-readback.json").exists())
+                finally:
+                    path.write_bytes(original)
+
+    def test_changed_raw_is_not_rebound_to_a_new_hash_before_preview(self):
+        self.early_raw_change = True
+        with self.assertRaisesRegex(gate.GateRefused, "evidence_bytes_changed"):
+            self.verify()
+        self.assertEqual(self.preview_requests, [])
+
+    def test_render_readback_hash_must_match_the_observed_render_even_if_path_was_restored(self):
+        self.foreign_render_metadata = True
+        with self.assertRaisesRegex(gate.GateRefused, "render_readback_differs_from_observed_output"):
+            self.verify()
+
+    def test_preview_hashes_must_match_observed_exports_for_both_cases(self):
+        for kind in ("complete", "missing"):
+            for field in ("received_otio_sha256", "edited_otio_sha256"):
+                self.foreign_preview_hash = kind, field
+                with self.subTest(kind=kind, field=field), \
+                        self.assertRaisesRegex(gate.GateRefused, "preview_raw_differs_from_observed_export"):
+                    self.verify(kind + "-" + field)
+
+    def test_complete_consistent_result_preserves_unsigned_authority_and_final_file_joins(self):
+        report = self.verify()
+        self.assertEqual(report["status"], "FRAME_AND_SOURCE_BUNDLE_VERIFIED_OBSERVER_ADMISSION_REQUIRED")
+        self.assertFalse(report["native_execution_authenticated"])
+        self.assertFalse(report["host_receipt_created"])
+        self.assertFalse(report["canonical_project_changed"])
+        self.assertEqual(report["observation_custody"]["observation_authentication"],
+                         "REQUIRES_OBSERVER_ADMISSION")
+        self.assertTrue(report["observation_custody"].get("all_observed_files_rechecked_after_readback", False))
+        for adjective in ("received", "edited"):
+            row = self.case.row(self.case.paths[adjective + "_render"])
+            self.assertEqual(report["media"][adjective].get("observed_render_file"), row)
+            self.assertEqual(report["media"][adjective]["media"], {k: row[k] for k in ("sha256", "bytes")})
+
+    def test_inconclusive_missing_preserves_partial_report_and_is_globally_incomplete(self):
+        self.missing_rejection = "unsupported_native_schema"
+        report = self.verify()
+        self.assertEqual(report["status"], "INCOMPLETE_MISSING_CASE")
+        self.assertEqual(report["missing_case"]["status"], "INCONCLUSIVE_MISSING")
+        self.assertFalse(report["native_execution_authenticated"])
+        retained = gate.load_json(self.case.root / "custody-readback/receiver-readback.json")
+        self.assertEqual(retained, report)
+
+    def test_cli_inconclusive_missing_emits_one_partial_json_and_exits_one(self):
+        self.missing_rejection = "unsupported_native_schema"
+        binding = self.case.root / "observation-binding.json"
+        binding.write_bytes(gate.encoded(self.case.row("observations.json")))
+        arguments = ["kdenlive_receiver_gate.py", "verify", "--case", str(self.case.root),
+            "--plan-sha256", gate.file_record(self.case.root / "receiver-plan.json")["sha256"],
+            "--observation-binding", str(binding), "--output", str(self.case.root / "cli-readback")]
+        captured = io.StringIO()
+        with mock.patch("sys.argv", arguments), redirect_stdout(captured), \
+                self.assertRaises(SystemExit) as raised:
+            gate.main()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(len(captured.getvalue().splitlines()), 1)
+        report = json.loads(captured.getvalue())
+        self.assertEqual(report["status"], "INCOMPLETE_MISSING_CASE")
+        self.assertFalse(report["native_execution_authenticated"])
+        self.assertEqual(gate.load_json(self.case.root / "cli-readback/receiver-readback.json"), report)
 
 
 if __name__ == "__main__":

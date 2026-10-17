@@ -7,7 +7,7 @@ save/close/reopen/edit sequence. It never starts Kdenlive, changes RAW, creates 
 Host execution receipt, commits a Project, or retries an UNKNOWN action.
 
 Preparation consumes ONE retained canonical Rust fixture and actual media.
-The runtime/preset/clock lock must be fixed before A6 opens the native editor.
+The runtime/preset/clock lock must be fixed before the observer opens the editor.
 Synthetic inspector fixtures are tests of this reader, not NLE executions.
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ import bridge
 SCHEMA = "motionwright.kdenlive-receiver-gate/1"
 LOCK_SCHEMA = "motionwright.kdenlive-receiver-runtime-lock/1"
 OBS_SCHEMA = "motionwright.kdenlive-receiver-observations/1"
+VERIFIED_BUNDLE_STATUS = "FRAME_AND_SOURCE_BUNDLE_VERIFIED_OBSERVER_ADMISSION_REQUIRED"
 KDENLIVE_COMMIT = "12a22024760d41ba233cdcb6f5b73aa20d859bed"
 MAX_FILE = 256 * 1024 * 1024
 MAX_JSON = 2 * 1024 * 1024
@@ -122,6 +123,21 @@ def load_json(path: Path) -> dict:
     require(0 < len(data) <= MAX_JSON and hashlib.sha256(data).hexdigest() == before["sha256"]
             and file_record(path, MAX_JSON) == before, "json_changed_during_read")
     return bridge.strict_json(data, "receiver evidence")
+
+
+def capture_file(path: Path, record: dict, budget: int, code: str) -> bytes:
+    """Read only the captured size plus an EOF sentinel, then bind these bytes.
+
+    This bounds the byte request and retained payload, not blocking filesystem
+    I/O time. The caller must parse and copy this same captured payload.
+    """
+    require(type(record.get("bytes")) is int and 0 < record["bytes"] <= budget, code)
+    with path.open("rb") as stream:
+        data = stream.read(record["bytes"] + 1)
+        require(len(data) == record["bytes"] and stream.read(1) == b"", code)
+    require(hashlib.sha256(data).hexdigest() == record["sha256"]
+            and file_record(path, budget) == record, code)
+    return data
 
 
 def write_new(path: Path, data: bytes) -> None:
@@ -237,11 +253,15 @@ def validate_probe(streams: dict, frames: dict, packets: dict, count: int,
         timestamps.append(pts)
     rows = packets.get("packets")
     require(isinstance(rows, list) and len(rows) == count, "packet_count_changed")
-    packet_times = []
+    packet_times, packet_dts = [], []
     for row in rows:
         require(isinstance(row, dict) and row.get("stream_index") == index, "packet_stream_changed")
         pts = integer(row.get("pts"), "packet_pts_missing")
-        integer(row.get("dts"), "packet_dts_missing")
+        dts = integer(row.get("dts"), "packet_dts_missing")
+        # DTS follows demux order. An initial negative DTS and reordered PTS
+        # remain valid; sorting DTS here would conceal a broken decode clock.
+        require(not packet_dts or dts > packet_dts[-1], "packet_dts_not_increasing")
+        packet_dts.append(dts)
         duration = integer(row.get("duration"), "packet_duration_missing")
         require(duration > 0, "packet_duration_missing")
         check_timestamp(duration, base, Fraction(1, FPS), clock)
@@ -251,6 +271,7 @@ def validate_probe(streams: dict, frames: dict, packets: dict, count: int,
     check_timestamp(ordered[-1][0] + ordered[-1][1], base, Fraction(count, FPS), clock)
     return {"frames": count, "width": WIDTH, "height": HEIGHT, "fps": "30/1",
             "time_base": str(base), "input_pts": timestamps, "packet_pts_duration": ordered,
+            "packet_dts_demux_order": packet_dts,
             "clock_profile": clock, "all_frames_and_packets_checked": True,
             "audio_streams": 0, "metadata_count_is_decode_proof": False}
 
@@ -355,16 +376,21 @@ def validate_fixture(fixture: dict, source_digest: str) -> list[str]:
 def prepare_case(fixture_path: Path, fixture_sha: str, media: Path, runtime_path: Path,
                  runtime_sha: str, output: Path, rights: dict, owner_review: dict) -> dict:
     """Create owner capsules once; this does not launch any native application."""
-    require(file_record(fixture_path, MAX_JSON)["sha256"] == fixture_sha,
+    fixture_record = file_record(fixture_path, MAX_JSON)
+    require(fixture_record["sha256"] == fixture_sha,
             "fixture_execution_output_changed")
-    require(file_record(runtime_path, MAX_JSON)["sha256"] == runtime_sha, "runtime_lock_changed")
-    lock = validate_runtime(load_json(runtime_path))
+    fixture_bytes = capture_file(fixture_path, fixture_record, MAX_JSON, "fixture_changed_during_capture")
+    runtime_record = file_record(runtime_path, MAX_JSON)
+    require(runtime_record["sha256"] == runtime_sha, "runtime_lock_changed")
+    runtime_bytes = capture_file(runtime_path, runtime_record, MAX_JSON, "runtime_changed_during_capture")
+    lock = validate_runtime(bridge.strict_json(runtime_bytes, "receiver runtime"))
     require(not output.exists() and output.parent.is_dir(), "new_case_required")
     parent = output.parent.resolve(strict=True)
     require(any(parent == Path(p).resolve() or parent.is_relative_to(Path(p).resolve())
                 for p in lock["controlled_roots"]), "case_outside_controlled_roots")
     source = file_record(media)
-    fixture = load_json(fixture_path)
+    source_bytes = capture_file(media, source, MAX_FILE, "source_changed_during_capture")
+    fixture = bridge.strict_json(fixture_bytes, "receiver fixture")
     ids = validate_fixture(fixture, source["sha256"])
     exact(rights, {"owner", "license", "authorized", "redistributable"}, "invalid_owner_rights")
     require(rights["authorized"] is True and rights["redistributable"] is True,
@@ -373,8 +399,8 @@ def prepare_case(fixture_path: Path, fixture_sha: str, media: Path, runtime_path
     output.mkdir()
     owner = output / "owner"
     owner.mkdir()
-    for dest, data in (("fixture.json", fixture_path.read_bytes()), ("source.mp4", media.read_bytes()),
-                       ("runtime-lock.json", runtime_path.read_bytes()),
+    for dest, data in (("fixture.json", fixture_bytes), ("source.mp4", source_bytes),
+                       ("runtime-lock.json", runtime_bytes),
                        ("source-project.json", encoded(fixture["project"])),
                        ("original.otio", encoded(fixture["original_otio"]))):
         write_new(owner / dest, data)
@@ -407,6 +433,22 @@ def prepare_case(fixture_path: Path, fixture_sha: str, media: Path, runtime_path
             "owner_input_changed_during_preparation")
     write_new(output / "receiver-plan.json", encoded(plan))
     return plan
+
+
+def observed_file_row(observations: dict, stage: str, role: str, name: str) -> dict:
+    """Select one file binding from the already validated action sequence."""
+    rows = [row for action in observations["actions"] if action["stage"] == stage
+            for row in action[role] if row["path"] == name]
+    require(rows, "native_action_file_join_missing")
+    require(len(rows) == 1, "native_action_file_join_ambiguous")
+    return rows[0]
+
+
+def scalar_details(value: dict, expected: dict, code: str) -> None:
+    """Keep JSON booleans, integers and strings distinct before value equality."""
+    exact(value, set(expected), code)
+    require(all(type(value[key]) is type(wanted) for key, wanted in expected.items()), code)
+    require(value == expected, code)
 
 
 def validate_observations(root: Path, observations: dict, plan: dict, lock: dict) -> dict:
@@ -446,8 +488,7 @@ def validate_observations(root: Path, observations: dict, plan: dict, lock: dict
         require(isinstance(action["details"], dict), "invalid_action_details")
         by_stage[action["stage"]] = action
     def has(stage: str, role: str, file: str) -> None:
-        require(any(row["path"] == file for row in by_stage[stage][role]),
-                "native_action_file_join_missing")
+        observed_file_row(observations, stage, role, file)
     def same(*stages: str) -> None:
         require(all(by_stage[s]["process_identity"] == by_stage[stages[0]]["process_identity"]
                     for s in stages), "native_session_continuity_changed")
@@ -470,26 +511,26 @@ def validate_observations(root: Path, observations: dict, plan: dict, lock: dict
         has("export_" + adjective, "outputs", raw)
         has("render_" + adjective, "inputs", project)
         has("render_" + adjective, "outputs", render)
-        require(by_stage["render_" + adjective]["details"] == {
+        scalar_details(by_stage["render_" + adjective]["details"], {
             "preset_parameters_sha256": lock["files"]["preset_parameters"]["sha256"],
             "render_async": False, "exit_code": 0, "native_jobs_created": 1},
             "native_render_not_bound_to_observed_job")
     has("save_missing", "outputs", outputs["missing_project"])
     has("export_missing", "inputs", outputs["missing_project"])
     has("export_missing", "outputs", outputs["missing_raw"])
-    require(by_stage["native_tail_edit"]["details"] == {
+    scalar_details(by_stage["native_tail_edit"]["details"], {
         "scene_ordinal": 2, "selected_clips": 1, "m_pos_frames": 60,
         "m_cropStart_frames": 60, "m_dur_frames": 15, "external_xml_edit": False},
         "native_tail_edit_profile_changed")
     for stage in ("close_received", "close_edited"):
-        require(by_stage[stage]["details"] == {"process_exited": True, "exit_code": 0},
+        scalar_details(by_stage[stage]["details"], {"process_exited": True, "exit_code": 0},
                 "native_close_not_observed")
     require(file_record(root / outputs["received_project"])["sha256"]
             != file_record(root / outputs["edited_project"])["sha256"],
             "native_edited_source_not_distinct")
     return {"all_stages_bound_to_physical_files": True, "distinct_app_instances": 4,
             "reported_save_close_reopen_edit_chain_consistent": True,
-            "observation_authentication": "REQUIRES_A6_OBSERVER_ADMISSION",
+            "observation_authentication": "REQUIRES_OBSERVER_ADMISSION",
             "native_execution_authenticated_by_this_json": False}
 
 
@@ -540,9 +581,14 @@ def verify_case(root: Path, plan_sha: str, observation_row: dict, output: Path) 
             and source["frame_hashes"] == plan["source_frame_hashes"], "source_preflight_changed")
     media = {}
     for adjective, count in (("received", SOURCE_FRAMES), ("edited", EDITED_FRAMES)):
-        value = inspect_video(root / plan["outputs"][adjective + "_render"], count,
+        render_row = observed_file_row(observations, "render_" + adjective, "outputs",
+                                       plan["outputs"][adjective + "_render"])
+        value = inspect_video(bound_file(root, render_row), count,
                               lock["preset"], lock["clock"], lock, output / adjective)
+        require(value.get("media") == {k: render_row[k] for k in ("sha256", "bytes")},
+                "render_readback_differs_from_observed_output")
         value["source_comparison"] = compare_frames(source["frame_hashes"], value["frame_hashes"], count)
+        value["observed_render_file"] = render_row
         media[adjective] = value
     previews = {}
     for kind, raw_dir, initial, last in (
@@ -550,13 +596,22 @@ def verify_case(root: Path, plan_sha: str, observation_row: dict, output: Path) 
         ("missing", "missing-raw", "received.otio", "received.otio"),
     ):
         bundle, raw_root = root / kind, root / raw_dir
+        received_stage, edited_stage = (("export_received", "export_edited") if kind == "complete"
+                                        else ("export_missing", "export_missing"))
+        received_row = observed_file_row(observations, received_stage, "outputs", raw_dir + "/" + initial)
+        edited_row = observed_file_row(observations, edited_stage, "outputs", raw_dir + "/" + last)
+        bound_file(root, received_row, MAX_JSON)
+        bound_file(root, edited_row, MAX_JSON)
         request = {"schema": bridge.KDENLIVE_REQUEST_SCHEMA,
                    "capsule_manifest_sha256": file_record(bundle / "bridge-manifest.json", MAX_JSON)["sha256"],
-                   "received_otio": initial, "received_sha256": file_record(raw_root / initial, MAX_JSON)["sha256"],
-                   "edited_otio": last, "edited_sha256": file_record(raw_root / last, MAX_JSON)["sha256"]}
+                   "received_otio": initial, "received_sha256": received_row["sha256"],
+                   "edited_otio": last, "edited_sha256": edited_row["sha256"]}
         previews[kind] = bridge.preview_kdenlive_cut(
             bundle, raw_root, request, root / "owner/source-project.json",
             authorized_media_roots=((bundle / "media").resolve(),))
+        require(previews[kind].get("received_otio_sha256") == received_row["sha256"]
+                and previews[kind].get("edited_otio_sha256") == edited_row["sha256"],
+                "preview_raw_differs_from_observed_export")
     expected = [{"type": "set_scene_duration", "scene_id": plan["scene_ids"][2],
                  "duration": {"num": "1", "den": "2"}}]
     preview = previews["complete"]
@@ -571,10 +626,17 @@ def verify_case(root: Path, plan_sha: str, observation_row: dict, output: Path) 
         bound_file(root, row)
     bound_file(root, observation_row, MAX_JSON)
     validate_runtime(lock)
-    report = {"schema": SCHEMA, "status": "FRAME_AND_SOURCE_BUNDLE_VERIFIED_OBSERVER_ADMISSION_REQUIRED",
+    # Recheck every observed input, output and evidence file after all readers.
+    # A matching initial hash alone cannot bind the bytes inspected later.
+    chain = validate_observations(root, observations, plan, lock)
+    chain["all_observed_files_rechecked_after_readback"] = True
+    missing = missing_result(previews["missing"])
+    status = (VERIFIED_BUNDLE_STATUS if missing["status"] == "SOURCE_BOUND_MISSING_LOSS_VERIFIED"
+              else "INCOMPLETE_MISSING_CASE")
+    report = {"schema": SCHEMA, "status": status,
               "plan_sha256": plan_sha, "observation_sha256": observation_row["sha256"],
               "source": source, "media": media, "observation_custody": chain,
-              "bridge_previews": previews, "missing_case": missing_result(previews["missing"]),
+              "bridge_previews": previews, "missing_case": missing,
               "native_execution_authenticated": False, "host_receipt_created": False,
               "canonical_project_changed": False, "native_project_portability_verified": False,
               "source_audio_or_native_scene_semantics_roundtripped": False,
@@ -608,6 +670,10 @@ def main() -> None:
                                  load_json(args.observation_binding),
                                  args.output)
         print(json.dumps(result, sort_keys=True))
+        if args.mode == "verify" and result.get("status") != VERIFIED_BUNDLE_STATUS:
+            # Preserve the partial report and its single JSON response, while
+            # refusing a successful qualification exit for an inconclusive case.
+            raise SystemExit(1)
     except (GateRefused, bridge.BridgeRefused, OSError, ValueError) as error:
         print(json.dumps({"schema": SCHEMA, "status": "NOT_VERIFIED",
                           "reason": str(error) if isinstance(error, GateRefused) else "bounded_receiver_readback_failed",
