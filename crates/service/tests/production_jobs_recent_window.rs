@@ -149,3 +149,50 @@ fn job_window_preserves_limit_and_does_not_write_a_new_receipt() {
         before
     );
 }
+
+#[test]
+fn snapshot_rejects_changed_receipt_stream_instead_of_inventing_a_stable_window() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("job-receipt-race.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let project = service
+        .create_project("Receipt watermark conflict")
+        .unwrap();
+
+    add_observation(
+        &service,
+        &project,
+        "original-start",
+        "driver.motion-canvas.render.start",
+        "running",
+    );
+    let before = service.production_receipt_watermark(project.id).unwrap();
+    assert_eq!(before.count, 2);
+
+    // Another persisted read-only observation advanced the stream after the
+    // caller selected its watermark. An old snapshot cannot claim completeness.
+    add_observation(
+        &service,
+        &project,
+        "later-status",
+        "driver.motion-canvas.render.status",
+        "rendering",
+    );
+    let error = service
+        .production_jobs_snapshot(project.id, &before)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        motionwright_storage::StorageError::ReceiptStreamChanged
+    ));
+    let current = service.production_receipt_watermark(project.id).unwrap();
+    assert_eq!(current.count, 4);
+    let jobs = service.production_jobs(project.id, 10).unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].root_request_id, "original-start");
+    assert_eq!(jobs[0].state, ProductionJobState::Running);
+    assert_eq!(
+        service.production_receipt_watermark(project.id).unwrap(),
+        current
+    );
+}
