@@ -1,7 +1,7 @@
 //! Isolated source-profile lane: an existing canonical OriginalMix Project,
 //! saved target revision, native MLT gain, physical WAV/PCM transfer and meter.
 //! No fixture bus is recreated and no extra mixer/runtime is introduced.
-//! Final MP4 mux/readback uses A1's existing composition join, not this lane.
+//! Final MP4 mux/readback uses the existing backend composition path.
 use motionwright_domain::{Change, Project};
 use motionwright_native::production::{
     OriginalMixSourceRequest, ProductionConnection, ProductionCoordinator,
@@ -30,7 +30,7 @@ const MAX_OWNER_INSTALLATION_BYTES: usize = 16 * 1024;
 #[serde(deny_unknown_fields)]
 struct OwnerInstallation {
     pins: AudioMeasurePins,
-    /// Must already be the A2-admitted readonly MLT media mount. This config
+    /// Must already be the readonly MLT media mount admitted by the owner. This
     /// record and filesystem path cannot create that grant or a receipt.
     sealed_media_root: PathBuf,
     source_custody_receipt_sha256: String,

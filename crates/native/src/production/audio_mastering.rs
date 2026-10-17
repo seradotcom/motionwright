@@ -602,7 +602,7 @@ pub fn canonical_mastering_binding(
 }
 
 /// Closed backend request. The owner_media_root must be the actual read-only
-/// MLT `media` mount admitted by A2, containing the sealed canonical filename.
+/// MLT `media` mount admitted by the owner, containing the sealed canonical filename.
 /// A path or this request is not a mount grant. The generic SDK does not take
 /// expected_sha256; the explicit custody record and post-render whole-PCM gate
 /// remain necessary and this operation alone never returns native readiness.
@@ -1169,8 +1169,8 @@ impl ProductionCoordinator {
     }
 
     /// Actual native transformation, using only the existing coordinator and
-    /// MLT commands. No local FFmpeg or alternate runtime is launched. A1's
-    /// command/provenance allowlist and A2's source custody remain the gates.
+    /// MLT commands. No local FFmpeg or alternate runtime is launched. The
+    /// coordinator's command/provenance allowlist and owner custody remain gates.
     pub async fn realize_native_audio_mastering(
         &self,
         expected: &RevisionStamp,

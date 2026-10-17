@@ -1,6 +1,6 @@
 //! Separate readonly measurement capability in the existing NativeReadback
 //! Driver Host. No process/FFmpeg API outside that Host is exposed here.
-//! Owner registration and native consumer joins are composed by A1/A2.
+//! Owner registration and native consumer admission are backend responsibilities.
 
 use crate::{
     FFMPEG_TOOL, FFPROBE_TOOL, MEDIA_MOUNT, PYTHON_TOOL, READER_SHA256, READER_SOURCE, ToolPins,
