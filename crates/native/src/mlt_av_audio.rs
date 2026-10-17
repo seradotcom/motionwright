@@ -332,6 +332,60 @@ pub fn preflight_multi_segment_audio(
     voice: &VerifiedMasterVoice,
     owner_output_root: &Path,
 ) -> NativeResult<MultiSegmentAudioReadiness> {
+    preflight_multi_segment_audio_source(
+        project,
+        deliverable_id,
+        recipe,
+        prepared,
+        voice,
+        owner_output_root,
+        VoiceSourcePolicy::UnchangedVoiceMaster,
+    )
+}
+
+/// Verify the original measured voice, its caption source and the exact FFV1
+/// inputs independently of a separately authored audio mix. The returned audio
+/// digest always identifies this measured voice, never a rendered mixed WAV.
+///
+/// This read-only source proof does not apply or approve gains, LUFS or true-peak
+/// targets. A mix coordinator must resolve the current persisted delivery recipe,
+/// validate its realized processing and separately verify the mixed WAV before
+/// authorizing the existing mux. Callers must keep that evidence separate from
+/// this voice/caption identity and recheck the complete project stamp at dispatch.
+pub fn preflight_multi_segment_voice_source(
+    project: &Project,
+    deliverable_id: Uuid,
+    recipe: &MltNativeVideoRecipe,
+    prepared: &MltPreparedMezzanines,
+    voice: &VerifiedMasterVoice,
+    owner_output_root: &Path,
+) -> NativeResult<MultiSegmentAudioReadiness> {
+    preflight_multi_segment_audio_source(
+        project,
+        deliverable_id,
+        recipe,
+        prepared,
+        voice,
+        owner_output_root,
+        VoiceSourcePolicy::IndependentSource,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum VoiceSourcePolicy {
+    UnchangedVoiceMaster,
+    IndependentSource,
+}
+
+fn preflight_multi_segment_audio_source(
+    project: &Project,
+    deliverable_id: Uuid,
+    recipe: &MltNativeVideoRecipe,
+    prepared: &MltPreparedMezzanines,
+    voice: &VerifiedMasterVoice,
+    owner_output_root: &Path,
+    policy: VoiceSourcePolicy,
+) -> NativeResult<MultiSegmentAudioReadiness> {
     project.validate().map_err(|error| {
         invalid(format!(
             "Project contains invalid versioned semantics: {error}",
@@ -374,9 +428,10 @@ pub fn preflight_multi_segment_audio(
             "Multi-segment AV requires exactly bound measured stereo 48 kHz WAV and H.264/AAC Rec.709 MP4",
         ));
     }
-    if project.audio.mix.voice_gain_db != 0.0
-        || project.audio.mix.target_lufs.is_some()
-        || project.audio.mix.target_true_peak_dbfs.is_some()
+    if matches!(policy, VoiceSourcePolicy::UnchangedVoiceMaster)
+        && (project.audio.mix.voice_gain_db != 0.0
+            || project.audio.mix.target_lufs.is_some()
+            || project.audio.mix.target_true_peak_dbfs.is_some())
     {
         return Err(unsupported(
             "Multi-segment AV does not implement gain changes or claimed LUFS/true-peak mastering; clear them or author an independently verified mix",
@@ -575,10 +630,19 @@ pub fn preflight_multi_segment_audio(
         final_profile: recipe.final_mux_profile.clone(),
         caption_cue_count: captions.as_ref().map(|(count, _)| *count),
         source_fingerprint,
-        evidence_scope: if captions.is_some() {
-            "verified-owner-audio-ffv1-native-captioned-source-not-muxed-mp4"
-        } else {
-            "verified-owner-audio-ffv1-inputs-not-muxed-mp4"
+        evidence_scope: match (policy, captions.is_some()) {
+            (VoiceSourcePolicy::UnchangedVoiceMaster, true) => {
+                "verified-owner-audio-ffv1-native-captioned-source-not-muxed-mp4"
+            }
+            (VoiceSourcePolicy::UnchangedVoiceMaster, false) => {
+                "verified-owner-audio-ffv1-inputs-not-muxed-mp4"
+            }
+            (VoiceSourcePolicy::IndependentSource, true) => {
+                "verified-measured-voice-ffv1-native-caption-source-not-final-audio"
+            }
+            (VoiceSourcePolicy::IndependentSource, false) => {
+                "verified-measured-voice-ffv1-source-not-final-audio"
+            }
         }
         .into(),
     })
@@ -748,6 +812,200 @@ mod tests {
             &f.voice,
             f.video_root.path(),
         )
+    }
+
+    fn check_source(f: &Fixture) -> NativeResult<MultiSegmentAudioReadiness> {
+        preflight_multi_segment_voice_source(
+            &f.project,
+            f.project.deliverables[0].id,
+            &f.recipe,
+            &f.prepared,
+            &f.voice,
+            f.video_root.path(),
+        )
+    }
+
+    fn caption_source_fixture() -> Fixture {
+        let mut f = fixture();
+        f.project.audio.mix.voice_gain_db = -6.0;
+        f.project.deliverables[0].captions = true;
+        f.project.deliverables[0].burn_in_captions = true;
+        let voice_track_id = f.project.audio.voice_tracks[0].id;
+        f.project.audio.transcript = [(1, 2, 1, 1), (5, 2, 3, 1)]
+            .into_iter()
+            .map(
+                |(start_num, start_den, end_num, end_den)| TranscriptSegment {
+                    id: Uuid::now_v7(),
+                    voice_track_id,
+                    start: RationalTime::new(start_num, start_den).unwrap(),
+                    end: RationalTime::new(end_num, end_den).unwrap(),
+                    text: "Authored timing for the original measured voice".into(),
+                    speaker: None,
+                    alignment: AlignmentEvidence::Manual,
+                },
+            )
+            .collect();
+        f
+    }
+
+    #[test]
+    fn unchanged_voice_entry_preserves_gain_and_mastering_guards() {
+        for (gain, lufs, true_peak) in [
+            (-3.0, None, None),
+            (0.0, Some(-14.0), None),
+            (0.0, None, Some(-1.0)),
+        ] {
+            let mut f = fixture();
+            let unchanged = check(&f).unwrap();
+            f.project.audio.mix.voice_gain_db = gain;
+            f.project.audio.mix.target_lufs = lufs;
+            f.project.audio.mix.target_true_peak_dbfs = true_peak;
+            assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+
+            let source = check_source(&f).unwrap();
+            assert_eq!(source.audio_sha256, f.voice.sha256);
+            assert_eq!(source.audio_size_bytes, unchanged.audio_size_bytes);
+            assert_eq!(source.audio_pcm_frames, unchanged.audio_pcm_frames);
+            assert_eq!(source.source_fingerprint, unchanged.source_fingerprint);
+            assert_eq!(
+                source.evidence_scope,
+                "verified-measured-voice-ffv1-source-not-final-audio"
+            );
+        }
+    }
+
+    #[test]
+    fn independent_caption_source_keeps_the_measured_voice_and_authored_text_identity() {
+        let mut f = caption_source_fixture();
+        assert_eq!(check(&f).unwrap_err().code, ErrorCode::Unsupported);
+        let source = check_source(&f).unwrap();
+        assert_eq!(source, check_source(&f).unwrap());
+        assert_eq!(source.audio_sha256, f.voice.sha256);
+        assert_eq!(source.voice_track_id, f.project.audio.voice_tracks[0].id);
+        assert_eq!(source.audio_pcm_frames, 192_000);
+        assert_eq!(source.caption_cue_count, Some(2));
+        assert_eq!(
+            source.evidence_scope,
+            "verified-measured-voice-ffv1-native-caption-source-not-final-audio"
+        );
+
+        f.project.audio.transcript[0].text = "A deliberate correction to the source words".into();
+        let corrected = check_source(&f).unwrap();
+        assert_eq!(corrected.audio_sha256, source.audio_sha256);
+        assert_ne!(corrected.source_fingerprint, source.source_fingerprint);
+
+        f.project.audio.transcript[0].alignment = AlignmentEvidence::Unknown;
+        assert!(check_source(&f).is_err());
+        f.project.audio.transcript[0].alignment = AlignmentEvidence::Measured {
+            engine: "fixture".into(),
+            source_sha256: "c".repeat(64),
+            confidence_millis: Some(900),
+        };
+        assert!(check_source(&f).is_err());
+        f.project.audio.transcript[0].alignment = AlignmentEvidence::Manual;
+        f.project.audio.transcript[0].start = RationalTime::new(51, 100).unwrap();
+        assert!(check_source(&f).is_err());
+        f.project.audio.transcript[0].start = RationalTime::new(1, 2).unwrap();
+        f.project.deliverables[0].captions = false;
+        assert!(check_source(&f).is_err());
+        f.project.deliverables[0].captions = true;
+        f.project.audio.transcript.clear();
+        assert!(check_source(&f).is_err());
+    }
+
+    #[test]
+    fn independent_voice_source_requires_full_stamps_and_the_selected_profile() {
+        for changed in 0..8 {
+            let mut f = fixture();
+            f.project.audio.mix.voice_gain_db = -6.0;
+            match changed {
+                0 => f.recipe.project_resource = "foreign-project-resource".into(),
+                1 => f.recipe.generation = Uuid::new_v4(),
+                2 => f.recipe.revision += 1,
+                3 => f.recipe.deliverable_id = Uuid::new_v4(),
+                4 => f.prepared.project_resource = "foreign-project-resource".into(),
+                5 => f.prepared.generation = Uuid::new_v4(),
+                6 => f.prepared.revision += 1,
+                _ => f.prepared.deliverable_id = Uuid::new_v4(),
+            }
+            assert_eq!(
+                check_source(&f).unwrap_err().code,
+                ErrorCode::StaleReference
+            );
+        }
+        let mut f = fixture();
+        f.recipe.provider_profile.width = 1280;
+        assert_eq!(
+            check_source(&f).unwrap_err().code,
+            ErrorCode::StaleReference
+        );
+        f = fixture();
+        f.project.deliverables[0].voice_track_id = None;
+        assert_eq!(check_source(&f).unwrap_err().code, ErrorCode::Unsupported);
+        f = fixture();
+        f.voice.sha256 = "f".repeat(64);
+        assert_eq!(check_source(&f).unwrap_err().code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn independent_voice_source_rejects_reordered_segments_and_same_length_byte_tamper() {
+        let mut f = fixture();
+        f.prepared.verified_video_segments.swap(0, 1);
+        assert_eq!(
+            check_source(&f).unwrap_err().code,
+            ErrorCode::StaleReference
+        );
+
+        f = fixture();
+        f.recipe.clips.swap(0, 1);
+        f.prepared.verified_video_segments.swap(0, 1);
+        assert_eq!(
+            check_source(&f).unwrap_err().code,
+            ErrorCode::StaleReference
+        );
+
+        // The fixture's segment bytes test custody, not an FFV1 decoder. Keep
+        // the trusted size unchanged so rejection must reach the actual hash.
+        f = fixture();
+        let path = f
+            .video_root
+            .path()
+            .join(&f.prepared.verified_video_segments[0].artifact_path);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            check_source(&f).unwrap_err().code,
+            ErrorCode::StaleReference
+        );
+
+        // Preserve the complete RIFF index and PCM length while changing an
+        // actual sample. Caption identity must never substitute for WAV bytes.
+        f = fixture();
+        let mut bytes = fs::read(&f.voice.path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&f.voice.path, &bytes).unwrap();
+        assert_eq!(
+            check_source(&f).unwrap_err().code,
+            ErrorCode::StaleReference
+        );
+    }
+
+    #[test]
+    fn independent_voice_source_checks_actual_wav_rate_and_complete_sample_frames() {
+        let mut f = fixture();
+        f.project.audio.mix.voice_gain_db = -6.0;
+        let short = synthetic_wav(48_000 * 3);
+        rebind_source_bytes(&mut f, &short);
+        assert_eq!(check_source(&f).unwrap_err().code, ErrorCode::Unsupported);
+
+        f = fixture();
+        f.project.audio.mix.voice_gain_db = -6.0;
+        let mut rate = synthetic_wav(48_000 * 4);
+        rate[24..28].copy_from_slice(&44_100_u32.to_le_bytes());
+        rate[28..32].copy_from_slice(&(44_100 * 4_u32).to_le_bytes());
+        rebind_source_bytes(&mut f, &rate);
+        assert_eq!(check_source(&f).unwrap_err().code, ErrorCode::Unsupported);
     }
 
     #[test]

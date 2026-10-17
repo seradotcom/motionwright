@@ -32,6 +32,7 @@ mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_multisegment_sfx;
 mod mlt_timeline;
+mod original_mix_av;
 #[cfg(test)]
 mod path_boundary_tests;
 mod recovery;
@@ -44,6 +45,12 @@ pub use mlt_multisegment_sfx::{
     preflight_multisegment_original_sfx_clock,
 };
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
+pub use original_mix_av::{
+    OriginalMixSemanticSfxProof, OriginalMixSfxSourceReceipt, OriginalMixSourceReadiness,
+    OriginalMixSourceRequest, PreparedOriginalMixWav, original_mix_sample_clock,
+    prepare_original_mix_av_audio, verify_original_mix_av_source,
+};
+
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
 pub use semantic_sfx_av::{
     PreparedSemanticSfxWav, SemanticSfxAvSourceProof, prepare_semantic_sfx_av_audio,
