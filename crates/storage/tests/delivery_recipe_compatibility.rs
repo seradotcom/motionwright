@@ -72,7 +72,7 @@ fn assert_original_missing(store: &Store) {
 }
 fn materialize_historical_source(directory: &Path) -> (Store, ProjectBackup, Project) {
     let backup = historical_backup();
-    let mut store = Store::open(directory.join("source.sqlite3")).unwrap();
+    let mut store = Store::open(directory.join("source/state.sqlite3")).unwrap();
     let imported = store.import_project(&backup).unwrap();
     assert_import_only_refreshes_authority(&backup.project, &imported);
     assert_original_missing(&store);
@@ -154,7 +154,7 @@ fn historical_backup_survives_real_bundle_transfer_and_reopening() {
     assert_eq!(manifest.blobs[0].sha256, ORIGINAL_SHA);
     assert_eq!(manifest.blobs[0].size_bytes, ORIGINAL.len() as u64);
     drop(source);
-    let mut source_reopened = Store::open(directory.path().join("source.sqlite3")).unwrap();
+    let mut source_reopened = Store::open(directory.path().join("source/state.sqlite3")).unwrap();
     assert_same_payload(
         &manifest.backup,
         &source_reopened.export_project(first_import.id).unwrap(),
@@ -164,7 +164,7 @@ fn historical_backup_survives_real_bundle_transfer_and_reopening() {
         ORIGINAL
     );
     drop(source_reopened);
-    let path = directory.path().join("destination.sqlite3");
+    let path = directory.path().join("destination/state.sqlite3");
     let mut destination = Store::open(&path).unwrap();
     assert_original_missing(&destination);
     let plan = destination.inspect_project_bundle(&bundle_path).unwrap();
@@ -193,7 +193,7 @@ fn historical_backup_survives_real_bundle_transfer_and_reopening() {
 #[test]
 fn unsupported_or_tampered_backups_leave_destination_unchanged() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("destination.sqlite3");
+    let path = directory.path().join("destination/state.sqlite3");
     let mut destination = Store::open(&path).unwrap();
     let control = destination
         .create_named_project("Preserved destination")
@@ -238,7 +238,7 @@ fn unknown_nested_fields_and_changed_source_bytes_are_rejected_before_bundle_ing
     let manifest = source
         .export_project_bundle(imported.id, &corrupt_path)
         .unwrap();
-    let destination_path = directory.path().join("destination.sqlite3");
+    let destination_path = directory.path().join("destination/state.sqlite3");
     let mut destination = Store::open(&destination_path).unwrap();
     destination.inspect_project_bundle(&unknown_path).unwrap();
     destination.inspect_project_bundle(&corrupt_path).unwrap();

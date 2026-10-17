@@ -200,6 +200,7 @@
     "generator_diff_paths": [
       "crates/storage/tests/delivery_recipe_compatibility.rs"
     ],
-    "capture_protocol": "Exactly one complete record per marker; preserve compact JSON bytes with one final LF; require producer SHA and size"
+    "capture_protocol": "Exactly one complete record per marker; preserve compact JSON bytes with one final LF; require producer SHA and size",
+    "generator_restore_limit": "The generator used separate SQLite files under one parent, so its destination shared the source CAS. Its original Store export and source byte checks remain authentic. Independent CAS transfer is verified by the reader oracles with separate source and destination parent directories."
   }
 }
