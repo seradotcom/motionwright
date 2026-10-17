@@ -27,13 +27,27 @@ struct SavedConnectionReference {
     connection_file: PathBuf,
 }
 
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 impl RuntimeConnectionRegistry {
     pub(crate) fn new(app_data_dir: &Path) -> Result<Self, String> {
         let root = app_data_dir.join("owner-native-connections");
         fs::create_dir_all(&root).map_err(|_| "Runtime settings directory could not be created")?;
         let metadata = fs::symlink_metadata(&root)
             .map_err(|_| "Runtime settings directory could not be inspected")?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !metadata.is_dir() || is_link_or_reparse(&metadata) {
             return Err("Runtime settings directory is not a regular directory".into());
         }
         #[cfg(unix)]
@@ -42,7 +56,36 @@ impl RuntimeConnectionRegistry {
             fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
                 .map_err(|_| "Runtime settings directory permissions are unsafe")?;
         }
-        Ok(Self { root })
+        // Tauri may supply a trusted data-directory alias. Resolve it once so
+        // an existing registry does not follow a later retarget of that alias.
+        let root = fs::canonicalize(&root)
+            .map_err(|_| "Runtime settings directory could not be resolved")?;
+        let registry = Self { root };
+        registry.validate_root()?;
+        Ok(registry)
+    }
+
+    fn validate_root(&self) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(&self.root)
+            .map_err(|_| "Runtime settings directory is unavailable")?;
+        if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+            return Err("Runtime settings directory is not a regular directory".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err("Runtime settings directory permissions are unsafe".into());
+            }
+        }
+        let current = fs::canonicalize(&self.root)
+            .map_err(|_| "Runtime settings directory could not be resolved")?;
+        if current != self.root {
+            return Err("Runtime settings directory location has changed".into());
+        }
+        // This rejects redirection already present before the operation.
+        // Path checks do not provide atomic directory-handle confinement.
+        Ok(())
     }
 
     fn destination(&self, project_id: Uuid) -> PathBuf {
@@ -54,6 +97,7 @@ impl RuntimeConnectionRegistry {
         project_id: Uuid,
         generation: Uuid,
     ) -> Result<Option<PathBuf>, String> {
+        self.validate_root()?;
         let destination = self.destination(project_id);
         let bytes = match fs::symlink_metadata(&destination) {
             Ok(metadata) => {
@@ -107,6 +151,7 @@ impl RuntimeConnectionRegistry {
         generation: Uuid,
         connection_file: &Path,
     ) -> Result<(), String> {
+        self.validate_root()?;
         if !connection_file.is_absolute() {
             return Err("The selected Semwright file must have an absolute path".into());
         }
@@ -168,6 +213,7 @@ impl RuntimeConnectionRegistry {
     /// Remove only the application-owned reference, never the operator's
     /// Semwright connection file, Broker session or native job evidence.
     pub(crate) fn clear_saved(&self, project_id: Uuid) -> Result<bool, String> {
+        self.validate_root()?;
         let destination = self.destination(project_id);
         match fs::symlink_metadata(&destination) {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
