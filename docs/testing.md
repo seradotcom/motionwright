@@ -144,44 +144,80 @@ Job projection tests cover cancellation request versus confirmed cancellation, t
 
 ## Performance evidence lane
 
-Heavy performance evidence is produced in GitHub Actions by the Performance Acceptance Evidence
-workflow. The harness uses three unrelated briefs and deterministic S/M/L project sizes. Each
-dataset is seeded into the real SQLite service boundary, receives ten predefined versioned edits,
-reopens from disk, checks editability and journal continuity, and records per-operation timings
-plus database size and process resource usage. The workflow fails if any measured commit exceeds
-its declared CI latency budget.
+The Performance Acceptance Evidence workflow runs three unrelated briefs
+(`harbor-safety`, `museum-night` and `bike-route`) at 8, 32 and 96 scenes each:
+nine datasets. These benchmark-specific S/M/L labels describe the revision-ten
+fixture; the separate responsiveness S editing profile is described below.
 
-The report measures the application-owned derived cache separately from renderer throughput.
-Each S/M/L dataset admits a fingerprint-bound preview index, reopens it through the verified
-content-addressed store, records bytes checked plus validation cost and counts the exact scene
-preview-index regeneration units avoided. It also mutates a delivery render input and requires a
-cache miss for the changed fingerprint. This evidence does not claim avoided renderer frames,
-GPU time or wall-clock render savings; renderer-level cold/warm evidence remains separate.
+Each dataset is seeded through the real SQLite service boundary and receives ten
+predefined versioned edits. Readback after reopening checks the stored revision,
+scene count, and the first scene's identity and final objective. The report retains
+each operation's timing, database size and `event_count`, the returned history
+length. That count does not assert event-by-event journal continuity, payload replay
+or a further edit after reopening.
 
-The same workflow has a separate `waveform-lazy` job for long-audio evidence. It builds the
-benchmark first, then measures only the resulting runtime process while it imports a real one-hour
-8 kHz PCM source, generates the cache-bound proxy and requests a distant page. CI requires the
-source to exceed 50 MB, the proxy to stay below 64 KiB, a returned page to stay at 256 peaks or
-less, and maximum resident memory to remain below 192 MiB. The second page must come from the
-cache and complete inside the declared two-second CI bound. These figures prove the current
-fixture and algorithm; they are not a universal desktop performance claim.
+The workflow builds each Rust benchmark in release mode before measuring its
+binary with `/usr/bin/time -v`. Compiler resource use is excluded from the measured
+process. The revision-ten report is written and flushed before checking whether
+any measured commit exceeds 2,000 ms; equality remains admitted by this gate.
+A functional assertion can still stop execution before a complete report exists.
 
-The `responsiveness-service` job builds a reference S editing profile through the real service
-boundary: 12 scenes, 80 authored beats, 300 canvas nodes, a measured five-minute PCM voice source
-and the default 1920x1080/30 deliverable. After warm-up it records 40 small SQLite-backed project
-commits and enforces p95 <250 ms, then reopens the same database under the declared S metadata
-budget of two seconds. The Tauri `apply_change` command dispatches its project load and mutation
-through `spawn_blocking`, keeping those SQLite operations off the async invoke executor.
+The preview index is generated before its cache-storage timer starts. Each dataset
+stores the index under its exact dependency fingerprint, validates the returned
+record and actual bytes on a hit, then requires a miss for a cloned profile with
+a changed width. There are nine positive lookups and nine changed-fingerprint
+misses; `lookup_attempts` counts only the positive lookups. The legacy
+`avoided_work_count` field totals 408 declared scene units across the nine
+prebuilt indices. It does not observe a pipeline skipping 408 regenerations.
+Storage cost, validation cost and bytes checked are measured separately; no
+renderer frames, GPU time or wall-clock render savings are measured here.
 
-The independent `ui-selection` job seeds 12 scenes in Chromium and measures 60 in-browser
-project-rail selections from the click dispatch through the Inspector update and next animation
-frame. It enforces p95 <100 ms. The measurement is performed inside the browser so Playwright
-transport latency is not counted as application latency. Exact JSON measurements and failure
-artifacts are retained per SHA; these runner-specific budgets are not universal device claims.
+The separate `waveform-lazy` job imports a synthetic one-hour 8 kHz PCM16
+silence fixture, generates the cache-bound proxy and requests a distant page.
+CI requires the source's logical file size to exceed 50 MB and `proxy_bytes`
+to stay below 64 KiB. The producer calculates `proxy_bytes` as
+`72 + 2 * peak_count`; it does not inspect the size of a retained proxy file.
+A returned page must stay at 256 peaks or less, maximum resident memory must remain
+below 192 MiB, and the cached second page must complete inside the declared
+two-second bound. These measurements apply to the current fixture and algorithm
+on the CI runner.
 
-Human feedback remains NOT_RUN until actual participants exist. The benchmark never manufactures
-comparative claims against other editors. See `docs/derived-cache.md` for cache identity,
-invalidation and recovery rules and `docs/audio.md` for waveform semantics.
+The `responsiveness-service` job builds a reference S editing profile through the
+real service boundary: 12 scenes, 80 authored beats, 300 canvas nodes, a synthetic
+five-minute 8 kHz PCM16 silence fixture imported as a voice track, and the default
+1920x1080/30 deliverable. After five warm-up commits it records all 40 small
+SQLite-backed project-commit samples,
+including outliers, and measures reopening the same database. It writes and flushes
+both measurements before enforcing p95 <250 ms and reopen <2,000 ms. The existing
+functional revision check remains in force. The Tauri `apply_change` command
+dispatches its project load and mutation through `spawn_blocking`, keeping those
+SQLite operations off the async invoke executor.
+
+The same workflow invokes the same compiled binaries with deliberately failing
+budgets to check report retention. The revision-ten probe uses a zero commit
+budget. Responsiveness has separate probes for a zero commit budget and a zero
+reopen budget; the latter uses a 60,000 ms commit budget only to reach the reopen
+guard. Each requires a nonzero exit, its specific budget diagnostic and complete
+JSON with nine ten-operation datasets or all 40 samples plus the measured reopen.
+These probe outputs live in separate subdirectories and never supply the positive
+performance report or its derived evidence. Positive acceptance thresholds and
+fixture sizes remain unchanged.
+
+The three Rust lanes request artifact upload even after failure. Build logs,
+measured-process stderr, exit codes, checkout identity, binary hashes and resource
+usage are retained when produced, together with any available JSON. Missing or
+incomplete measurements are not replaced with successful reports.
+
+The independent `ui-selection` job seeds 12 scenes in Chromium and measures 60
+in-browser project-rail selections from click dispatch through the Inspector update
+and next animation frame. It enforces p95 <100 ms. Browser-side timing excludes
+Playwright transport latency. Exact JSON measurements and failure artifacts are
+retained per SHA; these runner-specific budgets are not universal device claims.
+
+Human feedback remains NOT_RUN until actual participants exist. The benchmark
+makes no comparative claims against other editors. See `docs/derived-cache.md`
+for cache identity, invalidation and recovery rules, and `docs/audio.md` for
+waveform semantics.
 
 
 ## Variants and localization evidence lane
