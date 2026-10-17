@@ -30,14 +30,34 @@ use uuid::Uuid;
 
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
+mod mlt_multisegment_sfx;
 mod mlt_timeline;
+mod original_mix_av;
 #[cfg(test)]
 mod path_boundary_tests;
 mod recovery;
+mod semantic_sfx_av;
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
+pub use mlt_multisegment_sfx::{
+    MltMultisegmentOriginalSfxReadiness, MltMultisegmentSfxMasterEvidence,
+    MltMultisegmentSfxMasterRequest, MltMultisegmentSfxSourceRequest,
+    preflight_multisegment_original_sfx_clock,
+};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
+pub use original_mix_av::{
+    MltMultisegmentOriginalMixMasterEvidence, MltMultisegmentOriginalMixMasterRequest,
+    OriginalMixSemanticSfxProof, OriginalMixSfxSourceReceipt, OriginalMixSourceReadiness,
+    OriginalMixSourceRequest, PreparedOriginalMixWav, canonical_original_mix_film_options,
+    original_mix_sample_clock, prepare_original_mix_av_audio, resolve_canonical_original_mix_plan,
+    verify_original_mix_av_source,
+};
+
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
+pub use semantic_sfx_av::{
+    PreparedSemanticSfxWav, SemanticSfxAvSourceProof, prepare_semantic_sfx_av_audio,
+    verify_semantic_sfx_av_source,
+};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -638,6 +658,27 @@ pub struct MltAvMasterRequest<'a> {
     pub motion: &'a MotionCanvasRenderEvidence,
     pub audio: &'a MltAudioArtifact,
     pub sync: Option<&'a AvSyncSpec>,
+}
+
+/// A saved original mix selects its canonical three-bus master. Legacy
+/// finalizers must not silently replace that recipe with an unchanged source
+/// WAV, even when its gains and mastering targets would otherwise be admitted.
+fn reject_saved_original_mix_for_legacy_master(
+    project: &motionwright_domain::Project,
+    deliverable_id: Uuid,
+) -> NativeResult<()> {
+    if project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_id)
+        .is_some_and(|recipe| recipe.original_mix.is_some())
+    {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "The selected deliverable requires its canonical original mix master",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1439,6 +1480,18 @@ impl ProductionCoordinator {
             .iter()
             .find(|profile| profile.id == deliverable_id)
             .ok_or_else(|| invalid("Deliverable profile not found"))?;
+        reject_saved_original_mix_for_legacy_master(&project, deliverable_id)?;
+        // Encoding and muxing preserve this source WAV; neither operation
+        // realizes authored loudness or true-peak targets. Keep the saved
+        // intent intact and reject before the first native effect.
+        if project.audio.mix.target_lufs.is_some()
+            || project.audio.mix.target_true_peak_dbfs.is_some()
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "MLT audiovisual mastering does not support LUFS or true-peak targets",
+            ));
+        }
         if deliverable.video_codec != VideoCodec::H264
             || deliverable.audio_codec != AudioCodec::Aac
             || deliverable.audio_sample_rate_hz != 48_000
@@ -2231,6 +2284,703 @@ fn storage_error(error: motionwright_storage::StorageError) -> Error {
             "Production request id was reused with different input",
         ),
         _ => backend("Motionwright production receipt storage failed"),
+    }
+}
+
+#[cfg(test)]
+mod final_master_admission_tests {
+    use super::*;
+    use crate::{
+        assembly::preflight_multi_segment_mlt, mlt_av_audio::preflight_multi_segment_audio,
+        mlt_edit_plan::mlt_native_video_recipe,
+    };
+    use motionwright_domain::{
+        AlignmentEvidence, BlendMode, CanvasNode, Change, CoordinateSpace, DeliveryArchetype,
+        DeliveryNarrativeRole, DeliveryRecipe, DeliveryRecipeSchema, DeliverySceneIntent,
+        NodeStyle, OriginalMixRecipe, Project, RationalTime, TranscriptSegment,
+    };
+    use motionwright_service::VoiceImportMetadata;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const CANONICAL_MASTER_REQUIRED: &str =
+        "The selected deliverable requires its canonical original mix master";
+    const SINGLE_MASTER_TARGET_UNSUPPORTED: &str =
+        "MLT audiovisual mastering does not support LUFS or true-peak targets";
+
+    #[derive(Clone, Copy)]
+    enum LegacyMaster {
+        Single,
+        MultisegmentVoice,
+        MultisegmentSfx,
+    }
+
+    #[derive(Clone, Copy)]
+    enum MasteringTarget {
+        Lufs,
+        TruePeak,
+    }
+
+    struct AdmissionFixture {
+        service: StudioService,
+        project: Project,
+        connection: ProductionConnection,
+        options: FilmBuildOptions,
+        rendered: MotionCanvasRenderEvidence,
+        visual: Option<MltVerifiedLosslessTimeline>,
+        audio: MltAudioArtifact,
+        // Release SQLite and source handles before removing their directory.
+        root: tempfile::TempDir,
+    }
+
+    fn apply(service: &StudioService, project: &Project, key: &str, change: Change) -> Project {
+        service
+            .apply(project.id, &project.stamp(), key, &change)
+            .unwrap()
+            .project
+    }
+
+    fn original_wav(bus: usize) -> Vec<u8> {
+        let data_size = 96_000_u32 * 4;
+        let mut wav = Vec::with_capacity(44 + data_size as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&192_000_u32.to_le_bytes());
+        wav.extend_from_slice(&4_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        for frame in 0..96_000 {
+            for channel in 0..2 {
+                let value = (i16::try_from((frame + channel * 31) % 251).unwrap() - 125)
+                    * i16::try_from(bus + 1).unwrap()
+                    * 3;
+                wav.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        wav
+    }
+
+    fn no_dispatch_connection(root: &Path, resource: String) -> ProductionConnection {
+        let executable = root.join(if cfg!(windows) {
+            "master-admission-must-not-run.cmd"
+        } else {
+            "master-admission-must-not-run"
+        });
+        // This program can only mark an accidental dispatch and fail. It
+        // cannot emit a provider envelope, native receipt or successful media.
+        let script: &[u8] = if cfg!(windows) {
+            b"@echo off\r\n> \"%~dp0native-dispatch-marker\" echo unexpected\r\nexit /b 97\r\n"
+        } else {
+            b"#!/bin/sh\n: > \"${0%/*}/native-dispatch-marker\"\nexit 97\n"
+        };
+        let socket = root.join("broker.sock");
+        let session_file = root.join("session.json");
+        let output_root = root.join("output");
+        fs::create_dir(&output_root).unwrap();
+        fs::write(&executable, script).unwrap();
+        fs::write(&socket, b"").unwrap();
+        fs::write(&session_file, b"{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in [
+                (&executable, 0o700),
+                (&socket, 0o600),
+                (&session_file, 0o600),
+                (&output_root, 0o700),
+            ] {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            }
+        }
+        ProductionConnection {
+            schema: CONNECTION_SCHEMA.into(),
+            executable_sha256: hex::encode(Sha256::digest(script)),
+            executable,
+            socket,
+            session_file,
+            output_root,
+            resource,
+        }
+    }
+
+    fn fixture(
+        entry: LegacyMaster,
+        canonical_mix: bool,
+        target: Option<MasteringTarget>,
+    ) -> AdmissionFixture {
+        let root = tempfile::Builder::new()
+            .prefix("final-master-admission-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        let mut project = service.create_project("Final master admission").unwrap();
+        let scene_count = if matches!(entry, LegacyMaster::Single) {
+            1
+        } else {
+            33
+        };
+        for index in 0..scene_count {
+            project = apply(
+                &service,
+                &project,
+                &format!("admission-scene-{index}"),
+                Change::AddScene {
+                    name: format!("Admission source {index}"),
+                    objective: "Saved source and exact frame clock".into(),
+                    duration_seconds: 1,
+                },
+            );
+            let scene_id = project.scenes.last().unwrap().id;
+            let frames = if scene_count == 1 {
+                60
+            } else if index == 32 {
+                28
+            } else {
+                1
+            };
+            project = apply(
+                &service,
+                &project,
+                &format!("admission-clock-{index}"),
+                Change::SetSceneDuration {
+                    scene_id,
+                    duration: RationalTime::new(frames, 30).unwrap(),
+                },
+            );
+            project = apply(
+                &service,
+                &project,
+                &format!("admission-node-{index}"),
+                Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::new_v4(),
+                        name: "Admission rectangle".into(),
+                        kind: "rectangle".into(),
+                        parent_id: None,
+                        x: 400.0,
+                        y: 250.0,
+                        width: 160.0,
+                        height: 120.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: None,
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 1,
+                        style: NodeStyle {
+                            fill: Some("#F5F5F2".into()),
+                            stroke: None,
+                            stroke_width: 0.0,
+                            font_family: None,
+                            font_size: None,
+                            font_weight: None,
+                            line_height: None,
+                            blend_mode: BlendMode::Normal,
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            );
+        }
+        let paths = [0, 1, 2].map(|bus| root.path().join(format!("original-bus-{bus}.wav")));
+        for (bus, path) in paths.iter().enumerate() {
+            fs::write(path, original_wav(bus)).unwrap();
+        }
+        project = service
+            .import_voice_file(
+                project.id,
+                &project.stamp(),
+                "admission-voice",
+                &paths[0],
+                VoiceImportMetadata {
+                    name: "Original admission signal".into(),
+                    label: "Measured numerical source, not speech".into(),
+                    media_type: "audio/wav".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let track = project.audio.voice_tracks[0].clone();
+        let mut source_ids = [track.asset_id, Uuid::nil(), Uuid::nil()];
+        for bus in 1..3 {
+            project = service
+                .import_asset_file(
+                    project.id,
+                    &project.stamp(),
+                    &format!("admission-bus-{bus}"),
+                    &paths[bus],
+                    format!("Original admission bus {bus}"),
+                    "audio/wav".into(),
+                )
+                .unwrap()
+                .project;
+            source_ids[bus] = project.assets.last().unwrap().id;
+        }
+        let mut profile = project.deliverables[0].clone();
+        profile.width = 1280;
+        profile.height = 720;
+        profile.frame_rate = RationalTime::new(30, 1).unwrap();
+        profile.audio_sample_rate_hz = 48_000;
+        profile.language = "en".into();
+        profile.voice_track_id = Some(track.id);
+        profile.video_codec = VideoCodec::H264;
+        profile.audio_codec = AudioCodec::Aac;
+        profile.container = OutputContainer::Mp4;
+        profile.color_space = OutputColorSpace::Rec709;
+        profile.captions = false;
+        profile.burn_in_captions = false;
+        profile.included_scene_ids.clear();
+        let deliverable_id = profile.id;
+        project = apply(
+            &service,
+            &project,
+            "admission-profile",
+            Change::UpsertDeliverable { profile },
+        );
+        project = apply(
+            &service,
+            &project,
+            "admission-reviewed-window",
+            Change::AddTranscriptSegment {
+                segment: TranscriptSegment {
+                    id: Uuid::new_v4(),
+                    voice_track_id: track.id,
+                    start: RationalTime::new(6, 5).unwrap(),
+                    end: RationalTime::new(3, 2).unwrap(),
+                    text: "Authored timing for a numerical test signal".into(),
+                    speaker: None,
+                    alignment: AlignmentEvidence::Manual,
+                },
+            },
+        );
+        let mut mix = project.audio.mix.clone();
+        mix.voice_gain_db = 0.0;
+        mix.music_gain_db = -12.0;
+        mix.target_lufs = match target {
+            Some(MasteringTarget::Lufs) => Some(-14.0),
+            _ => None,
+        };
+        mix.target_true_peak_dbfs = match target {
+            Some(MasteringTarget::TruePeak) => Some(-1.0),
+            _ => None,
+        };
+        project = apply(
+            &service,
+            &project,
+            "admission-mix-intent",
+            Change::SetMixIntent { mix },
+        );
+        let recipe = DeliveryRecipe {
+            schema: DeliveryRecipeSchema::V1,
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| DeliverySceneIntent {
+                    scene_id: scene.id,
+                    role: Some(DeliveryNarrativeRole::Mechanism),
+                    archetype: Some(DeliveryArchetype::Statement),
+                })
+                .collect(),
+            original_mix: canonical_mix.then_some(OriginalMixRecipe {
+                music_asset_id: Some(source_ids[1]),
+                sfx_asset_id: Some(source_ids[2]),
+                sfx_gain_db: -3.0,
+                duck_attenuation_db: 12.0,
+                duck_attack_samples: 2_400,
+                duck_release_samples: 4_800,
+            }),
+        };
+        recipe.validate(&project.scenes, &project.assets).unwrap();
+        project = apply(
+            &service,
+            &project,
+            "admission-delivery-recipe",
+            Change::SetDeliveryRecipe {
+                deliverable_profile_id: deliverable_id,
+                recipe: Some(recipe),
+            },
+        );
+        for path in paths {
+            fs::remove_file(path).unwrap();
+        }
+        project.validate().unwrap();
+        assert_eq!(project.audio.mix.voice_gain_db, 0.0);
+        assert_eq!(project.audio.mix.music_gain_db, -12.0);
+        if canonical_mix {
+            assert!(project.audio.mix.target_lufs.is_none());
+            assert!(project.audio.mix.target_true_peak_dbfs.is_none());
+            let plan = resolve_canonical_original_mix_plan(
+                &service,
+                project.id,
+                &project.stamp(),
+                deliverable_id,
+            )
+            .unwrap();
+            assert_eq!(plan.sample_frames, 96_000);
+            assert_eq!(plan.measured_voice.asset_id, source_ids[0]);
+            assert_eq!(plan.original_music.asset_id, source_ids[1]);
+            assert_eq!(plan.original_sfx.asset_id, source_ids[2]);
+        } else {
+            assert!(
+                project.production_design.delivery_recipes[&deliverable_id]
+                    .original_mix
+                    .is_none()
+            );
+        }
+        let connection = no_dispatch_connection(root.path(), project.resource_key());
+        let options = canonical_original_mix_film_options(&project, deliverable_id).unwrap();
+        let rendered =
+            admitted_manifest_fixture(&project, deliverable_id, &options, &connection.output_root);
+        let visual = if matches!(entry, LegacyMaster::Single) {
+            assert_eq!(rendered.segments.len(), 1);
+            assert_eq!(rendered.segments[0].frame_count, 60);
+            None
+        } else {
+            assert_eq!(rendered.segments.len(), 2);
+            Some(admitted_visual_fixture(
+                &project,
+                &options,
+                &rendered,
+                &connection.output_root,
+            ))
+        };
+        let voice = service
+            .verified_master_voice(project.id, &project.stamp(), track.id)
+            .unwrap();
+        let audio = MltAudioArtifact {
+            relative_path: "staged-voice.wav".into(),
+            sha256: voice.sha256.clone(),
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        fs::copy(
+            &voice.path,
+            connection.output_root.join(&audio.relative_path),
+        )
+        .unwrap();
+        verify_output_artifact(
+            &connection.output_root,
+            &audio.relative_path,
+            &audio.sha256,
+            MLT_MASTER_MAX_BYTES,
+        )
+        .unwrap();
+        if let Some(visual) = &visual {
+            let recipe = mlt_multisegment_av::verify_multisegment_visual_source(
+                &project,
+                deliverable_id,
+                &options,
+                &rendered,
+                visual,
+                &connection.output_root,
+            )
+            .unwrap();
+            // The actual CAS/WAV, source clock and ordinary voice gain all
+            // pass independently. These checks do not decode the synthetic
+            // visual files below or turn them into native render evidence.
+            let source = preflight_multi_segment_audio(
+                &project,
+                deliverable_id,
+                &recipe,
+                &visual.source,
+                &voice,
+                &connection.output_root,
+            )
+            .unwrap();
+            assert_eq!(source.total_frames, 60);
+            assert_eq!(source.audio_pcm_frames, 96_000);
+        }
+        AdmissionFixture {
+            service,
+            project,
+            connection,
+            options,
+            rendered,
+            visual,
+            audio,
+            root,
+        }
+    }
+
+    // Complete, digest-checked manifests and typed visual records exercise
+    // the existing source-admission contract. The indexed PNG/FFV1 content
+    // is synthetic; no renderer is invoked or native success claimed.
+    fn admitted_manifest_fixture(
+        project: &Project,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+        output_root: &Path,
+    ) -> MotionCanvasRenderEvidence {
+        let source = build_motion_canvas_segments(project, deliverable_id, options).unwrap();
+        let mut segments = Vec::new();
+        for (index, segment) in source.iter().enumerate() {
+            let directory = format!("render-{index:032x}");
+            let manifest_path = format!("{directory}/artifact-manifest.json");
+            fs::create_dir(output_root.join(&directory)).unwrap();
+            let manifest = json!({
+                "plan": {
+                    "width": 1280, "height": 720, "fps": 30, "fps_denominator": 1,
+                    "frame_count": segment.frame_count, "first_frame": 0,
+                    "end_frame_exclusive": segment.frame_count,
+                },
+                "frames": (0..segment.frame_count).map(|frame| json!({
+                    "index": frame, "file": format!("frames/{frame:06}.png"),
+                    "bytes": 128, "sha256": "a".repeat(64),
+                })).collect::<Vec<_>>(),
+            });
+            let bytes = serde_json::to_vec(&manifest).unwrap();
+            let digest = hex::encode(Sha256::digest(&bytes));
+            fs::write(output_root.join(&manifest_path), bytes).unwrap();
+            verify_output_artifact(output_root, &manifest_path, &digest, 8 * 1024 * 1024).unwrap();
+            segments.push(MotionCanvasSegmentEvidence {
+                segment_id: segment.id.clone(), scene_ids: segment.scene_ids.clone(),
+                frame_count: segment.frame_count, plan_ref: format!("admission-plan-{index}"),
+                fingerprint: format!("admission-fingerprint-{index}"),
+                job_ref: format!("admission-job-{index}"),
+                artifact: json!({
+                    "directory": directory, "manifest": manifest_path,
+                    "manifest_sha256": digest, "frame_count": segment.frame_count,
+                }),
+                verification: json!({
+                    "report": {"execution_status": "completed", "support_level": "native"},
+                    "measurement": {"findings": [], "validation": {"checks": [{"verdict": "PASS"}]}},
+                }),
+            });
+        }
+        MotionCanvasRenderEvidence {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            frame_rate: options.frame_rate,
+            segments,
+        }
+    }
+
+    fn admitted_visual_fixture(
+        project: &Project,
+        options: &FilmBuildOptions,
+        rendered: &MotionCanvasRenderEvidence,
+        output_root: &Path,
+    ) -> MltVerifiedLosslessTimeline {
+        let deliverable_id = rendered.deliverable_id;
+        let checked =
+            preflight_multi_segment_mlt(project, deliverable_id, options, rendered, output_root)
+                .unwrap();
+        let recipe = mlt_native_video_recipe(&checked).unwrap();
+        assert_eq!(recipe.total_frames, 60);
+        let verified_video_segments = recipe
+            .clips
+            .iter()
+            .enumerate()
+            .map(|(index, clip)| {
+                let bytes = format!("synthetic admission-only segment {index}").into_bytes();
+                fs::write(output_root.join(&clip.ffv1_output_path), &bytes).unwrap();
+                MltVerifiedMezzanine {
+                    segment_id: clip.segment_id.clone(),
+                    scene_ids: clip.scene_ids.clone(),
+                    output_start_frame: clip.start_frame,
+                    frame_count: clip.source_out_exclusive,
+                    native_render_job_ref: clip.source_native_job_ref.clone(),
+                    source_manifest_sha256: clip.source_manifest_sha256.clone(),
+                    artifact_path: clip.ffv1_output_path.clone(),
+                    artifact_sha256: hex::encode(Sha256::digest(&bytes)),
+                    artifact_bytes: bytes.len() as u64,
+                }
+            })
+            .collect();
+        let source = MltPreparedMezzanines {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            input_sha256: recipe.input_sha256.clone(),
+            fps_num: 30,
+            fps_den: 1,
+            total_frames: 60,
+            verified_video_segments,
+            evidence_scope: "real-source-ffv1-segments-not-composited".into(),
+        };
+        let bytes = b"synthetic admission-only combined visual";
+        let artifact_path = format!(
+            "{}-sequence-video-only-ffv1.mkv",
+            recipe.owner_output_namespace
+        );
+        fs::write(output_root.join(&artifact_path), bytes).unwrap();
+        MltVerifiedLosslessTimeline {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            recipe_sha256: recipe.input_sha256,
+            frame_count: 60,
+            native_frame_count_observed: Some(60),
+            transport_pcm_audio: false,
+            native_render_profile: "lossless-video-only".into(),
+            provider_project_cleanup: "not_requested_requires_foreground_broker_consent".into(),
+            native_job_ref: "render:admission-only-synthetic".into(),
+            provider_revision: "admission-only-synthetic".into(),
+            artifact_path,
+            artifact_sha256: hex::encode(Sha256::digest(bytes)),
+            artifact_bytes: bytes.len() as u64,
+            source,
+            evidence_scope: "actual-native-mlt-ffv1-no-audio-exact-decoded-frames-not-final-master"
+                .into(),
+        }
+    }
+
+    fn output_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn visit(root: &Path, folder: &Path, result: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            for entry in fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                let key = path.strip_prefix(root).unwrap().to_path_buf();
+                let kind = fs::symlink_metadata(&path).unwrap();
+                assert!(!kind.file_type().is_symlink());
+                if kind.is_dir() {
+                    result.insert(key, None);
+                    visit(root, &path, result);
+                } else {
+                    assert!(kind.is_file());
+                    result.insert(key, Some(fs::read(path).unwrap()));
+                }
+            }
+        }
+        let mut result = BTreeMap::new();
+        visit(root, root, &mut result);
+        result
+    }
+
+    async fn assert_admission_rejected(
+        entry: LegacyMaster,
+        canonical_mix: bool,
+        target: Option<MasteringTarget>,
+        expected_message: &str,
+    ) {
+        let f = fixture(entry, canonical_mix, target);
+        let before = output_snapshot(&f.connection.output_root);
+        let coordinator =
+            ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+        assert!(coordinator.receipts(f.project.id, 256).unwrap().is_empty());
+        let error = match entry {
+            LegacyMaster::Single => coordinator
+                .assemble_mlt_av_master(
+                    f.project.id,
+                    &f.project.stamp(),
+                    MltAvMasterRequest {
+                        request_id: "legacy-final-admission-single",
+                        deliverable_id: f.rendered.deliverable_id,
+                        motion: &f.rendered,
+                        audio: &f.audio,
+                        sync: None,
+                    },
+                )
+                .await
+                .unwrap_err(),
+            LegacyMaster::MultisegmentVoice => coordinator
+                .assemble_native_mlt_multisegment_av_master(
+                    f.project.id,
+                    &f.project.stamp(),
+                    MltMultisegmentAvMasterRequest {
+                        request_id: "legacy-final-admission-voice",
+                        deliverable_id: f.rendered.deliverable_id,
+                        options: &f.options,
+                        rendered: &f.rendered,
+                        visual: f.visual.as_ref().unwrap(),
+                        audio: &f.audio,
+                    },
+                )
+                .await
+                .unwrap_err(),
+            LegacyMaster::MultisegmentSfx => coordinator
+                .assemble_native_mlt_multisegment_sfx_master(
+                    f.project.id,
+                    &f.project.stamp(),
+                    MltMultisegmentSfxMasterRequest {
+                        request_id: "legacy-final-admission-sfx",
+                        deliverable_id: f.rendered.deliverable_id,
+                        options: &f.options,
+                        rendered: &f.rendered,
+                        visual: f.visual.as_ref().unwrap(),
+                        audio: &f.audio,
+                    },
+                )
+                .await
+                .unwrap_err(),
+        };
+        // Check effects before the error details, so a failing baseline also
+        // exposes an accidental dispatch instead of hiding it behind its error.
+        assert!(coordinator.receipts(f.project.id, 256).unwrap().is_empty());
+        assert_eq!(output_snapshot(&f.connection.output_root), before);
+        assert_eq!(
+            fs::symlink_metadata(f.root.path().join("native-dispatch-marker"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound,
+        );
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert_eq!(error.message, expected_message);
+        assert!(error.outcome_known);
+    }
+
+    #[tokio::test]
+    async fn r1_single_master_rejects_saved_original_mix_before_any_effect() {
+        assert_admission_rejected(LegacyMaster::Single, true, None, CANONICAL_MASTER_REQUIRED)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn r1_multisegment_voice_rejects_saved_original_mix_before_any_effect() {
+        assert_admission_rejected(
+            LegacyMaster::MultisegmentVoice,
+            true,
+            None,
+            CANONICAL_MASTER_REQUIRED,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn r1_multisegment_sfx_rejects_saved_original_mix_before_any_effect() {
+        // Canonical three-bus and semantic-SFX-only are mutually exclusive
+        // source classes. A valid canonical recipe must select the canonical
+        // route before a later SFX-only guard reports a missing/foreign cue.
+        assert_admission_rejected(
+            LegacyMaster::MultisegmentSfx,
+            true,
+            None,
+            CANONICAL_MASTER_REQUIRED,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn r2_single_master_rejects_lufs_without_original_mix_before_any_effect() {
+        assert_admission_rejected(
+            LegacyMaster::Single,
+            false,
+            Some(MasteringTarget::Lufs),
+            SINGLE_MASTER_TARGET_UNSUPPORTED,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn r2_single_master_rejects_true_peak_without_original_mix_before_any_effect() {
+        assert_admission_rejected(
+            LegacyMaster::Single,
+            false,
+            Some(MasteringTarget::TruePeak),
+            SINGLE_MASTER_TARGET_UNSUPPORTED,
+        )
+        .await;
     }
 }
 
