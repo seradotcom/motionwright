@@ -10,4 +10,4 @@ The integration regression `production_jobs_recent_window.rs` writes an acknowle
 
 After correction, the same test checks equality before and after an independent SQLite close/reopen; companion controls verify the existing visible limit, no new receipts from reading, and deterministic rejection of a stale watermark after a new observation. Unit tests do not prove an actual provider job or full installed consumer behavior. The original receipt stream is never rewritten.
 
-Technical coverage is limited to the snapshot authority subcriteria of CR-JOBS-01/03/04/06 and portions of ACC-035/036. A5 retains the formal acceptance decision. This alone does not diagnose the historical provider-generation loss in issue #49 or establish a human review.
+These source-level checks validate only the read-only job-projection contract. Independent installed-service, native-provider and full-product acceptance remains separate; they do not establish the historical cause of issue #49.
