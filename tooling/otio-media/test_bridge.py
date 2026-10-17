@@ -5,12 +5,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
 from bridge import (
-    BridgeRefused, export_portable, import_preview, rtc, trange, SCHEMA
+    BridgeRefused, export_portable, file_probe, import_preview, rtc, trange, SCHEMA,
+    _probe_output,
 )
 
 ID=lambda number:f"00000000-0000-4000-8000-{number:012x}"
@@ -295,5 +298,119 @@ class PortableOtioTests(unittest.TestCase):
         self.request.pop("exec")
         self.export()
         with self.assertRaisesRegex(BridgeRefused,"new destination"):self.export()
+
+
+class VideoReadbackTests(unittest.TestCase):
+    @staticmethod
+    def header(**changes):
+        stream={"codec_name":"h264","width":320,"height":180,
+                "r_frame_rate":"30/1","avg_frame_rate":"30/1","nb_frames":"60"}
+        stream.update(changes)
+        return json.dumps({"streams":[stream]}).encode()
+
+    @staticmethod
+    def decoded(**changes):
+        stream={"codec_name":"h264","width":320,"height":180,"nb_read_frames":"60"}
+        stream.update(changes)
+        return json.dumps({"streams":[stream]}).encode()
+
+    def test_profile_limits_are_checked_before_whole_video_decode(self):
+        for changes in ({"codec_name":"vp9"},{"width":4097},{"height":0},
+                        {"r_frame_rate":"30000/1001"},{"avg_frame_rate":"29/1"},
+                        {"nb_frames":"216001"},{"nb_frames":"N/A"},
+                        {"nb_frames":float("inf")}):
+            with self.subTest(changes=changes):
+                with patch("bridge._probe_output",return_value=self.header(**changes))as probe:
+                    with self.assertRaises(BridgeRefused):
+                        file_probe(Path("private-owner-source.mp4"))
+                    self.assertEqual(probe.call_count,1)
+
+    def test_complete_count_is_observed_for_only_the_selected_video(self):
+        with patch("bridge._probe_output",side_effect=[self.header(),self.decoded()])as probe:
+            self.assertEqual(file_probe(Path("private-owner-source.mp4")),{
+                "fps":30,"frames":60,"width":320,"height":180,"codec":"h264"})
+        self.assertEqual(probe.call_count,2)
+        for call in probe.call_args_list:
+            args=call.args[0]
+            self.assertEqual(args[args.index("-select_streams")+1],"v:0")
+            self.assertEqual(args[args.index("-threads")+1],"1")
+            self.assertEqual(args[args.index("-protocol_whitelist")+1],"file")
+        self.assertNotIn("-count_frames",probe.call_args_list[0].args[0])
+        self.assertIn("-count_frames",probe.call_args_list[1].args[0])
+        self.assertIn("-err_detect",probe.call_args_list[1].args[0])
+        self.assertEqual(probe.call_args_list[0].kwargs["deadline"],
+                         probe.call_args_list[1].kwargs["deadline"])
+
+    def test_zero_error_readback_still_must_match_the_declared_frame_count(self):
+        for count in ("0","39","61","N/A",None,60.5,True,float("inf")):
+            with self.subTest(count=count):
+                with patch("bridge._probe_output",side_effect=[
+                    self.header(),self.decoded(nb_read_frames=count)
+                ]):
+                    with self.assertRaises(BridgeRefused):
+                        file_probe(Path("private-owner-source.mp4"))
+
+    def test_decode_cannot_change_geometry_or_substitute_a_codec(self):
+        for changes in ({"codec_name":"vp9"},{"width":640},{"height":360}):
+            with self.subTest(changes=changes):
+                with patch("bridge._probe_output",side_effect=[
+                    self.header(),self.decoded(**changes)
+                ]):
+                    with self.assertRaisesRegex(BridgeRefused,"geometry or codec"):
+                        file_probe(Path("private-owner-source.mp4"))
+
+    def test_missing_or_ambiguous_decoded_stream_is_refused(self):
+        for decoded in ({"streams":[]},{"streams":[{},{}]},
+                        {"streams":"malformed"},{"streams":[{}]}):
+            with self.subTest(decoded=decoded):
+                with patch("bridge._probe_output",side_effect=[
+                    self.header(),json.dumps(decoded).encode()
+                ]):
+                    with self.assertRaises(BridgeRefused):
+                        file_probe(Path("private-owner-source.mp4"))
+
+    def test_zero_exit_with_decoder_error_is_refused_without_private_diagnostics(self):
+        with self.assertRaisesRegex(BridgeRefused,"decode error")as raised:
+            _probe_output([sys.executable,"-I","-c",
+                           "import sys; sys.stderr.write('PRIVATE_OWNER_PATH packet corrupt')"])
+        self.assertNotIn("PRIVATE_OWNER_PATH",str(raised.exception))
+
+    def test_failed_or_missing_decoder_does_not_leak_process_details(self):
+        with self.assertRaises(BridgeRefused):
+            _probe_output([sys.executable,"-I","-c","raise SystemExit(2)"])
+        with patch("bridge.subprocess.Popen",side_effect=OSError("PRIVATE_OWNER_PATH")):
+            with self.assertRaises(BridgeRefused)as raised:
+                _probe_output(["ffprobe","PRIVATE_OWNER_PATH"])
+        self.assertNotIn("PRIVATE_OWNER_PATH",str(raised.exception))
+
+    def test_readback_timeout_kills_and_reaps_the_process(self):
+        started=[]
+        popen=subprocess.Popen
+        def remember(*args,**kwargs):
+            child=popen(*args,**kwargs)
+            started.append(child)
+            return child
+        with patch("bridge.PROBE_TIMEOUT_SECONDS",0.05), \
+             patch("bridge.subprocess.Popen",side_effect=remember):
+            with self.assertRaisesRegex(BridgeRefused,"bounded"):
+                _probe_output([sys.executable,"-I","-c","import time; time.sleep(2)"])
+        self.assertEqual(len(started),1)
+        self.assertIsNotNone(started[0].returncode)
+
+    def test_expired_source_budget_does_not_start_another_decoder(self):
+        with patch("bridge.subprocess.Popen")as start:
+            with self.assertRaisesRegex(BridgeRefused,"bounded"):
+                _probe_output(["ffprobe","private-owner-source.mp4"],deadline=0)
+        start.assert_not_called()
+
+    def test_stdout_and_stderr_are_bounded_while_the_process_is_alive(self):
+        for stream in ("stdout","stderr"):
+            with self.subTest(stream=stream):
+                with patch("bridge.MAX_JSON",128):
+                    with self.assertRaisesRegex(BridgeRefused,"bounded"):
+                        _probe_output([sys.executable,"-I","-c",
+                            f"import sys,time; sys.{stream}.write('x'*4096); "
+                            f"sys.{stream}.flush(); time.sleep(2)"])
+
 
 if __name__=="__main__":unittest.main()

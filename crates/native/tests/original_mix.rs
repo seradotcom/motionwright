@@ -140,6 +140,93 @@ fn true_native_music_ducking_is_sample_accurate_and_does_not_change_voice_source
     assert!(!receipt.listening_intelligibility_approved);
     assert!(!receipt.owner_release_approved);
 }
+
+#[test]
+fn short_voice_releases_from_the_reached_gain_without_a_pcm_discontinuity() {
+    for (duration, attack, release) in [
+        (1_u64, 4_800_u32, 4_800_u32),
+        (1_200, 4_800, 4_800),
+        (1_200, 4_800, 600),
+        (4_800, 4_800, 4_800),
+        (9_600, 4_800, 4_800),
+    ] {
+        let (mut project, mut plan, [voice, music, sfx]) = fixture();
+        let start = plan.voice_windows[0].start_sample;
+        let end = start + duration;
+        project.audio.transcript[0].end = domain::RationalTime::new(end as i64, 48_000).unwrap();
+        plan.voice_windows[0].end_exclusive = end;
+        plan.duck_attack_samples = attack;
+        plan.duck_release_samples = release;
+
+        let (mixed, receipt) =
+            render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+        let before = left_at(&mixed, start as usize - 1);
+        assert_eq!(left_at(&mixed, start as usize), before);
+        // These constant-source profiles slew by at most one PCM16 unit
+        // per sample. A switch of envelope phase must not create a click.
+        for frame in start..end {
+            let current = i32::from(left_at(&mixed, frame as usize));
+            let next = i32::from(left_at(&mixed, frame as usize + 1));
+            assert!(
+                (0..=1).contains(&(current - next)),
+                "Attack discontinuity at {frame}: {current} -> {next}, duration {duration}"
+            );
+        }
+        let release_end = end + u64::from(release);
+        for frame in end..release_end {
+            let current = i32::from(left_at(&mixed, frame as usize));
+            let next = i32::from(left_at(&mixed, frame as usize + 1));
+            assert!(
+                (0..=1).contains(&(next - current)),
+                "Music must recover after voice ends: {frame}: {current} -> {next}, duration {duration}, release {release}"
+            );
+        }
+        // Also cover the former attack boundary when release has already
+        // finished. It must not re-attenuate or cause a delayed jump.
+        let check_end = release_end.max(start + u64::from(attack)) + 1;
+        for frame in release_end..=check_end {
+            assert_eq!(left_at(&mixed, frame as usize), before);
+        }
+        assert_eq!(receipt.frames, plan.sample_frames);
+        assert_eq!(receipt.rendered_pcm_sha256, hex(&mixed));
+        assert_eq!(receipt.measured_music_duck_windows, 1);
+        assert!(!receipt.listening_intelligibility_approved);
+    }
+}
+
+#[test]
+fn short_voice_envelopes_do_not_attenuate_voice_or_sfx_buses() {
+    let (mut project, mut plan, _) = fixture();
+    let sources = [pcm(2_000, 96_000), pcm(0, 96_000), pcm(-1_000, 96_000)];
+    for (index, stem) in [
+        &mut plan.measured_voice,
+        &mut plan.original_music,
+        &mut plan.original_sfx,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let digest = hex(&sources[index]);
+        stem.source_asset_sha256 = digest.clone();
+        stem.decoded_pcm_sha256 = digest.clone();
+        project.assets[index].content_sha256 = Some(digest);
+    }
+    project.audio.voice_tracks[0].source_sha256 = plan.measured_voice.source_asset_sha256.clone();
+    let [voice, music, sfx] = sources;
+    let (before, _) = render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+    project.audio.transcript[0].end = time(21, 40);
+    plan.voice_windows[0].end_exclusive = 25_200;
+    plan.duck_attenuation_db = 30.0;
+    plan.duck_attack_samples = 4_800;
+    plan.duck_release_samples = 600;
+    let (after, _) = render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+    assert!(
+        left_at(&before, 24_000) > 0,
+        "Voice and SFX must contribute"
+    );
+    assert_eq!(after, before, "Only the music bus may be ducked");
+}
+
 #[test]
 fn rendered_wav_has_exact_pcm_bytes_and_cannot_claim_an_audio_master() {
     let (project, plan, [voice, music, sfx]) = fixture();

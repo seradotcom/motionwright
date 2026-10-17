@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 
@@ -29,6 +30,7 @@ MAX_TOTAL=512*1024*1024
 MAX_SCENES=32
 MAX_JSON=2*1024*1024
 RATES={24,25,30,60}
+PROBE_TIMEOUT_SECONDS=20
 
 class BridgeRefused(ValueError):pass
 def insist(ok:bool,message:str)->None:
@@ -104,18 +106,68 @@ def rtc(value:int,rate:int)->dict:
 def trange(start:int,duration:int,rate:int)->dict:
     return {"OTIO_SCHEMA":"TimeRange.1","duration":rtc(duration,rate),
             "start_time":rtc(start,rate)}
+def _probe_output(args:list[str],deadline:float|None=None)->bytes:
+    """Bound readback output while the process runs, including corrupt-file logs."""
+    if deadline is None:deadline=time.monotonic()+PROBE_TIMEOUT_SECONDS
+    insist(time.monotonic()<deadline,"Media video readback exceeded its bounded time budget")
+    try:
+        process=subprocess.Popen(args,stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    except OSError:
+        raise BridgeRefused("A bounded ffprobe video readback is unavailable")from None
+    output=[b"",b""]
+    overflow=threading.Event()
+    read_failed=threading.Event()
+    def stop()->None:
+        try:process.kill()
+        except OSError:pass
+    def collect(stream,index:int)->None:
+        try:
+            output[index]=stream.read(MAX_JSON+1)
+            if len(output[index])>MAX_JSON:
+                overflow.set()
+                stop()
+        except OSError:
+            read_failed.set()
+            stop()
+        finally:
+            stream.close()
+    readers=[threading.Thread(target=collect,args=(stream,index),daemon=True)
+             for index,stream in enumerate((process.stdout,process.stderr))]
+    timed_out=False
+    started=[]
+    with process:
+        try:
+            for reader in readers:
+                reader.start()
+                started.append(reader)
+            process.wait(timeout=max(0,deadline-time.monotonic()))
+        except subprocess.TimeoutExpired:
+            timed_out=True
+        finally:
+            if process.poll() is None:
+                stop()
+                process.wait()
+            for reader in started:reader.join()
+    insist(not timed_out and not overflow.is_set() and not read_failed.is_set(),
+           "Media video readback exceeded its bounded time or output budget")
+    # ffprobe may return zero after reporting a damaged packet or decoder error.
+    # Never include those diagnostics, which can contain private paths, in errors.
+    insist(process.returncode==0 and not output[1].strip(),
+           "Media video readback failed or reported a decode error")
+    return output[0]
+
 def file_probe(media:Path)->dict:
-    args=["ffprobe","-v","error","-select_streams","v:0",
-          "-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames",
-          "-of","json",str(media)]
-    try:run=subprocess.run(args,capture_output=True,timeout=20,check=False)
-    except (FileNotFoundError,subprocess.TimeoutExpired) as error:
-        raise BridgeRefused("A bounded ffprobe video readback is unavailable") from error
-    insist(run.returncode==0 and len(run.stdout)<MAX_JSON,
-           "Media video stream could not be independently probed")
-    observed=strict_json(run.stdout,"ffprobe")
+    # Metadata and complete decode share the existing whole-source time budget.
+    deadline=time.monotonic()+PROBE_TIMEOUT_SECONDS
+    common=["ffprobe","-v","error","-protocol_whitelist","file",
+            "-threads","1","-max_alloc",str(MAX_MEDIA),"-select_streams","v:0"]
+    observed=strict_json(_probe_output(common+[
+        "-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames",
+        "-of","json",str(media)],deadline=deadline),"ffprobe")
     streams=observed.get("streams",[])
-    insist(len(streams)==1,"Expected exactly one probed video stream")
+    insist(isinstance(streams,list) and len(streams)==1 and isinstance(streams[0],dict),
+           "Expected exactly one probed video stream")
     item=streams[0]
     insist(item.get("codec_name")=="h264",
            "Portable first-party NLE media profile currently requires actual H.264")
@@ -126,13 +178,31 @@ def file_probe(media:Path)->dict:
         fps=Fraction(item["r_frame_rate"])
         average=Fraction(item["avg_frame_rate"])
         count=int(item["nb_frames"])
-    except (KeyError,ValueError,TypeError,ZeroDivisionError)as error:
+    except (KeyError,ValueError,TypeError,ZeroDivisionError,OverflowError)as error:
         raise BridgeRefused("Media needs measured constant-rate counted frames")from error
     insist(fps==average and fps.denominator==1 and fps.numerator in RATES,
            "Only exact constant 24/25/30/60 fps sources are admitted")
     insist(str(count)==str(item["nb_frames"]) and 1<=count<=216000,
            "Media frame count must be measured and canonical")
-    return {"fps":fps.numerator,"frames":count,"width":item["width"],"height":item["height"],
+    # Only after the existing profile limits pass, decode the entire selected
+    # video stream. Container nb_frames is a declaration, not observed media.
+    decoded=strict_json(_probe_output(common+[
+        "-err_detect","explode","-count_frames","-show_entries",
+        "stream=codec_name,width,height,nb_read_frames","-of","json",str(media)],
+        deadline=deadline),
+        "decoded ffprobe")
+    readback=decoded.get("streams",[])
+    insist(isinstance(readback,list) and len(readback)==1 and isinstance(readback[0],dict),
+           "Expected exactly one completely decoded video stream")
+    readback=readback[0]
+    insist(all(readback.get(key)==item[key] for key in ("codec_name","width","height")),
+           "Decoded video geometry or codec differs from the admitted source profile")
+    try:read_count=int(readback["nb_read_frames"])
+    except (KeyError,ValueError,TypeError,OverflowError):
+        raise BridgeRefused("Media has no complete decoded video frame count")from None
+    insist(str(read_count)==str(readback["nb_read_frames"]) and read_count==count,
+           "Decoded media frame count differs from the declared source length")
+    return {"fps":fps.numerator,"frames":read_count,"width":item["width"],"height":item["height"],
             "codec":"h264"}
 def parse_project(root:Path,name:str)->tuple[dict,str]:
     path=owner_file(root,name,MAX_JSON)
