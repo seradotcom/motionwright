@@ -213,22 +213,51 @@ Var NoShortcutMode
 !macroend
 
 !macro MWINST_INSTALL_PAYLOAD Relative Symbol
-  ; The complete source preparation preceded every predecessor deletion.
-  ; Recheck this source before withdrawing a predecessor file.
-  !insertmacro MWOWN_CHECK "" "$MWINST_PluginRoot" "mw-prepared-${Symbol}.bin" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
-  ${If} $0 != ${MWOWN_MATCHED}
-    !insertmacro MWINST_FAIL "Prepared payload changed; $MWOWN_LastReason"
-  ${EndIf}
+  ; First classify the existing immutable destination. A matching current
+  ; payload needs neither an extraction nor another publication.
   StrCpy $MWINST_Relative "${Relative}"
-  Call MWINST_MakeDestinationAvailable
-  ${If} $MWINST_NeedFile = 1
-    !insertmacro MWINST_REQUIRE_ABSENT "${Relative}" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}"
-    ClearErrors
-    ; Both File instructions consume the same captured build input. The
-    ; prepared copy is its full-byte preflight, not a second ownership source.
-    File "/oname=${Relative}" "${${Symbol}_SOURCE}"
-    ${If} ${Errors}
-      !insertmacro MWINST_FAIL "Payload extraction failed: ${Relative}"
+  Call MWINST_Classify
+  ${If} $MWINST_Classification != "NEW"
+    ; Stage in the exact DESTINATION parent on the same volume. Extraction
+    ; may be interrupted but never writes the canonical basename.
+    !insertmacro MWOWN_CHECK "" "$MWINST_PluginRoot" "mw-prepared-${Symbol}.bin" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
+    ${If} $0 != ${MWOWN_MATCHED}
+      !insertmacro MWINST_FAIL "Prepared source changed before staging; $MWOWN_LastReason"
+    ${EndIf}
+    ${GetParent} "$INSTDIR\${Relative}" $MWINST_Parent
+    ${GetFileName} "$INSTDIR\${Relative}" $MWINST_Leaf
+    StrCpy $MWINST_StageLeaf "mw-stage-${Symbol}-${${Symbol}_SHA256}.bin"
+    !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
+    ${If} $0 = ${MWOWN_MISSING}
+      ClearErrors
+      File "/oname=$MWINST_Parent\$MWINST_StageLeaf" "${${Symbol}_SOURCE}"
+      ${If} ${Errors}
+        !insertmacro MWINST_FAIL "Destination-volume payload staging failed: ${Relative}"
+      ${EndIf}
+    ${ElseIf} $0 != ${MWOWN_MATCHED}
+      ; Do not replace/delete an old partial or modified staging file.
+      !insertmacro MWINST_FAIL "Untrusted payload staging bytes retained: ${Relative}; $MWOWN_LastReason"
+    ${EndIf}
+    !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
+    ${If} $0 != ${MWOWN_MATCHED}
+      !insertmacro MWINST_FAIL "Staged destination-volume bytes are not complete: ${Relative}; $MWOWN_LastReason"
+    ${EndIf}
+
+    ; Only after complete same-volume staging may the confirmed predecessor
+    ; be withdrawn. The PUBLISH function reopens and checks the SAME staged
+    ; handle through the atomic no-replace rename; it never runs File on
+    ; the canonical destination.
+    StrCpy $MWINST_Relative "${Relative}"
+    Call MWINST_MakeDestinationAvailable
+    ${If} $MWINST_NeedFile = 1
+      !insertmacro MWINST_REQUIRE_ABSENT "${Relative}" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}"
+      !insertmacro MWOWN_PUBLISH "$MWINST_Parent" "$MWINST_StageLeaf" "$MWINST_Leaf" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
+      ${If} $0 = ${MWOWN_PUBLISH_UNCERTAIN}
+        SetErrorLevel 3
+        Abort "Publication outcome uncertain for ${Relative}; registration retained, no retry."
+      ${ElseIf} $0 != ${MWOWN_PUBLISHED}
+        !insertmacro MWINST_FAIL "Verified publication rejected for ${Relative}; $MWOWN_LastReason"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
   !insertmacro MWINST_REQUIRE_MATCHED "${Relative}" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}"
@@ -255,6 +284,7 @@ Var MWINST_PrevSha
 Var MWINST_PrevSize
 Var MWINST_Classification
 Var MWINST_NeedFile
+Var MWINST_StageLeaf
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -813,15 +843,42 @@ Section Install
     !insertmacro MWINST_FAIL "The prepared uninstaller changed; $MWOWN_LastReason"
   ${EndIf}
   StrCpy $MWINST_Relative "uninstall.exe"
-  Call MWINST_MakeDestinationAvailable
-  ${If} $MWINST_NeedFile = 1
-    !insertmacro MWINST_REQUIRE_ABSENT "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize"
-    ClearErrors
-    ; No overwrite/deferred-delete fallback. The source and the final bytes
-    ; are checked, but CHECK plus Rename is not a transaction.
-    Rename "$MWINST_PluginRoot\${MWOWN_NEW_SELF_NAME}" "$INSTDIR\uninstall.exe"
-    ${If} ${Errors}
-      !insertmacro MWINST_FAIL "Uninstaller publication failed; no retry was performed."
+  Call MWINST_Classify
+  ${If} $MWINST_Classification != "NEW"
+    ; WriteUninstaller cannot be embedded in File. Copy its fully checked
+    ; private source to a same-volume stage, preserving the old executable
+    ; until that staged copy is byte-verified.
+    StrCpy $MWINST_StageLeaf "mw-uninstaller-stage-$MWINST_NewSelfSha.bin"
+    !insertmacro MWOWN_CHECK "" "$INSTDIR" "$MWINST_StageLeaf" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
+    ${If} $0 = ${MWOWN_MISSING}
+      ClearErrors
+      ; Fail if a separate writer creates the stage after the absence check.
+      ; CopyFiles may replace it; Win32 CopyFileW(...,TRUE) never does.
+      StrCpy $2 "$MWINST_PluginRoot\${MWOWN_NEW_SELF_NAME}"
+      StrCpy $3 "$INSTDIR\$MWINST_StageLeaf"
+      System::Call 'kernel32::CopyFileW(w r2, w r3, i 1) i.r0 ?e'
+      Pop $1
+      ${If} $0 = 0
+        !insertmacro MWINST_FAIL "The uninstaller staging copy was refused; previous bytes retained."
+      ${EndIf}
+    ${ElseIf} $0 != ${MWOWN_MATCHED}
+      !insertmacro MWINST_FAIL "Untrusted uninstaller staging file retained; $MWOWN_LastReason"
+    ${EndIf}
+    !insertmacro MWOWN_CHECK "" "$INSTDIR" "$MWINST_StageLeaf" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
+    ${If} $0 != ${MWOWN_MATCHED}
+      !insertmacro MWINST_FAIL "The fully staged uninstaller was not verified; $MWOWN_LastReason"
+    ${EndIf}
+    StrCpy $MWINST_Relative "uninstall.exe"
+    Call MWINST_MakeDestinationAvailable
+    ${If} $MWINST_NeedFile = 1
+      !insertmacro MWINST_REQUIRE_ABSENT "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize"
+      !insertmacro MWOWN_PUBLISH "$INSTDIR" "$MWINST_StageLeaf" "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
+      ${If} $0 = ${MWOWN_PUBLISH_UNCERTAIN}
+        SetErrorLevel 3
+        Abort "Uninstaller publication uncertain; registration retained and no retry attempted."
+      ${ElseIf} $0 != ${MWOWN_PUBLISHED}
+        !insertmacro MWINST_FAIL "Uninstaller held-handle publication was refused; $MWOWN_LastReason"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
   !insertmacro MWINST_REQUIRE_MATCHED "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize"
