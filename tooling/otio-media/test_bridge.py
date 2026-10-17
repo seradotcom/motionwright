@@ -2,18 +2,20 @@
 """First-party portable OTIO tests. Synthetic bytes; real NLE/ffprobe is CI only."""
 from __future__ import annotations
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
 from bridge import (
     BridgeRefused, export_portable, file_probe, import_preview, rtc, trange, SCHEMA,
-    _probe_output,
+    _probe_output, preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, fingerprint, _nle_local_media,
 )
 
 ID=lambda number:f"00000000-0000-4000-8000-{number:012x}"
@@ -298,6 +300,406 @@ class PortableOtioTests(unittest.TestCase):
         self.request.pop("exec")
         self.export()
         with self.assertRaisesRegex(BridgeRefused,"new destination"):self.export()
+
+
+class BoundedKdenliveCutTests(unittest.TestCase):
+    """RAW-shaped unit data, not an execution or receipt of a native editor."""
+    setUp=PortableOtioTests.setUp
+    save=PortableOtioTests.save
+    export=PortableOtioTests.export
+    read=PortableOtioTests.read
+
+    def prepare(self,*,complete=True,schema="Clip.2"):
+        if complete:
+            self.request["bindings"].append({**self.request["bindings"][0],
+                "scene_id":ID(12),"source_start_frame":60})
+        self.export()
+        self.raw=self.root/"raw"
+        self.raw.mkdir()
+        clips=[]
+        # These records are explicit parser fixtures. No generated metadata,
+        # NLE UUID authority or renderer output is asserted.
+        for original in self.read()["tracks"]["children"][0]["children"]:
+            ref=json.loads(json.dumps(original["media_reference"]))
+            if ref["OTIO_SCHEMA"]=="MissingReference.1":continue
+            ref["metadata"]={}
+            ref["name"]=""
+            ref["available_image_bounds"]=None
+            ref["target_url"]=str(self.out/ref["target_url"])
+            clip={"OTIO_SCHEMA":schema,"name":"native-original.mp4","metadata":{},
+                  "enabled":True,"effects":[],"markers":[],
+                  "source_range":original["source_range"]}
+            if schema=="Clip.1":clip["media_reference"]=ref
+            else:clip.update(media_references={"DEFAULT_MEDIA":ref},
+                             active_media_reference_key="DEFAULT_MEDIA")
+            clips.append(clip)
+        self.received={"OTIO_SCHEMA":"Timeline.1","name":"","metadata":{},
+            "global_start_time":None,"tracks":{"OTIO_SCHEMA":"Stack.1",
+            "metadata":{},"source_range":None,"effects":[],"markers":[],"enabled":True,
+            "children":[{"OTIO_SCHEMA":"Track.1","kind":"Video","name":"V1",
+                "metadata":{},"source_range":trange(0,len(clips)*30,30),
+                "effects":[],"markers":[],"enabled":True,"children":clips}]}}
+        self.edited=json.loads(json.dumps(self.received))
+        self.write_raw()
+
+    def write_raw(self):
+        for name,value in (("received.otio",self.received),("edited.otio",self.edited)):
+            (self.raw/name).write_text(json.dumps(value,sort_keys=True),encoding="utf-8")
+
+    def raw_request(self):
+        digest=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
+        return {"schema":KDENLIVE_REQUEST_SCHEMA,
+            "capsule_manifest_sha256":digest(self.out/"bridge-manifest.json"),
+            "received_otio":"received.otio","received_sha256":digest(self.raw/"received.otio"),
+            "edited_otio":"edited.otio","edited_sha256":digest(self.raw/"edited.otio")}
+
+    def check(self,*,roots=None,request=None,probe=None):
+        with patch("bridge.file_probe",return_value=probe or VIDEO_INFO):
+            return preview_kdenlive_cut(self.out,self.raw,request or self.raw_request(),
+                self.out/"source-project.json",authorized_media_roots=roots or (self.out,self.raw))
+
+    def children(self):return self.edited["tracks"]["children"][0]["children"]
+
+    def ref(self,clip):
+        return clip.get("media_reference")or clip["media_references"]["DEFAULT_MEDIA"]
+
+    def assert_loss(self,code):
+        self.write_raw()
+        result=self.check()
+        self.assertEqual(result["status"],"REJECTED_LOSS")
+        self.assertEqual(result["rejection_code"],code)
+        self.assertEqual(result["native_change_proposals"],[])
+        self.assertFalse(result["edit_imported"])
+        self.assertFalse(result["raw_files_rewritten"])
+        return result
+
+    def test_unique_physical_inpoints_recover_ids_without_raw_metadata_or_unique_names(self):
+        self.prepare()
+        before={p:p.read_bytes()for p in (*self.raw.glob("*.otio"),
+            self.out/"source-project.json",self.out/"timeline.otio",self.out/"bridge-manifest.json")}
+        self.assertNotIn(ID(10),(self.raw/"received.otio").read_text())
+        result=self.check()
+        self.assertEqual(result["proposed_scene_order"],[ID(10),ID(11),ID(12)])
+        self.assertEqual(result["native_change_proposals"],[])
+        self.assertEqual([m["original_inpoint"]for m in result["source_identity_mapping"]],[0,30,60])
+        self.assertEqual(len({m["native_name_observed"]for m in result["source_identity_mapping"]}),1)
+        self.assertEqual(result["nle_receiver_acceptance"],"NOT_VERIFIED")
+        self.assertEqual(result["native_project_reopened"],"NOT_VERIFIED")
+        self.assertFalse(result["native_final_frames_verified"])
+        self.assertFalse(result["publication_approved"])
+        self.assertTrue(any("immutable capsule"in loss for loss in result["loss_report"]))
+        for path,data in before.items():self.assertEqual(path.read_bytes(),data)
+
+    def test_reorder_and_end_trim_use_only_existing_changes_on_original_uuids(self):
+        self.prepare()
+        clips=self.children()
+        self.edited["tracks"]["children"][0]["children"]=[clips[1],clips[0],clips[2]]
+        clips[0]["source_range"]["duration"]=rtc(15,30)
+        self.edited["tracks"]["children"][0]["source_range"]=trange(0,75,30)
+        self.write_raw()
+        result=self.check()
+        self.assertEqual(result["native_change_proposals"],[
+            {"type":"move_scene","scene_id":ID(11),"to_index":0},
+            {"type":"set_scene_duration","scene_id":ID(10),"duration":{"num":"1","den":"2"}}])
+        self.assertEqual(result["expected_project_revision"],7)
+        self.assertFalse(result["source_media_relinked"])
+
+    def test_clip1_has_a_separate_closed_shape(self):
+        self.prepare(schema="Clip.1")
+        self.assertEqual(self.check()["native_change_proposals"],[])
+        self.children()[0]["media_references"]={"DEFAULT_MEDIA":self.ref(self.children()[0])}
+        self.assert_loss("unsupported_schema")
+
+    def test_same_bytes_relocation_is_separate_from_project_relink_and_native_receipt(self):
+        self.prepare()
+        source=Path(self.ref(self.children()[0])["target_url"])
+        relocated=self.raw/"relocated.mp4"
+        relocated.write_bytes(source.read_bytes())
+        for clip in self.children():self.ref(clip)["target_url"]=relocated.as_uri()
+        self.write_raw()
+        result=self.check()
+        self.assertTrue(result["same_source_bytes_relocated"])
+        self.assertTrue(all(m["same_source_bytes_relocated"]for m in result["source_identity_mapping"]))
+        self.assertFalse(result["source_media_relinked"])
+        self.assertEqual(result["native_change_proposals"],[])
+        with patch("bridge.file_probe",return_value=VIDEO_INFO):
+            with self.assertRaises(BridgeRefused):
+                import_preview(self.out,"../raw/edited.otio",self.out/"source-project.json")
+
+    def test_original_missing_reference_omission_is_rejected_loss_and_never_filled(self):
+        self.prepare(complete=False)
+        result=self.assert_loss("original_missing_reference_not_receivable")
+        self.assertEqual(result["original_missing_scene_ids"],[ID(12)])
+        self.assertEqual(result["received_clip_count"],2)
+        self.assertEqual(result["edited_clip_count"],2)
+        self.assertEqual(self.read()["tracks"]["children"][0]["children"][2]
+                         ["media_reference"]["OTIO_SCHEMA"],"MissingReference.1")
+
+    def test_gap_and_explicit_missing_are_loss_not_placeholder_frames(self):
+        self.prepare()
+        original=json.loads(json.dumps(self.edited))
+        self.children()[0]["OTIO_SCHEMA"]="Gap.1"
+        self.assert_loss("native_gap_observed")
+        self.edited=json.loads(json.dumps(original))
+        self.children()[0]["media_references"]["DEFAULT_MEDIA"]={"OTIO_SCHEMA":"MissingReference.1"}
+        self.assert_loss("native_missing_reference_observed")
+
+    def test_omitted_duplicate_or_split_native_instances_are_refused(self):
+        self.prepare()
+        original=json.loads(json.dumps(self.edited))
+        self.children().pop()
+        self.edited["tracks"]["children"][0]["source_range"]=trange(0,60,30)
+        self.assert_loss("scene_set_changed")
+        self.edited=json.loads(json.dumps(original))
+        self.children()[1]=json.loads(json.dumps(self.children()[0]))
+        self.assert_loss("duplicate_native_instance")
+
+    def test_same_media_same_original_inpoint_is_ambiguous_before_any_name_mapping(self):
+        self.request["bindings"][1]["source_start_frame"]=0
+        self.prepare()
+        self.assert_loss("ambiguous_source_identity")
+
+    def test_initial_native_observation_cannot_already_contain_the_edit(self):
+        self.prepare()
+        self.received["tracks"]["children"][0]["children"].reverse()
+        self.assert_loss("initial_receipt_already_edited")
+
+    def test_native_rename_is_rejected_even_when_physical_binding_is_unique(self):
+        self.prepare()
+        self.children()[0]["name"]="same source but renamed by editor"
+        self.assert_loss("native_clip_renamed")
+
+    def test_inpoint_slip_and_duration_extension_are_not_end_trims(self):
+        self.prepare()
+        original=json.loads(json.dumps(self.edited))
+        self.children()[0]["source_range"]["start_time"]=rtc(1,30)
+        self.assert_loss("unbound_source_or_inpoint")
+        self.edited=json.loads(json.dumps(original))
+        self.children()[0]["source_range"]["duration"]=rtc(31,30)
+        self.edited["tracks"]["children"][0]["source_range"]=trange(0,91,30)
+        self.assert_loss("native_end_trim_exceeded")
+
+    def test_same_filename_foreign_bytes_never_acquire_original_identity(self):
+        self.prepare()
+        bad=self.raw/Path(self.ref(self.children()[0])["target_url"]).name
+        bad.write_bytes(b"different source with the same name")
+        self.ref(self.children()[0])["target_url"]=str(bad)
+        self.assert_loss("unbound_source_or_inpoint")
+
+    def test_relative_relink_stays_within_explicit_backend_roots(self):
+        self.prepare()
+        source=Path(self.ref(self.children()[0])["target_url"])
+        (self.raw/"relocated.mp4").write_bytes(source.read_bytes())
+        for clip in self.children():self.ref(clip)["target_url"]="relocated.mp4"
+        self.write_raw()
+        self.assertTrue(self.check()["same_source_bytes_relocated"])
+        result=self.check(roots=(self.out,))
+        self.assertEqual(result["rejection_code"],"unauthorized_media_root")
+
+    def test_protocol_traversal_and_symlink_targets_do_not_gain_scope(self):
+        self.prepare()
+        ref=self.ref(self.children()[0])
+        for target in ("https://example.invalid/a.mp4","file://server/a.mp4","../original.mp4"):
+            ref["target_url"]=target
+            self.assert_loss("unsafe_media_target")
+        link=self.raw/"linked.mp4"
+        try:link.symlink_to(self.out/"media"/(self.expected_hash+".mp4"))
+        except OSError:self.skipTest("Platform did not permit the symlink fixture")
+        ref["target_url"]=str(link)
+        self.assert_loss("unsafe_media_target")
+
+    def reparse_at(self, flagged):
+        original=Path.lstat
+        def observed(path,*args,**kwargs):
+            value=original(path,*args,**kwargs)
+            if path==flagged:
+                # A junction/reparse point need not have POSIX symlink mode.
+                return SimpleNamespace(st_mode=value.st_mode,
+                    st_file_attributes=getattr(value,"st_file_attributes",0)|0x400)
+            return value
+        return patch.object(Path,"lstat",new=observed)
+
+    def assert_reparse_root_rejected(self, flagged):
+        request=self.raw_request()
+        before={p:p.read_bytes()for p in (*self.raw.glob("*.otio"),
+            self.out/"source-project.json",self.out/"timeline.otio",self.out/"bridge-manifest.json")}
+        with self.reparse_at(flagged),patch("bridge.file_probe",return_value=VIDEO_INFO)as probe:
+            self.assertFalse(flagged.is_symlink())
+            with self.assertRaisesRegex(BridgeRefused,"^Invalid backend-authorized media root$"):
+                preview_kdenlive_cut(self.out,self.raw,request,self.out/"source-project.json",
+                    authorized_media_roots=(self.out,self.raw))
+            probe.assert_not_called()
+        for path,data in before.items():self.assertEqual(path.read_bytes(),data)
+
+    def test_path_reparse_authorized_root_is_rejected_before_probe(self):
+        self.prepare()
+        self.assert_reparse_root_rejected(self.out)
+
+    def test_path_reparse_ancestor_of_authorized_root_is_rejected_before_probe(self):
+        self.prepare()
+        self.assert_reparse_root_rejected(self.root)
+
+    def assert_reparse_candidate_rejected(self, *, ancestor):
+        self.prepare()
+        parent=self.raw/"nested" if ancestor else self.raw
+        if ancestor:parent.mkdir()
+        source=Path(self.ref(self.children()[0])["target_url"])
+        candidate=parent/"relocated.mp4"
+        candidate.write_bytes(source.read_bytes())
+        self.ref(self.children()[0])["target_url"]=str(candidate)
+        self.children().reverse()
+        self.write_raw()
+        request=self.raw_request()
+        before={p:p.read_bytes()for p in (*self.raw.glob("*.otio"),candidate,
+            self.out/"source-project.json",self.out/"timeline.otio",self.out/"bridge-manifest.json")}
+        flagged=parent if ancestor else candidate
+        with self.reparse_at(flagged),patch("bridge.file_probe",return_value=VIDEO_INFO)as probe:
+            self.assertFalse(flagged.is_symlink())
+            result=preview_kdenlive_cut(self.out,self.raw,request,self.out/"source-project.json",
+                authorized_media_roots=(self.out,self.raw))
+        self.assertEqual(result["status"],"REJECTED_LOSS")
+        self.assertEqual(result["rejection_code"],"unsafe_media_target")
+        self.assertEqual(result["native_change_proposals"],[])
+        self.assertFalse(result["edit_imported"])
+        self.assertFalse(result["raw_files_rewritten"])
+        self.assertNotIn(candidate,[call.args[0]for call in probe.call_args_list])
+        for path,data in before.items():self.assertEqual(path.read_bytes(),data)
+
+    def test_path_reparse_candidate_file_is_rejected_before_its_probe(self):
+        self.assert_reparse_candidate_rejected(ancestor=False)
+
+    def test_path_reparse_candidate_ancestor_is_rejected_before_its_probe(self):
+        self.assert_reparse_candidate_rejected(ancestor=True)
+
+    def test_path_resolved_target_must_remain_in_authorized_root(self):
+        self.prepare()
+        candidate=self.raw/"relocated.mp4"
+        candidate.write_bytes(self.media.read_bytes())
+        outside=self.src/"outside.mp4"
+        outside.write_bytes(candidate.read_bytes())
+        original=Path.resolve
+        def resolve(path,*,strict=False):
+            if path==candidate:
+                self.assertTrue(strict)
+                return outside
+            return original(path,strict=strict)
+        with patch.object(Path,"resolve",new=resolve):
+            with self.assertRaises(BridgeRefused)as error:
+                _nle_local_media(self.raw,str(candidate),(self.raw,))
+        self.assertEqual(error.exception.code,"unauthorized_media_root")
+
+    def test_path_missing_candidate_is_rejected_by_strict_admission(self):
+        self.prepare()
+        with self.assertRaises(BridgeRefused)as error:
+            _nle_local_media(self.raw,"absent.mp4",(self.raw,))
+        self.assertEqual(error.exception.code,"unsafe_media_target")
+
+    def test_path_unavailable_lstat_is_a_bounded_refusal(self):
+        self.prepare()
+        original=Path.lstat
+        def denied(path,*args,**kwargs):
+            if path==self.media:raise PermissionError("private-owner-path-must-not-leak")
+            return original(path,*args,**kwargs)
+        with patch.object(Path,"lstat",new=denied):
+            with self.assertRaises(BridgeRefused)as error:
+                _nle_local_media(self.src,str(self.media),(self.src,))
+        self.assertEqual(error.exception.code,"unsafe_media_target")
+        self.assertNotIn("private-owner-path",str(error.exception))
+
+    def test_metadata_effects_markers_audio_tracks_and_unknown_fields_are_closed(self):
+        self.prepare()
+        original=json.loads(json.dumps(self.edited))
+        for field,value in (("metadata",{"motionwright":{"scene_id":ID(10)}}),
+                            ("effects",[{"OTIO_SCHEMA":"Effect.1"}]),
+                            ("markers",[{"name":"fake-id"}]),("enabled",False)):
+            self.edited=json.loads(json.dumps(original))
+            self.children()[0][field]=value
+            self.assert_loss("unsupported_native_control")
+        self.edited=json.loads(json.dumps(original))
+        self.children()[0]["unknown_semantics"]={"gain":2}
+        self.assert_loss("unsupported_schema")
+        self.edited=json.loads(json.dumps(original))
+        self.edited["tracks"]["children"][0]["kind"]="Audio"
+        self.assert_loss("track_set_changed")
+
+    def test_multireference_proxy_or_unrecognized_schema_is_not_flattened(self):
+        self.prepare()
+        original=json.loads(json.dumps(self.edited))
+        self.children()[0]["media_references"]["PROXY"]=self.ref(self.children()[0]).copy()
+        self.assert_loss("ambiguous_media_reference")
+        self.edited=json.loads(json.dumps(original))
+        self.children()[0]["OTIO_SCHEMA"]="Clip.99"
+        self.assert_loss("unsupported_schema")
+
+    def test_declared_available_range_and_composition_clock_are_not_trusted(self):
+        self.prepare()
+        original=json.loads(json.dumps(self.edited))
+        self.ref(self.children()[0])["available_range"]=trange(0,91,30)
+        self.assert_loss("native_media_range_changed")
+        self.edited=json.loads(json.dumps(original))
+        self.edited["tracks"]["children"][0]["source_range"]=trange(1,90,30)
+        self.assert_loss("timeline_interval_changed")
+
+    def test_untrusted_hash_map_verified_boolean_and_stale_project_are_rejected(self):
+        self.prepare()
+        for extra in ({"verified":True},{"scene_ids":[ID(10),ID(11),ID(12)]}):
+            with self.assertRaises(BridgeRefused):self.check(request={**self.raw_request(),**extra})
+        for field in ("capsule_manifest_sha256","received_sha256","edited_sha256"):
+            with self.assertRaises(BridgeRefused):self.check(request={**self.raw_request(),field:"f"*64})
+        current=self.out/"source-project.json"
+        before=current.read_bytes()
+        current.write_bytes(before+b"\n")
+        with self.assertRaises(BridgeRefused):self.check()
+        current.write_bytes(before)
+
+    def test_raw_duplicate_keys_and_source_drift_are_rejected_without_rewriting(self):
+        self.prepare()
+        edited=self.raw/"edited.otio"
+        original=edited.read_text()
+        duplicated=original.replace('"OTIO_SCHEMA": "Timeline.1"',
+            '"OTIO_SCHEMA": "Timeline.1", "OTIO_SCHEMA": "Timeline.1"',1)
+        edited.write_text(duplicated)
+        with self.assertRaises(BridgeRefused):self.check()
+        self.assertEqual(edited.read_text(),duplicated)
+        edited.write_text(original)
+        timeline=self.out/"timeline.otio"
+        timeline.write_bytes(timeline.read_bytes()+b"\n")
+        with self.assertRaises(BridgeRefused):self.check()
+
+    def test_raw_drift_after_bound_parse_cannot_emit_a_proposal(self):
+        self.prepare()
+        calls=0
+        def change_after_source_preflight(path):
+            nonlocal calls
+            calls+=1
+            if calls==4:
+                edited=self.raw/"edited.otio"
+                edited.write_bytes(edited.read_bytes()+b"\n")
+            return VIDEO_INFO
+        with patch("bridge.file_probe",side_effect=change_after_source_preflight):
+            with self.assertRaisesRegex(BridgeRefused,"changed during bounded cut"):
+                preview_kdenlive_cut(self.out,self.raw,self.raw_request(),
+                    self.out/"source-project.json",authorized_media_roots=(self.out,self.raw))
+
+    def test_boolean_global_clock_and_percent_encoded_control_path_are_not_accepted(self):
+        self.prepare()
+        self.edited["global_start_time"]={"OTIO_SCHEMA":"RationalTime.1","rate":30.0,"value":False}
+        self.write_raw()
+        with self.assertRaises(BridgeRefused):self.check()
+        self.edited["global_start_time"]=None
+        self.ref(self.children()[0])["target_url"]="file:///invalid%00.mp4"
+        self.assert_loss("unsafe_media_target")
+
+
+class BoundedFileDigestTests(unittest.TestCase):
+    def test_source_growth_or_truncation_cannot_extend_the_admitted_read(self):
+        with tempfile.TemporaryDirectory(prefix="mw-otio-bounded-hash-")as folder:
+            path=Path(folder)/"source.mp4"
+            path.write_bytes(b"abcd")
+            for observed in (b"abc",b"abcde"):
+                with patch.object(Path,"open",return_value=io.BytesIO(observed)):
+                    with self.assertRaises(BridgeRefused):fingerprint(path,10)
+            self.assertEqual(fingerprint(path,10),(hashlib.sha256(b"abcd").hexdigest(),4))
 
 
 class VideoReadbackTests(unittest.TestCase):

@@ -14,11 +14,13 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from urllib.parse import unquote, urlsplit
 import zipfile
 
 SCHEMA="motionwright.otio-portable-media-bridge/1"
@@ -62,7 +64,14 @@ def fingerprint(path:Path,budget:int)->tuple[str,int]:
     insist(0<size<=budget,f"File exceeds byte budget: {path.name}")
     digest=hashlib.sha256()
     with path.open("rb") as stream:
-        while block:=stream.read(1024*1024):digest.update(block)
+        remaining=size
+        while remaining:
+            block=stream.read(min(1024*1024,remaining))
+            insist(bool(block),f"File shortened during digest verification: {path.name}")
+            digest.update(block)
+            remaining-=len(block)
+        insist(not stream.read(1),f"File grew during digest verification: {path.name}")
+    insist(path.stat().st_size==size,f"File changed during digest verification: {path.name}")
     return digest.hexdigest(),size
 def owner_file(root:Path,name:str,budget:int,extension:set[str]|None=None)->Path:
     insist(isinstance(name,str) and 1<=len(name)<=250,
@@ -492,6 +501,27 @@ def read_time_range(value:object,label:str)->tuple[int,int,int]:
     duration,other_rate=stamp(item["duration"])
     insist(rate==other_rate and duration>=1,"Imported source range rate/duration mismatch")
     return begin,duration,rate
+
+def _native_cut_commands(original_ids:list[str],observed_order:list[str],
+                         updates:dict)->list[dict]:
+    """The same bounded Change proposal algorithm for both import profiles."""
+    commands=[]
+    working=original_ids.copy()
+    for target_index,scene_id in enumerate(observed_order):
+        if working[target_index]==scene_id:continue
+        source_index=working.index(scene_id)
+        working.pop(source_index)
+        working.insert(target_index,scene_id)
+        commands.append({"type":"move_scene","scene_id":scene_id,
+                         "to_index":target_index})
+    for scene_id in observed_order:
+        if scene_id in updates:
+            commands.append({"type":"set_scene_duration","scene_id":scene_id,
+                             "duration":updates[scene_id]})
+    insist(len(commands)<=MAX_SCENES*2,
+           "Too many source revision updates for bounded OTIO cut")
+    return commands
+
 def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
     insist(current_project.is_file() and not current_project.is_symlink(),
            "A live current Project snapshot is required for a bounded edit proposal")
@@ -611,21 +641,7 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
     insist(set(observed_order)==set(original_ids),
            "NLE omitted, repeated or invented a source scene")
     expected_source_sha=manifest["project_sha256"]
-    commands=[]
-    working=original_ids.copy()
-    for target_index,scene_id in enumerate(observed_order):
-        if working[target_index]==scene_id:continue
-        source_index=working.index(scene_id)
-        working.pop(source_index)
-        working.insert(target_index,scene_id)
-        commands.append({"type":"move_scene","scene_id":scene_id,
-                         "to_index":target_index})
-    for scene_id in observed_order:
-        if scene_id in updates:
-            commands.append({"type":"set_scene_duration","scene_id":scene_id,
-                             "duration":updates[scene_id]})
-    insist(len(commands)<=MAX_SCENES*2,
-           "Too many source revision updates for bounded OTIO cut")
+    commands=_native_cut_commands(original_ids,observed_order,updates)
     losses=list(manifest.get("loss_report",[]))
     losses.append(
         "Import produces a native Change proposal only; no source edit, source media in-point, renderer effect or per-property lock is applied by this inspector."
@@ -651,6 +667,351 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
         "nle_receiver_acceptance":"NOT_VERIFIED",
         "publication_approved":False,
     }
+KDENLIVE_REQUEST_SCHEMA="motionwright.kdenlive-bound-cut-request/1"
+KDENLIVE_PREVIEW_SCHEMA="motionwright.kdenlive-bound-cut-preview/1"
+KDENLIVE_PROFILE="kdenlive-bound-video-cut-v1"
+
+class _NleCutLoss(BridgeRefused):
+    def __init__(self,code:str,message:str):
+        super().__init__(message)
+        self.code=code
+
+def _nle_require(ok:bool,code:str,message:str)->None:
+    if not ok:raise _NleCutLoss(code,message)
+
+def _nle_fields(value:object,required:set[str],optional:set[str],label:str)->dict:
+    _nle_require(isinstance(value,dict) and required<=set(value)
+                 and set(value)<=required|optional,"unsupported_schema",
+                 f"{label} has unsupported or missing fields")
+    return value
+
+def _nle_clean(value:dict,label:str)->None:
+    _nle_require(value.get("metadata",{})=={} and value.get("effects",[])==[]
+                 and value.get("markers",[])==[] and value.get("enabled",True)is True
+                 and value.get("color")is None,"unsupported_native_control",
+                 f"{label} contains metadata, effects, markers or disabled content outside the bounded profile")
+
+def _nle_name(value:object)->str:
+    _nle_require(isinstance(value,str) and 0<len(value)<=250
+                 and not any(ord(c)<32 or ord(c)==127 for c in value),
+                 "native_name_unavailable","Native clip name must be observed and bounded")
+    return value
+
+def _nle_clips(timeline:dict)->list[dict]:
+    """Read a closed Clip.1 / single-reference Clip.2 data profile, never rewrite RAW."""
+    _nle_fields(timeline,{"OTIO_SCHEMA","tracks"},
+                {"name","metadata","global_start_time"},"NLE Timeline")
+    _nle_require(timeline["OTIO_SCHEMA"]=="Timeline.1","unsupported_schema",
+                 "Native return is not an admitted Timeline.1")
+    _nle_clean(timeline,"NLE Timeline")
+    common={"name","metadata","effects","markers","enabled","color","source_range"}
+    stack=_nle_fields(timeline["tracks"],{"OTIO_SCHEMA","children"},common,"NLE Stack")
+    _nle_require(stack["OTIO_SCHEMA"]=="Stack.1","unsupported_schema","NLE stack schema changed")
+    _nle_clean(stack,"NLE Stack")
+    tracks=stack["children"]
+    _nle_require(isinstance(tracks,list) and len(tracks)==1,"track_set_changed",
+                 "Bounded return needs exactly one video track, without audio or subtitle tracks")
+    track=_nle_fields(tracks[0],{"OTIO_SCHEMA","kind","children"},common,"NLE Track")
+    _nle_require(track["OTIO_SCHEMA"]=="Track.1" and track["kind"]=="Video",
+                 "track_set_changed","Bounded return needs an admitted video track")
+    _nle_clean(track,"NLE Track")
+    clips=track["children"]
+    _nle_require(isinstance(clips,list) and len(clips)<=MAX_SCENES,"scene_set_changed",
+                 "Native clip set exceeds the bounded scene profile")
+    observations=[]
+    total=0
+    common_rate=None
+    for clip in clips:
+        _nle_require(isinstance(clip,dict),"unsupported_schema","Native child is not an object")
+        schema=clip.get("OTIO_SCHEMA")
+        _nle_require(schema!="Gap.1","native_gap_observed",
+                     "Native receiver contains a Gap; no missing timeline interval is filled")
+        _nle_require(schema in ("Clip.1","Clip.2"),"unsupported_schema",
+                     "Native return contains a transition or an unadmitted clip schema")
+        required={"OTIO_SCHEMA","name","source_range","enabled"}
+        optional={"metadata","effects","markers","color"}
+        if schema=="Clip.1":
+            _nle_fields(clip,required|{"media_reference"},optional,"NLE Clip.1")
+            reference=clip["media_reference"]
+        else:
+            _nle_fields(clip,required|{"media_references","active_media_reference_key"},
+                        optional,"NLE Clip.2")
+            refs=clip["media_references"]
+            _nle_require(isinstance(refs,dict) and set(refs)=={"DEFAULT_MEDIA"}
+                         and clip["active_media_reference_key"]=="DEFAULT_MEDIA",
+                         "ambiguous_media_reference","Clip.2 needs one active DEFAULT_MEDIA reference")
+            reference=refs["DEFAULT_MEDIA"]
+        _nle_clean(clip,"NLE Clip")
+        _nle_require(isinstance(reference,dict),"unsupported_schema","Native media reference is absent")
+        _nle_require(reference.get("OTIO_SCHEMA")!="MissingReference.1",
+                     "native_missing_reference_observed",
+                     "Native return contains MissingReference; no media or scene is invented")
+        _nle_fields(reference,{"OTIO_SCHEMA","target_url","available_range"},
+                    {"name","metadata","available_image_bounds"},"Native external media")
+        _nle_require(reference["OTIO_SCHEMA"]=="ExternalReference.1"
+                     and reference.get("metadata",{})=={}
+                     and reference.get("available_image_bounds")is None,
+                     "unsupported_media_reference","Native external media has unadmitted parameters")
+        start,duration,rate=read_time_range(clip["source_range"],"Native source interval")
+        available_start,available_duration,available_rate=read_time_range(
+            reference["available_range"],"Native available media")
+        _nle_require(available_start==0 and available_rate==rate,
+                     "source_clock_changed","Native available range has a different clock or start")
+        _nle_require(common_rate is None or common_rate==rate,"source_clock_changed",
+                     "Native timeline mixes source frame rates")
+        common_rate=rate
+        total+=duration
+        observations.append({"name":_nle_name(clip["name"]),"target":reference["target_url"],
+                             "start":start,"duration":duration,"fps":rate,
+                             "available_frames":available_duration,"schema":schema})
+    if not observations:
+        raise _NleCutLoss("scene_set_changed","Native receiver omitted every source scene")
+    for composition in (stack,track):
+        if composition.get("source_range")is not None:
+            _nle_require(read_time_range(composition["source_range"],"Native composition interval")
+                         ==(0,total,common_rate),"timeline_interval_changed",
+                         "Native composition range does not equal its complete contiguous cut")
+    if timeline.get("global_start_time")is not None:
+        stamp=timeline["global_start_time"]
+        global_interval={"OTIO_SCHEMA":"TimeRange.1","start_time":stamp,
+                         "duration":rtc(1,common_rate)}
+        _nle_require(read_time_range(global_interval,"Native global clock")== (0,1,common_rate),
+                     "timeline_interval_changed",
+                     "Native global clock is shifted or has a different rate")
+    return observations
+
+def _nle_resolve_plain_path(path:Path,message:str,*,directory:bool=False)->Path:
+    try:
+        # Inspect from the filesystem root down before resolve can erase a
+        # junction. Windows reparse points need not use symlink mode.
+        for item in (*reversed(path.parents),path):
+            observed=item.lstat()
+            insist(not stat.S_ISLNK(observed.st_mode)
+                   and not getattr(observed,"st_file_attributes",0)&0x400,message)
+        insist(not directory or stat.S_ISDIR(observed.st_mode),message)
+        return path.resolve(strict=True)
+    except (OSError,RuntimeError,ValueError):
+        raise BridgeRefused(message)from None
+
+def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...])->Path:
+    _nle_require(isinstance(target,str) and 1<=len(target)<=250
+                 and not any(ord(c)<32 for c in target),"unsafe_media_target",
+                 "Native media target is absent or outside path bounds")
+    parsed=urlsplit(target)
+    if parsed.scheme=="file":
+        _nle_require(not parsed.netloc and not parsed.query and not parsed.fragment,
+                     "unsafe_media_target","Only local file URLs without authority are admitted")
+        text=unquote(parsed.path)
+        if os.name=="nt" and re.match(r"^/[A-Za-z]:/",text):text=text[1:]
+    elif os.name=="nt" and re.match(r"^[A-Za-z]:[\\/]",target):
+        text=target
+    else:
+        _nle_require(not parsed.scheme and not parsed.netloc and not parsed.query
+                     and not parsed.fragment,"unsafe_media_target",
+                     "Network/protocol media references are not admitted")
+        text=target
+    _nle_require(bool(text) and not any(ord(c)<32 for c in text),
+                 "unsafe_media_target","Decoded native path contains an invalid character")
+    relative=Path(text)
+    _nle_require(".." not in relative.parts and not text.startswith(("//","\\\\")),
+                 "unsafe_media_target","Native target traversal or network path is not admitted")
+    path=relative if relative.is_absolute() else raw_parent/relative
+    path=path.absolute()
+    _nle_require(any(path.is_relative_to(root)for root in roots),"unauthorized_media_root",
+                 "Native media target lies outside the backend-authorized roots")
+    try:
+        path=_nle_resolve_plain_path(path,"Native media target cannot be resolved safely")
+    except BridgeRefused:
+        raise _NleCutLoss("unsafe_media_target",
+            "Native media target contains a link, reparse point or unavailable path")from None
+    _nle_require(any(path.is_relative_to(root)for root in roots),"unauthorized_media_root",
+                 "Resolved native media target lies outside the backend-authorized roots")
+    _nle_require(path.suffix.lower()==".mp4","unsupported_media_reference",
+                 "Native source must remain the admitted MP4")
+    return path
+
+def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:Path,
+                         *,authorized_media_roots:tuple[Path,...])->dict:
+    """Source-bound data inspection only: no NLE receipt, grant or Project mutation.
+
+    A backend resolves the expected hashes and roots from CAS/authority. Neither
+    RAW supplies UUID authority. Initial RAW supplies corroborating names only;
+    a backend native-receiver receipt is still required before claiming receipt.
+    """
+    request=exact(request,{"schema","capsule_manifest_sha256","received_otio",
+                           "received_sha256","edited_otio","edited_sha256"},
+                  "Kdenlive bounded cut request")
+    insist(request["schema"]==KDENLIVE_REQUEST_SCHEMA,"Unknown bounded NLE cut request")
+    insist(bundle.is_dir() and not bundle.is_symlink() and raw_root.is_dir()
+           and not raw_root.is_symlink(),"Source capsule and RAW roots must be owner-controlled directories")
+    bundle=bundle.resolve(strict=True)
+    raw_root=raw_root.resolve(strict=True)
+    insist(isinstance(authorized_media_roots,tuple) and 1<=len(authorized_media_roots)<=8,
+           "Backend must supply one to eight authorized local media roots")
+    roots=[]
+    for root in authorized_media_roots:
+        insist(isinstance(root,Path) and root.is_absolute(),
+               "Invalid backend-authorized media root")
+        roots.append(_nle_resolve_plain_path(root,
+            "Invalid backend-authorized media root",directory=True))
+    roots=tuple(roots)
+    snapshots={}
+    def read_bound(root:Path,name:str,expected:object)->tuple[dict,Path]:
+        insist(isinstance(expected,str) and HEX.fullmatch(expected),"Expected CAS SHA-256 is missing")
+        path=owner_file(root,name,MAX_JSON)
+        with path.open("rb")as stream:data=stream.read(MAX_JSON+1)
+        insist(0<len(data)<=MAX_JSON and sha_bytes(data)==expected,
+               "Source capsule or native RAW differs from its expected CAS bytes")
+        snapshots[path]=(expected,len(data),MAX_JSON)
+        try:return strict_json(data,"bound native cut data"),path
+        except RecursionError:raise BridgeRefused("Native JSON nesting exceeds the bounded parser")from None
+    manifest,manifest_path=read_bound(bundle,"bridge-manifest.json",request["capsule_manifest_sha256"])
+    original,original_path=read_bound(bundle,"timeline.otio",manifest.get("otio_sha256"))
+    # Reuse the established source/rights/fidelity/current-Project/media checks.
+    # Its legacy contract and raw metadata requirements are not relaxed.
+    legacy=import_preview(bundle,"timeline.otio",current_project)
+    source,source_sha=parse_project(bundle,"source-project.json")
+    for path in (bundle/"source-project.json",current_project):
+        hash_,size=fingerprint(path,MAX_JSON)
+        insist(hash_==source_sha,"Current or original Project changed during cut inspection")
+        snapshots[path]=(hash_,size,MAX_JSON)
+    received,received_path=read_bound(raw_root,request["received_otio"],request["received_sha256"])
+    edited,edited_path=read_bound(raw_root,request["edited_otio"],request["edited_sha256"])
+    original_ids=[scene["id"]for scene in source["scenes"]]
+    result={
+        "schema":KDENLIVE_PREVIEW_SCHEMA,"profile":KDENLIVE_PROFILE,
+        "capsule_manifest_sha256":request["capsule_manifest_sha256"],
+        "original_otio_sha256":manifest["otio_sha256"],"source_project_sha256":source_sha,
+        "received_otio_sha256":request["received_sha256"],"edited_otio_sha256":request["edited_sha256"],
+        "project_id":source["id"],"generation":source["generation"],
+        "expected_project_revision":source["revision"],"original_scene_order":original_ids,
+        "original_missing_scene_ids":manifest.get("missing_scene_ids",[]),
+        "native_change_proposals":[],"loss_report":list(legacy["loss_report"]),
+        "property_fidelity":legacy["property_fidelity"],
+        "nle_receiver_acceptance":"NOT_VERIFIED","native_project_reopened":"NOT_VERIFIED",
+        "native_final_frames_verified":False,"edit_imported":False,
+        "source_media_relinked":False,"raw_files_rewritten":False,
+        "owner_revision_commit_required":True,"human_review_required":True,
+        "semantic_native_roundtrip":"NOT_SUPPORTED","publication_approved":False,
+    }
+    probes={}
+    unique_bytes={}
+    def media(path:Path,expected_sources:set[str]|None=None)->tuple[str,dict]:
+        hash_,size=fingerprint(path,MAX_MEDIA)
+        _nle_require(expected_sources is None or hash_ in expected_sources,
+                     "unbound_source_or_inpoint",
+                     "Native source digest is not bound by the immutable capsule")
+        previous=snapshots.get(path)
+        insist(previous is None or previous==(hash_,size,MAX_MEDIA),
+               "Physical media changed during native cut inspection")
+        snapshots[path]=(hash_,size,MAX_MEDIA)
+        unique_bytes[hash_]=size
+        insist(sum(unique_bytes.values())<=MAX_TOTAL,"Native cut source media exceeds aggregate budget")
+        if path not in probes:
+            probes[path]=file_probe(path)
+            insist(fingerprint(path,MAX_MEDIA)==(hash_,size),
+                   "Physical media changed while its frames were decoded")
+        return hash_,probes[path]
+    try:
+        source_by_id={scene["id"]:scene for scene in source["scenes"]}
+        keys={}
+        geometry=None
+        for row in manifest["bound_media"]:
+            path=owner_file(bundle,row["path"],MAX_MEDIA,{".mp4"})
+            hash_,probe=media(path)
+            _nle_require(hash_==row["source_sha256"] and
+                         all(probe[k]==row[m]for k,m in (("fps","source_fps"),
+                         ("frames","actual_media_frames"),("width","width"),("height","height"),
+                         ("codec","codec"))) and snapshots[path][1]==row["bytes"],
+                         "capsule_media_changed","Capsule media observation disagrees with its immutable ledger")
+            frame_count=frames(rational(source_by_id[row["scene_id"]]["duration"],"source scene duration"),
+                               probe["fps"],"original native cut duration")
+            _nle_require(type(row["source_start_frame"])is int and row["source_start_frame"]>=0
+                         and row["duration_frames"]==frame_count
+                         and row["source_start_frame"]+frame_count<=probe["frames"],
+                         "capsule_interval_changed","Capsule does not bind the complete original source interval")
+            shape=(probe["fps"],probe["width"],probe["height"])
+            _nle_require(geometry is None or shape==geometry,"source_clock_changed",
+                         "Bounded native cut requires one source rate and geometry")
+            geometry=shape
+            key=(hash_,probe["fps"],row["source_start_frame"])
+            _nle_require(key not in keys,"ambiguous_source_identity",
+                         "Repeated media with the same original inpoint cannot identify a scene uniquely")
+            keys[key]=row
+        first=_nle_clips(received)
+        last=_nle_clips(edited)
+        result["received_clip_count"]=len(first)
+        result["edited_clip_count"]=len(last)
+        _nle_require(not result["original_missing_scene_ids"] and len(keys)==len(original_ids),
+                     "original_missing_reference_not_receivable",
+                     "Original MissingReference cannot be received as a complete native cut; omissions are retained as rejected loss")
+        def map_raw(observations:list[dict],raw_path:Path,initial:bool)->list[dict]:
+            mapped=[]
+            used=set()
+            for item in observations:
+                path=_nle_local_media(raw_path.parent,item["target"],roots)
+                hash_,probe=media(path,{key[0]for key in keys})
+                key=(hash_,item["fps"],item["start"])
+                row=keys.get(key)
+                _nle_require(row is not None,"unbound_source_or_inpoint",
+                             "Native source digest, clock or original inpoint has no unique capsule binding")
+                scene_id=row["scene_id"]
+                _nle_require(scene_id not in used,"duplicate_native_instance",
+                             "Native return duplicated a source instance; no second scene is invented")
+                used.add(scene_id)
+                _nle_require((probe["fps"],probe["width"],probe["height"])==geometry
+                             and probe["frames"]==row["actual_media_frames"]==item["available_frames"],
+                             "native_media_range_changed","Native available range differs from completely decoded source media")
+                _nle_require(0<item["duration"]<=row["duration_frames"]
+                             and item["start"]+item["duration"]<=probe["frames"],
+                             "native_end_trim_exceeded","Native return extends the authored source scene")
+                _nle_require(not initial or item["duration"]==row["duration_frames"],
+                             "initial_receipt_already_edited","Initial native observation already changes a source duration")
+                mapped.append({**item,"scene_id":scene_id,"asset_id":row["asset_id"],
+                               "source_sha256":hash_,"resolved_path":str(path),
+                               "original_target":row["path"]})
+            _nle_require(used==set(original_ids),"scene_set_changed",
+                         "Native receiver omitted, added or replaced an original scene")
+            return mapped
+        first=map_raw(first,received_path,True)
+        _nle_require([item["scene_id"]for item in first]==original_ids,
+                     "initial_receipt_already_edited","Initial native observation already changes source order")
+        last=map_raw(last,edited_path,False)
+        first_by_id={item["scene_id"]:item for item in first}
+        updates={}
+        mapping=[]
+        for item in last:
+            initial=first_by_id[item["scene_id"]]
+            _nle_require(item["name"]==initial["name"],"native_clip_renamed",
+                         "Native clip name changed after receipt; names are corroboration, never UUID authority")
+            duration=Fraction(item["duration"],item["fps"])
+            if duration!=rational(source_by_id[item["scene_id"]]["duration"],"original scene duration"):
+                updates[item["scene_id"]]={"num":str(duration.numerator),"den":str(duration.denominator)}
+            mapping.append({"scene_id":item["scene_id"],"asset_id":item["asset_id"],
+                            "source_sha256":item["source_sha256"],"source_fps":item["fps"],
+                            "original_inpoint":item["start"],"duration_frames":item["duration"],
+                            "native_name_observed":item["name"],"original_target":item["original_target"],
+                            "received_target":initial["target"],"returned_target":item["target"],
+                            "same_source_bytes_relocated":item["resolved_path"]!=initial["resolved_path"]})
+        order=[item["scene_id"]for item in last]
+        result.update(status="BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED",proposed_scene_order=order,
+                      native_change_proposals=_native_cut_commands(original_ids,order,updates),
+                      source_identity_mapping=mapping,media_refs_verified=len(mapping),
+                      same_source_bytes_relocated=any(row["same_source_bytes_relocated"]for row in mapping))
+        result["loss_report"].extend([
+            "Native OTIO metadata does not preserve Motionwright identity; this inspector derives it from the immutable capsule and a unique physical SHA/FPS/original-inpoint map.",
+            "Initial native names are corroborating RAW data only; neither RAW file authenticates a Kdenlive execution, native reopen, final-frame fidelity or authority to commit.",
+            "Same-byte media relocation is recorded separately and never changes the Project asset ledger or grants publication rights.",
+        ])
+    except _NleCutLoss as error:
+        result.update(status="REJECTED_LOSS",rejection_code=error.code,
+                      native_change_proposals=[],rejection_reason=str(error))
+        result["loss_report"].append(str(error))
+    for path,(expected,size,budget)in snapshots.items():
+        insist(fingerprint(path,budget)==(expected,size),
+               "Source capsule, RAW, Project or media changed during bounded cut inspection")
+    return result
+
 def main()->None:
     parser=argparse.ArgumentParser()
     mode=parser.add_subparsers(dest="command",required=True)
@@ -663,17 +1024,34 @@ def main()->None:
     importer.add_argument("--edited",required=True)
     importer.add_argument("--current-project",type=Path,required=True)
     importer.add_argument("--output",type=Path,required=True)
+    native=mode.add_parser("preview-kdenlive-cut")
+    native.add_argument("--bundle",type=Path,required=True)
+    native.add_argument("--raw-root",type=Path,required=True)
+    native.add_argument("--request",required=True)
+    native.add_argument("--current-project",type=Path,required=True)
+    native.add_argument("--media-root",type=Path,action="append",required=True)
+    native.add_argument("--output",type=Path,required=True)
     args=parser.parse_args()
     try:
         if args.command=="export":
             insist(args.root.is_dir()and not args.root.is_symlink(),"Owner root missing")
             result=export_portable(args.root,read_json(args.root,args.request),args.output)
+        elif args.command=="preview-kdenlive-cut":
+            insist(not args.output.exists() and args.output.parent.is_dir()
+                   and not args.output.parent.is_symlink(),"A new native cut proposal destination is required")
+            result=preview_kdenlive_cut(args.bundle,args.raw_root,
+                read_json(args.raw_root,args.request),args.current_project,
+                authorized_media_roots=tuple(args.media_root))
+            with args.output.open("x",encoding="utf-8")as stream:
+                stream.write(json.dumps(result,sort_keys=True,indent=2)+"\n")
         else:
             insist(not args.output.exists(),"Refusing to overwrite an import proposal")
             result=import_preview(args.bundle,args.edited,args.current_project)
             args.output.parent.mkdir(parents=True,exist_ok=True)
             args.output.write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
         print(json.dumps(result,sort_keys=True))
+        if args.command=="preview-kdenlive-cut" and result["status"]=="REJECTED_LOSS":
+            raise SystemExit(3)
     except (BridgeRefused,ValueError,OSError,KeyError,
             json.JSONDecodeError,subprocess.SubprocessError) as error:
         print("otio-media-refused: "+str(error),file=sys.stderr)

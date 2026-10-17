@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from bridge import BridgeRefused, SCHEMA, export_portable, file_probe, import_preview, trange
+from bridge import (
+    BridgeRefused, SCHEMA, export_portable, file_probe, import_preview, trange,
+    preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, _nle_local_media,
+)
 
 
 def source_sha(data: bytes) -> str:
@@ -178,6 +184,194 @@ class NativeMediaAdmissionTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf8")
         with self.assertRaises(BridgeRefused):
             import_preview(self.output, "timeline.otio", self.output / "source-project.json")
+
+    def bounded_raw_inputs(self):
+        """Use the real source video with explicit RAW-shaped parser test data.
+
+        No Kdenlive process, native receiver receipt or final NLE frame oracle
+        is created here. Only the admitted source video is physically decoded.
+        """
+        request = self.owner_inputs(self.original_bytes)
+        export_portable(self.owner, request, self.output)
+        raw_root = self.root / "raw"
+        raw_root.mkdir()
+        original = json.loads((self.output / "timeline.otio").read_text())
+        original_clip = original["tracks"]["children"][0]["children"][0]
+        reference = original_clip["media_reference"]
+        reference["metadata"] = {}
+        reference["name"] = ""
+        reference["available_image_bounds"] = None
+        reference["target_url"] = str(self.output / reference["target_url"])
+        clip = {"OTIO_SCHEMA": "Clip.2", "name": "source-native-name.mp4",
+                "metadata": {}, "enabled": True, "effects": [], "markers": [],
+                "source_range": original_clip["source_range"],
+                "media_references": {"DEFAULT_MEDIA": reference},
+                "active_media_reference_key": "DEFAULT_MEDIA"}
+        raw = {"OTIO_SCHEMA": "Timeline.1", "name": "", "metadata": {},
+               "global_start_time": None,
+               "tracks": {"OTIO_SCHEMA": "Stack.1", "metadata": {},
+                          "source_range": None, "effects": [], "markers": [],
+                          "children": [{"OTIO_SCHEMA": "Track.1", "kind": "Video",
+                                        "name": "V1", "metadata": {}, "effects": [],
+                                        "markers": [], "enabled": True,
+                                        "source_range": trange(0, 60, 30), "children": [clip]}]}}
+        (raw_root / "received.otio").write_text(json.dumps(raw), encoding="utf8")
+        (raw_root / "edited.otio").write_text(json.dumps(raw), encoding="utf8")
+        return raw_root, raw
+
+    def bounded_request(self, raw_root):
+        return {"schema": KDENLIVE_REQUEST_SCHEMA,
+                "capsule_manifest_sha256": source_sha((self.output / "bridge-manifest.json").read_bytes()),
+                "received_otio": "received.otio",
+                "received_sha256": source_sha((raw_root / "received.otio").read_bytes()),
+                "edited_otio": "edited.otio",
+                "edited_sha256": source_sha((raw_root / "edited.otio").read_bytes())}
+
+    def test_bound_native_cut_reads_real_source_and_preserves_every_raw_and_capsule_byte(self):
+        raw_root, edited = self.bounded_raw_inputs()
+        track = edited["tracks"]["children"][0]
+        track["source_range"] = trange(0, 30, 30)
+        track["children"][0]["source_range"] = trange(0, 30, 30)
+        (raw_root / "edited.otio").write_text(json.dumps(edited), encoding="utf8")
+        paths = [self.output / "bridge-manifest.json", self.output / "timeline.otio",
+                 self.output / "source-project.json", raw_root / "received.otio",
+                 raw_root / "edited.otio", self.output / "media" / (source_sha(self.original_bytes) + ".mp4")]
+        before = {path: path.read_bytes() for path in paths}
+        result = preview_kdenlive_cut(self.output, raw_root, self.bounded_request(raw_root),
+            self.output / "source-project.json", authorized_media_roots=(self.output, raw_root))
+        self.assertEqual(result["status"], "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED")
+        self.assertEqual(result["native_change_proposals"], [{"type": "set_scene_duration",
+            "scene_id": identity(10), "duration": {"num": "1", "den": "1"}}])
+        self.assertEqual(result["source_identity_mapping"][0]["source_sha256"], source_sha(self.original_bytes))
+        self.assertFalse(result["native_final_frames_verified"])
+        self.assertEqual(result["nle_receiver_acceptance"], "NOT_VERIFIED")
+        self.assertEqual(result["native_project_reopened"], "NOT_VERIFIED")
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_cli_same_byte_relink_and_missing_clip_return_explicit_distinct_statuses(self):
+        raw_root, edited = self.bounded_raw_inputs()
+        relocated = raw_root / "relocated.mp4"
+        relocated.write_bytes(self.original_bytes)
+        edited["tracks"]["children"][0]["children"][0]["media_references"]["DEFAULT_MEDIA"]["target_url"] = str(relocated)
+        (raw_root / "edited.otio").write_text(json.dumps(edited), encoding="utf8")
+        request = raw_root / "request.json"
+        request.write_text(json.dumps(self.bounded_request(raw_root)), encoding="utf8")
+        output = raw_root / "proposal.json"
+        command = [sys.executable, "-B", str(Path(__file__).with_name("bridge.py")),
+                   "preview-kdenlive-cut", "--bundle", str(self.output),
+                   "--raw-root", str(raw_root), "--request", "request.json",
+                   "--current-project", str(self.output / "source-project.json"),
+                   "--media-root", str(self.output), "--media-root", str(raw_root),
+                   "--output", str(output)]
+        observed = subprocess.run(command, capture_output=True, timeout=30, check=False)
+        self.assertEqual(observed.returncode, 0, observed.stderr.decode())
+        result = json.loads(output.read_text())
+        self.assertTrue(result["same_source_bytes_relocated"])
+        self.assertEqual(result["native_change_proposals"], [])
+        self.assertFalse(result["source_media_relinked"])
+        self.assertFalse(result["native_final_frames_verified"])
+        output_bytes = output.read_bytes()
+        duplicate = subprocess.run(command, capture_output=True, timeout=30, check=False)
+        self.assertEqual(duplicate.returncode, 2)
+        self.assertEqual(output.read_bytes(), output_bytes)
+        edited["tracks"]["children"][0]["children"] = []
+        edited["tracks"]["children"][0]["source_range"] = None
+        # Preserve the successful RAW and request; the negative is a new input.
+        omitted = raw_root / "edited-omitted.otio"
+        omitted.write_text(json.dumps(edited), encoding="utf8")
+        loss_request = {**self.bounded_request(raw_root), "edited_otio": omitted.name,
+                        "edited_sha256": source_sha(omitted.read_bytes())}
+        (raw_root / "request-loss.json").write_text(json.dumps(loss_request), encoding="utf8")
+        loss_output = raw_root / "rejected-loss.json"
+        loss_command = command[:-1] + [str(loss_output)]
+        loss_command[loss_command.index("--request") + 1] = "request-loss.json"
+        observed = subprocess.run(loss_command, capture_output=True,
+                                  timeout=30, check=False)
+        self.assertEqual(observed.returncode, 3, observed.stderr.decode())
+        loss = json.loads(loss_output.read_text())
+        self.assertEqual(loss["status"], "REJECTED_LOSS")
+        self.assertEqual(loss["native_change_proposals"], [])
+        self.assertFalse(loss["edit_imported"])
+        self.assertEqual(loss["nle_receiver_acceptance"], "NOT_VERIFIED")
+
+    def test_foreign_or_truncated_relink_bytes_cannot_use_the_original_media_name(self):
+        raw_root, edited = self.bounded_raw_inputs()
+        original_name = source_sha(self.original_bytes) + ".mp4"
+        foreign = raw_root / original_name
+        foreign.write_bytes(self.truncated_bytes)
+        edited["tracks"]["children"][0]["children"][0]["media_references"]["DEFAULT_MEDIA"]["target_url"] = str(foreign)
+        (raw_root / "edited.otio").write_text(json.dumps(edited), encoding="utf8")
+        result = preview_kdenlive_cut(self.output, raw_root, self.bounded_request(raw_root),
+            self.output / "source-project.json", authorized_media_roots=(self.output, raw_root))
+        self.assertEqual(result["status"], "REJECTED_LOSS")
+        self.assertEqual(result["rejection_code"], "unbound_source_or_inpoint")
+        self.assertEqual(result["native_change_proposals"], [])
+        self.assertEqual(foreign.read_bytes(), self.truncated_bytes)
+        self.assertEqual((self.output / "media" / original_name).read_bytes(), self.original_bytes)
+
+
+@unittest.skipUnless(os.name == "nt", "Real junction admission requires Windows")
+class WindowsReparsePathTests(unittest.TestCase):
+    """Real filesystem junctions only; no FFmpeg fixture, NLE or media decode."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="mw-otio-junction-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve(strict=True)
+        self.bundle = self.root / "bundle"
+        self.raw = self.root / "raw"
+        self.external = self.root / "external"
+        for path in (self.bundle, self.raw, self.external):
+            path.mkdir()
+        self.original = self.external / "source.mp4"
+        self.original.write_bytes(b"Path admission fixture only; not encoded media")
+
+    def junction(self, link, target):
+        # Exactly one filesystem fixture creation; no retry after timeout/error.
+        observed = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True, timeout=10, check=False,
+        )
+        self.assertEqual(observed.returncode, 0, "Windows junction fixture creation failed")
+        # Remove the directory entry itself before TemporaryDirectory cleanup.
+        self.addCleanup(link.rmdir)
+        self.assertTrue(link.lstat().st_file_attributes & 0x400)
+        self.assertFalse(link.is_symlink(), "Fixture must exercise junction metadata")
+
+    def assert_root_rejected_before_data_read(self, root):
+        request = {
+            "schema": KDENLIVE_REQUEST_SCHEMA, "capsule_manifest_sha256": "0" * 64,
+            "received_otio": "received.otio", "received_sha256": "0" * 64,
+            "edited_otio": "edited.otio", "edited_sha256": "0" * 64,
+        }
+        with patch("bridge.owner_file", side_effect=AssertionError("Root admission must precede data reads")) as files, \
+             patch("bridge.file_probe", side_effect=AssertionError("Root admission must precede decode")) as probe:
+            with self.assertRaisesRegex(BridgeRefused, "^Invalid backend-authorized media root$"):
+                preview_kdenlive_cut(self.bundle, self.raw, request,
+                    self.bundle / "source-project.json", authorized_media_roots=(root,))
+            files.assert_not_called()
+            probe.assert_not_called()
+        self.assertEqual(self.original.read_bytes(), b"Path admission fixture only; not encoded media")
+
+    def test_authorized_root_junction_is_rejected(self):
+        link = self.root / "linked-root"
+        self.junction(link, self.external)
+        self.assert_root_rejected_before_data_read(link)
+
+    def test_authorized_root_ancestor_junction_is_rejected(self):
+        (self.external / "nested").mkdir()
+        link = self.root / "linked-parent"
+        self.junction(link, self.external)
+        self.assert_root_rejected_before_data_read(link / "nested")
+
+    def test_candidate_junction_cannot_escape_plain_authorized_root(self):
+        link = self.raw / "linked-media"
+        self.junction(link, self.external)
+        with self.assertRaises(BridgeRefused) as error:
+            _nle_local_media(self.raw, str(link / "source.mp4"), (self.raw,))
+        self.assertEqual(error.exception.code, "unsafe_media_target")
+        self.assertEqual(self.original.read_bytes(), b"Path admission fixture only; not encoded media")
 
 
 if __name__ == "__main__":
