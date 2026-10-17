@@ -9,11 +9,13 @@ use super::{
     read_verified_production_artifact, safe_metadata, storage_error,
 };
 use crate::{
+    assembly::preflight_multi_segment_mlt,
     film::{
         FilmBuildOptions, MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY,
         SceneFilmIntent, build_motion_canvas_segments,
     },
     mlt_av_audio::{MultiSegmentAudioReadiness, preflight_multi_segment_voice_source},
+    mlt_edit_plan::{MltNativeVideoRecipe, mlt_native_video_recipe},
     original_mix::{
         OriginalMixEvidence, OriginalMixPlan, PcmStemReceipt,
         original_mix_plan_from_canonical_recipe, write_mix_wav,
@@ -85,6 +87,658 @@ pub struct CanonicalMotionCanvasFilmSource {
 struct CanonicalMotionSourceSnapshot {
     bindings: Vec<CanonicalMotionCanvasFilmSource>,
     watermark: ProductionReceiptWatermark,
+}
+
+/// Original journal disposition only. None of these states is an effect
+/// grant, a retry decision, a decoded-media verdict or an export token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalOriginalMixAttemptState {
+    NotStarted,
+    Uncertain,
+    Completed,
+    KnownFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalOriginalMixAttemptReason {
+    NoAssemblyReceipts,
+    OriginalMuxCompleted,
+    OriginalKnownFailure,
+    OriginalUnknown,
+    IncompleteOriginalStage,
+    AmbiguousOriginalStage,
+    ForeignOriginalStage,
+    UnrecognizedOriginalStage,
+    UnresolvedMotionSource,
+    AlternateOriginalIdentity,
+}
+
+/// A backend-only, read-only observation of one source-derived original
+/// attempt. It deliberately has no Deserialize implementation. The complete
+/// journal remains in storage; original_receipts retains at most two original
+/// rows per selected request, while selected_receipt_ids also reports extras.
+/// Raw provider results belong to recovery/review, never to WebView authority.
+#[derive(Debug, Clone, Serialize)]
+pub struct CanonicalOriginalMixAttemptClassification {
+    pub project_resource: String,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+    pub native_request_id: String,
+    pub state: CanonicalOriginalMixAttemptState,
+    pub reason: CanonicalOriginalMixAttemptReason,
+    pub outcome_known: bool,
+    pub canonical_dependency: VariantDependencyFingerprint,
+    pub canonical_motion_source: Vec<CanonicalMotionCanvasFilmSource>,
+    pub source_plan_sha256: String,
+    pub frame_count: u64,
+    pub journal_latest_receipt_id: Option<Uuid>,
+    pub journal_receipt_count: u64,
+    pub selected_receipt_ids: Vec<Uuid>,
+    pub original_receipts: Vec<ProductionReceipt>,
+    pub original_terminal_receipt_id: Option<Uuid>,
+    pub evidence_scope: String,
+}
+
+struct ExpectedMixAttemptStage {
+    request_id: String,
+    command: &'static str,
+    mutation: bool,
+    request_sha256: Option<String>,
+}
+
+fn canonical_mix_attempt_identity(
+    dependency: &VariantDependencyFingerprint,
+    plan: &OriginalMixPlan,
+    films: &[(String, String)],
+    frame_count: u64,
+) -> NativeResult<String> {
+    // Keep the source identity independent of client nonces, native job IDs,
+    // connection resets and newly appended receipts. This is the same closed
+    // identity used by the canonical desktop preflight, not an execute key
+    // supplied by its caller.
+    let bytes = serde_json::to_vec(&(
+        "motionwright/canonical-original-mix-master/v1",
+        dependency,
+        plan,
+        films,
+        frame_count,
+    ))
+    .map_err(|_| unsupported("Canonical original mix attempt cannot be fingerprinted"))?;
+    Ok(format!("mxav-{}", &sha256(&bytes)[..36]))
+}
+
+fn expected_mix_attempt_stages(
+    identity: &str,
+    recipe: &MltNativeVideoRecipe,
+) -> NativeResult<Vec<ExpectedMixAttemptStage>> {
+    let visual = format!("{identity}-visual");
+    let mut stages = Vec::new();
+    for (index, clip) in recipe.clips.iter().enumerate() {
+        let command = "driver.mlt-video.frames.encode";
+        let args = semwright_native_sdk::json!({
+            "root": "output", "manifest_path": &clip.source_manifest_path,
+            "expected_manifest_sha256": &clip.source_manifest_sha256,
+            "output_path": &clip.ffv1_output_path, "max_bytes": clip.ffv1_max_bytes,
+        });
+        stages.push(ExpectedMixAttemptStage {
+            request_id: format!("{visual}-prep:ffv1:{index:02}"),
+            command,
+            mutation: true,
+            request_sha256: Some(super::request_digest(command, &args)?),
+        });
+    }
+    let mut push = |suffix: &str, command, mutation| {
+        stages.push(ExpectedMixAttemptStage {
+            request_id: format!("{visual}:mlt:{suffix}"),
+            command,
+            mutation,
+            request_sha256: None,
+        });
+    };
+    push("project-create", "driver.mlt-video.project.create", true);
+    push("sequence-create", "driver.mlt-video.sequence.create", true);
+    push("track-create", "driver.mlt-video.track.create", true);
+    for index in 0..recipe.clips.len() {
+        push(
+            &format!("asset:{index:02}"),
+            "driver.mlt-video.asset.import",
+            true,
+        );
+        push(
+            &format!("sequence-ref:{index:02}"),
+            "driver.mlt-video.sequence.list",
+            false,
+        );
+        push(
+            &format!("track-ref:{index:02}"),
+            "driver.mlt-video.track.list",
+            false,
+        );
+        push(
+            &format!("clip:{index:02}"),
+            "driver.mlt-video.clip.insert",
+            true,
+        );
+    }
+    push(
+        "final-sequence-ref",
+        "driver.mlt-video.sequence.list",
+        false,
+    );
+    push("duration", "driver.mlt-video.sequence.duration", false);
+    push("render-plan", "driver.mlt-video.render.plan", false);
+    push("render-start", "driver.mlt-video.render.start", true);
+    push("render-result", "driver.mlt-video.render.result", false);
+    stages.push(ExpectedMixAttemptStage {
+        request_id: format!("{identity}:mlt:multisegment-av-mux"),
+        command: "driver.mlt-video.av.mux",
+        mutation: true,
+        request_sha256: None,
+    });
+    let create = &mut stages[recipe.clips.len()];
+    create.request_sha256 = Some(super::request_digest(
+        create.command,
+        &semwright_native_sdk::json!({"profile": &recipe.provider_profile}),
+    )?);
+    Ok(stages)
+}
+
+#[derive(Default)]
+struct MixAttemptJournal {
+    rows: BTreeMap<String, Vec<ProductionReceipt>>,
+    ids: Vec<Uuid>,
+    unknown: bool,
+    excess: bool,
+    alternate_identity: bool,
+}
+
+fn attempt_request_selected(request: &str, identity: &str) -> bool {
+    request.starts_with(&format!("{identity}:"))
+        || request.starts_with(&format!("{identity}-visual:"))
+        || request.starts_with(&format!("{identity}-visual-prep:"))
+}
+
+fn visit_mix_attempt_journal(
+    service: &StudioService,
+    project: &Project,
+    watermark: &ProductionReceiptWatermark,
+    identity: &str,
+    expected: &[ExpectedMixAttemptStage],
+    rendered: &MotionCanvasRenderEvidence,
+) -> NativeResult<MixAttemptJournal> {
+    let mut motion_prefixes = BTreeSet::new();
+    let mut alternate_prefixes = BTreeSet::new();
+    let ffv1_digests: BTreeSet<_> = expected
+        .iter()
+        .filter(|stage| stage.command == "driver.mlt-video.frames.encode")
+        .filter_map(|stage| stage.request_sha256.as_deref())
+        .collect();
+    // Discover original prefixes from the backend's selected source objects
+    // and exact manifest argument digests. An older alias of the same FFV1
+    // effect must not become a new attempt merely by changing its label.
+    visit_motion_receipts(service, project.id, watermark, |row| {
+        for (index, segment) in rendered.segments.iter().enumerate() {
+            let data = row.payload.pointer("/result/data");
+            let selected_job = data
+                .and_then(|data| data.get("job_ref"))
+                .or_else(|| row.payload.get("job_ref"))
+                .and_then(Value::as_str)
+                == Some(segment.job_ref.as_str());
+            let selected_plan = data
+                .and_then(|data| data.get("plan_ref"))
+                .and_then(Value::as_str)
+                == Some(segment.plan_ref.as_str());
+            if selected_job || selected_plan {
+                let marker = format!(":motion:{index}:");
+                if let Some((prefix, _)) = row.request_id.rsplit_once(&marker)
+                    && !prefix.is_empty()
+                    && prefix.len() <= 96
+                {
+                    motion_prefixes.insert(format!("{prefix}{marker}"));
+                }
+            }
+        }
+        if row.command == "driver.mlt-video.frames.encode"
+            && ffv1_digests.contains(row.request_sha256.as_str())
+            && !attempt_request_selected(&row.request_id, identity)
+        {
+            if let Some((prefix, _)) = row.request_id.rsplit_once(":ffv1:") {
+                alternate_prefixes.insert(format!("{prefix}:"));
+                if let Some(visual) = prefix.strip_suffix("-prep") {
+                    alternate_prefixes.insert(format!("{visual}:"));
+                    if let Some(attempt) = visual.strip_suffix("-visual") {
+                        alternate_prefixes.insert(format!("{attempt}:"));
+                    }
+                }
+            } else {
+                alternate_prefixes.insert(row.request_id.clone());
+            }
+        }
+        Ok(())
+    })?;
+    let mut journal = MixAttemptJournal {
+        alternate_identity: !alternate_prefixes.is_empty(),
+        ..MixAttemptJournal::default()
+    };
+    let mut retained_bytes = 0_usize;
+    visit_motion_receipts(service, project.id, watermark, |row| {
+        if !attempt_request_selected(&row.request_id, identity)
+            && !motion_prefixes
+                .iter()
+                .any(|prefix| row.request_id.starts_with(prefix))
+            && !alternate_prefixes
+                .iter()
+                .any(|prefix| row.request_id.starts_with(prefix))
+        {
+            return Ok(());
+        }
+        // Inspect disposition before the two-row retention limit. Older
+        // UNKNOWNs behind duplicate terminals are never filtered out.
+        journal.unknown |= row.stage == "outcome_unknown"
+            || row
+                .payload
+                .pointer("/error/outcome_known")
+                .and_then(Value::as_bool)
+                == Some(false);
+        journal.ids.push(row.id);
+        let pair = journal.rows.entry(row.request_id.clone()).or_default();
+        if pair.len() == 2 {
+            journal.excess = true;
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&row.payload)
+            .map_err(|_| motion_source_mismatch())?
+            .len();
+        retained_bytes = retained_bytes
+            .checked_add(bytes)
+            .ok_or_else(motion_source_mismatch)?;
+        if bytes > MOTION_JOURNAL_MAX_ROW_BYTES
+            || retained_bytes > MOTION_JOURNAL_MAX_RETAINED_BYTES
+        {
+            return Err(unsupported(
+                "Original mix attempt receipts exceed the bounded retention budget",
+            ));
+        }
+        pair.push(row);
+        Ok(())
+    })?;
+    Ok(journal)
+}
+
+struct OriginalMixStageDisposition<'a> {
+    dispatch: &'a ProductionReceipt,
+    terminal: &'a ProductionReceipt,
+    known_failed: bool,
+}
+
+fn original_mix_stage_disposition<'a>(
+    project: &Project,
+    connection: &str,
+    rows: &'a [ProductionReceipt],
+    expected: &ExpectedMixAttemptStage,
+    provider_generation: &mut Option<u64>,
+    descriptors: &mut BTreeMap<&'static str, String>,
+) -> Result<OriginalMixStageDisposition<'a>, CanonicalOriginalMixAttemptReason> {
+    use CanonicalOriginalMixAttemptReason as Reason;
+    if rows.len() != 2 {
+        return Err(Reason::IncompleteOriginalStage);
+    }
+    let dispatch = rows
+        .iter()
+        .find(|row| row.stage == "dispatching")
+        .ok_or(Reason::AmbiguousOriginalStage)?;
+    let terminal = rows
+        .iter()
+        .find(|row| matches!(row.stage.as_str(), "completed" | "failed_known"))
+        .ok_or(Reason::IncompleteOriginalStage)?;
+    if dispatch.id >= terminal.id {
+        return Err(Reason::AmbiguousOriginalStage);
+    }
+    for row in rows {
+        if row.project_id != project.id
+            || row.generation != project.generation
+            || row.revision != project.revision
+            || row.command != expected.command
+            || row.request_id != expected.request_id
+            || !super::is_sha256(&row.request_sha256)
+            || row.request_sha256 != dispatch.request_sha256
+            || expected
+                .request_sha256
+                .as_ref()
+                .is_some_and(|digest| digest != &row.request_sha256)
+        {
+            return Err(Reason::ForeignOriginalStage);
+        }
+    }
+    let job = dispatch
+        .payload
+        .get("job_ref")
+        .ok_or(Reason::ForeignOriginalStage)?;
+    if dispatch.payload.get("connection").and_then(Value::as_str) != Some(connection)
+        || dispatch.payload.get("mutation").and_then(Value::as_bool) != Some(expected.mutation)
+        || terminal.payload.get("job_ref") != Some(job)
+    {
+        return Err(Reason::ForeignOriginalStage);
+    }
+    if terminal.stage == "failed_known" {
+        let error: Error = serde_json::from_value(
+            terminal
+                .payload
+                .get("error")
+                .cloned()
+                .ok_or(Reason::ForeignOriginalStage)?,
+        )
+        .map_err(|_| Reason::ForeignOriginalStage)?;
+        if !error.outcome_known {
+            return Err(Reason::OriginalUnknown);
+        }
+        if terminal.payload.get("mutation").and_then(Value::as_bool) != Some(expected.mutation) {
+            return Err(Reason::ForeignOriginalStage);
+        }
+        return Ok(OriginalMixStageDisposition {
+            dispatch,
+            terminal,
+            known_failed: true,
+        });
+    }
+    let result = terminal
+        .payload
+        .get("result")
+        .ok_or(Reason::ForeignOriginalStage)?;
+    let execution: semwright_native_sdk::types::Execution = serde_json::from_value(
+        result
+            .get("execution")
+            .cloned()
+            .ok_or(Reason::ForeignOriginalStage)?,
+    )
+    .map_err(|_| Reason::ForeignOriginalStage)?;
+    let provenance = execution
+        .provenance
+        .as_ref()
+        .ok_or(Reason::ForeignOriginalStage)?;
+    let generation = provenance
+        .provider_generation
+        .ok_or(Reason::ForeignOriginalStage)?;
+    if result.get("provenance_checked").and_then(Value::as_bool) != Some(true)
+        || result.get("data").and_then(Value::as_object).is_none()
+        || terminal
+            .payload
+            .get("broker_request_id")
+            .and_then(Value::as_str)
+            .is_none_or(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+        || execution.dry_run
+        || provenance.untrusted_metadata
+        || provenance.provider != "driver:mlt-video"
+        || provenance.source != semwright_native_sdk::types::SourceKind::Driver
+        || provenance
+            .execution_provider
+            .as_deref()
+            .is_some_and(|provider| provider != "driver:mlt-video")
+        || !super::is_sha256(&provenance.descriptor_sha256)
+        || provider_generation.is_some_and(|prior| prior != generation)
+    {
+        return Err(Reason::ForeignOriginalStage);
+    }
+    *provider_generation = Some(generation);
+    if let Some(prior) = descriptors.insert(expected.command, provenance.descriptor_sha256.clone())
+        && prior != provenance.descriptor_sha256
+    {
+        return Err(Reason::ForeignOriginalStage);
+    }
+    Ok(OriginalMixStageDisposition {
+        dispatch,
+        terminal,
+        known_failed: false,
+    })
+}
+
+fn classify_mix_attempt_rows(
+    project: &Project,
+    connection: &str,
+    identity: &str,
+    mut stages: Vec<ExpectedMixAttemptStage>,
+    journal: &MixAttemptJournal,
+    motion_source_valid: bool,
+) -> (
+    CanonicalOriginalMixAttemptState,
+    CanonicalOriginalMixAttemptReason,
+    Option<Uuid>,
+) {
+    use CanonicalOriginalMixAttemptReason as Reason;
+    use CanonicalOriginalMixAttemptState as State;
+    let uncertain = |reason| (State::Uncertain, reason, None);
+    if journal.unknown {
+        return uncertain(Reason::OriginalUnknown);
+    }
+    if journal.excess {
+        return uncertain(Reason::AmbiguousOriginalStage);
+    }
+    if journal.alternate_identity {
+        return uncertain(Reason::AlternateOriginalIdentity);
+    }
+    if !motion_source_valid {
+        return uncertain(Reason::UnresolvedMotionSource);
+    }
+    let selected: BTreeMap<_, _> = journal
+        .rows
+        .iter()
+        .filter(|(id, _)| attempt_request_selected(id, identity))
+        .collect();
+    if selected.is_empty() {
+        // Completed original MC work is retained independently. Any FFV1,
+        // semantic MLT edit, query or mux observation excludes this state.
+        return (State::NotStarted, Reason::NoAssemblyReceipts, None);
+    }
+    let poll_prefix = format!("{identity}-visual:mlt:status:");
+    let mut polls = BTreeMap::new();
+    for id in selected.keys() {
+        if let Some(suffix) = id.strip_prefix(&poll_prefix) {
+            let Ok(number) = suffix.parse::<u32>() else {
+                return uncertain(Reason::UnrecognizedOriginalStage);
+            };
+            if number == 0 || number > 330 || suffix != number.to_string() {
+                return uncertain(Reason::UnrecognizedOriginalStage);
+            }
+            polls.insert(number, id.to_string());
+        }
+    }
+    if polls.keys().copied().ne(1..=polls.len() as u32) {
+        return uncertain(Reason::IncompleteOriginalStage);
+    }
+    let result_index = stages.len() - 2;
+    drop(
+        stages.splice(
+            result_index..result_index,
+            polls
+                .into_values()
+                .map(|request_id| ExpectedMixAttemptStage {
+                    request_id,
+                    command: "driver.mlt-video.render.status",
+                    mutation: false,
+                    request_sha256: None,
+                }),
+        ),
+    );
+    if selected
+        .keys()
+        .any(|id| !stages.iter().any(|stage| &stage.request_id == *id))
+    {
+        return uncertain(Reason::UnrecognizedOriginalStage);
+    }
+    let mut last_completed = None;
+    let mut provider_generation = None;
+    let mut descriptors = BTreeMap::new();
+    let mut original_job: Option<String> = None;
+    for (index, stage) in stages.iter().enumerate() {
+        let Some(rows) = journal.rows.get(&stage.request_id) else {
+            return uncertain(Reason::IncompleteOriginalStage);
+        };
+        let disposition = match original_mix_stage_disposition(
+            project,
+            connection,
+            rows,
+            stage,
+            &mut provider_generation,
+            &mut descriptors,
+        ) {
+            Ok(disposition) => disposition,
+            Err(reason) => return uncertain(reason),
+        };
+        if last_completed.is_some_and(|prior| prior >= disposition.dispatch.id) {
+            return uncertain(Reason::AmbiguousOriginalStage);
+        }
+        last_completed = Some(disposition.terminal.id);
+        let data = disposition.terminal.payload.pointer("/result/data");
+        let native_state = data
+            .and_then(|data| data.get("state"))
+            .and_then(Value::as_str);
+        let job_observation = matches!(
+            stage.command,
+            "driver.mlt-video.render.start"
+                | "driver.mlt-video.render.status"
+                | "driver.mlt-video.render.result"
+        );
+        if !disposition.known_failed && stage.command == "driver.mlt-video.render.start" {
+            original_job = data
+                .and_then(|data| data.get("job"))
+                .and_then(Value::as_str)
+                .filter(|job| {
+                    !job.is_empty() && job.len() <= 80 && !job.chars().any(char::is_control)
+                })
+                .map(str::to_owned);
+            if original_job.is_none() {
+                return uncertain(Reason::ForeignOriginalStage);
+            }
+        }
+        if matches!(
+            stage.command,
+            "driver.mlt-video.render.status" | "driver.mlt-video.render.result"
+        ) {
+            let Some(job) = original_job.as_deref() else {
+                return uncertain(Reason::ForeignOriginalStage);
+            };
+            let args = semwright_native_sdk::json!({"job": job});
+            let Ok(digest) = super::request_digest(stage.command, &args) else {
+                return uncertain(Reason::ForeignOriginalStage);
+            };
+            if disposition.dispatch.request_sha256 != digest
+                || disposition
+                    .dispatch
+                    .payload
+                    .get("job_ref")
+                    .and_then(Value::as_str)
+                    != Some(job)
+                || (!disposition.known_failed
+                    && data
+                        .and_then(|data| data.get("job"))
+                        .and_then(Value::as_str)
+                        != Some(job))
+            {
+                return uncertain(Reason::ForeignOriginalStage);
+            }
+        }
+        if job_observation && native_state == Some("unknown") {
+            return uncertain(Reason::OriginalUnknown);
+        }
+        let known_job_failure =
+            job_observation && matches!(native_state, Some("failed" | "cancelled"));
+        if disposition.known_failed || known_job_failure {
+            if stages[index + 1..]
+                .iter()
+                .any(|later| journal.rows.contains_key(&later.request_id))
+            {
+                return uncertain(Reason::AmbiguousOriginalStage);
+            }
+            return (
+                State::KnownFailed,
+                Reason::OriginalKnownFailure,
+                Some(disposition.terminal.id),
+            );
+        }
+        if stage.command == "driver.mlt-video.render.result" && native_state != Some("succeeded") {
+            return uncertain(Reason::IncompleteOriginalStage);
+        }
+    }
+    (
+        State::Completed,
+        Reason::OriginalMuxCompleted,
+        last_completed,
+    )
+}
+
+fn completed_mix_attempt_binds_sources(
+    project: &Project,
+    identity: &str,
+    recipe: &MltNativeVideoRecipe,
+    source: &OriginalMixSourceReadiness,
+    rows: &BTreeMap<String, Vec<ProductionReceipt>>,
+) -> NativeResult<bool> {
+    let terminal = |id: &str| rows.get(id)?.iter().find(|row| row.stage == "completed");
+    let Some(visual) = terminal(&format!("{identity}-visual:mlt:render-result")) else {
+        return Ok(false);
+    };
+    let Some(mux) = terminal(&format!("{identity}:mlt:multisegment-av-mux")) else {
+        return Ok(false);
+    };
+    let Some(video) = visual.payload.pointer("/result/data") else {
+        return Ok(false);
+    };
+    let Some(master) = mux.payload.pointer("/result/data") else {
+        return Ok(false);
+    };
+    let video_path = format!(
+        "{}-sequence-video-only-ffv1.mkv",
+        recipe.owner_output_namespace
+    );
+    let Some(video_sha) = video
+        .pointer("/artifact/sha256")
+        .and_then(Value::as_str)
+        .filter(|value| super::is_sha256(value))
+    else {
+        return Ok(false);
+    };
+    let token = sha256(identity.as_bytes());
+    let output_path = format!(
+        "mw-{}-r{}-{}-multisegment-master.mp4",
+        project.id.simple(),
+        project.revision,
+        &token[..16]
+    );
+    let args = semwright_native_sdk::json!({
+        "video_root": "output", "video_path": &video_path, "video_sha256": video_sha,
+        "audio_root": "output", "audio_path": source_path(project.id, source),
+        "audio_sha256": &source.staged_wav_sha256,
+        "width": recipe.provider_profile.width, "height": recipe.provider_profile.height,
+        "fps_num": recipe.provider_profile.fps_num, "fps_den": recipe.provider_profile.fps_den,
+        "frame_count": recipe.total_frames, "sample_rate": 48_000, "channels": 2,
+        "profile": "h264-aac-mp4", "output_path": &output_path,
+        "max_bytes": super::MLT_MASTER_MAX_BYTES,
+    });
+    Ok(
+        mux.request_sha256 == super::request_digest("driver.mlt-video.av.mux", &args)?
+            && video.get("state").and_then(Value::as_str) == Some("succeeded")
+            && video.get("profile").and_then(Value::as_str) == Some("lossless-video-only")
+            && video.pointer("/artifact/root").and_then(Value::as_str) == Some("output")
+            && video.pointer("/artifact/path").and_then(Value::as_str) == Some(video_path.as_str())
+            && master.get("video_sha256").and_then(Value::as_str) == Some(video_sha)
+            && master.get("audio_sha256").and_then(Value::as_str)
+                == Some(source.staged_wav_sha256.as_str())
+            && master.get("profile").and_then(Value::as_str) == Some("h264-aac-mp4")
+            && master.pointer("/artifact/root").and_then(Value::as_str) == Some("output")
+            && master.pointer("/artifact/path").and_then(Value::as_str)
+                == Some(output_path.as_str())
+            && master
+                .pointer("/artifact/sha256")
+                .and_then(Value::as_str)
+                .is_some_and(super::is_sha256)
+            && master
+                .pointer("/artifact/bytes")
+                .and_then(Value::as_u64)
+                .is_some_and(|bytes| (1..=super::MLT_MASTER_MAX_BYTES).contains(&bytes)),
+    )
 }
 
 fn motion_source_mismatch() -> Error {
@@ -1241,6 +1895,200 @@ pub struct MltMultisegmentOriginalMixMasterEvidence {
 }
 
 impl ProductionCoordinator {
+    /// Observe the original canonical attempt before any new render effect.
+    /// IDs are derived from the current saved recipe, actual CAS receipts and
+    /// complete Film, never from caller JSON, a client nonce or a new job.
+    ///
+    /// NotStarted requires a complete original MC source chain and no selected
+    /// FFV1/MLT/mux observations. Completed preserves an original mux result;
+    /// it does not mean that final PCM/pixels passed independent inspection.
+    /// Every other disposition requires separate explicit reconciliation.
+    /// This method calls no prepare/execute path and writes no file or row.
+    pub fn classify_native_canonical_original_mix_master(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        deliverable_id: Uuid,
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<CanonicalOriginalMixAttemptClassification> {
+        let project = current_project(&self.service, project_id, expected)?;
+        if self.client.connection().resource != project.resource_key() {
+            return Err(stale("Canonical original mix Broker owner root is foreign"));
+        }
+        let connection = self.client.connection().identity()?;
+        let dependency = canonical_dependency(&project, deliverable_id)?;
+        let options = canonical_original_mix_film_options(&project, deliverable_id)?;
+        let plan = resolve_canonical_original_mix_plan(
+            &self.service,
+            project_id,
+            expected,
+            deliverable_id,
+        )?;
+        let source_plan_sha256 = sha256(
+            &serde_json::to_vec(&plan)
+                .map_err(|_| unsupported("Canonical original mix plan cannot be fingerprinted"))?,
+        );
+        let films = build_motion_canvas_segments(&project, deliverable_id, &options)?;
+        let film_identities: Vec<_> = films
+            .iter()
+            .map(|film| {
+                Ok((
+                    film.id.clone(),
+                    semwright_semantic_composition::canonical_digest(&film.film)
+                        .map_err(|_| motion_source_mismatch())?
+                        .as_str()
+                        .to_owned(),
+                ))
+            })
+            .collect::<NativeResult<_>>()?;
+        let checked = preflight_multi_segment_mlt(
+            &project,
+            deliverable_id,
+            &options,
+            rendered,
+            &self.client.connection().output_root,
+        )?;
+        let recipe = mlt_native_video_recipe(&checked)?;
+        if original_mix_sample_clock(
+            recipe.total_frames,
+            recipe.provider_profile.fps_num,
+            recipe.provider_profile.fps_den,
+        )? != plan.sample_frames
+        {
+            return Err(stale(
+                "Canonical original mix attempt has mismatched source clocks",
+            ));
+        }
+        let identity = canonical_mix_attempt_identity(
+            &dependency,
+            &plan,
+            &film_identities,
+            recipe.total_frames,
+        )?;
+        let watermark = self
+            .service
+            .production_receipt_watermark(project_id)
+            .map_err(motion_journal_error)?;
+        let stages = expected_mix_attempt_stages(&identity, &recipe)?;
+        let journal = visit_mix_attempt_journal(
+            &self.service,
+            &project,
+            &watermark,
+            &identity,
+            &stages,
+            rendered,
+        )?;
+        let motion_source = match canonical_motion_source_snapshot(
+            &self.service,
+            &project,
+            deliverable_id,
+            &options,
+            rendered,
+        ) {
+            Ok(source) => {
+                if source.watermark != watermark {
+                    return Err(motion_receipt_snapshot_changed());
+                }
+                Some(source.bindings)
+            }
+            Err(error) if matches!(error.code, ErrorCode::StaleReference | ErrorCode::Conflict) => {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let valid_motion = motion_source.as_ref().is_some_and(|sources| {
+            sources.len() == film_identities.len()
+                && sources.iter().zip(&film_identities).all(|(source, film)| {
+                    source.segment_id == film.0
+                        && source.film_sha256 == film.1
+                        && source.connection_identity == connection
+                })
+        });
+        let (mut state, mut reason, terminal) = classify_mix_attempt_rows(
+            &project,
+            &connection,
+            &identity,
+            stages,
+            &journal,
+            valid_motion,
+        );
+        if state == CanonicalOriginalMixAttemptState::Completed {
+            // Reconstruct the bounded canonical WAV in memory only. This
+            // binds the original mux argument digest and input hashes; it
+            // neither restages the WAV nor re-decodes/recreates the master.
+            let (source, _) = render_current_source(
+                &self.service,
+                project_id,
+                expected,
+                OriginalMixSourceRequest {
+                    plan: &plan,
+                    frame_count: recipe.total_frames,
+                    fps_num: recipe.provider_profile.fps_num,
+                    fps_den: recipe.provider_profile.fps_den,
+                },
+            )?;
+            if !completed_mix_attempt_binds_sources(
+                &project,
+                &identity,
+                &recipe,
+                &source,
+                &journal.rows,
+            )? {
+                state = CanonicalOriginalMixAttemptState::Uncertain;
+                reason = CanonicalOriginalMixAttemptReason::ForeignOriginalStage;
+            }
+        }
+        recheck_canonical_dependency(
+            &self.service,
+            project_id,
+            expected,
+            deliverable_id,
+            &dependency,
+        )?;
+        let current_plan = resolve_canonical_original_mix_plan(
+            &self.service,
+            project_id,
+            expected,
+            deliverable_id,
+        )?;
+        if source_plan_sha256
+            != sha256(
+                &serde_json::to_vec(&current_plan).map_err(|_| {
+                    unsupported("Canonical original mix plan cannot be fingerprinted")
+                })?,
+            )
+        {
+            return Err(stale(
+                "Canonical original mix source changed during original attempt observation",
+            ));
+        }
+        let after = preflight_multi_segment_mlt(
+            &project,
+            deliverable_id,
+            &options,
+            rendered,
+            &self.client.connection().output_root,
+        )?;
+        if mlt_native_video_recipe(&after)? != recipe {
+            return Err(motion_source_mismatch());
+        }
+        recheck_motion_watermark(&self.service, project_id, &watermark)?;
+        Ok(CanonicalOriginalMixAttemptClassification {
+            project_resource: project.resource_key(), generation: project.generation,
+            revision: project.revision, deliverable_id, native_request_id: identity,
+            state, reason, outcome_known: state != CanonicalOriginalMixAttemptState::Uncertain,
+            canonical_dependency: dependency,
+            canonical_motion_source: motion_source.unwrap_or_default(),
+            source_plan_sha256, frame_count: recipe.total_frames,
+            journal_latest_receipt_id: watermark.latest_id,
+            journal_receipt_count: watermark.count,
+            selected_receipt_ids: journal.ids,
+            original_receipts: journal.rows.into_values().flatten().collect(),
+            original_terminal_receipt_id: terminal,
+            evidence_scope: "original-application-journal-disposition-only-no-effect-grant-no-retry-no-final-media-verdict".into(),
+        })
+    }
+
     /// Read-only source custody from the current saved Film and the original
     /// application journal. Caller JSON cannot supply or replace those rows.
     /// This grants no render/mux effect and does not verify pixels or audio.
