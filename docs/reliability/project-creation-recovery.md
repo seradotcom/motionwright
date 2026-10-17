@@ -81,16 +81,16 @@ application transport testing. Client checkpoint fixtures exercise the service
 contract; application permission, persistent pending state and UI wiring require
 their own integration evidence.
 
-## Requirement and regression mapping
+## Capability and regression mapping
 
-| Requirement | Implemented boundary | Executable evidence |
+| Capability | Implemented boundary | Executable evidence |
 | --- | --- | --- |
-| CR-PROJECT-02, single transaction | Project, empty initial Change journal and durable receipt commit together | Storage trigger rejects the receipt INSERT; no partial project/receipt/event remains |
+| Single transaction | Project, empty initial Change journal and durable receipt commit together | Storage trigger rejects the receipt INSERT; no partial project/receipt/event remains |
 | Creation idempotency | Stable operation UUID and payload-bound receipt | Service duplicate delivery, reopen and two independent connections; same UUID/changed title rejects |
 | Existing naming behavior | Title is not a deduplication identity | Distinct operation UUIDs with one title produce two valid projects |
 | Read-only uncertain recovery | Historical result, current generation and head remain distinct | query_only, complete logical SQL snapshots, later edit, retained client intent and reopen |
-| CR-PROJECT-06 compatibility boundary | Restore does not restore operation authority | Independent Store import rotates generation and cannot be adopted as the creation result |
-| CR-FOUND-04 integration | Existing Store and StudioService APIs | Real SQLite service tests; application authorization and installed flow remain separate gates |
+| Restore compatibility | Restore does not restore operation authority | Independent Store import rotates generation and cannot be adopted as the creation result |
+| Service integration | Existing Store and StudioService APIs | Real SQLite service tests; application authorization and installed flow remain separate gates |
 
 Run cargo test -p motionwright-storage project_creation:: and
 cargo test -p motionwright-service --test project_creation_idempotency.
