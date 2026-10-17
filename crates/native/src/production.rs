@@ -46,10 +46,11 @@ pub use mlt_multisegment_sfx::{
 };
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use original_mix_av::{
-    MltMultisegmentOriginalMixMasterEvidence, MltMultisegmentOriginalMixMasterRequest,
-    OriginalMixSemanticSfxProof, OriginalMixSfxSourceReceipt, OriginalMixSourceReadiness,
-    OriginalMixSourceRequest, PreparedOriginalMixWav, canonical_original_mix_film_options,
-    original_mix_sample_clock, prepare_original_mix_av_audio, resolve_canonical_original_mix_plan,
+    CanonicalMotionCanvasFilmSource, MltMultisegmentOriginalMixMasterEvidence,
+    MltMultisegmentOriginalMixMasterRequest, OriginalMixSemanticSfxProof,
+    OriginalMixSfxSourceReceipt, OriginalMixSourceReadiness, OriginalMixSourceRequest,
+    PreparedOriginalMixWav, canonical_original_mix_film_options, original_mix_sample_clock,
+    prepare_original_mix_av_audio, resolve_canonical_original_mix_plan,
     verify_original_mix_av_source,
 };
 
