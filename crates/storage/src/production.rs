@@ -214,7 +214,22 @@ impl Store {
             )));
         }
 
-        let current = self.load_project(input.project_id)?;
+        // Serialize the project check, request binding and append across
+        // connections. Reading before the write lock lets competing writers
+        // both observe an unused request key.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project_json: String = tx
+            .query_row(
+                "SELECT document_json FROM projects WHERE id=?1",
+                [input.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)?;
+        let current: motionwright_domain::Project = serde_json::from_str(&project_json)?;
+        current.validate()?;
         if current.generation != input.generation {
             return Err(StorageError::GenerationConflict);
         }
@@ -225,8 +240,7 @@ impl Store {
             });
         }
 
-        let prior: Option<(String, String)> = self
-            .conn
+        let prior: Option<(String, String)> = tx
             .query_row(
                 "SELECT request_sha256,command FROM production_receipts
                  WHERE project_id=?1 AND request_id=?2
@@ -235,8 +249,12 @@ impl Store {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        // Observations may extend an existing request, but cannot grant a new
+        // dispatch. Explicit recovery retries use claim_recovery_stage.
         if let Some((prior_sha, prior_command)) = prior
-            && (prior_sha != input.request_sha256 || prior_command != input.command)
+            && (prior_sha != input.request_sha256
+                || prior_command != input.command
+                || input.stage == "dispatching")
         {
             return Err(StorageError::RequestReuse);
         }
@@ -253,7 +271,7 @@ impl Store {
             payload: input.payload,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO production_receipts(
                 receipt_id,project_id,generation,revision,request_id,request_sha256,
                 command,stage,payload_json,created_at
@@ -271,6 +289,7 @@ impl Store {
                 &receipt.created_at,
             ],
         )?;
+        tx.commit()?;
         Ok(receipt)
     }
 
@@ -637,6 +656,55 @@ mod tests {
             &"a".repeat(64),
             "driver.motion-canvas.render.start",
         );
+    }
+
+    #[test]
+    fn foreign_generation_rejects_receipts_without_leaking_a_writer_transaction() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("receipt-generation.sqlite3")).unwrap();
+        let project = store
+            .create_named_project("Production generation validation")
+            .unwrap();
+        let input = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: "generation-bound-request".into(),
+            request_sha256: "a".repeat(64),
+            command: "driver.motion-canvas.render.start".into(),
+            stage: "dispatching".into(),
+            payload: json!({"mutation": true}),
+        };
+        let foreign_generation = Uuid::now_v7();
+        assert_ne!(foreign_generation, project.generation);
+        let before = store.production_receipt_watermark(project.id).unwrap();
+
+        assert!(matches!(
+            store.append_production_receipt(ProductionReceiptInput {
+                generation: foreign_generation,
+                ..input.clone()
+            }),
+            Err(StorageError::GenerationConflict)
+        ));
+        assert_eq!(
+            store.production_receipt_watermark(project.id).unwrap(),
+            before
+        );
+        assert!(
+            store
+                .latest_production_receipt(project.id, &input.request_id)
+                .unwrap()
+                .is_none()
+        );
+
+        // Rejection must release the transaction and leave the request key
+        // available for an append bound to the actual project generation.
+        let accepted = store.append_production_receipt(input).unwrap();
+        assert_eq!(
+            store.production_receipts(project.id, 10).unwrap(),
+            vec![accepted]
+        );
+        assert_eq!(store.load_project(project.id).unwrap(), project);
     }
 
     #[test]
