@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import warnings
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +145,46 @@ class ConformancePolicyTests(unittest.TestCase):
         path = self.root / "result.json"
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
         with self.assertRaisesRegex(ValueError, "artifact bytes"):
+            self.validate()
+
+    def archive_fixture(self, case="valid"):
+        path = self.root / "observations.zip"
+        payload = b'{"observed":4}\\n'
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("observation.json", payload)
+                if case == "duplicate":
+                    archive.writestr("observation.json", b'{"observed":99}\\n')
+        if case == "not_zip":
+            path.write_bytes(b"not an archive")
+        artifact = {"path": "observations.zip", "sha256": digest(path.read_bytes()),
+                    "member": "observation.json", "member_sha256": digest(payload)}
+        if case == "missing":
+            artifact["member"] = "absent.json"
+        elif case == "wrong_member_digest":
+            artifact["member_sha256"] = "b" * 64
+        elif case == "unsafe":
+            artifact["member"] = "../observation.json"
+        elif case == "missing_digest":
+            artifact.pop("member_sha256")
+        self.index["records"][0]["artifacts"] = [artifact]
+        self.populate_sufficiency()
+
+    def test_member_is_verified_within_retained_archive(self):
+        self.archive_fixture()
+        self.validate()
+
+    def test_correct_archive_digest_cannot_hide_member_errors(self):
+        for case in ("missing", "wrong_member_digest", "duplicate", "not_zip", "unsafe"):
+            with self.subTest(case=case):
+                self.archive_fixture(case)
+                with self.assertRaisesRegex(ValueError, "archive member"):
+                    self.validate()
+
+    def test_named_archive_member_requires_its_own_digest(self):
+        self.archive_fixture("missing_digest")
+        with self.assertRaisesRegex(ValueError, "archive member"):
             self.validate()
 
     def test_artifact_mutation_is_detected(self):

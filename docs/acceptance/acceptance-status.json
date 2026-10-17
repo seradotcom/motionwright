@@ -6,6 +6,19 @@
   },
   "cases": [
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-001",
       "independent": false,
@@ -156,7 +169,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -168,7 +181,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -179,6 +192,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-002",
       "independent": false,
@@ -329,7 +355,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -341,7 +367,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -352,6 +378,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-003",
       "independent": false,
@@ -502,7 +541,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -514,7 +553,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -525,6 +564,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-004",
       "independent": false,
@@ -675,7 +727,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -687,7 +739,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -698,6 +750,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-005",
       "independent": false,
@@ -848,7 +913,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -860,7 +925,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -871,6 +936,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-006",
       "independent": false,
@@ -1021,7 +1099,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -1033,7 +1111,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1044,6 +1122,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-007",
       "independent": false,
@@ -1194,7 +1285,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -1206,7 +1297,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1217,6 +1308,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-008",
       "independent": false,
@@ -1367,7 +1471,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -1379,7 +1483,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1390,6 +1494,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-009",
       "independent": false,
@@ -1540,7 +1657,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -1552,7 +1669,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1563,6 +1680,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-010",
       "independent": false,
@@ -1713,7 +1843,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -1725,7 +1855,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1736,6 +1866,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-011",
       "independent": false,
@@ -1886,7 +2029,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -1898,7 +2041,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1909,6 +2052,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-012",
       "independent": false,
@@ -2059,7 +2215,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2071,7 +2227,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2082,6 +2238,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-013",
       "independent": false,
@@ -2232,7 +2401,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2244,7 +2413,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2255,6 +2424,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-014",
       "independent": false,
@@ -2405,7 +2587,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2417,7 +2599,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2428,6 +2610,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-015",
       "independent": false,
@@ -2578,7 +2773,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2590,7 +2785,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2601,6 +2796,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-016",
       "independent": false,
@@ -2751,7 +2959,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2763,7 +2971,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2774,6 +2982,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-017",
       "independent": false,
@@ -2924,7 +3145,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2936,7 +3157,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2947,6 +3168,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-018",
       "independent": false,
@@ -3097,7 +3331,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -3109,7 +3343,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3120,6 +3354,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-019",
       "independent": false,
@@ -3270,7 +3517,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -3282,7 +3529,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3293,6 +3540,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-020",
       "independent": false,
@@ -3443,7 +3703,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -3455,7 +3715,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3466,6 +3726,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-021",
       "independent": false,
@@ -3616,7 +3889,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -3628,7 +3901,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3639,6 +3912,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-022",
       "independent": false,
@@ -3789,7 +4075,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -3801,7 +4087,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3812,6 +4098,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-023",
       "independent": false,
@@ -3962,7 +4261,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -3974,7 +4273,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3985,6 +4284,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-024",
       "independent": false,
@@ -4135,7 +4447,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4147,7 +4459,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4158,6 +4470,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-025",
       "independent": false,
@@ -4308,7 +4633,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4320,7 +4645,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4331,6 +4656,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-026",
       "independent": false,
@@ -4481,7 +4819,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4493,7 +4831,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4504,6 +4842,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-027",
       "independent": false,
@@ -4654,7 +5005,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4666,7 +5017,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4677,6 +5028,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-028",
       "independent": false,
@@ -4827,7 +5191,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4839,7 +5203,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4850,6 +5214,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-029",
       "independent": false,
@@ -5000,7 +5377,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -5012,7 +5389,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5023,6 +5400,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-030",
       "independent": false,
@@ -5173,7 +5563,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -5185,7 +5575,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5196,6 +5586,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-031",
       "independent": false,
@@ -5346,7 +5749,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -5358,7 +5761,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5369,6 +5772,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-032",
       "independent": false,
@@ -5519,7 +5935,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -5531,7 +5947,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5542,6 +5958,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-033",
       "independent": false,
@@ -5692,7 +6121,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -5704,7 +6133,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5715,6 +6144,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-034",
       "independent": false,
@@ -5865,7 +6307,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -5877,7 +6319,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5888,6 +6330,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-035",
       "independent": false,
@@ -6038,7 +6493,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6050,7 +6505,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6061,6 +6516,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-036",
       "independent": false,
@@ -6211,7 +6679,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6223,7 +6691,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6234,6 +6702,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-037",
       "independent": false,
@@ -6384,7 +6865,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6396,7 +6877,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6407,6 +6888,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-038",
       "independent": false,
@@ -6557,7 +7051,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6569,7 +7063,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6580,6 +7074,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-039",
       "independent": false,
@@ -6730,7 +7237,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6742,7 +7249,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6753,6 +7260,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-040",
       "independent": false,
@@ -6903,7 +7423,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6915,7 +7435,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6926,6 +7446,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-041",
       "independent": false,
@@ -7076,7 +7609,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -7088,7 +7621,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7099,6 +7632,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-042",
       "independent": false,
@@ -7249,7 +7795,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -7261,7 +7807,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7272,6 +7818,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-043",
       "independent": false,
@@ -7422,7 +7981,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -7434,7 +7993,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7445,6 +8004,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-044",
       "independent": false,
@@ -7595,7 +8167,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -7607,7 +8179,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7618,6 +8190,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-045",
       "independent": false,
@@ -7768,7 +8353,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -7780,7 +8365,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7791,6 +8376,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-046",
       "independent": false,
@@ -7941,7 +8539,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -7953,7 +8551,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7964,6 +8562,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-047",
       "independent": false,
@@ -8114,7 +8725,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -8126,7 +8737,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8137,6 +8748,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-048",
       "independent": false,
@@ -8287,7 +8911,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -8299,7 +8923,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8310,6 +8934,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-049",
       "independent": false,
@@ -8460,7 +9097,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -8472,7 +9109,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8483,6 +9120,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-050",
       "independent": false,
@@ -8633,7 +9283,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -8645,7 +9295,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8656,6 +9306,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-051",
       "independent": false,
@@ -8806,7 +9469,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -8818,7 +9481,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8829,6 +9492,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-052",
       "independent": false,
@@ -8979,7 +9655,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -8991,7 +9667,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9002,6 +9678,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-053",
       "independent": false,
@@ -9137,7 +9826,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -9149,7 +9838,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9160,6 +9849,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-054",
       "independent": false,
@@ -9289,7 +9991,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -9301,7 +10003,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9312,6 +10014,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-055",
       "independent": false,
@@ -9441,7 +10156,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -9453,7 +10168,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9464,6 +10179,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-056",
       "independent": false,
@@ -9593,7 +10321,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -9605,7 +10333,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9616,6 +10344,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-057",
       "independent": false,
@@ -9745,7 +10486,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -9757,7 +10498,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9768,6 +10509,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-058",
       "independent": false,
@@ -9897,7 +10651,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -9909,7 +10663,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9920,6 +10674,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-059",
       "independent": false,
@@ -10049,7 +10816,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10061,7 +10828,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10072,6 +10839,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "ACC-060",
       "independent": false,
@@ -10201,7 +10981,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10213,7 +10993,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10227,11 +11007,24 @@
   "conformance_schema_version": 1,
   "current_assessment_source": {
     "digest_kind": "git-text-lf",
-    "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+    "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
     "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
   },
   "expansion_cases": [
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E00-01",
       "independent": false,
@@ -10357,7 +11150,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10369,7 +11162,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10380,6 +11173,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E00-02",
       "independent": false,
@@ -10390,15 +11196,15 @@
       "status": "NOT_RUN",
       "technical_assessment": {
         "artifact_verification": {
-          "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
-          "status": "not_admitted"
+          "media_persistence_or_installed_artifacts": "Temporary SQLite/WAV outputs are observed by assertions; final masters and installed sessions are not inferred.",
+          "retained": "Hashed execution excerpts, source structure and the public synthetic seed fixture where referenced.",
+          "status": "scoped_outputs_admitted"
         },
         "contract_acceptance": {
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
             "A05-E00-02#/scenario",
-            "A05-E00-02#/negative_scenario",
             "A05-E00-02#/evidence_required/0",
             "A05-E00-02#/evidence_required/1",
             "A05-E00-02#/evidence_required/2",
@@ -10410,24 +11216,31 @@
         },
         "criteria": [
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "backup-compatibility-main-c987",
+              "restored-authority-main-c987"
+            ],
             "id": "A05-E00-02#/scenario",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "remaining_canonical_obligations_not_demonstrated_by_the_scoped_storage_or_domain_assertions"
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred."
+            ],
             "source_clause_sha256": "c1d62e9cc763203d22338b73d6cb480a9314907a3ee868f95ae3176b11578497",
-            "status": "not_run"
+            "status": "partial"
           },
           {
-            "evidence_ids": [],
-            "id": "A05-E00-02#/negative_scenario",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "backup-compatibility-main-c987"
             ],
-            "scope_notes": [],
+            "id": "A05-E00-02#/negative_scenario",
+            "missing_assertions": [],
+            "scope_notes": [
+              "Complete canonical field supported by its current execution/source evidence and separately bound sufficiency review."
+            ],
             "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2",
-            "status": "not_run"
+            "status": "pass"
           },
           {
             "evidence_ids": [],
@@ -10502,12 +11315,17 @@
         },
         "implementation": {
           "reference_status": "behavioral_integration_not_yet_established",
-          "referenced_paths": [],
-          "status": "not_assessed"
+          "referenced_paths": [
+            "crates/service/tests/delivery_recipe_authority.rs",
+            "crates/storage/tests/delivery_recipe_compatibility.rs",
+            "crates/storage/tests/fixtures/pre_delivery_recipe_backup.json",
+            "crates/storage/tests/fixtures/pre_delivery_recipe_backup.provenance.json"
+          ],
+          "status": "partial"
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10519,17 +11337,35 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "backup-compatibility-main-c987",
+            "restored-authority-main-c987"
+          ],
+          "execution_kinds": [
+            "integration"
+          ],
+          "status": "partial"
         }
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E00-03",
       "independent": false,
@@ -10655,7 +11491,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10667,7 +11503,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10678,6 +11514,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E00-04",
       "independent": false,
@@ -10803,7 +11652,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10815,7 +11664,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10826,6 +11675,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E01-01",
       "independent": false,
@@ -10951,7 +11813,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -10963,7 +11825,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10974,6 +11836,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E01-02",
       "independent": false,
@@ -11099,7 +11974,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11111,7 +11986,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -11122,6 +11997,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E01-03",
       "independent": false,
@@ -11247,7 +12135,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11259,7 +12147,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -11270,6 +12158,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E01-04",
       "independent": false,
@@ -11395,7 +12296,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11407,7 +12308,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -11418,6 +12319,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E02-01",
       "independent": false,
@@ -11543,7 +12457,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11555,7 +12469,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -11566,6 +12480,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E02-02",
       "independent": false,
@@ -11691,7 +12618,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11703,7 +12630,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -11714,6 +12641,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E02-03",
       "independent": false,
@@ -11839,7 +12779,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11851,7 +12791,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -11862,6 +12802,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E02-04",
       "independent": false,
@@ -11987,7 +12940,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -11999,7 +12952,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12010,6 +12963,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E03-01",
       "independent": false,
@@ -12135,7 +13101,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -12147,7 +13113,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12158,6 +13124,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E03-02",
       "independent": false,
@@ -12283,7 +13262,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -12295,7 +13274,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12306,6 +13285,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E03-03",
       "independent": false,
@@ -12431,7 +13423,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -12443,7 +13435,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12454,6 +13446,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E03-04",
       "independent": false,
@@ -12579,7 +13584,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -12591,7 +13596,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12602,6 +13607,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E04-01",
       "independent": false,
@@ -12729,7 +13747,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -12741,7 +13759,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12752,6 +13770,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E04-02",
       "independent": false,
@@ -12877,7 +13908,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -12889,7 +13920,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -12900,6 +13931,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E04-03",
       "independent": false,
@@ -13027,7 +14071,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13039,7 +14083,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13050,6 +14094,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E04-04",
       "independent": false,
@@ -13175,7 +14232,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13187,7 +14244,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13198,6 +14255,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E05-01",
       "independent": false,
@@ -13323,7 +14393,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13335,7 +14405,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13346,6 +14416,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E05-02",
       "independent": false,
@@ -13471,7 +14554,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13483,7 +14566,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13494,6 +14577,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E05-03",
       "independent": false,
@@ -13619,7 +14715,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13631,7 +14727,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13642,6 +14738,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E05-04",
       "independent": false,
@@ -13767,7 +14876,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13779,7 +14888,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13790,6 +14899,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E06-01",
       "independent": false,
@@ -13915,7 +15037,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -13927,7 +15049,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -13938,6 +15060,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E06-02",
       "independent": false,
@@ -14063,7 +15198,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14075,7 +15210,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14086,6 +15221,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E06-03",
       "independent": false,
@@ -14211,7 +15359,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14223,7 +15371,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14234,6 +15382,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E06-04",
       "independent": false,
@@ -14359,7 +15520,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14371,7 +15532,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14382,6 +15543,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E07-01",
       "independent": false,
@@ -14507,7 +15681,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14519,7 +15693,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14530,6 +15704,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E07-02",
       "independent": false,
@@ -14655,7 +15842,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14667,7 +15854,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14678,6 +15865,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E07-03",
       "independent": false,
@@ -14803,7 +16003,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14815,7 +16015,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14826,6 +16026,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E07-04",
       "independent": false,
@@ -14951,7 +16164,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -14963,7 +16176,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -14974,6 +16187,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E08-01",
       "independent": false,
@@ -15099,7 +16325,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15111,7 +16337,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -15122,6 +16348,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E08-02",
       "independent": false,
@@ -15247,7 +16486,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15259,7 +16498,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -15270,6 +16509,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E08-03",
       "independent": false,
@@ -15395,7 +16647,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15407,7 +16659,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -15418,6 +16670,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E08-04",
       "independent": false,
@@ -15543,7 +16808,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15555,7 +16820,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -15566,6 +16831,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E09-01",
       "independent": false,
@@ -15691,7 +16969,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15703,7 +16981,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -15714,6 +16992,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E09-02",
       "independent": false,
@@ -15839,7 +17130,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15851,7 +17142,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -15862,6 +17153,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E09-03",
       "independent": false,
@@ -15987,7 +17291,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -15999,7 +17303,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16010,6 +17314,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E09-04",
       "independent": false,
@@ -16024,8 +17341,8 @@
           "status": "not_admitted"
         },
         "contract_acceptance": {
-          "human_review_required": true,
-          "human_review_status": "not_run",
+          "human_review_required": false,
+          "human_review_status": "not_required",
           "pending_criteria": [
             "A05-E09-04#/scenario",
             "A05-E09-04#/negative_scenario",
@@ -16135,19 +17452,19 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "original_contract_profile_and_source_reference_reconciliation"
+          "scope": "objective_comparison_protocol_and_report_reconciliation"
         },
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16158,6 +17475,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E10-01",
       "independent": false,
@@ -16283,7 +17613,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -16295,7 +17625,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16306,6 +17636,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E10-02",
       "independent": false,
@@ -16431,7 +17774,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -16443,7 +17786,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16454,6 +17797,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E10-03",
       "independent": false,
@@ -16579,7 +17935,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -16591,7 +17947,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16602,6 +17958,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E10-04",
       "independent": false,
@@ -16727,7 +18096,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -16739,7 +18108,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16750,6 +18119,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E11-01",
       "independent": false,
@@ -16875,7 +18257,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -16887,7 +18269,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -16898,6 +18280,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E11-02",
       "independent": false,
@@ -17023,7 +18418,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17035,7 +18430,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17046,6 +18441,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E11-03",
       "independent": false,
@@ -17173,7 +18581,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17185,7 +18593,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17196,6 +18604,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E11-04",
       "independent": false,
@@ -17323,7 +18744,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17335,7 +18756,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17346,6 +18767,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E12-01",
       "independent": false,
@@ -17471,7 +18905,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17483,7 +18917,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17494,6 +18928,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E12-02",
       "independent": false,
@@ -17619,7 +19066,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17631,7 +19078,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17642,6 +19089,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E12-03",
       "independent": false,
@@ -17767,7 +19227,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17779,7 +19239,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17790,6 +19250,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E12-04",
       "independent": false,
@@ -17915,7 +19388,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -17927,7 +19400,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -17938,6 +19411,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E13-01",
       "independent": false,
@@ -18063,7 +19549,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18075,7 +19561,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18086,6 +19572,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E13-02",
       "independent": false,
@@ -18211,7 +19710,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18223,7 +19722,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18234,6 +19733,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E13-03",
       "independent": false,
@@ -18359,7 +19871,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18371,7 +19883,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18382,6 +19894,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E13-04",
       "independent": false,
@@ -18507,7 +20032,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18519,7 +20044,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18530,6 +20055,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E14-01",
       "independent": false,
@@ -18655,7 +20193,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18667,7 +20205,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18678,6 +20216,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E14-02",
       "independent": false,
@@ -18803,7 +20354,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18815,7 +20366,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18826,6 +20377,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E14-03",
       "independent": false,
@@ -18951,7 +20515,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -18963,7 +20527,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -18974,6 +20538,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E14-04",
       "independent": false,
@@ -19101,7 +20678,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -19113,7 +20690,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -19124,6 +20701,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E15-01",
       "independent": false,
@@ -19249,7 +20839,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -19261,7 +20851,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -19272,6 +20862,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E15-02",
       "independent": false,
@@ -19397,7 +21000,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -19409,7 +21012,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -19420,6 +21023,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E15-03",
       "independent": false,
@@ -19547,7 +21163,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -19559,7 +21175,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -19570,6 +21186,19 @@
       }
     },
     {
+      "assessment_history": [
+        {
+          "contract_status": "open",
+          "evidence_ids": [],
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-17T16:53:14.059535+00:00",
+          "technical_status": "not_run"
+        }
+      ],
       "evidence": [],
       "id": "A05-E15-04",
       "independent": false,
@@ -19695,7 +21324,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "source_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -19707,7 +21336,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "59bbd83178a59fcfbc1012e80a2a8b20e543aa3e",
+          "motionwright_sha": "c987e7a3f714653e5e6778f9fdb9be81cefc4bd3",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -19725,6 +21354,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "a36903a914a9e7b25aa1fa8e213c0893a3fe12be1ca7b135bbff29bf8272d0ce"
+    "sha256": "d1d6e56dfd2b49fc2b13478378f35938dd47f4a1e0b4fb27d0cc31694edcc009"
   }
 }

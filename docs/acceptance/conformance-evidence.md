@@ -42,7 +42,17 @@ The assessment source is an explicit snapshot. Final release checks must additio
 
 The initial source-scoped corpus includes selected SQLite replay/dispatch assertions, in-memory creative history assertions, synthetic PCM ducking assertions, intake identity guards and native H264 admission assertions. Source declarations are separate observations.
 
-The retained archive contains selected execution-log observations and source-declaration observations. It does not contain final product masters, private acceptance media or completed installed/human acceptance sessions. Each record states those limits, and no complete criterion is awarded from this initial corpus.
+The retained archive contains selected execution-log observations and source-declaration observations. It does not contain final product masters, private acceptance media or completed installed/human acceptance sessions. Each record states those limits. The initial corpus does not grant complete criteria. The subsequent c987 assessment adds a real concurrent SQLite execution and corruption-rejection observations, and records separate sufficiency decisions for four canonical fields.
+
+## Current integrated observation
+
+The assessed source is c987e7a3f714653e5e6778f9fdb9be81cefc4bd3. Its CI run39017405595 and exact checkout/log observations are retained without changing the earlier runs' identities.
+
+CR-PROJECT-03 is technically verified: inspection confirms the revision comparison lies within the immediate transaction, and two concurrent connections produce one success and one Conflict. Its objective fields have been accepted after technical sufficiency review. The linked scenarios retain their separate states.
+
+The negative fields MW05-E00-02#/negative_case and A05-E00-02#/negative_scenario have sufficient current evidence. Their positive migration and scenario obligations remain open. No complete acceptance scenario or release is granted by these decisions.
+
+Additional scoped observations cover recipe persistence, branch-local references, bundle transfer, generation rotation and dependency fingerprints. An inverse authoring mutation is not recorded as generic undo. Fingerprints and persisted settings are not treated as rendered media.
 
 ## Validation
 
