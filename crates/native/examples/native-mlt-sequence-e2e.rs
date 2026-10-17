@@ -1,6 +1,8 @@
 //! Real pinned Broker/Driver Host two-segment timeline smoke test.
 //! Never run on the developer workstation; the workflow provisions the
 //! Semwright and Motion Canvas/MLT sandbox in a disposable CI runner.
+//! `calibrate-original-mix` only reopens canonical source data and prepares its
+//! actual Rust-mixed WAV; it never connects to Broker or creates a native job.
 use motionwright_domain::{
     AlignmentEvidence, BlendMode, CanvasNode, Change, CoordinateSpace, DeliveryArchetype,
     DeliveryNarrativeRole, DeliveryRecipe, DeliveryRecipeSchema, DeliverySceneIntent, NodeStyle,
@@ -10,7 +12,9 @@ use motionwright_native::{
     film::{FilmBuildOptions, SceneFilmIntent, build_motion_canvas_segments},
     production::{
         MltAudioArtifact, MltMultisegmentAvMasterRequest, MltMultisegmentOriginalMixMasterRequest,
-        ProductionConnection, ProductionCoordinator, canonical_original_mix_film_options,
+        OriginalMixSourceRequest, ProductionConnection, ProductionCoordinator,
+        canonical_original_mix_film_options, prepare_original_mix_av_audio,
+        resolve_canonical_original_mix_plan,
     },
 };
 use motionwright_service::{StudioService, VoiceImportMetadata};
@@ -29,7 +33,7 @@ use uuid::Uuid;
 fn arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> PathBuf {
     args.next().map(PathBuf::from).unwrap_or_else(|| {
         eprintln!(
-            "usage: native-mlt-sequence-e2e seed DATABASE | assemble DATABASE CONNECTION EVIDENCE"
+            "usage: native-mlt-sequence-e2e seed DATABASE | assemble DATABASE CONNECTION EVIDENCE | calibrate-original-mix DATABASE OUTPUT_ROOT"
         );
         std::process::exit(2);
     })
@@ -115,6 +119,20 @@ fn write_synthetic_stereo_wav(path: &Path) -> Result<(), Box<dyn std::error::Err
 const CANONICAL_FIXTURE_SAMPLES: u32 = 96_000;
 const CANONICAL_VOICE_WINDOWS: [(u32, u32); 2] = [(8_000, 28_000), (52_800, 86_400)];
 const CANONICAL_SFX_WINDOWS: [(u32, u32); 3] = [(1_600, 6_400), (49_600, 55_200), (92_000, 96_000)];
+const CANONICAL_FIXTURE_DIGESTS: [(&str, &str); 3] = [
+    (
+        "92600baa4f59af065cf2d4132cd84943313e6c842392c226efe8eac00e176c49",
+        "741d45438a68fa44d875398653c588f02a3a2674638070b1dc0149795a37f0a8",
+    ),
+    (
+        "708d8953769f4a92228df3417487e04344c6a3a3a07f89e4bc36e3f9b1031ad1",
+        "3ea758e4872cd184d0f3ffb60e535e4f72d1f416867a396682bdf6a0de4c7e26",
+    ),
+    (
+        "efe99c94f674aa38fb094c9d37ba00ba2baca0c5b87cdc14449d79dbbca74a11",
+        "b9c647103eee2fd4201da8be2da5d5b7bbe4ec2b77aa030d225e1f5ded1c4026",
+    ),
+];
 
 fn fixture_knot(index: u32, seed: u32) -> i64 {
     let mut value = seed ^ index.wrapping_mul(0x9E37_79B9);
@@ -582,6 +600,280 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+/// Retain the actual current Rust mixer output before any native render/mux.
+/// The existing `seed` action must already have completed in original-mix mode.
+/// This source-only calibration cannot authenticate listening, mastering or a
+/// native production receipt, and it never launches an external process.
+fn calibrate_original_mix(
+    database: &Path,
+    output_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !fs::symlink_metadata(database)?.is_file() {
+        return Err("Calibration requires an existing regular seeded database".into());
+    }
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("Calibration requires exactly one canonical seeded project".into());
+    }
+    let project = projects
+        .into_iter()
+        .next()
+        .ok_or("Calibration project absent")?;
+    let expected = project.stamp();
+    let before_project = serde_json::to_value(&project)?;
+    let source_project_bytes = serde_json::to_vec(&before_project)?;
+    let source_project_sha256 = hex::encode(Sha256::digest(&source_project_bytes));
+    let receipts_before = service.production_receipt_watermark(project.id)?;
+    if receipts_before.count != 0 || receipts_before.latest_id.is_some() {
+        return Err(
+            "Calibration requires zero native receipts before preparing source audio".into(),
+        );
+    }
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|candidate| candidate.name == "Master 16:9")
+        .ok_or("Calibration master profile is absent")?;
+    if project.scenes.len() != 33
+        || project.deliverables.len() != 3
+        || (profile.width, profile.height) != (1280, 720)
+        || profile.frame_rate != RationalTime::new(30, 1)?
+        || !profile.included_scene_ids.is_empty()
+        || profile.captions
+        || profile.burn_in_captions
+        || !project.audio.cues.is_empty()
+        || !project.audio.sfx_cues.is_empty()
+        || project.audio.mix.target_lufs.is_some()
+        || project.audio.mix.target_true_peak_dbfs.is_some()
+    {
+        return Err("Calibration source differs from the original-mix fixture profile".into());
+    }
+    for (index, scene) in project.scenes.iter().enumerate() {
+        if scene.start != RationalTime::new(index as i64, 30)?
+            || scene.duration != RationalTime::new(if index == 32 { 28 } else { 1 }, 30)?
+        {
+            return Err("Calibration requires the preserved 32+28-frame scene clock".into());
+        }
+    }
+    let options = canonical_original_mix_film_options(&project, profile.id)?;
+    let segments = build_motion_canvas_segments(&project, profile.id, &options)?;
+    if segments.len() != 2 || segments[0].frame_count != 32 || segments[1].frame_count != 28 {
+        return Err("Canonical calibration Film projection is not exactly 60 frames".into());
+    }
+    let plan = resolve_canonical_original_mix_plan(&service, project.id, &expected, profile.id)?;
+    let observed_windows = plan
+        .voice_windows
+        .iter()
+        .map(|window| (window.start_sample, window.end_exclusive))
+        .collect::<Vec<_>>();
+    let expected_windows =
+        CANONICAL_VOICE_WINDOWS.map(|(start, end)| (u64::from(start), u64::from(end)));
+    if plan.sample_frames != u64::from(CANONICAL_FIXTURE_SAMPLES)
+        || plan.sample_rate != 48_000
+        || plan.channels != 2
+        || plan.voice_gain_db != 0.0
+        || plan.music_gain_db != -12.0
+        || plan.sfx_gain_db != -3.0
+        || plan.duck_attenuation_db != 12.0
+        || plan.duck_attack_samples != 2_400
+        || plan.duck_release_samples != 4_800
+        || plan.sample_peak_guard_dbfs != -1.0
+        || observed_windows.as_slice() != expected_windows.as_slice()
+        || plan.owner_mixing_approval_authenticated
+        || plan.is_mastered
+    {
+        return Err("Calibration canonical plan differs from the saved fixture recipe".into());
+    }
+    for (stem, (source_sha256, pcm_sha256)) in [
+        &plan.measured_voice,
+        &plan.original_music,
+        &plan.original_sfx,
+    ]
+    .into_iter()
+    .zip(CANONICAL_FIXTURE_DIGESTS)
+    {
+        if stem.source_asset_sha256 != source_sha256
+            || stem.decoded_pcm_sha256 != pcm_sha256
+            || stem.sample_frames != u64::from(CANONICAL_FIXTURE_SAMPLES)
+        {
+            return Err(
+                "Calibration CAS source is not the retained integer fixture WAV/PCM".into(),
+            );
+        }
+    }
+    let plan_bytes = serde_json::to_vec(&plan)?;
+    let plan_sha256 = hex::encode(Sha256::digest(&plan_bytes));
+    // A new directory prevents even the public preparer's verified reuse path
+    // from accepting a previous calibration. Partial output stays for review.
+    fs::create_dir(output_root)?;
+    let prepared = prepare_original_mix_av_audio(
+        &service,
+        project.id,
+        &expected,
+        OriginalMixSourceRequest {
+            plan: &plan,
+            frame_count: 60,
+            fps_num: 30,
+            fps_den: 1,
+        },
+        output_root,
+    )?;
+    let wav_path = output_root.join(&prepared.audio.relative_path);
+    let wav = fs::read(&wav_path)?;
+    let wav_sha256 = hex::encode(Sha256::digest(&wav));
+    // The canonical writer has a fixed 44-byte PCM WAVE header. Preserve its
+    // physical payload verbatim; no second mixer or PCM quantizer runs here.
+    if wav.len() != 384_044
+        || wav.get(..4) != Some(b"RIFF".as_slice())
+        || wav.get(8..16) != Some(b"WAVEfmt ".as_slice())
+        || wav.get(20..24) != Some([1_u8, 0, 2, 0].as_slice())
+        || wav.get(24..28) != Some(48_000_u32.to_le_bytes().as_slice())
+        || wav.get(32..40) != Some([4_u8, 0, 16, 0, b'd', b'a', b't', b'a'].as_slice())
+        || wav.get(40..44) != Some(384_000_u32.to_le_bytes().as_slice())
+    {
+        return Err("Actual Rust-mixed source is not the exact 48 kHz stereo s16le WAVE".into());
+    }
+    let pcm = &wav[44..];
+    let pcm_sha256 = hex::encode(Sha256::digest(pcm));
+    if prepared.audio.sha256 != wav_sha256
+        || prepared.proof.staged_wav_sha256 != wav_sha256
+        || prepared.proof.staged_wav_bytes != wav.len() as u64
+        || prepared.proof.original_mix.source_plan_sha256 != plan_sha256
+        || prepared.proof.original_mix.rendered_pcm_sha256 != pcm_sha256
+        || prepared.proof.original_mix.frames != 96_000
+        || prepared.proof.original_mix.sample_rate != 48_000
+        || prepared.proof.original_mix.channels != 2
+        || prepared.proof.original_mix.measured_music_duck_windows != 2
+        || prepared.proof.original_mix.independently_verified_lufs
+        || prepared.proof.original_mix.independently_verified_true_peak
+        || prepared
+            .proof
+            .original_mix
+            .listening_intelligibility_approved
+        || prepared.proof.original_mix.owner_release_approved
+        || wav_sha256 == plan.measured_voice.source_asset_sha256
+        || pcm_sha256 == plan.measured_voice.decoded_pcm_sha256
+    {
+        return Err("Calibration readback differs from the actual Rust source mix proof".into());
+    }
+    let mut retained_files = vec![json!({
+        "path": prepared.audio.relative_path,
+        "bytes": wav.len(),
+        "sha256": wav_sha256,
+        "kind": "actual_rust_mixed_wav",
+    })];
+    for (name, bytes) in [
+        ("mixed.pcm.s16le", pcm),
+        ("canonical-original-mix-plan.json", plan_bytes.as_slice()),
+        ("source-project.json", source_project_bytes.as_slice()),
+    ] {
+        let path = output_root.join(name);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        if fs::read(&path)?.as_slice() != bytes {
+            return Err("Calibration retained bytes changed during physical readback".into());
+        }
+        retained_files.push(json!({
+            "path": name,
+            "bytes": bytes.len(),
+            "sha256": hex::encode(Sha256::digest(bytes)),
+        }));
+    }
+    // Reopen storage independently after all source preparation and files.
+    // SQLite bookkeeping can change; the canonical Project and receipt stream
+    // must remain identical. This does not claim a native job was run.
+    let reopened = StudioService::open(database)?;
+    let after_project = serde_json::to_value(reopened.project(project.id)?)?;
+    let receipts_after = reopened.production_receipt_watermark(project.id)?;
+    if before_project != after_project || receipts_before != receipts_after {
+        return Err("Calibration changed canonical Project content or native receipt state".into());
+    }
+    let recipe = project
+        .production_design
+        .delivery_recipes
+        .get(&profile.id)
+        .ok_or("Calibration saved recipe disappeared")?;
+    let manifest = json!({
+        "schema": "motionwright.canonical-original-mix-rust-calibration/1",
+        "evidence_scope": "actual-canonical-rust-source-mixer-only-before-mlt-not-native-master",
+        "project_id": project.id,
+        "source_project_stamp": expected,
+        "source_project_sha256": source_project_sha256,
+        "source_project_serialization": "serde_json::to_vec(serde_json::to_value(Project))",
+        "source_project_unchanged": true,
+        "selected_profile": profile,
+        "saved_delivery_recipe": recipe,
+        "canonical_film_options": options,
+        "canonical_film_projection_only": {
+            "rendered": false,
+            "frame_count": 60,
+            "segment_frame_counts": [32, 28],
+            "segment_pcm_frame_counts": [51_200, 44_800],
+            "fps_num": 30,
+            "fps_den": 1,
+        },
+        "original_mix_plan_sha256": plan_sha256,
+        "source_stems": {
+            "voice": plan.measured_voice,
+            "music": plan.original_music,
+            "sfx": plan.original_sfx,
+        },
+        "actual_mixed_wav_sha256": wav_sha256,
+        "actual_mixed_pcm_sha256": pcm_sha256,
+        "actual_pcm_sample_frames": 96_000,
+        "pcm_sample_rate_hz": 48_000,
+        "pcm_channels": 2,
+        "pcm_encoding": "signed_16_bit_little_endian_interleaved",
+        "mixed_wav_differs_from_voice_wav": true,
+        "mixed_pcm_differs_from_voice_pcm": true,
+        "source_readiness": prepared.proof,
+        "retained_files": retained_files,
+        "production_receipts_before": {"count": receipts_before.count, "latest_id": receipts_before.latest_id},
+        "production_receipts_after": {"count": receipts_after.count, "latest_id": receipts_after.latest_id},
+        "native_jobs_dispatched": 0,
+        "broker_connected": false,
+        "external_process_launched": false,
+        "mlt_or_aac_executed": false,
+        "independent_lufs_or_true_peak_verified": false,
+        "speech_listening_rights_or_human_approval": false,
+        "example_source_sha256": hex::encode(Sha256::digest(include_bytes!("native-mlt-sequence-e2e.rs"))),
+        "mixer_source_sha256": hex::encode(Sha256::digest(include_bytes!("../src/original_mix.rs"))),
+        "source_preparer_source_sha256": hex::encode(Sha256::digest(include_bytes!("../src/production/original_mix_av.rs"))),
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+    let manifest_path = output_root.join("calibration-manifest.json");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&manifest_path)?;
+    output.write_all(&manifest_bytes)?;
+    output.sync_all()?;
+    if fs::read(&manifest_path)? != manifest_bytes {
+        return Err("Calibration manifest changed during physical readback".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "canonical_original_mix_rust_calibration": "PASS_SOURCE_ONLY",
+            "manifest": "calibration-manifest.json",
+            "manifest_sha256": hex::encode(Sha256::digest(&manifest_bytes)),
+            "mixed_wav_relative_path": prepared.audio.relative_path,
+            "mixed_wav_sha256": wav_sha256,
+            "mixed_pcm_sha256": pcm_sha256,
+            "pcm_sample_frames": 96_000,
+            "production_receipts": receipts_after.count,
+            "source_project_unchanged": true,
+            "native_master_verified": false,
+        }))?
+    );
+    Ok(())
+}
+
 async fn assemble(
     database: &Path,
     connection_path: &Path,
@@ -985,6 +1277,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = arg(&mut args);
     match action.to_str().ok_or("Non UTF-8 action")? {
         "seed" => seeded_database(&database),
+        "calibrate-original-mix" => {
+            let output = arg(&mut args);
+            if args.next().is_some() {
+                return Err("Calibration accepts only DATABASE and a new OUTPUT_ROOT".into());
+            }
+            calibrate_original_mix(&database, &output)
+        }
         "assemble" => {
             let connection = arg(&mut args);
             let output = arg(&mut args);
@@ -1004,23 +1303,7 @@ mod fixture_tests {
             .prefix("native-mix-signal-")
             .tempdir_in(env!("CARGO_MANIFEST_DIR"))
             .unwrap();
-        for (bus, (wav_sha256, pcm_sha256)) in [
-            (
-                "92600baa4f59af065cf2d4132cd84943313e6c842392c226efe8eac00e176c49",
-                "741d45438a68fa44d875398653c588f02a3a2674638070b1dc0149795a37f0a8",
-            ),
-            (
-                "708d8953769f4a92228df3417487e04344c6a3a3a07f89e4bc36e3f9b1031ad1",
-                "3ea758e4872cd184d0f3ffb60e535e4f72d1f416867a396682bdf6a0de4c7e26",
-            ),
-            (
-                "efe99c94f674aa38fb094c9d37ba00ba2baca0c5b87cdc14449d79dbbca74a11",
-                "b9c647103eee2fd4201da8be2da5d5b7bbe4ec2b77aa030d225e1f5ded1c4026",
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (bus, (wav_sha256, pcm_sha256)) in CANONICAL_FIXTURE_DIGESTS.into_iter().enumerate() {
             let path = root.path().join(format!("source-bus-{bus}.wav"));
             write_nonperiodic_bus_wav(&path, bus).unwrap();
             let bytes = fs::read(&path).unwrap();
