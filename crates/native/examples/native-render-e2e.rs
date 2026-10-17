@@ -703,6 +703,122 @@ fn prepare_caption_source(
     Ok(())
 }
 
+/// One complete typed failure response for the existing AV consumer. Only the
+/// original SDK enum and outcome bit define the top-level error. Secondary
+/// journal observations never replace them, expose private text, or prove a job.
+fn native_failure_envelope(
+    error: &semwright_native_sdk::Error,
+    receipts: &[motionwright_storage::ProductionReceipt],
+    captions: bool,
+) -> serde_json::Value {
+    let closed_error =
+        |code: semwright_native_sdk::ErrorCode, known: Option<bool>, message: &str| {
+            let mut value = json!({ "code": code });
+            if let Some(known) = known {
+                value["outcome_known"] = json!(known);
+            }
+            if message.contains("Provider capability generation is inactive") {
+                // Preserve only this closed category recognized by the existing
+                // consumer, never any prefix, suffix, path, job ref or provider log.
+                value["message"] = json!("Provider capability generation is inactive");
+            }
+            value
+        };
+    let safe_receipts = receipts
+        .iter()
+        .take(256)
+        .filter_map(|receipt| {
+            let command = match receipt.command.as_str() {
+                "driver.motion-canvas.composition.inspect" => {
+                    "driver.motion-canvas.composition.inspect"
+                }
+                "driver.motion-canvas.composition.plan" => "driver.motion-canvas.composition.plan",
+                "driver.motion-canvas.composition.apply" => {
+                    "driver.motion-canvas.composition.apply"
+                }
+                "driver.motion-canvas.composition.verify" => {
+                    "driver.motion-canvas.composition.verify"
+                }
+                "driver.motion-canvas.render.start" => "driver.motion-canvas.render.start",
+                "driver.motion-canvas.render.status" => "driver.motion-canvas.render.status",
+                "driver.motion-canvas.render.result" => "driver.motion-canvas.render.result",
+                "driver.mlt-video.frames.encode" => "driver.mlt-video.frames.encode",
+                "driver.mlt-video.av.mux" => "driver.mlt-video.av.mux",
+                _ => return None,
+            };
+            let stage = match receipt.stage.as_str() {
+                "dispatching" => "dispatching",
+                "completed" => "completed",
+                "failed_known" => "failed_known",
+                "failed" => "failed",
+                "outcome_unknown" => "outcome_unknown",
+                _ => "unrecognized",
+            };
+            let mut payload = json!({});
+            // Parse the already-existing SDK enum; do not invent another
+            // error roster or forward an arbitrary code from JSON metadata.
+            if let Some(observed) = receipt.payload.get("error")
+                && let Some(code) = observed.get("code").and_then(|value| {
+                    serde_json::from_value::<semwright_native_sdk::ErrorCode>(value.clone()).ok()
+                })
+            {
+                payload["error"] = closed_error(
+                    code,
+                    observed
+                        .get("outcome_known")
+                        .and_then(serde_json::Value::as_bool),
+                    observed
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(""),
+                );
+            }
+            Some(json!({ "command": command, "stage": stage, "payload": payload }))
+        })
+        .collect::<Vec<_>>();
+    let mut response = json!({
+        "error": closed_error(error.code, Some(error.outcome_known), &error.message),
+        "receipts": safe_receipts,
+        "native_media_verified": false,
+        "automatic_mutating_retry": false,
+    });
+    if captions {
+        let (caption_stage, caption_native_class) =
+            caption_native_closed_diagnostic(&error.message);
+        response["caption_native_pixels"] = json!("NOT_VERIFIED");
+        response["caption_stage"] = json!(caption_stage);
+        response["caption_native_class"] = json!(caption_native_class);
+        response["caption_verification_gate"] = json!(caption_native_closed_gate(&error.message));
+        response["retry_authorized"] = json!(false);
+    }
+    response
+}
+
+fn write_native_failure_response(
+    stream: &mut impl Write,
+    response: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    serde_json::to_writer(&mut *stream, response)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+/// Keep the original SDK/journal diagnostic owner-local. A secondary write
+/// failure must never erase or change the already-emitted typed failure.
+fn retain_native_failure_diagnostic(path: &Path, diagnostic: &serde_json::Value) {
+    let saved = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        serde_json::to_writer_pretty(&mut file, diagnostic)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if saved.is_err() {
+        eprintln!("native-owner-diagnostic=NOT_WRITTEN");
+    }
+}
+
 async fn render(
     database: &Path,
     connection_path: &Path,
@@ -767,59 +883,44 @@ async fn render(
     {
         Ok(result) => result,
         Err(error) => {
-            let diagnostic_path =
-                evidence_path.with_file_name("motionwright-render-diagnostic.json");
+            // The original typed error reaches stdout before optional journal
+            // retention. No secondary observation can replace UNKNOWN.
             let receipts = coordinator.receipts(project.id, 128).unwrap_or_default();
+            let response = native_failure_envelope(&error, &receipts, deliverable.burn_in_captions);
+            if write_native_failure_response(&mut std::io::stdout().lock(), &response).is_err() {
+                eprintln!("native-failure-response=NOT_WRITTEN");
+            }
             let diagnostic = json!({
                 "native_render_e2e": "FAIL",
                 "project_id": project.id,
                 "generation": project.generation,
                 "revision": project.revision,
                 "error": {
-                    "code": format!("{:?}", error.code),
+                    "code": error.code,
                     "message": &error.message,
                     "outcome_known": error.outcome_known,
                     "candidates": &error.candidates,
                 },
-                "receipts": receipts,
+                "receipts": &receipts,
             });
-            let body = serde_json::to_vec_pretty(&diagnostic)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&diagnostic_path)?;
-            file.write_all(&body)?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
+            retain_native_failure_diagnostic(
+                &evidence_path.with_file_name("motionwright-render-diagnostic.json"),
+                &diagnostic,
+            );
             if deliverable.burn_in_captions {
-                // A strict, typed, closed-field CI diagnostic is the ONLY
-                // CLI payload for failed caption effects. It cannot disclose
-                // job refs, original transcripts or raw provider messages.
-                let (caption_stage, caption_native_class) =
-                    caption_native_closed_diagnostic(&error.message);
-                let caption_verification_gate = caption_native_closed_gate(&error.message);
-                println!(
-                    "{}",
-                    serde_json::to_string(&json!({
-                        "error": {
-                            "code": format!("{:?}", error.code),
-                            "outcome_known": error.outcome_known,
-                        },
-                        "caption_native_pixels": "NOT_VERIFIED",
-                        "caption_stage": caption_stage,
-                        "caption_native_class": caption_native_class,
-                        "caption_verification_gate": caption_verification_gate,
-                        "retry_authorized": false,
-                    }))?
-                );
                 eprintln!(
                     "native-caption-producer=NOT_VERIFIED category={:?} outcome_known={}",
                     error.code, error.outcome_known
                 );
                 return Err("Source-bound caption render failed; no retry authorized".into());
             }
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
-            return Err(error.into());
+            eprintln!("native-render-producer=NOT_VERIFIED");
+            // Result main may add only this fixed stderr diagnostic. It must
+            // never append the provider Error Debug to a JSON response.
+            return Err(
+                "Native render failed; reconcile the original operation before further effects"
+                    .into(),
+            );
         }
     };
 
@@ -936,32 +1037,33 @@ async fn master(
     {
         Ok(result) => result,
         Err(error) => {
-            let diagnostic_path =
-                evidence_path.with_file_name("motionwright-av-master-diagnostic.json");
             let receipts = coordinator.receipts(project.id, 256).unwrap_or_default();
+            let response = native_failure_envelope(&error, &receipts, deliverable.burn_in_captions);
+            if write_native_failure_response(&mut std::io::stdout().lock(), &response).is_err() {
+                eprintln!("native-failure-response=NOT_WRITTEN");
+            }
             let diagnostic = json!({
                 "native_av_master_e2e": "FAIL",
                 "project_id": project.id,
                 "generation": project.generation,
                 "revision": project.revision,
                 "error": {
-                    "code": format!("{:?}", error.code),
+                    "code": error.code,
                     "message": &error.message,
                     "outcome_known": error.outcome_known,
                     "candidates": &error.candidates,
                 },
-                "receipts": receipts,
+                "receipts": &receipts,
             });
-            let body = serde_json::to_vec_pretty(&diagnostic)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&diagnostic_path)?;
-            file.write_all(&body)?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
-            return Err(error.into());
+            retain_native_failure_diagnostic(
+                &evidence_path.with_file_name("motionwright-av-master-diagnostic.json"),
+                &diagnostic,
+            );
+            eprintln!("native-av-master-producer=NOT_VERIFIED");
+            return Err(
+                "Native AV master failed; reconcile the original operation before further effects"
+                    .into(),
+            );
         }
     };
 
@@ -2435,5 +2537,122 @@ mod native_caption_closed_gate_tests {
             caption_native_closed_gate("unrelated native owner status"),
             "unclassified",
         );
+    }
+}
+
+#[cfg(test)]
+mod native_failure_stdout_contract_tests {
+    use super::*;
+    use semwright_native_sdk::{Error, ErrorCode};
+
+    const PRIVATE: &str = "job_ref=private-job ticket=secret /owner/private/source.wav";
+
+    fn receipt(
+        command: &str,
+        stage: &str,
+        payload: serde_json::Value,
+    ) -> motionwright_storage::ProductionReceipt {
+        // An in-memory negative fixture, never appended to a production journal.
+        motionwright_storage::ProductionReceipt {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            generation: Uuid::nil(),
+            revision: 1,
+            request_id: PRIVATE.into(),
+            request_sha256: "a".repeat(64),
+            command: command.into(),
+            stage: stage.into(),
+            payload,
+            created_at: PRIVATE.into(),
+        }
+    }
+
+    #[test]
+    fn stdout_is_one_complete_json_preserving_original_sdk_code_and_unknown() {
+        for code in [
+            ErrorCode::BackendFailed,
+            ErrorCode::InvalidArgument,
+            ErrorCode::Unsupported,
+            ErrorCode::Timeout,
+        ] {
+            let mut error = Error::new(code, PRIVATE).uncertain();
+            error.candidates.push(PRIVATE.into());
+            let response = native_failure_envelope(&error, &[], false);
+            let mut stdout = Vec::new();
+            write_native_failure_response(&mut stdout, &response).unwrap();
+            assert_eq!(stdout.last(), Some(&b'\n'));
+            assert_eq!(stdout.iter().filter(|byte| **byte == b'\n').count(), 1);
+            let parsed: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(parsed["error"]["code"], serde_json::to_value(code).unwrap());
+            assert_eq!(parsed["error"]["outcome_known"], false);
+            assert_eq!(parsed["native_media_verified"], false);
+            assert_eq!(parsed["automatic_mutating_retry"], false);
+            assert!(!String::from_utf8(stdout).unwrap().contains(PRIVATE));
+        }
+    }
+
+    #[test]
+    fn secondary_receipts_and_diagnostic_write_failure_cannot_replace_original_error() {
+        let error = Error::new(ErrorCode::BackendFailed, PRIVATE).uncertain();
+        let receipts = [
+            receipt(
+                "driver.motion-canvas.render.start",
+                "completed",
+                json!({ "job_ref": PRIVATE }),
+            ),
+            receipt(
+                "driver.motion-canvas.render.status",
+                "failed_known",
+                json!({ "error": {
+                    "code": "Unavailable", "outcome_known": true,
+                    "message": format!("Provider capability generation is inactive {PRIVATE}"),
+                }}),
+            ),
+            receipt(
+                PRIVATE,
+                PRIVATE,
+                json!({ "error": { "code": PRIVATE, "message": PRIVATE } }),
+            ),
+        ];
+        let response = native_failure_envelope(&error, &receipts, false);
+        assert_eq!(response["error"]["code"], "BackendFailed");
+        assert_eq!(response["error"]["outcome_known"], false);
+        assert_eq!(response["receipts"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            response["receipts"][1]["payload"]["error"]["code"],
+            "Unavailable"
+        );
+        assert!(!serde_json::to_string(&response).unwrap().contains(PRIVATE));
+        let mut stdout = Vec::new();
+        write_native_failure_response(&mut stdout, &response).unwrap();
+        let original_stdout = stdout.clone();
+        let temporary = tempfile::tempdir().unwrap();
+        retain_native_failure_diagnostic(
+            &temporary.path().join("absent-parent/diagnostic.json"),
+            &json!({ "error": PRIVATE }),
+        );
+        assert_eq!(stdout, original_stdout);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&stdout).unwrap(),
+            response
+        );
+        // Failed optional receipt collection is represented by an empty window.
+        let no_receipts = native_failure_envelope(&error, &[], false);
+        assert_eq!(no_receipts["error"], response["error"]);
+    }
+
+    #[test]
+    fn caption_fields_and_gate_are_preserved_in_the_single_failure_envelope() {
+        let error = Error::new(
+            ErrorCode::BackendFailed,
+            "Motion Canvas caption native verification rejected (gate: frame_coverage)",
+        );
+        let response = native_failure_envelope(&error, &[], true);
+        assert_eq!(response["error"]["outcome_known"], true);
+        assert_eq!(response["caption_native_pixels"], "NOT_VERIFIED");
+        assert_eq!(response["caption_stage"], "native_verification");
+        assert_eq!(response["caption_native_class"], "unclassified");
+        assert_eq!(response["caption_verification_gate"], "frame_coverage");
+        assert_eq!(response["retry_authorized"], false);
     }
 }
