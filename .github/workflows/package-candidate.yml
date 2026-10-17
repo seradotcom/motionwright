@@ -861,7 +861,7 @@ jobs:
   # on PRs, while this job is NOT_RUN until trusted dispatch or main push.
   attest-candidates:
     name: Candidate GH provenance (trusted runs only)
-    if: (github.event_name == 'workflow_dispatch' && inputs.package_scope != 'windows-uninstall') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && inputs.package_scope != 'windows-uninstall' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
