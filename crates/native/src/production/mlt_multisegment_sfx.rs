@@ -416,6 +416,30 @@ impl super::ProductionCoordinator {
             visual,
             audio,
         } = request;
+        // The existing mux preserves the source mix; it does not realize
+        // authored loudness or true-peak targets. Refuse those requests
+        // before source staging, output writes or native receipt dispatch.
+        // Keep the saved intent intact and the read-only source gate usable.
+        let project = self
+            .service
+            .project(project_id)
+            .map_err(super::storage_error)?;
+        if expected.resource != project.resource_key()
+            || expected.generation != project.generation
+            || expected.revision != project.revision
+            || self.client.connection().resource != project.resource_key()
+        {
+            return Err(stale(
+                "Native source-only SFX MLT owner authority or revision is stale",
+            ));
+        }
+        if project.audio.mix.target_lufs.is_some()
+            || project.audio.mix.target_true_peak_dbfs.is_some()
+        {
+            return Err(unsupported(
+                "Original SFX multisegment mastering does not support LUFS or true-peak targets",
+            ));
+        }
         validate_multisegment_sfx_request_id(request_id)?;
         // All real FFV1 and original WAV CAS reads, SHA256 checks and
         // scene/sample clock admission come from the original read-only gate.
@@ -483,6 +507,200 @@ impl super::ProductionCoordinator {
 #[cfg(test)]
 mod native_sfx_multisegment_request_tests {
     use super::*;
+    use crate::film::{
+        FilmBuildOptions, MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY,
+    };
+    use crate::production::{
+        MltPreparedMezzanines, MltVerifiedLosslessTimeline, MotionCanvasRenderEvidence,
+        ProductionConnection, ProductionCoordinator,
+    };
+    use motionwright_domain::Change;
+    use motionwright_service::StudioService;
+    use motionwright_storage::Store;
+    use semwright_media_time::Rate;
+    use std::{fs, path::Path};
+
+    // This executable records unexpected dispatch and fails. It never returns
+    // a successful provider envelope or fabricates native source evidence.
+    fn no_dispatch_connection(root: &Path, resource: String) -> ProductionConnection {
+        let executable = root.join(if cfg!(windows) {
+            "semwright-must-not-run.cmd"
+        } else {
+            "semwright-must-not-run"
+        });
+        let script: &[u8] = if cfg!(windows) {
+            b"@echo off\r\n> \"%~dp0native-dispatch-marker\" echo unexpected\r\nexit /b 97\r\n"
+        } else {
+            b"#!/bin/sh\n: > \"${0%/*}/native-dispatch-marker\"\nexit 97\n"
+        };
+        let socket = root.join("broker.sock");
+        let session = root.join("session.json");
+        let output = root.join("output");
+        fs::write(&executable, script).unwrap();
+        fs::write(&socket, b"").unwrap();
+        fs::write(&session, b"{}").unwrap();
+        fs::create_dir(&output).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in [
+                (&executable, 0o700),
+                (&socket, 0o600),
+                (&session, 0o600),
+                (&output, 0o700),
+            ] {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            }
+        }
+        ProductionConnection {
+            schema: super::super::CONNECTION_SCHEMA.into(),
+            executable_sha256: super::super::sha256_file(&executable).unwrap(),
+            executable,
+            socket,
+            session_file: session,
+            output_root: output,
+            resource,
+        }
+    }
+
+    enum MasteringTarget {
+        Lufs,
+        TruePeak,
+    }
+
+    async fn assert_mastering_target_rejected_without_effects(target: MasteringTarget) {
+        // Keep all controllable test files within this checkout on every OS.
+        let temp = tempfile::Builder::new()
+            .prefix("sfx-mastering-guard-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let store = Store::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let service = StudioService::from_store(store);
+        let initial = service
+            .create_project("SFX mastering target guard")
+            .unwrap();
+        let mut mix = initial.audio.mix.clone();
+        let (target_lufs, target_true_peak_dbfs) = match target {
+            MasteringTarget::Lufs => (Some(-14.0), None),
+            MasteringTarget::TruePeak => (None, Some(-1.0)),
+        };
+        mix.target_lufs = target_lufs;
+        mix.target_true_peak_dbfs = target_true_peak_dbfs;
+        let project = service
+            .apply(
+                initial.id,
+                &initial.stamp(),
+                "sfx-mastering-guard-intent",
+                &Change::SetMixIntent { mix },
+            )
+            .unwrap()
+            .project;
+        let before = serde_json::to_value(&project).unwrap();
+        let expected = project.stamp();
+        let deliverable_id = project.deliverables[0].id;
+        let connection = no_dispatch_connection(temp.path(), project.resource_key());
+        let output = connection.output_root.clone();
+        let marker = temp.path().join("native-dispatch-marker");
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        assert!(coordinator.receipts(project.id, 256).unwrap().is_empty());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+
+        // Deliberately absent media proves that the mastering guard precedes
+        // source validation and CAS reads. These values are unverified test
+        // placeholders, never successful render or import evidence.
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: vec![],
+        };
+        let rendered = MotionCanvasRenderEvidence {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            frame_rate: Rate::new(30, 1).unwrap(),
+            segments: vec![],
+        };
+        let visual = MltVerifiedLosslessTimeline {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            recipe_sha256: String::new(),
+            frame_count: 0,
+            native_frame_count_observed: None,
+            transport_pcm_audio: false,
+            native_render_profile: String::new(),
+            provider_project_cleanup: String::new(),
+            native_job_ref: String::new(),
+            provider_revision: String::new(),
+            artifact_path: "unread-visual.mkv".into(),
+            artifact_sha256: String::new(),
+            artifact_bytes: 0,
+            source: MltPreparedMezzanines {
+                project_resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+                deliverable_id,
+                input_sha256: String::new(),
+                fps_num: 30,
+                fps_den: 1,
+                total_frames: 0,
+                verified_video_segments: vec![],
+                evidence_scope: "unverified-negative-fixture".into(),
+            },
+            evidence_scope: "unverified-negative-fixture".into(),
+        };
+        let audio = MltAudioArtifact {
+            relative_path: "unread-original-sfx.wav".into(),
+            sha256: String::new(),
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        let error = coordinator
+            .assemble_native_mlt_multisegment_sfx_master(
+                project.id,
+                &expected,
+                MltMultisegmentSfxMasterRequest {
+                    request_id: "sfx-mastering-guard",
+                    deliverable_id,
+                    options: &options,
+                    rendered: &rendered,
+                    visual: &visual,
+                    audio: &audio,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert_eq!(
+            error.message,
+            "Original SFX multisegment mastering does not support LUFS or true-peak targets"
+        );
+        assert!(error.outcome_known);
+        assert!(coordinator.receipts(project.id, 256).unwrap().is_empty());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+        assert_eq!(
+            fs::symlink_metadata(&marker).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before,
+            "rejection must preserve the entire saved Project and its mastering intent"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_sfx_master_rejects_lufs_before_any_effect() {
+        assert_mastering_target_rejected_without_effects(MasteringTarget::Lufs).await;
+    }
+
+    #[tokio::test]
+    async fn native_sfx_master_rejects_true_peak_before_any_effect() {
+        assert_mastering_target_rejected_without_effects(MasteringTarget::TruePeak).await;
+    }
 
     #[test]
     fn source_only_native_mux_rejects_untrusted_output_and_job_identity() {
