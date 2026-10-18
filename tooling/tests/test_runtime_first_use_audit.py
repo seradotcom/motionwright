@@ -15,7 +15,20 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import runtime_first_use_audit as audit  # noqa: E402
-from test_runtime_first_use_atomic_receipt import AtomicSupportReceiptTests  # noqa: E402,F401
+def load_tests(loader, tests, pattern):
+    """Extend the *selected* first-use audit suite without duplicating tests.
+
+    GitHub's historical targeted discovery selects only this filename. The
+    complete discovery and the dotted two-module invocation already discover
+    the atomic suite independently, so re-exporting its TestCase class at
+    module scope creates duplicates (and breaks dotted imports on Windows).
+    """
+    if pattern == "test_runtime_first_use_audit.py":
+        from test_runtime_first_use_atomic_receipt import AtomicSupportReceiptTests
+
+        tests.addTests(loader.loadTestsFromTestCase(AtomicSupportReceiptTests))
+    return tests
+
 
 
 class FirstUseAuditTests(unittest.TestCase):
