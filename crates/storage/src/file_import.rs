@@ -1,6 +1,6 @@
 //! Durable file-import receipt inspection and validated CAS capture.
 use super::{
-    ApplyOutcome, Change, OptionalExtension, Project, Result, RevisionStamp, StorageError, Store,
+    ApplyOutcome, Change, OptionalExtension, Result, RevisionStamp, StorageError, Store,
     TransactionBehavior, params, request_digest, validate_digest,
 };
 use motionwright_domain::DomainError;
@@ -123,19 +123,13 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let current_json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                params![id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let current: Project = serde_json::from_str(&current_json)
-            .map_err(|_| invalid_receipt("invalid current project JSON"))?;
-        current
-            .validate()
-            .map_err(|_| invalid_receipt("invalid current project document"))?;
+        let current = super::load_project_from_row(&tx, id).map_err(|error| match error {
+            StorageError::Serde(_) => invalid_receipt("invalid current project JSON"),
+            StorageError::Domain(_) => {
+                invalid_receipt("invalid current project document or authority columns")
+            }
+            other => other,
+        })?;
         if current.id != id
             || current.resource_key() != expected.resource
             || current.generation != expected.generation
@@ -274,11 +268,13 @@ impl Store {
             let mut hasher = Sha256::new();
             let mut buffer = [0_u8; 128 * 1024];
             let mut size_bytes = 0_u64;
+            let mut credential_scan = crate::CredentialScan::default();
             loop {
                 let count = input.read(&mut buffer)?;
                 if count == 0 {
                     break;
                 }
+                credential_scan.check(&buffer[..count], "file import source")?;
                 output.write_all(&buffer[..count])?;
                 hasher.update(&buffer[..count]);
                 size_bytes = size_bytes.saturating_add(count as u64);
