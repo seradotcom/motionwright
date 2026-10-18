@@ -1,17 +1,28 @@
-name: v0.1 glib 0.18 Backport Conformance (not adopted)
+name: v0.1 adopted glib source and native FFI conformance
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "SOURCE_LOCK.json"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "vendor/glib-0.18.5/**"
+      - "tooling/upstream-crates/glib-0.18.5.crate"
       - "tooling/v01_glib_backport_integrity.py"
       - "tooling/tests/test_v01_glib_backport_integrity.py"
+      - "tooling/v01_glib_product_admission.py"
+      - "tooling/tests/test_v01_glib_product_admission.py"
       - "tooling/v01-glib-backport-probe/**"
-      - "docs/security/v01-glib-backport-lab.md"
       - ".github/workflows/v01-glib-backport-conformance.yml"
 
 permissions:
   contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   source-exact-backport-and-native-ffi:
@@ -24,59 +35,245 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
-      - name: Download and verify exact original registry glib bytes
+      - name: Export exact adopted inputs to fresh scratch outside the checkout
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ci-evidence vendor
-          curl --fail --location --silent --show-error --retry 3 \
-            https://static.crates.io/crates/glib/glib-0.18.5.crate \
-            --output "$RUNNER_TEMP/glib-0.18.5.crate"
-      - name: Generate disposable candidate; reject any change beyond FFI fix
+          python3 -I -B - <<'PY'
+          import hashlib, io, json, os, pathlib, stat, subprocess, tarfile
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          work = (pathlib.Path(os.environ["RUNNER_TEMP"]) /
+                  f"motionwright-v01-glib-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}").resolve()
+          source = os.environ["GITHUB_SHA"]
+          def git(*args):
+              return subprocess.check_output(["git", "--no-replace-objects", *args], cwd=root,
+                                             env=dict(os.environ, GIT_GRAFT_FILE=os.devnull))
+          assert git("rev-parse", "HEAD").decode().strip() == source
+          assert not git("status", "--porcelain", "--untracked-files=all")
+          assert not work.is_relative_to(root) and not root.is_relative_to(work)
+          work.mkdir()
+          for name in ("source", "evidence", "tmp", "cargo-home", "rustup-home", "target"):
+              (work / name).mkdir()
+          exact = {
+              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
+              "tooling/upstream-crates/glib-0.18.5.crate",
+              "tooling/v01_glib_backport_integrity.py", "tooling/v01_glib_product_admission.py",
+              "tooling/tests/test_v01_glib_backport_integrity.py",
+              "tooling/tests/test_v01_glib_product_admission.py",
+              ".github/workflows/v01-glib-backport-conformance.yml",
+          }
+          prefixes = ("vendor/glib-0.18.5/", "tooling/v01-glib-backport-probe/", ".cargo/")
+          entries = {}
+          for item in git("ls-tree", "-rz", "--full-tree", source).split(b"\0"):
+              if not item:
+                  continue
+              meta, raw_path = item.split(b"\t", 1)
+              name = raw_path.decode("utf-8")
+              if name in exact or name.startswith(prefixes):
+                  mode, kind, oid = meta.decode().split()
+                  assert mode in ("100644", "100755") and kind == "blob", "nonregular_input"
+                  entries[name] = {"git_blob": oid, "git_mode": mode}
+          assert exact <= entries.keys(), "required_source_input_missing"
+          assert not git("ls-files", "--others", "--ignored", "--exclude-standard", "--", *exact, *prefixes)
+          archive = git("archive", "--format=tar", source, "--", *sorted(entries))
+          seen = set()
+          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
+              for member in stream:
+                  if member.isdir():
+                      continue
+                  name = member.name
+                  assert member.isfile() and name in entries and name not in seen
+                  assert not pathlib.PurePosixPath(name).is_absolute() and ".." not in pathlib.PurePosixPath(name).parts
+                  raw = stream.extractfile(member).read()
+                  oid = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                  assert oid == entries[name]["git_blob"], "exported_blob_mismatch"
+                  path = work / "source" / name
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  with path.open("xb") as output:
+                      output.write(raw)
+                  path.chmod(int(entries[name]["git_mode"], 8) & 0o777)
+                  entries[name].update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                  seen.add(name)
+          assert seen == entries.keys(), "source_export_incomplete"
+          record = {
+              "source_sha": source, "source_tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+              "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "job": os.environ["GITHUB_JOB"], "inputs": entries,
+              "source_archive_sha256": hashlib.sha256(archive).hexdigest(),
+          }
+          (work / "evidence/inputs.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+          # Publish only after every scratch directory exists. These values are
+          # available to later steps, including rustup and temporary-file users.
+          runtime = {"MW_GLIB_WORK": work, "CARGO_HOME": work / "cargo-home",
+                     "RUSTUP_HOME": work / "rustup-home", "CARGO_TARGET_DIR": work / "target",
+                     "TMPDIR": work / "tmp"}
+          with pathlib.Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
+              for name, path in runtime.items():
+                  assert path.is_dir() and "\n" not in str(path) and "\r" not in str(path)
+                  output.write(f"{name}={path}\n")
+          PY
+      - name: Admit the adopted local path and run its existing negative source guards
         shell: bash
         run: |
           set -euo pipefail
-          python3 tooling/v01_glib_backport_integrity.py \
-            --upstream-crate "$RUNNER_TEMP/glib-0.18.5.crate" \
-            --vendor-root vendor/glib-0.18.5 \
-            --create-candidate \
-            --report ci-evidence/glib-backport-candidate.json
-          python3 -m json.tool ci-evidence/glib-backport-candidate.json >/dev/null
-          python3 -m unittest discover -s tooling/tests \
-            -p test_v01_glib_backport_integrity.py -v
-      - name: Original product Cargo.lock is NOT patched by this lab
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import pathlib, tomllib
-          lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text())
-          glib = [p for p in lock["package"] if p["name"] == "glib"]
-          assert len(glib) == 1
-          assert glib[0]["version"] == "0.18.5"
-          assert glib[0]["source"] == "registry+https://github.com/rust-lang/crates.io-index"
-          assert glib[0]["checksum"] == "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
-          assert "[patch.crates-io]" not in pathlib.Path("Cargo.toml").read_text()
-          print("glib-v01-original-product-graph=UNCHANGED advisory=OPEN")
+          cd "$MW_GLIB_WORK/source"
+          run_logged() {
+            local label="$1"; shift
+            set +e
+            env -u GH_TOKEN -u GITHUB_TOKEN "$@" >"$MW_GLIB_WORK/evidence/$label.stdout" 2>"$MW_GLIB_WORK/evidence/$label.stderr"
+            local result=$?
+            set -e
+            printf '%s\n' "$result" >"$MW_GLIB_WORK/evidence/$label.exit"
+            return "$result"
+          }
+          run_logged source-admission python3 -B -E -s tooling/v01_glib_product_admission.py \
+            --root "$MW_GLIB_WORK/source" --output "$MW_GLIB_WORK/evidence/source-admission.json"
+          run_logged source-guards python3 -B -E -s -m unittest discover -s tooling/tests \
+            -p 'test_v01_glib*.py' -v
+          python3 -B -E -s - <<'PY'
+          import os, pathlib, re
+          log = (pathlib.Path(os.environ["MW_GLIB_WORK"]) / "evidence/source-guards.stderr").read_text()
+          assert re.search(r"\nRan 19 tests in [0-9.]+s\n\nOK\s*\Z", log), "source_guards_incomplete_or_skipped"
           PY
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
-      - name: Install GLib native development headers for FFI
+      - name: Install GLib native development headers for the isolated FFI probe
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libglib2.0-dev pkg-config
-      - name: Compile and test original glib 0.18.5 with isolated FFI fix
+      - name: Run the existing real FFI probe against the adopted vendor
+        shell: bash
         run: |
-          cargo test \
-            --manifest-path tooling/v01-glib-backport-probe/Cargo.toml \
-            --all-targets -- --nocapture
-      - name: Preserve explicit non-release scope
+          set -euo pipefail
+          cd "$MW_GLIB_WORK/source/tooling/v01-glib-backport-probe"
+          run_logged() {
+            local label="$1"; shift
+            set +e
+            env -u GH_TOKEN -u GITHUB_TOKEN "$@" >"$MW_GLIB_WORK/evidence/$label.stdout" 2>"$MW_GLIB_WORK/evidence/$label.stderr"
+            local result=$?
+            set -e
+            printf '%s\n' "$result" >"$MW_GLIB_WORK/evidence/$label.exit"
+            return "$result"
+          }
+          run_logged rustc rustc -Vv
+          run_logged cargo cargo -Vv
+          run_logged glib-runtime pkg-config --modversion glib-2.0
+          run_logged glib-link-flags pkg-config --libs --cflags glib-2.0
+          # This standalone probe has no tracked lock. Retain its resolved lock for replay.
+          run_logged probe-lock cargo generate-lockfile --manifest-path Cargo.toml
+          cp Cargo.lock "$MW_GLIB_WORK/evidence/probe-Cargo.lock"
+          run_logged probe-metadata cargo metadata --locked --format-version 1 --manifest-path Cargo.toml
+          python3 -B -E -s - <<'PY'
+          import json, os, pathlib
+          work = pathlib.Path(os.environ["MW_GLIB_WORK"])
+          metadata = json.loads((work / "evidence/probe-metadata.stdout").read_text())
+          rows = [p for p in metadata["packages"] if p["name"] == "glib"]
+          assert len(rows) == 1 and rows[0]["version"] == "0.18.5" and rows[0]["source"] is None
+          assert pathlib.Path(rows[0]["manifest_path"]).resolve(strict=True) == work / "source/vendor/glib-0.18.5/Cargo.toml", "probe_resolved_another_glib"
+          PY
+          run_logged ffi-probe cargo test --locked --all-targets --manifest-path Cargo.toml \
+            --message-format=json -- --nocapture
+      - name: Bind source, tools, logs and executed FFI results without a release verdict
+        if: always()
+        shell: bash
+        env:
+          MW_PRIOR_JOB_STATUS: ${{ job.status }}
         run: |
-          echo "v01-glib-candidate=REAL_FFI_TEST_ONLY"
-          echo "application_uses_patched_crate=NOT_VERIFIED"
-          echo "rustsec_alert_closed=NO installed_linux_gui=NOT_RUN release=BLOCKED"
+          python3 -I -B - <<'PY'
+          import hashlib, json, os, pathlib, re, shutil, stat, subprocess, sys
+          from datetime import datetime, timezone
+          # Derive the same location even if bootstrap failed before GITHUB_ENV.
+          work = (pathlib.Path(os.environ["RUNNER_TEMP"]) /
+                  f"motionwright-v01-glib-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}").resolve()
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          assert not work.is_relative_to(root) and not root.is_relative_to(work)
+          evidence = work / "evidence"
+          evidence.mkdir(parents=True, exist_ok=True)
+          record = {"schema": "motionwright.v01-glib-source-and-ffi-conformance/1",
+                    "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                    "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "job": os.environ["GITHUB_JOB"],
+                    "status": "NOT_VERIFIED", "prior_job_status": os.environ["MW_PRIOR_JOB_STATUS"],
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "repository": os.environ["GITHUB_REPOSITORY"], "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+                    "no_undefined_behavior_proven": False, "product_binary_linkage_verified": False,
+                    "installed_linux_gui_verified": False, "rustsec_advisory_closed": False,
+                    "release_authorized": False, "human_acceptance": "NOT_RUN"}
+          def identity(path):
+              info = path.lstat()
+              assert stat.S_ISREG(info.st_mode) and not path.is_symlink(), "nonregular_evidence_or_input"
+              raw = path.read_bytes()
+              return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+          def git(*args):
+              return subprocess.check_output(["git", "--no-replace-objects", *args], cwd=root,
+                                             env=dict(os.environ, GIT_GRAFT_FILE=os.devnull))
+          try:
+              inputs = json.loads((evidence / "inputs.json").read_text())
+              assert all(record[key] == inputs[key] for key in ("source_sha", "run_id", "run_attempt", "job")), "mixed_source_or_run"
+              assert git("rev-parse", "HEAD").decode().strip() == record["source_sha"]
+              assert git("rev-parse", "HEAD^{tree}").decode().strip() == inputs["source_tree"]
+              assert not git("status", "--porcelain", "--untracked-files=all")
+              for name, declared in inputs["inputs"].items():
+                  expected = {key: declared[key] for key in ("bytes", "sha256")}
+                  assert identity(root / name) == identity(work / "source" / name) == expected, "source_input_changed"
+              labels = ("source-admission", "source-guards", "rustc", "cargo", "glib-runtime", "glib-link-flags", "probe-lock", "probe-metadata", "ffi-probe")
+              record["commands"] = {label: ((evidence / (label + ".exit")).read_text().strip() if (evidence / (label + ".exit")).is_file() else "NOT_RUN") for label in labels}
+              for label in labels:
+                  assert record["commands"][label] == "0", label + "_not_successful"
+                  for stream in ("stdout", "stderr"):
+                      identity(evidence / (label + "." + stream))
+              generated_lock = "tooling/v01-glib-backport-probe/Cargo.lock"
+              actual = {p.relative_to(work / "source").as_posix() for p in (work / "source").rglob("*") if p.is_file() or p.is_symlink()}
+              assert actual == set(inputs["inputs"]) | {generated_lock}, "unexpected_probe_source_output"
+              assert identity(work / "source" / generated_lock) == identity(evidence / "probe-Cargo.lock"), "resolved_probe_lock_changed"
+              assert re.search(r"\nRan 19 tests in [0-9.]+s\n\nOK\s*\Z", (evidence / "source-guards.stderr").read_text()), "source_guards_incomplete_or_skipped"
+              admission = json.loads((evidence / "source-admission.json").read_text())
+              assert admission["local_cargo_lock_selected"] and admission["all_other_files_identical_to_upstream"]
+              assert admission["upstream_file_count"] == 121 and not admission["release_authorized"]
+              assert "release: 1.98.1\n" in (evidence / "rustc.stdout").read_text(), "unreviewed_rust_toolchain"
+              metadata = json.loads((evidence / "probe-metadata.stdout").read_text())
+              glib = [p for p in metadata["packages"] if p["name"] == "glib"]
+              assert len(glib) == 1 and glib[0]["source"] is None and glib[0]["version"] == "0.18.5"
+              assert pathlib.Path(glib[0]["manifest_path"]).resolve(strict=True) == work / "source/vendor/glib-0.18.5/Cargo.toml", "probe_resolved_another_glib"
+              text = (evidence / "ffi-probe.stdout").read_text()
+              expected_tests = {"tests::empty_and_single_item_string_variants", "tests::forward_and_reverse_utf8_iteration",
+                                "tests::alternating_front_back_and_exact_size", "tests::all_lengths_0_through_64_are_lossless_in_both_directions"}
+              observed_tests = re.findall(r"^test (tests::[a-z0-9_]+) \.\.\. ok$", text, re.M)
+              assert len(observed_tests) == 4 and set(observed_tests) == expected_tests, "missing_or_duplicate_ffi_tests"
+              assert len(re.findall(r"^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;", text, re.M)) == 1, "ffi_tests_incomplete_or_skipped"
+              messages = [json.loads(line) for line in text.splitlines() if line.startswith("{")]
+              artifacts = [m for m in messages if m.get("reason") == "compiler-artifact" and m.get("package_id") == glib[0]["id"] and m.get("target", {}).get("name") == "glib"]
+              assert artifacts, "selected_glib_compilation_not_observed"
+              probes = [m for m in messages if m.get("reason") == "compiler-artifact" and m.get("package_id") == metadata["resolve"]["root"] and m.get("profile", {}).get("test") is True and m.get("executable")]
+              assert len(probes) == 1, "test_executable_not_observed"
+              executable = pathlib.Path(probes[0]["executable"]).resolve(strict=True)
+              assert executable.is_relative_to(pathlib.Path(os.environ["CARGO_TARGET_DIR"]).resolve(strict=True)), "test_executable_outside_scratch"
+              record["native_test_executable"] = identity(executable)
+              record["compiled_glib_outputs"] = []
+              for artifact in artifacts:
+                  for name in artifact["filenames"]:
+                      path = pathlib.Path(name).resolve(strict=True)
+                      assert path.is_relative_to(pathlib.Path(os.environ["CARGO_TARGET_DIR"]).resolve(strict=True)), "compiled_output_outside_scratch"
+                      record["compiled_glib_outputs"].append(identity(path))
+              record["tools"] = {}
+              for tool in ("rustc", "cargo", "pkg-config", "python3"):
+                  path = pathlib.Path(subprocess.check_output(["rustup", "which", tool]).decode().strip()) if tool in ("rustc", "cargo") else pathlib.Path(shutil.which(tool)).resolve(strict=True)
+                  record["tools"][tool] = identity(path)
+              assert record["prior_job_status"] == "success", "earlier_step_failed_or_cancelled"
+              record.update(status="ADOPTED_SOURCE_AND_REAL_FFI_VERIFIED", source_tree=inputs["source_tree"],
+                            source_guards={"tests": 19, "skips": 0}, native_ffi={"tests": 4, "skips": 0},
+                            standalone_probe_only=True, upstream_advisory_open=True)
+          except Exception as error:
+              record["failure"] = {"type": type(error).__name__, "reason": str(error)}
+          finally:
+              record["evidence"] = {p.name: identity(p) for p in sorted(evidence.iterdir()) if p.is_file() and p.name != "conformance.json"}
+              (evidence / "conformance.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+          print("v01-glib-conformance=" + record["status"] + " product_binary=NOT_VERIFIED no_UB=NOT_PROVEN installed_GUI=NOT_RUN release=NOT_AUTHORIZED")
+          sys.exit(0 if record["status"] == "ADOPTED_SOURCE_AND_REAL_FFI_VERIFIED" else 1)
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
-          name: v01-glib-0.18-backport-source-evidence
-          path: ci-evidence/glib-backport-candidate.json
+          name: v01-glib-adopted-source-ffi-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motionwright-v01-glib-${{ github.run_id }}-${{ github.run_attempt }}/evidence/
           if-no-files-found: error
