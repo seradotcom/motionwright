@@ -1175,9 +1175,9 @@ mod tests {
                     "revision": 17, "scene_id": scene, "deliverable_id": deliverable
                 },
                 "clock": {
-                    "timeline_start": {"num": 0, "den": 1},
-                    "duration": {"num": 1, "den": 1},
-                    "frame_rate": {"num": 30, "den": 1},
+                    "timeline_start": {"num": "0", "den": "1"},
+                    "duration": {"num": "1", "den": "1"},
+                    "frame_rate": {"num": "30", "den": "1"},
                     "project_start_frame": 0, "project_end_frame_exclusive": 30,
                     "local_start_frame": 0, "frame_count": 30
                 },
