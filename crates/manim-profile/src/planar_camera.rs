@@ -534,3 +534,181 @@ class MotionwrightScene(MovingCameraScene):
         with Path(__file__).with_suffix(".camera.json").open("xb") as target:
             target.write(encoded)
 "###;
+
+#[cfg(test)]
+mod source_contract_tests {
+    use super::*;
+
+    fn fixture() -> ManimCameraScenePlanV1 {
+        let scene = Uuid::from_u128(0x20000000000040008000000000000001);
+        let nodes = [
+            ("rectangle", 420.0, 270.0, 270.0, 180.0, "#E53935"),
+            ("circle", 1125.0, 540.0, 180.0, 180.0, "#2BBBAD"),
+        ]
+        .iter()
+        .enumerate()
+        .map(
+            |(index, (kind, x, y, width, height, color))| ManimStaticShapeV2 {
+                node_id: Uuid::from_u128(0x40000000000040008000000000000001 + index as u128),
+                display_name: format!("test-shape-{index}"),
+                source_kind: match *kind {
+                    "rectangle" => ManimSourceShapeKindV2::Rectangle,
+                    _ => ManimSourceShapeKindV2::Circle,
+                },
+                canonical_ordinal: index as u32,
+                z_index: index as i32,
+                x_px: *x,
+                y_px: *y,
+                width_px: *width,
+                height_px: *height,
+                fill_hex: (*color).into(),
+            },
+        )
+        .collect();
+        ManimCameraScenePlanV1 {
+            schema_version: CAMERA_SCHEMA_V1,
+            profile_id: ManimCameraProfileIdV1::PlanarCamera,
+            output_role: ManimOutputRoleV2::SceneVideoContributionWithoutAudioOrCaptions,
+            binding: ManimSceneBindingV2 {
+                project_id: Uuid::from_u128(0x10000000000040008000000000000001),
+                generation: Uuid::from_u128(0x10000000000040008000000000000002),
+                revision: 17,
+                scene_id: scene,
+                deliverable_id: Uuid::from_u128(0x10000000000040008000000000000003),
+            },
+            clock: ManimFrameClockV2::from_canonical(
+                Rational::new(0, 1).unwrap(),
+                Rational::new(1, 1).unwrap(),
+                Rational::new(30, 1).unwrap(),
+            )
+            .unwrap(),
+            render_profile: ManimRenderProfile {
+                width: 640,
+                height: 360,
+                frame_rate: 30,
+            },
+            canvas: ManimCanvasV2::default(),
+            background: ManimMatteV2::default(),
+            camera: ManimCameraPoseV1 {
+                center_x: 1000.0,
+                center_y: 520.0,
+                zoom: 1.0,
+                rotation_deg: 0.0,
+                safe_margin: 0.05,
+            },
+            reframe: CameraMoveV1 {
+                id: Uuid::from_u128(0x30000000000040008000000000000001),
+                scene_id: scene,
+                component_version: CAMERA_VERSION_V2,
+                start_center_x: 960.0,
+                start_center_y: 540.0,
+                end_center_x: 1000.0,
+                end_center_y: 520.0,
+                duration_frames: 24,
+            },
+            nodes,
+        }
+    }
+
+    #[test]
+    fn source_clock_contains_every_frame_and_exact_24_to_29_hold() {
+        let plan = fixture();
+        let samples = plan.expected_frame_samples().unwrap();
+        assert_eq!(samples.len(), 30);
+        assert_eq!(samples[0].pts, Rational::new(0, 30).unwrap());
+        assert_eq!(samples[12].pts, Rational::new(12, 30).unwrap());
+        assert_eq!((samples[0].center_x, samples[0].center_y), (960.0, 540.0));
+        assert_eq!((samples[12].center_x, samples[12].center_y), (980.0, 530.0));
+        for (index, row) in samples.iter().enumerate() {
+            assert_eq!(row.frame as usize, index);
+            if index >= 24 {
+                assert_eq!((row.center_x, row.center_y), (1000.0, 520.0));
+            }
+        }
+        assert_eq!(plan.nodes[0].x_px, 420.0);
+        assert_eq!(plan.nodes[1].x_px, 1125.0);
+        assert!(plan.sample(30).is_err());
+    }
+
+    #[test]
+    fn source_compiler_is_fixed_and_hash_bound_across_edit_and_untrusted_names() {
+        use sha2::{Digest, Sha256};
+        let input = fixture();
+        let prepared = compile_camera_program_source_only(&input).unwrap();
+        assert_eq!(
+            prepared,
+            compile_camera_program_source_only(&input).unwrap()
+        );
+        assert_eq!(prepared.compiler_id, CAMERA_COMPILER_V1);
+        assert!(!prepared.native_execution_performed);
+        assert!(!prepared.runtime_sample_pts_verified);
+        assert!(prepared.plan_document.ends_with(b"\n"));
+        assert_eq!(
+            serde_json::from_slice::<ManimCameraScenePlanV1>(&prepared.plan_document).unwrap(),
+            input
+        );
+        assert_eq!(
+            prepared.plan_sha256,
+            hex::encode(Sha256::digest(&prepared.plan_document))
+        );
+        assert_eq!(
+            prepared.source_sha256,
+            hex::encode(Sha256::digest(prepared.python_source.as_bytes()))
+        );
+        let trusted_token = "from manim import Circle, Rectangle, MovingCameraScene";
+        assert!(prepared.python_source.contains(trusted_token));
+        assert!(
+            prepared
+                .python_source
+                .contains("self.play(UpdateFromAlphaFunc(")
+        );
+        let program_body = prepared.python_source.split_once(trusted_token).unwrap().1;
+        let mut injection = input.clone();
+        injection.nodes[0].display_name = "__import__('os').system('bad')".into();
+        let inert = compile_camera_program_source_only(&injection).unwrap();
+        assert_eq!(
+            program_body,
+            inert.python_source.split_once(trusted_token).unwrap().1,
+            "authored bytes must not change executable program body"
+        );
+        assert_ne!(prepared.plan_sha256, inert.plan_sha256);
+        let mut edited = input;
+        edited.reframe.end_center_x = 1012.0;
+        edited.camera.center_x = 1012.0;
+        edited.binding.revision += 1;
+        let next = compile_camera_program_source_only(&edited).unwrap();
+        assert_ne!(prepared.plan_sha256, next.plan_sha256);
+        assert_ne!(prepared.source_sha256, next.source_sha256);
+        assert_eq!(
+            program_body,
+            next.python_source.split_once(trusted_token).unwrap().1
+        );
+    }
+
+    #[test]
+    fn compiler_refuses_unadmitted_controls_without_mutations_or_dispatch() {
+        let original = fixture();
+        assert!(original.validate_source_only().is_ok());
+        let mut bad = original.clone();
+        bad.reframe.component_version = 1;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = original.clone();
+        bad.render_profile.frame_rate = 60;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = original.clone();
+        bad.camera.center_x = 999.0;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = original.clone();
+        bad.nodes[0].fill_hex = "#NOTHEX".into();
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = original.clone();
+        bad.nodes[0].display_name = "X".repeat(161);
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = original;
+        bad.clock.frame_count += 1;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut value = serde_json::to_value(&bad).unwrap();
+        value["clock"]["frame_count"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ManimCameraScenePlanV1>(value).is_err());
+    }
+}
