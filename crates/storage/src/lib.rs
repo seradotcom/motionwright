@@ -85,7 +85,42 @@ pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_BLOBS: usize = 4096;
 const MAX_BUNDLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
-const MAX_SECRET_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+// One finite byte-pattern policy is shared by metadata and streamed members.
+// This recognizes the existing credential shapes; it is not a proof that
+// arbitrary, encoded or encrypted credentials are absent.
+const PRIVATE_KEY_MARKER: &[u8] = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
+const CREDENTIAL_PREFIXES: [(&[u8], usize); 10] = [
+    (b"ghp_", 20),
+    (b"gho_", 20),
+    (b"ghu_", 20),
+    (b"ghs_", 20),
+    (b"xoxb-", 20),
+    (b"xoxa-", 20),
+    (b"xoxp-", 20),
+    (b"xoxr-", 20),
+    (b"xoxs-", 20),
+    (b"sk-", 24),
+];
+const ACCESS_KEY_WIDTH: usize = 20;
+
+const fn credential_pattern_width() -> usize {
+    let mut width = PRIVATE_KEY_MARKER.len();
+    let mut index = 0;
+    while index < CREDENTIAL_PREFIXES.len() {
+        let (prefix, suffix) = CREDENTIAL_PREFIXES[index];
+        let candidate = prefix.len() + suffix;
+        if candidate > width {
+            width = candidate;
+        }
+        index += 1;
+    }
+    if ACCESS_KEY_WIDTH > width {
+        width = ACCESS_KEY_WIDTH;
+    }
+    width
+}
+
+const CREDENTIAL_SCAN_OVERLAP: usize = credential_pattern_width() - 1;
 
 fn secret_token_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
@@ -99,37 +134,25 @@ fn has_prefixed_secret(bytes: &[u8], prefix: &[u8], min_suffix: usize) -> bool {
             if window != prefix {
                 return false;
             }
-            bytes[index + prefix.len()..]
-                .iter()
-                .take_while(|byte| secret_token_char(**byte))
-                .count()
-                >= min_suffix
+            let suffix = &bytes[index + prefix.len()..];
+            suffix.len() >= min_suffix
+                && suffix[..min_suffix].iter().copied().all(secret_token_char)
         })
 }
 
 fn contains_credential_like_material(bytes: &[u8]) -> bool {
-    let private_key = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
     if bytes
-        .windows(private_key.len())
-        .any(|window| window == private_key)
+        .windows(PRIVATE_KEY_MARKER.len())
+        .any(|window| window == PRIVATE_KEY_MARKER)
     {
         return true;
     }
-
-    for prefix in [b"ghp_".as_slice(), b"gho_", b"ghu_", b"ghs_"] {
-        if has_prefixed_secret(bytes, prefix, 20) {
+    for (prefix, min_suffix) in CREDENTIAL_PREFIXES {
+        if has_prefixed_secret(bytes, prefix, min_suffix) {
             return true;
         }
     }
-    for prefix in [b"xoxb-".as_slice(), b"xoxa-", b"xoxp-", b"xoxr-", b"xoxs-"] {
-        if has_prefixed_secret(bytes, prefix, 20) {
-            return true;
-        }
-    }
-    if has_prefixed_secret(bytes, b"sk-", 24) {
-        return true;
-    }
-    bytes.windows(20).any(|window| {
+    bytes.windows(ACCESS_KEY_WIDTH).any(|window| {
         window.starts_with(b"AKIA")
             && window[4..]
                 .iter()
@@ -140,47 +163,26 @@ fn contains_credential_like_material(bytes: &[u8]) -> bool {
 fn ensure_secret_free_bytes(bytes: &[u8], context: &str) -> Result<()> {
     if contains_credential_like_material(bytes) {
         return Err(StorageError::InvalidBackup(format!(
-            "{context} contains credential-like material and cannot enter a portable bundle"
+            "{context} contains credential-like material and cannot enter a portable project"
         )));
     }
     Ok(())
 }
 
-fn ensure_backup_secret_free(backup: &ProjectBackup) -> Result<()> {
+// Pattern policy is shared by raw backups and bundles. Only the bundle
+// format supplies a metadata byte budget; raw JSON backups retain their
+// pre-existing size contract.
+fn ensure_backup_secret_free(backup: &ProjectBackup, max_bytes: Option<u64>) -> Result<()> {
     let encoded = serde_json::to_vec(backup)?;
-    if encoded.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+    if let Some(limit) = max_bytes
+        && encoded.len() as u64 > limit
+    {
         return Err(StorageError::BlobTooLarge {
             size: encoded.len() as u64,
-            limit: MAX_BUNDLE_MANIFEST_BYTES,
+            limit,
         });
     }
     ensure_secret_free_bytes(&encoded, "portable project metadata")
-}
-
-fn media_type_requires_secret_scan(media_type: &str) -> bool {
-    let media_type = media_type.to_ascii_lowercase();
-    media_type.starts_with("text/")
-        || [
-            "json",
-            "javascript",
-            "typescript",
-            "python",
-            "rust",
-            "xml",
-            "svg",
-            "yaml",
-            "toml",
-            "shell",
-        ]
-        .iter()
-        .any(|needle| media_type.contains(needle))
-}
-
-fn project_blob_requires_secret_scan(project: &Project, digest: &str) -> bool {
-    project.assets.iter().any(|asset| {
-        asset.content_sha256.as_deref() == Some(digest)
-            && media_type_requires_secret_scan(&asset.media_type)
-    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -675,7 +677,7 @@ impl Store {
                 "portable bundle contains too many blobs".into(),
             ));
         }
-        ensure_backup_secret_free(&manifest.backup)?;
+        ensure_backup_secret_free(&manifest.backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
         let project_plan = self.inspect_import(&manifest.backup)?;
         let mut expected = BTreeSet::new();
         for asset in &manifest.backup.project.assets {
@@ -712,14 +714,10 @@ impl Store {
                     limit: MAX_BUNDLE_TOTAL_BYTES,
                 });
             }
-            if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                portability::ensure_secret_free_portable_file(
-                    &path,
-                    "portable text-like asset",
-                    blob.size_bytes,
-                )?;
-            }
-            let descriptor = portability::hash_portable_file(&path, blob.size_bytes)?;
+            // MIME is caller-supplied metadata. Check the actual member bytes
+            // in the same bounded pass that establishes their digest.
+            let descriptor =
+                portability::inspect_portable_file(&path, "portable asset", blob.size_bytes)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
@@ -1284,7 +1282,7 @@ fn validate_backup(backup: &ProjectBackup) -> Result<()> {
             ));
         }
     }
-    Ok(())
+    ensure_backup_secret_free(backup, None)
 }
 
 fn validate_digest(digest: &str) -> Result<()> {

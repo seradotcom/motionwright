@@ -147,13 +147,11 @@ impl Store {
                     "captured blob differs from bundle manifest".into(),
                 ));
             }
-            if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                ensure_secret_free_portable_file(
-                    captured.path(),
-                    "captured portable text-like asset",
-                    blob.size_bytes,
-                )?;
-            }
+            ensure_secret_free_portable_file(
+                captured.path(),
+                "captured portable asset",
+                blob.size_bytes,
+            )?;
             staged.push(captured);
         }
         Ok(staged)
@@ -256,7 +254,7 @@ impl Store {
             return Err(StorageError::DestinationExists);
         }
         validate_backup(&backup)?;
-        ensure_backup_secret_free(&backup)?;
+        ensure_backup_secret_free(&backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
         let mut digests = BTreeSet::new();
         for asset in &backup.project.assets {
             let digest = asset.content_sha256.as_deref().ok_or_else(|| {
@@ -275,19 +273,15 @@ impl Store {
         let mut total_blob_bytes = 0_u64;
         for digest in digests {
             let source = self.checked_existing_blob_path(&digest)?;
-            let descriptor =
-                hash_portable_file(&source, MAX_BUNDLE_TOTAL_BYTES - total_blob_bytes)?;
+            let descriptor = inspect_portable_file(
+                &source,
+                "portable asset",
+                MAX_BUNDLE_TOTAL_BYTES - total_blob_bytes,
+            )?;
             if descriptor.sha256 != digest {
                 return Err(StorageError::InvalidBackup(
                     "stored blob digest differs from its content-addressed path".into(),
                 ));
-            }
-            if project_blob_requires_secret_scan(&backup.project, &digest) {
-                ensure_secret_free_portable_file(
-                    &source,
-                    "portable text-like asset",
-                    descriptor.size_bytes,
-                )?;
             }
             total_blob_bytes += descriptor.size_bytes;
             blobs.push(PortableBlob {
@@ -363,16 +357,59 @@ impl Drop for BundleExportStage {
     }
 }
 
+/// Detect the same finite byte patterns across arbitrary short reads.
+/// Only a bounded suffix survives a call. No media decoder, MIME assertion,
+/// text rewriting or complete-member allocation participates in the check.
+#[derive(Default)]
+struct PortableCredentialScan {
+    tail: [u8; CREDENTIAL_SCAN_OVERLAP],
+    tail_len: usize,
+}
+
+impl PortableCredentialScan {
+    fn check(&mut self, bytes: &[u8], context: &str) -> Result<()> {
+        let head_len = bytes.len().min(CREDENTIAL_SCAN_OVERLAP);
+        let mut crossing = [0_u8; CREDENTIAL_SCAN_OVERLAP * 2];
+        crossing[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        crossing[self.tail_len..self.tail_len + head_len].copy_from_slice(&bytes[..head_len]);
+        ensure_secret_free_bytes(&crossing[..self.tail_len + head_len], context)?;
+        ensure_secret_free_bytes(bytes, context)?;
+
+        if bytes.len() >= CREDENTIAL_SCAN_OVERLAP {
+            self.tail
+                .copy_from_slice(&bytes[bytes.len() - CREDENTIAL_SCAN_OVERLAP..]);
+            self.tail_len = CREDENTIAL_SCAN_OVERLAP;
+        } else {
+            let keep = self.tail_len.min(CREDENTIAL_SCAN_OVERLAP - bytes.len());
+            self.tail
+                .copy_within(self.tail_len - keep..self.tail_len, 0);
+            self.tail[keep..keep + bytes.len()].copy_from_slice(bytes);
+            self.tail_len = keep + bytes.len();
+        }
+        Ok(())
+    }
+}
+
 /// The byte budget constrains the actual read, including growth after stat.
 fn transfer_portable_bytes(
     input: impl Read,
+    output: impl Write,
+    limit: u64,
+) -> Result<BlobDescriptor> {
+    transfer_portable_bytes_with_credential_check(input, output, limit, None)
+}
+
+fn transfer_portable_bytes_with_credential_check(
+    input: impl Read,
     mut output: impl Write,
     limit: u64,
+    credential_context: Option<&str>,
 ) -> Result<BlobDescriptor> {
     let mut input = input.take(limit.saturating_add(1));
     let mut hasher = Sha256::new();
     let mut size_bytes = 0_u64;
     let mut buffer = [0_u8; 128 * 1024];
+    let mut credentials = PortableCredentialScan::default();
     loop {
         let read = input.read(&mut buffer)?;
         if read == 0 {
@@ -386,6 +423,9 @@ fn transfer_portable_bytes(
                 size: size_bytes,
                 limit,
             });
+        }
+        if let Some(context) = credential_context {
+            credentials.check(&buffer[..read], context)?;
         }
         output.write_all(&buffer[..read])?;
         hasher.update(&buffer[..read]);
@@ -409,16 +449,21 @@ pub(super) fn hash_portable_file(path: &Path, limit: u64) -> Result<BlobDescript
     transfer_portable_bytes(input, std::io::sink(), limit)
 }
 
+pub(super) fn inspect_portable_file(
+    path: &Path,
+    context: &str,
+    limit: u64,
+) -> Result<BlobDescriptor> {
+    let input = checked_portable_source(path, context, limit)?;
+    transfer_portable_bytes_with_credential_check(input, std::io::sink(), limit, Some(context))
+}
+
 pub(super) fn ensure_secret_free_portable_file(
     path: &Path,
     context: &str,
     limit: u64,
 ) -> Result<()> {
-    let limit = limit.min(MAX_SECRET_SCAN_BYTES);
-    let input = checked_portable_source(path, context, limit)?;
-    let mut bytes = Vec::new();
-    transfer_portable_bytes(input, &mut bytes, limit)?;
-    ensure_secret_free_bytes(&bytes, context)
+    inspect_portable_file(path, context, limit).map(|_| ())
 }
 
 fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDescriptor> {
@@ -431,7 +476,12 @@ fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDe
         options.mode(0o600);
     }
     let mut output = options.open(target)?;
-    let descriptor = transfer_portable_bytes(input, &mut output, limit)?;
+    let descriptor = transfer_portable_bytes_with_credential_check(
+        input,
+        &mut output,
+        limit,
+        Some("copied portable asset"),
+    )?;
     output.flush()?;
     output.sync_all()?;
     Ok(descriptor)
@@ -1197,5 +1247,57 @@ mod tests {
         assert!(
             matches!(result, Err(StorageError::BlobTooLarge { limit: actual, .. }) if actual == limit)
         );
+    }
+}
+
+#[cfg(test)]
+mod portable_credential_stream_tests {
+    use super::*;
+
+    struct ShortReads<'a> {
+        remaining: &'a [u8],
+        stride: usize,
+    }
+
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let count = output.len().min(self.stride).min(self.remaining.len());
+            output[..count].copy_from_slice(&self.remaining[..count]);
+            self.remaining = &self.remaining[count..];
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn existing_credential_patterns_are_rejected_under_every_short_read_width() {
+        let mut markers = CREDENTIAL_PREFIXES
+            .iter()
+            .map(|(prefix, suffix)| {
+                let mut marker = prefix.to_vec();
+                marker.extend(std::iter::repeat_n(b'A', *suffix));
+                marker
+            })
+            .collect::<Vec<_>>();
+        markers.push(PRIVATE_KEY_MARKER.to_vec());
+        markers.push([b"AKIA".as_slice(), &[b'A'; ACCESS_KEY_WIDTH - 4]].concat());
+        for marker in markers {
+            assert!(contains_credential_like_material(&marker));
+            for stride in 1..=credential_pattern_width() + 1 {
+                let mut bytes = vec![0xff; 17];
+                bytes.extend_from_slice(&marker);
+                bytes.extend_from_slice(&[0, 0x80]);
+                let input = ShortReads {
+                    remaining: &bytes,
+                    stride,
+                };
+                let result = transfer_portable_bytes_with_credential_check(
+                    input,
+                    std::io::sink(),
+                    bytes.len() as u64,
+                    Some("portable asset"),
+                );
+                assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
+            }
+        }
     }
 }
