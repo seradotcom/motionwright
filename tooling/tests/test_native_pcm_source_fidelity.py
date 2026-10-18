@@ -56,6 +56,9 @@ class OriginalPcmSourceFidelityTests(unittest.TestCase):
         self.assertEqual(got["informative_source_windows_by_channel"],[207,207])
         self.assertEqual(got["minimum_source_window_energy_ratio"],[1,1])
         self.assertEqual(got["maximum_source_window_energy_ratio"],[1,1])
+        self.assertEqual(got["source_window_temporal_identity_checked_by_channel"],[207,207])
+        self.assertEqual(got["minimum_source_window_correlation"],[1,1])
+        self.assertEqual(got["maximum_source_window_correlation"],[1,1])
         self.assertEqual(got["last_informative_window_by_channel"][1]["to"],COUNT)
         self.assertEqual(got["terminal_source_window_informative_by_channel"],[True,True])
         self.assertFalse(got["source_to_decoded_PTS_and_AAC_priming_verified"])
@@ -121,6 +124,76 @@ class OriginalPcmSourceFidelityTests(unittest.TestCase):
             witness(self.wave,self.source+bytes(1100*4))
         with self.assertRaisesRegex(PcmContentError,"decoded_pcm_duration_budget"):
             witness(self.wave,self.source[:-4])
+
+    def test_arbitrary_nonperiodic_original_source_passes_and_reordered_block_fails(self):
+        # The product gate must not be limited to the historical 400/600Hz
+        # periodic MLT CI waveform. This exercises a separate seeded, bounded
+        # nonperiodic source with identical multichannel frame/sample budgets.
+        from random import Random
+        prng=Random(20261017)
+        raw=b"".join(struct.pack("<hh",
+                   prng.randint(-18000,18000),prng.randint(-15000,15000))
+                   for _ in range(10_240))
+        alternative=source_wave(raw)
+        good=witness(alternative,raw)
+        self.assertEqual(good["source_stereo_frames"],10_240)
+        self.assertEqual(good["source_window_temporal_identity_checked_by_channel"],
+                         [40,40])
+        before=bytearray(raw)
+        first=256*17
+        segment=[bytes(before[(first+i)*4:(first+i+1)*4]) for i in range(256)]
+        for i,frame in enumerate(reversed(segment)):
+            before[(first+i)*4:(first+i+1)*4]=frame
+        with self.assertRaisesRegex(PcmContentError,
+                 "source_audio_content_temporally_changed"):
+            witness(alternative,bytes(before))
+
+    def test_injected_sfx_in_authored_silence_is_rejected_not_skipped(self):
+        # Energy/correlation must also reject a loud unsourced effect inside
+        # explicit source silence, where source correlation is undefined.
+        original=bytearray(self.source)
+        window=256*120
+        for at in range(window,window+256):
+            struct.pack_into("<hh",original,at*4,0,0)
+        authoritative=bytes(original)
+        authored_wave=source_wave(authoritative)
+        self.assertFalse(witness(authored_wave,authoritative)[
+            "terminal_source_window_informative_by_channel"]==[False,False])
+        corrupted=bytearray(authoritative)
+        for at in range(window,window+256):
+            struct.pack_into("<h",corrupted,at*4+2,4000)
+        with self.assertRaisesRegex(PcmContentError,
+                 r"source_audio_unapproved_sound_in_quiet_window:channel=1:"):
+            witness(authored_wave,bytes(corrupted))
+
+    def test_256frame_reordered_midtrack_with_identical_window_energy_rejected(self):
+        # Historical RED from frozen PR284: sparse identity sampling accepted
+        # this permutation despite a real 400/600 Hz authored source.
+        first=256*137
+        raw=bytearray(self.source)
+        blocks=[bytes(raw[(first+i)*4:(first+i+1)*4]) for i in range(256)]
+        for i,pair in enumerate(reversed(blocks)):
+            raw[(first+i)*4:(first+i+1)*4]=pair
+        altered=bytes(raw)
+        for channel in range(2):
+            source_l1=sum(abs(struct.unpack_from("<h",self.source,(first+i)*4+2*channel)[0])
+                          for i in range(256))
+            altered_l1=sum(abs(struct.unpack_from("<h",altered,(first+i)*4+2*channel)[0])
+                          for i in range(256))
+            self.assertEqual(source_l1,altered_l1)
+        with self.assertRaisesRegex(PcmContentError,
+                 r"source_audio_content_temporally_changed:channel=0:start=35072:end=35328"):
+            witness(self.wave,altered)
+
+    def test_256frame_polarity_inversion_in_middle_rejected_despite_energy_match(self):
+        first=256*130
+        raw=bytearray(self.source)
+        for i in range(first,first+256):
+            left,right=struct.unpack_from("<hh",raw,4*i)
+            struct.pack_into("<hh",raw,4*i,-left,-right)
+        with self.assertRaisesRegex(PcmContentError,
+                 r"source_audio_content_temporally_changed:channel=0:"):
+            witness(self.wave,bytes(raw))
 
     def test_clipping_and_modified_audio_are_not_silently_approved(self):
         huge=b"".join(struct.pack("<hh",32767,-32768) for _ in range(COUNT))

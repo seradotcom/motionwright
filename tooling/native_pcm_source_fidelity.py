@@ -23,7 +23,8 @@ SCHEMA = "motionwright.native.source-pcm16-stereo-content/1"
 MAX_SOURCE_FRAMES = 48_000 * 60   # 60s bounded independent CI witness
 MAX_PADDING_FRAMES = 1024        # only physical sample *budget*, NOT PTS approval
 WINDOW_FRAMES = 256              # ~5.33 ms at 48kHz, includes terminal remainder
-MIN_MEAN_ABSOLUTE_SOURCE = 64.0  # reject faint/zero windows as uninformative
+MIN_MEAN_ABSOLUTE_SOURCE = 64.0  # faint/zero windows need a separate noise-floor bound
+MAX_QUIET_OUTPUT_ABSOLUTE_MEAN = 256.0  # conservative codec ringing allowance, not silence identity
 MIN_RELATIVE_ENERGY = 0.20
 MAX_RELATIVE_ENERGY = 5.0
 MIN_CHANNEL_COVERAGE = 0.10      # an almost-fully-muted channel cannot be "green"
@@ -109,6 +110,9 @@ def inspect_source_pcm16_stereo_content(
            "decoded_pcm_duration_budget")
 
     total_informative=[0,0]
+    window_identity_checked=[0,0]
+    min_window_correlation=[math.inf,math.inf]
+    max_window_correlation=[-math.inf,-math.inf]
     total_source_l1=[0,0]
     total_decoded_l1=[0,0]
     observed_min=[math.inf,math.inf]
@@ -128,6 +132,18 @@ def inspect_source_pcm16_stereo_content(
             total_decoded_l1[channel]+=decoded_sum
             original_mean=original_sum/sample_count
             if original_mean < MIN_MEAN_ABSOLUTE_SOURCE:
+                # Source silence is part of the composition. The output cannot
+                # invent a loud SFX in an authored silent/very quiet interval
+                # merely because this window lacks enough information to
+                # compute a meaningful waveform correlation.
+                observed_mean=decoded_sum/sample_count
+                insist(
+                    observed_mean <= MAX_QUIET_OUTPUT_ABSOLUTE_MEAN
+                        + MAX_RELATIVE_ENERGY*original_mean,
+                    f"source_audio_unapproved_sound_in_quiet_window:"
+                    f"channel={channel}:start={first}:end={final}:"
+                    f"mean={observed_mean:.6f}",
+                )
                 skipped_ambiguous+=1
                 continue
             total_informative[channel]+=1
@@ -135,6 +151,17 @@ def inspect_source_pcm16_stereo_content(
             insist(MIN_RELATIVE_ENERGY<=ratio<=MAX_RELATIVE_ENERGY,
                    f"source_audio_content_missing_or_scaled:channel={channel}:"
                    f"start={first}:end={final}:ratio={ratio:.6f}")
+            # The energy ratio alone is insufficient. A reversed or reordered
+            # 256-frame segment has exactly the same channel L1 energy but is
+            # not the authored waveform. The legacy five-point identity test
+            # missed such corruption between its sparse anchors.
+            corr=_correlation(x,y,first,final,channel,channel)
+            insist(corr>=MIN_CORRELATION,
+                   f"source_audio_content_temporally_changed:channel={channel}:"
+                   f"start={first}:end={final}:correlation={corr:.6f}")
+            window_identity_checked[channel]+=1
+            min_window_correlation[channel]=min(min_window_correlation[channel],corr)
+            max_window_correlation[channel]=max(max_window_correlation[channel],corr)
             observed_min[channel]=min(observed_min[channel],ratio)
             observed_max[channel]=max(observed_max[channel],ratio)
             if final==source_frames:
@@ -185,7 +212,13 @@ def inspect_source_pcm16_stereo_content(
         "source_declared_channel_map_verified":False,
         "full_source_window_count":inspected,
         "uninformative_source_channel_windows":skipped_ambiguous,
+        "maximum_admitted_quiet_output_absolute_mean":MAX_QUIET_OUTPUT_ABSOLUTE_MEAN,
+        "quiet_source_windows_checked_against_codec_floor":True,
         "informative_source_windows_by_channel":total_informative,
+        "source_window_temporal_identity_checked_by_channel":window_identity_checked,
+        "minimum_source_window_correlation":[round(v,6) for v in min_window_correlation],
+        "maximum_source_window_correlation":[round(v,6) for v in max_window_correlation],
+        "minimum_admitted_window_correlation":MIN_CORRELATION,
         "minimum_source_window_energy_ratio":[round(v,6) for v in observed_min],
         "maximum_source_window_energy_ratio":[round(v,6) for v in observed_max],
         "last_informative_window_by_channel":last_window,
