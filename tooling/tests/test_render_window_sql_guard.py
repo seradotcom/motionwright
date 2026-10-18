@@ -6,6 +6,7 @@ The Rust integration suite and source-pinned CI provide those separate gates.
 from __future__ import annotations
 
 import pathlib
+import re
 import sqlite3
 import unittest
 
@@ -14,10 +15,27 @@ SOURCE = pathlib.Path(__file__).resolve().parents[2] / "crates/storage/src/lib.r
 
 def storage_migration_sql() -> str:
     text = SOURCE.read_text(encoding="utf-8")
-    marker = 'conn.execute_batch(\n            r#"'
-    begin = text.index(marker) + len(marker)
-    end = text.index('"#,\n        )?;', begin)
-    return text[begin:end]
+    # The verified opener moved its DDL from an autocommit connection
+    # to an IMMEDIATE schema transaction. Check the real DDL, not the
+    # Rust receiver's incidental local variable name.
+    required = (
+        "CREATE TABLE IF NOT EXISTS projects(",
+        "CREATE TABLE IF NOT EXISTS render_window_cache_entries(",
+        "CREATE TABLE IF NOT EXISTS render_window_cache_evictions(",
+        "CREATE TRIGGER IF NOT EXISTS render_window_cache_invalidate_revision",
+    )
+    candidates = [
+        match.group(1)
+        for match in re.finditer(
+            r'\b(?:schema_tx|conn)\.execute_batch\(\s*r#"(.*?)"#,\s*\)\?;',
+            text,
+            flags=re.DOTALL,
+        )
+        if all(statement in match.group(1) for statement in required)
+    ]
+    if len(candidates) != 1:
+        raise ValueError("expected exactly one complete render-window schema DDL")
+    return candidates[0]
 
 
 class RenderWindowSQLiteGuardTests(unittest.TestCase):
