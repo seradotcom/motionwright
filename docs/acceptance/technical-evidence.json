@@ -19,6 +19,16 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "superseded_at_utc": "2026-10-17T17:09:12.079634+00:00"
+    },
+    {
+      "index_sha256": "3ed2fa7aff02bb521cbfe2e5754b9e3849ae68dba126a615b4972b3d190950f4",
+      "retained_history": "Original 37 source-scoped CE22 executions and 14 independent sufficiency reviews remain byte-identical; they are historical after BF487 merged product code.",
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
     }
   ],
   "catalog_counts": {
@@ -13963,7 +13973,7 @@
   "schema": "motionwright.technical-evidence/1",
   "source": {
     "digest_kind": "git-text-lf",
-    "motionwright_sha": "ce22d6a3e2d2bbb08bfb48838ffafb82f94cbb46",
+    "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
     "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
   },
   "source_reference_observations": {
