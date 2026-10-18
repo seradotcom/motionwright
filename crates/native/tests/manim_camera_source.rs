@@ -546,7 +546,7 @@ mod production {
     fn sqlite_camera_source_reopens_edit_recompiles_and_reopens_without_silent_authority() {
         use motionwright_domain::{
             BlendMode, CameraReframe, CanvasNode, Change, CoordinateSpace, NodeStyle,
-            OutputColorSpace, OutputContainer, Project, RationalTime, RendererKind, RevisionStamp,
+            OutputColorSpace, OutputContainer, RationalTime, RendererKind, RevisionStamp,
             VideoCodec,
         };
         use motionwright_native::manim_camera_projection::{
