@@ -524,4 +524,266 @@ mod production {
         false_digest.source_plan_sha256 = "0".repeat(64);
         assert!(false_digest.compile_trusted_program_source_only().is_err());
     }
+
+    fn studio_apply(
+        service: &motionwright_service::StudioService,
+        old: &motionwright_domain::Project,
+        edit: motionwright_domain::Change,
+    ) -> motionwright_domain::Project {
+        use motionwright_domain::RevisionStamp;
+        service
+            .apply(
+                old.id,
+                &RevisionStamp::from(old),
+                &format!("manim-camera-persisted-edit-{}", old.revision),
+                &edit,
+            )
+            .unwrap()
+            .project
+    }
+
+    #[test]
+    fn sqlite_camera_source_reopens_edit_recompiles_and_reopens_without_silent_authority() {
+        use motionwright_domain::{
+            BlendMode, CameraReframe, CanvasNode, Change, CoordinateSpace, NodeStyle,
+            OutputColorSpace, OutputContainer, Project, RationalTime, RendererKind, RevisionStamp,
+            VideoCodec,
+        };
+        use motionwright_native::manim_camera_projection::{
+            author_one_camera_endpoint_edit, prepare_saved_manim_camera_program_source_only,
+        };
+        use motionwright_service::StudioService;
+        use semwright_native_sdk::ErrorCode;
+        use std::collections::BTreeSet;
+
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("original-manim-camera.sqlite3");
+        let service = StudioService::open(&database).unwrap();
+        let mut project = service
+            .create_project("Original editable Manim camera")
+            .unwrap();
+        project = studio_apply(
+            &service,
+            &project,
+            Change::AddScene {
+                name: "One native camera over two authored objects".into(),
+                objective: "Persist, reopen, edit and regenerate trusted source".into(),
+                duration_seconds: 1,
+            },
+        );
+        let scene_id = project.scenes[0].id;
+        project = studio_apply(
+            &service,
+            &project,
+            Change::SetSceneRenderer {
+                scene_id,
+                renderer: RendererKind::ManimCommunity,
+            },
+        );
+        let mut deliverable = project.deliverables[0].clone();
+        deliverable.width = 640;
+        deliverable.height = 360;
+        deliverable.frame_rate = RationalTime::new(30, 1).unwrap();
+        deliverable.video_codec = VideoCodec::H264;
+        deliverable.container = OutputContainer::Mp4;
+        deliverable.color_space = OutputColorSpace::Rec709;
+        project = studio_apply(
+            &service,
+            &project,
+            Change::UpsertDeliverable {
+                profile: deliverable,
+            },
+        );
+        let deliverable_id = project.deliverables[0].id;
+        let mut language = project.visual_language.clone();
+        let color_index = language
+            .palette
+            .iter()
+            .position(|token| token.name == "background")
+            .or_else(|| {
+                language
+                    .palette
+                    .iter()
+                    .position(|token| token.name == "surface")
+            })
+            .unwrap();
+        language.palette[color_index].value = "#000000".into();
+        project = studio_apply(
+            &service,
+            &project,
+            Change::SetVisualLanguage {
+                visual_language: language,
+            },
+        );
+        for (ordinal, (kind, x, y, width, height, color)) in [
+            ("rectangle", 420.0, 270.0, 270.0, 180.0, "#E53935"),
+            ("circle", 1125.0, 540.0, 180.0, 180.0, "#2BBBAD"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let node = CanvasNode {
+                id: Uuid::from_u128(0x40000000_0000_4000_8000_000000000001 + ordinal as u128),
+                name: format!("Persisted {kind} source"),
+                kind: kind.into(),
+                parent_id: None,
+                x,
+                y,
+                width,
+                height,
+                rotation_deg: 0.0,
+                opacity: 1.0,
+                text: None,
+                coordinate_space: CoordinateSpace::ProjectPixels,
+                z_index: ordinal as i32,
+                style: NodeStyle {
+                    fill: Some(color.into()),
+                    stroke: None,
+                    stroke_width: 0.0,
+                    font_family: None,
+                    font_size: None,
+                    font_weight: None,
+                    line_height: None,
+                    blend_mode: BlendMode::Normal,
+                },
+                relations: vec![],
+                property_locks: BTreeSet::new(),
+                keyframes: vec![],
+            };
+            project = studio_apply(&service, &project, Change::AddCanvasNode { scene_id, node });
+        }
+        project = studio_apply(
+            &service,
+            &project,
+            Change::UpsertCameraReframe {
+                reframe: CameraReframe {
+                    id: Uuid::from_u128(0x30000000_0000_4000_8000_000000000001),
+                    scene_id,
+                    component_version: 2,
+                    start_center_x: 960.0,
+                    start_center_y: 540.0,
+                    end_center_x: 1000.0,
+                    end_center_y: 520.0,
+                    duration_frames: 24,
+                },
+            },
+        );
+        project.validate().unwrap();
+        let stamp_before = RevisionStamp::from(&project);
+        let prepared = prepare_saved_manim_camera_program_source_only(
+            &service,
+            project.id,
+            &stamp_before,
+            scene_id,
+            deliverable_id,
+        )
+        .unwrap();
+        assert_eq!(prepared.prepared.source.clock.frame_count, 30);
+        assert_eq!(prepared.prepared.source.reframe.duration_frames, 24);
+        assert!(prepared.trusted_compiler.plan_document.ends_with(b"\n"));
+        assert!(!prepared.native_execution_performed);
+        assert!(!prepared.native_source_compiler_registered);
+        assert!(!prepared.native_permissions_verified);
+
+        // New SQLite service instance and original revision must retain exactly
+        // the authored canonical source and deterministic executable program.
+        let reopened = StudioService::open(&database).unwrap();
+        let reopen_project = reopened.project(project.id).unwrap();
+        assert_eq!(reopen_project, project);
+        let restored = prepare_saved_manim_camera_program_source_only(
+            &reopened,
+            project.id,
+            &stamp_before,
+            scene_id,
+            deliverable_id,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.trusted_compiler.plan_sha256,
+            restored.trusted_compiler.plan_sha256
+        );
+        assert_eq!(
+            prepared.trusted_compiler.source_sha256,
+            restored.trusted_compiler.source_sha256
+        );
+        assert_eq!(
+            prepared.trusted_compiler.python_source,
+            restored.trusted_compiler.python_source
+        );
+
+        let change =
+            author_one_camera_endpoint_edit(&reopen_project, &stamp_before, scene_id, 1012.0)
+                .unwrap();
+        let edited = studio_apply(&reopened, &reopen_project, change);
+        assert_eq!(edited.id, project.id);
+        assert_eq!(edited.generation, project.generation);
+        assert_eq!(edited.revision, project.revision + 1);
+        assert_eq!(edited.scenes[0].nodes, project.scenes[0].nodes);
+        assert_eq!(edited.scenes[0].camera.center_x, 1012.0);
+        assert_eq!(
+            edited.production_design.camera_reframes[0].end_center_x,
+            1012.0
+        );
+        let next_stamp = RevisionStamp::from(&edited);
+        let compiled_edit = prepare_saved_manim_camera_program_source_only(
+            &reopened,
+            edited.id,
+            &next_stamp,
+            scene_id,
+            deliverable_id,
+        )
+        .unwrap();
+        assert_ne!(
+            prepared.trusted_compiler.plan_sha256,
+            compiled_edit.trusted_compiler.plan_sha256
+        );
+        assert_ne!(
+            prepared.trusted_compiler.source_sha256,
+            compiled_edit.trusted_compiler.source_sha256
+        );
+        assert_eq!(
+            prepared.prepared.source.binding.project_id,
+            compiled_edit.prepared.source.binding.project_id
+        );
+        assert_eq!(
+            prepared.prepared.source.binding.generation,
+            compiled_edit.prepared.source.binding.generation
+        );
+
+        let reopened_edited_service = StudioService::open(&database).unwrap();
+        let reopened_edited_project = reopened_edited_service.project(project.id).unwrap();
+        assert_eq!(reopened_edited_project, edited);
+        let second_reopen = prepare_saved_manim_camera_program_source_only(
+            &reopened_edited_service,
+            edited.id,
+            &next_stamp,
+            scene_id,
+            deliverable_id,
+        )
+        .unwrap();
+        assert_eq!(
+            compiled_edit.trusted_compiler.python_source,
+            second_reopen.trusted_compiler.python_source
+        );
+        assert_eq!(
+            compiled_edit.trusted_compiler.plan_document,
+            second_reopen.trusted_compiler.plan_document
+        );
+        let stale = prepare_saved_manim_camera_program_source_only(
+            &reopened_edited_service,
+            project.id,
+            &stamp_before,
+            scene_id,
+            deliverable_id,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, ErrorCode::StaleReference);
+        assert!(
+            reopened_edited_service
+                .production_receipts(project.id, 32)
+                .unwrap()
+                .is_empty(),
+            "Source-only CameraReframe must not invent Host receipts"
+        );
+    }
 }
