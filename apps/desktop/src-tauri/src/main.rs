@@ -1179,9 +1179,17 @@ async fn read_original_native_job_status(
                 .map_err(|_| {
                     "Source-bound native job history could not be confirmed.".to_owned()
                 })?;
+            // A job_ref can recur under another provider or Project stamp.
+            // Select the original Motion Canvas row from this trusted snapshot
+            // before applying the existing native authority validator.
             let job = jobs
                 .iter()
-                .find(|job| job.job_ref == selected)
+                .find(|job| {
+                    job.job_ref == selected
+                        && job.provider == "driver:motion-canvas"
+                        && job.generation == generation
+                        && job.revision == revision
+                })
                 .ok_or_else(|| {
                     "No acknowledged native render job matches the selection.".to_owned()
                 })?;
