@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+"""Independent first-party Blender GLB -> .blend -> edit -> .blend/GLB receiver.
+
+Run *inside original Blender 4.5.14 LTS*, using five separately opened
+processes (including edited GLB import and a separate final native reopen). Does not run the Semwright Broker/Driver Host or modify its
+authority, and does not treat the reconstructed .blend as original native
+project source. This is a destination-editor roundtrip witness, not release
+approval; retain private .blend receipts only with A5-approved custody.
+
+Example (A6-owned GH Actions workflow is responsible for provision/grants):
+  blender -b --factory-startup --python tooling/native_blender_editable_receiver.py \
+    -- --phase import --source "$ORIGINAL_GLB" --source-sha256 "$SHA" --root "$PRIVATE"
+  blender -b "$PRIVATE/original.blend" --python tooling/native_blender_editable_receiver.py \
+    -- --phase edit --source "$ORIGINAL_GLB" --source-sha256 "$SHA" --root "$PRIVATE"
+  blender -b "$PRIVATE/edited.blend" --python tooling/native_blender_editable_receiver.py \
+    -- --phase verify --source "$ORIGINAL_GLB" --source-sha256 "$SHA" --root "$PRIVATE"
+  blender -b --factory-startup --python tooling/native_blender_editable_receiver.py \
+    -- --phase reimport --source "$ORIGINAL_GLB" --source-sha256 "$SHA" --root "$PRIVATE"
+  blender -b "$PRIVATE/reimport.blend" --python tooling/native_blender_editable_receiver.py \
+    -- --phase reopen-reimport --source "$ORIGINAL_GLB" --source-sha256 "$SHA" --root "$PRIVATE"
+
+No scripts are loaded from GLB/project data. Requires bpy only in run_phase().
+"""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import struct
+import sys
+
+SCHEMA = "motionwright.a4.blender-first-party-interchange-reopen/1"
+MAX_GLB = 8 * 1024 * 1024
+MAX_BLEND = 64 * 1024 * 1024
+EDIT_DELTA_X = 0.25
+EXPECTED = {
+    "panel": {"faces": 2, "rgba": "#4F7CAC"},
+    "focus": {"faces": 124, "rgba": "#F5B84A"},
+}
+NAMES = re.compile(r"^Motionwright-(panel|focus)-([0-9a-f]{12}|[0-9a-f]{32})$")
+SHA = re.compile(r"[0-9a-f]{64}\Z")
+
+
+class ReceiverError(ValueError):
+    """A real destination edit, source or private readback failed closed."""
+
+
+def require(ok, reason):
+    if not ok:
+        raise ReceiverError(reason)
+
+
+def digest(payload):
+    return hashlib.sha256(payload).hexdigest()
+
+
+def strict_pairs(pairs):
+    out = {}
+    for key, value in pairs:
+        require(key not in out, "duplicate_receipt_field")
+        out[key] = value
+    return out
+
+
+def read_json(path, max_bytes=256 * 1024):
+    require(path.is_file() and not path.is_symlink(), "receiver_receipt_missing_or_symlink")
+    require(0 < path.stat().st_size <= max_bytes, "receiver_receipt_byte_budget")
+    try:
+        return json.loads(path.read_text("utf8"), object_pairs_hook=strict_pairs,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ReceiverError("nonfinite_receipt_value")))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReceiverError("receiver_receipt_invalid_json") from exc
+
+
+def original_glb(path, expected_sha):
+    require(isinstance(expected_sha, str) and SHA.fullmatch(expected_sha) is not None,
+            "original_GLB_digest_required")
+    require(path.is_file() and not path.is_symlink(), "source_GLB_not_regular")
+    size = path.stat().st_size
+    require(100 <= size <= MAX_GLB, "original_GLB_size_not_admitted")
+    data = path.read_bytes()
+    require(digest(data) == expected_sha, "original_GLB_SHA_changed")
+    require(len(data) >= 28, "GLB_truncated")
+    magic, version, declared = struct.unpack_from("<4sII", data)
+    require((magic, version, declared) == (b"glTF", 2, len(data)),
+            "original_GLB_header_mismatch")
+    at = 12
+    chunks = []
+    while at < len(data):
+        require(at + 8 <= len(data), "original_GLB_chunk_truncated")
+        length, kind = struct.unpack_from("<II", data, at)
+        at += 8
+        require(length > 0 and length % 4 == 0 and at+length <= len(data),
+                "GLB_chunk_unbounded")
+        chunks.append((kind, data[at:at+length]))
+        at += length
+    require(len(chunks)==2 and chunks[0][0]==0x4E4F534A and
+            chunks[1][0]==0x004E4942, "original_GLB_chunks_invalid")
+    try:
+        source = json.loads(chunks[0][1].decode("utf8").rstrip(" \x00"),
+                            object_pairs_hook=strict_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReceiverError("original_GLB_JSON_invalid") from exc
+    require(source.get("asset", {}).get("version")=="2.0",
+            "original_GLB_not_gltf2")
+    for forbidden in ("extensionsUsed", "extensionsRequired", "animations", "skins", "cameras", "images", "textures"):
+        require(not source.get(forbidden), "original_GLB_unadmitted_component:"+forbidden)
+    require(len(source.get("nodes", []))==2 and
+            len(source.get("meshes", []))==2 and
+            len(source.get("materials", []))==2 and
+            len(source.get("scenes", []))==1 and
+            len(source.get("buffers", []))==1 and
+            source["buffers"][0].get("uri") is None,
+            "original_GLB_not_bounded_two_object_fixture")
+    names = {}
+    for item in source["nodes"]:
+        match = NAMES.fullmatch(str(item.get("name", "")))
+        require(match is not None, "original_GLB_shape_name_missing")
+        label = match.group(1)
+        require(label not in names, "duplicate_original_GLB_object_identity")
+        names[label] = item["name"]
+    require(set(names)==set(EXPECTED), "original_GLB_object_identity_incomplete")
+    return {
+        "sha256": expected_sha, "bytes":len(data),
+        "source_object_names": names,
+        "original_Project_UUID_custody": "NOT_PROVEN_BY_GLB_NAME_ALONE",
+    }
+
+
+def root_path(value):
+    path = Path(value)
+    require(path.is_absolute() and path.is_dir() and not path.is_symlink(),
+            "private_receiver_root_must_preexist_and_be_absolute")
+    return path.resolve(strict=True)
+
+
+def within_root(path, root, *, must_exist=False):
+    require(path.parent.resolve(strict=True) == root,
+            "receiver_destination_outside_private_root")
+    if must_exist:
+        require(path.is_file() and not path.is_symlink(), "private_receiver_file_missing")
+        require(0 < path.stat().st_size <= MAX_BLEND, "private_receiver_file_size_budget")
+    else:
+        require(not path.exists() and not path.is_symlink(),
+                "private_receiver_file_already_exists")
+    return path
+
+
+def bounded_source_snapshot(objects):
+    require(type(objects) is list and len(objects)==2, "imported_Blender_object_count")
+    names = set()
+    out = {}
+    for node in objects:
+        require(type(node) is dict, "Blender_scene_object_not_a_document")
+        label = node.get("label")
+        require(label in EXPECTED and label not in names,
+                "Blender_source_object_missing_or_duplicated")
+        names.add(label)
+        require(NAMES.fullmatch(str(node.get("name",""))) is not None,
+                "Blender_import_changed_original_node_name")
+        require(node.get("type") == "MESH" and
+                node.get("faces") == EXPECTED[label]["faces"],
+                "Blender_import_lost_source_mesh_topology")
+        require(type(node.get("vertices")) is int and
+                4 <= node["vertices"] <= 256,
+                "Blender_import_vertex_budget")
+        location=node.get("location")
+        dimensions=node.get("dimensions")
+        require(
+            type(location) is list and len(location)==3 and
+            type(dimensions) is list and len(dimensions)==3 and
+            all(type(x) in (int,float) and math.isfinite(x) for x in location+dimensions) and
+            all(0<=x<100 for x in dimensions) and sum(x>0 for x in dimensions)>=2,
+            "Blender_import_lost_geometry_or_world_transform"
+        )
+        material=node.get("material")
+        require(type(material) is dict and
+                type(material.get("name")) is str and
+                material["name"].startswith(node["name"]) and
+                type(material.get("color")) is list and
+                len(material["color"])==4 and
+                all(type(x) in (int,float) and math.isfinite(x) and 0<=x<=1
+                    for x in material["color"]),
+                "Blender_import_lost_editable_PBR_material")
+        out[label] = node
+    require(names == set(EXPECTED), "Blender_import_source_fixture_incomplete")
+    return out
+
+
+def compare_edit(original, edited, *, change=EDIT_DELTA_X):
+    a=bounded_source_snapshot(original)
+    b=bounded_source_snapshot(edited)
+    require(set(a)==set(b), "edited_scene_missing_original_object")
+    for label in EXPECTED:
+        before=a[label]
+        after=b[label]
+        for field in ("label","name","type","vertices","faces","dimensions","material"):
+            require(before[field]==after[field],
+                    "edited_scene_unapproved_semantic_change:"+field)
+        expected_location=before["location"][:]
+        if label=="focus":
+            expected_location[0]=round(expected_location[0]+change,6)
+        require(all(abs(x-y)<=1e-5
+                    for x,y in zip(expected_location,after["location"])),
+                "edited_Blender_scene_transform_did_not_persist:"+label)
+    return {"changed_label":"focus","change_x":change,
+            "original_source_mesh_ids_retained_by_name":True,
+            "material_and_topology_preserved":True,
+            "Project_UUID_and_original_blend_authority":"NOT_PROVEN"}
+
+
+def compare_reimported_glb(original, expected_edit, new_import):
+    """Require re-export/reimport to preserve source geometry and the edit.
+
+    A narrow floating-point tolerance allows glTF PBR/transform serialization.
+    It is not a visual fidelity approval or proof of original Project UUIDs.
+    """
+    source=bounded_source_snapshot(original)
+    edited=bounded_source_snapshot(expected_edit)
+    seen=bounded_source_snapshot(new_import)
+    compare_edit(original, expected_edit)
+    for label in EXPECTED:
+        a=source[label]
+        b=edited[label]
+        c=seen[label]
+        for field in ("name", "type", "vertices", "faces"):
+            require(a[field]==b[field]==c[field],
+                    "GLTF_reimport_lost_edited_topology_or_original_name:"+field)
+        original_dimensions=a["dimensions"]
+        for k in range(3):
+            require(abs(c["location"][k]-b["location"][k])<=0.0005,
+                    "GLTF_reimport_lost_edited_position")
+            require(abs(c["dimensions"][k]-original_dimensions[k])<=0.0005,
+                    "GLTF_reimport_changed_original_mesh_bounds")
+        require(a["material"]["name"]==b["material"]["name"]==
+                c["material"]["name"],"GLTF_reimport_material_identity_changed")
+        require(all(abs(x-y)<=0.01 for x,y in zip(
+                a["material"]["color"], c["material"]["color"])),
+                "GLTF_reimport_material_PBR_color_changed")
+    return {
+        "source_semantics": "FIRST_PARTY_GLTF_INTERCHANGE",
+        "original_GLB_to_saved_Blend_to_edit_to_new_GLB_to_new_Blend": True,
+        "original_Project_UUID_binding_or_Motionwright_blend_source": False,
+        "material_color_max_tolerance": 0.01,
+        "world_transform_max_tolerance": 0.0005,
+    }
+
+
+def source_scene_snapshot(bpy):
+    scene = bpy.context.scene
+    result=[]
+    for obj in scene.objects:
+        require(obj.type=="MESH" and obj.parent is None,
+                "unexpected_Blender_scene_object_or_parent")
+        match=NAMES.fullmatch(obj.name)
+        require(match is not None, "unexpected_imported_Blender_object")
+        require(len(obj.data.materials)==1 and obj.active_material is not None,
+                "Blender_mesh_missing_editable_material")
+        mat=obj.active_material
+        require(mat.use_nodes and mat.node_tree is not None,
+                "Blender_material_not_node_editable")
+        bsdf=[node for node in mat.node_tree.nodes if node.type=="BSDF_PRINCIPLED"]
+        require(len(bsdf)==1,"Blender_PBR_principled_shader_missing")
+        color=bsdf[0].inputs.get("Base Color")
+        require(color is not None,"Blender_PBR_color_property_missing")
+        result.append({
+            "label":match.group(1),
+            "name":obj.name,
+            "type":obj.type,
+            "vertices":len(obj.data.vertices),
+            "faces":len(obj.data.polygons),
+            "location":[round(float(x),6) for x in obj.location],
+            "dimensions":[round(float(x),6) for x in obj.dimensions],
+            "material":{
+                "name":mat.name,
+                "color":[round(float(x),6) for x in color.default_value],
+            },
+        })
+    result.sort(key=lambda item:item["label"])
+    bounded_source_snapshot(result)
+    return result
+
+
+def write_receipt(path, value):
+    with path.open("x",encoding="utf8",newline="\n") as out:
+        json.dump(value,out,indent=2,sort_keys=True,allow_nan=False)
+        out.write("\n")
+
+
+def measure_saved_file(path, root):
+    within_root(path, root, must_exist=True)
+    return {"name":path.name,"bytes":path.stat().st_size,
+            "sha256":digest(path.read_bytes())}
+
+
+def run_phase(args):
+    import bpy  # Blender-provided module only; no import in ordinary unit tests.
+
+    require(bpy.app.version[:2]==(4,5) and
+            bpy.app.version_string.startswith("4.5.14"),
+            "original_Blender_4p5p14_LTS_version_required")
+    root = root_path(args.root)
+    source_original = Path(args.source)
+    require(source_original.is_absolute() and not source_original.is_symlink(),
+            "original_GLB_path_must_be_absolute_regular")
+    source = source_original.resolve(strict=True)
+    info=original_glb(source,args.source_sha256)
+    imported=root/"import.json"
+    edited=root/"edit.json"
+    original_blend=root/"original.blend"
+    edited_blend=root/"edited.blend"
+    output_glb=root/"edited.glb"
+    if args.phase=="import":
+        within_root(imported,root)
+        within_root(original_blend,root)
+        require(not edited.exists() and not edited_blend.exists(),
+                "interchange_fixture_already_edited")
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        value=bpy.ops.import_scene.gltf(filepath=str(source))
+        require("FINISHED" in value, "native_Blender_GLB_import_failed")
+        original=source_scene_snapshot(bpy)
+        require({obj["name"] for obj in original}==set(info["source_object_names"].values()),
+                "original_GLTF_names_not_preserved_by_Blender_import")
+        save=bpy.ops.wm.save_as_mainfile(filepath=str(original_blend))
+        require("FINISHED" in save, "original_Blender_native_save_failed")
+        artifact=measure_saved_file(original_blend,root)
+        write_receipt(imported,{
+            "schema":SCHEMA,"phase":"imported_first_party_GLB_to_Blend",
+            "source":info,"blender_version":bpy.app.version_string,
+            "native_saved_file":artifact,"objects":original,
+            "original_blend_originated_from_GLB_not_Studio_source":True,
+            "original_Broker_effect_replayed":False,
+            "rights_human_acceptance":False,
+        })
+    elif args.phase=="edit":
+        within_root(edited,root)
+        within_root(edited_blend,root)
+        within_root(output_glb,root)
+        first=read_json(imported)
+        require(first["schema"]==SCHEMA and first["phase"]==
+                "imported_first_party_GLB_to_Blend" and
+                first["source"]["sha256"]==info["sha256"],
+                "original_import_receipt_not_bound_to_same_media")
+        verify=measure_saved_file(original_blend,root)
+        require(verify==first["native_saved_file"],
+                "original_Blender_source_changed_before_edit")
+        require(Path(bpy.data.filepath).resolve(strict=True)==original_blend,
+                "Blender_edit_phase_did_not_reopen_saved_native_file")
+        before=source_scene_snapshot(bpy)
+        require(before==first["objects"],"Blender_original_reopen_changed_project_content")
+        focus=next(obj for obj in bpy.context.scene.objects
+                   if NAMES.fullmatch(obj.name).group(1)=="focus")
+        focus.location.x=float(focus.location.x)+EDIT_DELTA_X
+        bpy.context.view_layer.update()
+        after=source_scene_snapshot(bpy)
+        change=compare_edit(first["objects"],after)
+        save=bpy.ops.wm.save_as_mainfile(filepath=str(edited_blend))
+        require("FINISHED" in save,"Blender_edited_native_save_failed")
+        exported=bpy.ops.export_scene.gltf(filepath=str(output_glb),
+                                           export_format="GLB")
+        require("FINISHED" in exported,"Blender_edited_GLB_export_failed")
+        artifacts={
+            "edited_blend":measure_saved_file(edited_blend,root),
+            "edited_glb":measure_saved_file(output_glb,root)
+        }
+        require(artifacts["edited_glb"]["sha256"]!=info["sha256"],
+                "edited_GLTF_artifact_unmodified")
+        write_receipt(edited,{
+            "schema":SCHEMA,"phase":"original_Blend_reopened_and_edited",
+            "source":info,"original_blend":verify,
+            "artifacts":artifacts,"objects":after,"change":change,
+            "original_Broker_effect_replayed":False,
+            "rights_human_acceptance":False,
+        })
+    elif args.phase=="verify":
+        final=root/"verified.json"
+        within_root(final,root)
+        first=read_json(imported)
+        second=read_json(edited)
+        require(first["schema"]==second["schema"]==SCHEMA and
+                second["phase"]=="original_Blend_reopened_and_edited" and
+                first["source"]["sha256"]==second["source"]["sha256"]==
+                    info["sha256"],"Blender_revision_receipts_not_bound_to_original")
+        if measure_saved_file(edited_blend,root)!=second["artifacts"]["edited_blend"]:
+            raise ReceiverError("edited_Blender_source_did_not_reopen_unchanged")
+        if measure_saved_file(output_glb,root)!=second["artifacts"]["edited_glb"]:
+            raise ReceiverError("edited_GLB_interchange_artifact_changed")
+        require(Path(bpy.data.filepath).resolve(strict=True)==edited_blend,
+                "second_Blender_process_did_not_reopen_edited_Blend")
+        actual=source_scene_snapshot(bpy)
+        require(actual==second["objects"],"Blender_second_reopen_changed_edited_content")
+        verified=compare_edit(first["objects"],actual)
+        write_receipt(final,{
+            "schema":SCHEMA,"phase":"edited_Blend_reopened_in_new_Blender_process",
+            "source":info,
+            "original_native_blend":first["native_saved_file"],
+            "edited_native_blend":second["artifacts"]["edited_blend"],
+            "edited_interchange_glb":second["artifacts"]["edited_glb"],
+            "original_objects":first["objects"],
+            "verified_edited_objects":actual,
+            "change":verified,
+            "complete_GLTF_import_Blend_reopen_edit_Blend_reopen":True,
+            "original_Blend_source_from_Motionwright_Host":False,
+            "external_rights_accepted":False,
+            "human_visual_acceptance":False,
+        })
+    elif args.phase=="reimport":
+        reimport=root/"reimport.json"
+        saved=root/"reimport.blend"
+        within_root(reimport,root)
+        within_root(saved,root)
+        first=read_json(imported)
+        second=read_json(edited)
+        third=read_json(root/"verified.json")
+        require(first["schema"]==second["schema"]==third["schema"]==SCHEMA,
+                "Blender_five_stage_source_receipts_have_different_contracts")
+        require(first["source"]["sha256"]==
+                second["source"]["sha256"]==
+                third["source"]["sha256"]==info["sha256"],
+                "Blender_export_reimport_not_bound_to_original_GLB")
+        require(third["phase"]=="edited_Blend_reopened_in_new_Blender_process",
+                "Blender_second_native_reopen_not_verified_before_reimport")
+        require(measure_saved_file(output_glb,root)==second["artifacts"]["edited_glb"],
+                "Blender_edited_GLTF_bytes_changed_before_reimport")
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        result=bpy.ops.import_scene.gltf(filepath=str(output_glb))
+        require("FINISHED" in result,"Blender_edited_GLB_import_failed")
+        actual=source_scene_snapshot(bpy)
+        audit=compare_reimported_glb(
+            first["objects"],third["verified_edited_objects"],actual)
+        saved_result=bpy.ops.wm.save_as_mainfile(filepath=str(saved))
+        require("FINISHED" in saved_result,
+                "Blender_reimported_native_Blend_save_failed")
+        write_receipt(reimport,{
+            "schema":SCHEMA,"phase":"edited_GLTF_reimported_into_new_Blend",
+            "source":info,"original_exported_glb":second["artifacts"]["edited_glb"],
+            "reimported_native_blend":measure_saved_file(saved,root),
+            "objects":actual,"audit":audit,
+            "original_Broker_effect_replayed":False,
+            "rights_human_acceptance":False,
+        })
+    elif args.phase=="reopen-reimport":
+        reimport=read_json(root/"reimport.json")
+        final=root/"complete.json"
+        within_root(final,root)
+        first=read_json(imported)
+        edited_source=read_json(root/"verified.json")
+        require(reimport["schema"]==edited_source["schema"]==SCHEMA and
+                reimport["phase"]=="edited_GLTF_reimported_into_new_Blend" and
+                reimport["source"]["sha256"]==info["sha256"],
+                "Blender_final_native_reopen_receipt_not_source_bound")
+        saved=root/"reimport.blend"
+        require(measure_saved_file(saved,root)==
+                reimport["reimported_native_blend"],
+                "Blender_reimported_saved_source_changed")
+        require(Path(bpy.data.filepath).resolve(strict=True)==saved,
+                "third_native_Blend_reopen_not_executed")
+        actual=source_scene_snapshot(bpy)
+        require(actual==reimport["objects"],
+                "Blender_reimported_native_source_did_not_reopen")
+        audit=compare_reimported_glb(
+            first["objects"],edited_source["verified_edited_objects"],actual)
+        write_receipt(final,{
+            "schema":SCHEMA,"phase":"reimported_Blend_reopened_independently",
+            "source":info,
+            "original_Blend_sha256":first["native_saved_file"]["sha256"],
+            "edited_GLB_sha256":reimport["original_exported_glb"]["sha256"],
+            "reimported_Blend_sha256":reimport["reimported_native_blend"]["sha256"],
+            "final_objects":actual,"audit":audit,
+            "five_separate_Blender_processes_required":True,
+            "complete_first_party_GLTF_external_editable_interchange":True,
+            "original_Motionwright_native_blend_source_proven":False,
+            "original_Studio_UUID_binding_proven":False,
+            "independent_A5_human_or_rights_acceptance":False,
+            "original_Semwright_Broker_jobs_started":0,
+        })
+    else:
+        raise ReceiverError("unknown_Blender_receiver_phase")
+
+
+def cli(argv):
+    parser=argparse.ArgumentParser(description="original Blender 4.5.14 first-party receiver")
+    parser.add_argument("--phase",required=True,choices=(
+        "import","edit","verify","reimport","reopen-reimport"
+    ))
+    parser.add_argument("--source",required=True)
+    parser.add_argument("--source-sha256",required=True)
+    parser.add_argument("--root",required=True)
+    args=parser.parse_args(argv)
+    run_phase(args)
+
+
+if __name__=="__main__":
+    marker=sys.argv.index("--")+1 if "--" in sys.argv else len(sys.argv)
+    try:
+        cli(sys.argv[marker:])
+    except (ReceiverError, OSError, KeyError, ValueError) as error:
+        print("Blender external receiver failed: "+str(error),file=sys.stderr)
+        raise SystemExit(1) from error
