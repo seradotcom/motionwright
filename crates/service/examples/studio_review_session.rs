@@ -397,10 +397,11 @@ impl Session {
         generation: Uuid,
         revision: u64,
     ) -> Result<Project, String> {
-        let project = self
-            .service
-            .project(id)
-            .map_err(|error| error.to_string())?;
+        let project = project_library::open_project(
+            &self.service,
+            project_library::OpenProjectRequest { project_id: id },
+        )
+        .map_err(|error| error.to_string())?;
         if project.generation != generation || project.revision != revision {
             return Err("Effect grant scope is stale; refresh the project before retrying.".into());
         }
@@ -553,9 +554,13 @@ impl Session {
                     *self = replacement;
                 }
                 encoded(
-                    self.service
-                        .project(request.project_id)
-                        .map_err(|error| error.to_string())?,
+                    project_library::open_project(
+                        &self.service,
+                        project_library::OpenProjectRequest {
+                            project_id: request.project_id,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?,
                 )
             }
             "import_asset_file" => {

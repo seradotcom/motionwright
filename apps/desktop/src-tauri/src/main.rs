@@ -606,7 +606,11 @@ fn checked_effect_scope(
     generation: Uuid,
     revision: u64,
 ) -> Result<EffectScope, String> {
-    let project = state.service.project(project_id).map_err(sanitized)?;
+    let project = project_library::open_project(
+        &state.service,
+        project_library::OpenProjectRequest { project_id },
+    )
+    .map_err(sanitized)?;
     if project.generation != generation || project.revision != revision {
         return Err("Effect grant scope is stale; refresh the project before retrying.".into());
     }
@@ -2367,7 +2371,13 @@ async fn apply_change(
 
     let service = state.service.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let current = service.project(request.project_id).map_err(sanitized)?;
+        let current = project_library::open_project(
+            &service,
+            project_library::OpenProjectRequest {
+                project_id: request.project_id,
+            },
+        )
+        .map_err(sanitized)?;
         let expected = RevisionStamp {
             resource: current.resource_key(),
             generation: request.generation,

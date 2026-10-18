@@ -433,12 +433,15 @@ export class ScopedChangeService {
       const page = await this.history(project.id, afterRevision, 100);
       if (!page.length) break;
       for (const event of page) {
-        if (!Number.isSafeInteger(event.revision) || event.revision <= afterRevision || event.revision > project.revision) {
-          throw new Error("The full journal is unordered, repeated, or ahead of the observed Project");
+        if (!Number.isSafeInteger(event.revision) || event.revision !== afterRevision + 1 || event.revision > project.revision) {
+          throw new Error("The full journal has a gap, is unordered, repeated, or ahead of the observed Project");
         }
         afterRevision = event.revision;
         journal.push(event);
       }
+    }
+    if (afterRevision !== project.revision) {
+      throw new Error("The full journal is truncated before the observed Project revision");
     }
     if (!isDeepStrictEqual(await this.project(expected.id), project)) throw new Error("The stored Project changed while collecting its full journal");
     return { schemaVersion: 1, observedAt: new Date().toISOString(), project, journal,

@@ -1,12 +1,13 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import { cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect, test, type TestInfo } from "@playwright/test";
 import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
-// Faults below affect only the real executable's test transport. No Project,
-// RPC response, SQLite mutation, process result, or media acceptance is mocked.
+// Transport faults and deliberately damaged copies of real SQLite stores are
+// explicit negative fixtures. RPC responses and process results are real.
 test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
   "Build studio_review_session and set its absolute path; there is no simulated service fallback.");
 
@@ -31,6 +32,108 @@ async function record(testInfo: TestInfo, services: ScopedChangeService[], obser
 }
 async function rejectedCapture(service: ScopedChangeService, testInfo: TestInfo, name: string) {
   await expect(service.captureClosedStore(testInfo.outputPath(name))).rejects.toThrow(/cleanly.*lifecycle taint/);
+}
+
+function withDatabase<T>(path: string, action: (database: DatabaseSync) => T): T {
+  const database = new DatabaseSync(path);
+  try { return action(database); }
+  finally { database.close(); }
+}
+
+function authorityRows(database: DatabaseSync) {
+  return Object.fromEntries(["projects", "events", "receipts", "production_receipts"].map(table =>
+    [table, database.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+}
+
+for (const damage of ["middle", "tail", "all"] as const) {
+  test(`a ${damage} journal loss in an isolated SQLite copy cannot receive a complete oracle`, async ({}, testInfo) => {
+    const original = await create(testInfo);
+    let damaged: ScopedChangeService | undefined;
+    try {
+      let final = (await original.fixtureBootstrap()).project;
+      for (let n = 0; n < 3; n++) final = await original.apply(final, { type: "rename_project", title: `Journal continuity ${n}` });
+      await original.observeStoredProject(final);
+      await original.close();
+      const capture = await original.captureClosedStore(testInfo.outputPath("original-closed-store"));
+      const originalBytes = await readFile(original.databasePath);
+      const copiedDirectory = testInfo.outputPath("damaged-copy");
+      await cp(capture.snapshotDirectory, copiedDirectory, { recursive: true, errorOnExist: true, force: false });
+      const copiedDatabase = join(copiedDirectory, capture.databaseRelativePath);
+      const deleted = withDatabase(copiedDatabase, database => {
+        const revision = damage === "middle" ? 2 : final.revision;
+        return damage === "all"
+          ? database.prepare("DELETE FROM events WHERE project_id=?").run(final.id).changes
+          : database.prepare("DELETE FROM events WHERE project_id=? AND revision=?").run(final.id, revision).changes;
+      });
+      expect(Number(deleted)).toBe(damage === "all" ? final.revision : 1);
+      damaged = await ScopedChangeService.create({ databasePath: copiedDatabase, seedFixture: false });
+      expect(await damaged.project(final.id)).toEqual(final);
+      await expect(damaged.observeStoredProject(final)).rejects.toThrow(damage === "middle" ? /journal has a gap/ : /journal is truncated/);
+      const destination = testInfo.outputPath("rejected-damaged-finalization");
+      await expect(damaged.finalizeClosedStore(destination, final)).rejects.toThrow("Store finalization is incomplete");
+      const outcome = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
+      expect(outcome.oracle).toBeNull(); expect(outcome.capture).toBeNull();
+      expect(outcome.closures.every(item => item.status === "fulfilled")).toBe(true);
+      expect(await readFile(original.databasePath)).toEqual(originalBytes);
+    } finally {
+      const services = [original, ...(damaged ? [damaged] : [])];
+      await Promise.allSettled(services.map(item => item.close()));
+      await record(testInfo, services, { fixture: "deliberate_journal_loss_in_separate_sqlite_copy", damage });
+    }
+  });
+}
+
+for (const damage of ["foreign_identity", "invalid_json"] as const) {
+  test(`a ${damage} project row cannot redirect reads or mutations and healthy projects remain usable`, async ({ page }, testInfo) => {
+    const original = await create(testInfo);
+    let damaged: ScopedChangeService | undefined;
+    try {
+      const first = (await original.fixtureBootstrap()).project;
+      const intent = { request_id: crypto.randomUUID(), title: "Healthy independent project" };
+      const creationGrant = await original.invoke<{ token: string }>("issue_project_creation_grant", { request: intent });
+      const second = (await original.invoke<{ project: typeof first }>("create_project", { request: { intent, effect_grant: creationGrant.token } })).project;
+      await original.close();
+      const capture = await original.captureClosedStore(testInfo.outputPath("original-closed-store"));
+      const originalBytes = await readFile(original.databasePath);
+      const copiedDirectory = testInfo.outputPath("damaged-copy");
+      await cp(capture.snapshotDirectory, copiedDirectory, { recursive: true, errorOnExist: true, force: false });
+      const copiedDatabase = join(copiedDirectory, capture.databaseRelativePath);
+      damaged = await ScopedChangeService.create({ databasePath: copiedDatabase, seedFixture: false, desktopInvokeFixture: true });
+      const requestId = crypto.randomUUID();
+      const grant = await damaged.grant("project_edit", first, requestId);
+      // The real grant predates a separate committed write to the isolated
+      // copy. This exercises an association changing before the apply RPC.
+      const expectedRows = withDatabase(copiedDatabase, database => {
+        const document = damage === "foreign_identity" ? JSON.stringify(second) : "{ damaged document";
+        expect(database.prepare("UPDATE projects SET document_json=? WHERE id=?").run(document, first.id).changes).toBe(1);
+        return authorityRows(database);
+      });
+      const rejected = damage === "foreign_identity" ? /identity differs/ : /could not be opened/;
+      await expect(damaged.project(first.id)).rejects.toThrow(rejected);
+      await expect(damaged.grant("project_edit", first, crypto.randomUUID())).rejects.toThrow(rejected);
+      await expect(damaged.invoke("apply_change", { request: {
+        project_id: first.id, generation: first.generation, revision: first.revision,
+        request_id: requestId, effect_grant: grant.token, change: { type: "rename_project", title: "Must never be applied" },
+      } })).rejects.toThrow(rejected);
+      await damaged.attachPage(page, null); await page.goto("/");
+      const library = page.getByRole("dialog", { name: "Project library", exact: true });
+      await expect(library).toBeVisible();
+      await library.getByRole("button", { name: "Open " + first.title, exact: true }).click();
+      await expect(library.getByRole("alert")).toContainText(damage === "foreign_identity" ? "identity differs" : "could not be opened");
+      await library.getByRole("button", { name: "Open " + second.title, exact: true }).click();
+      await expect(page.locator(".command-bar .revision-chip")).toHaveText("r0");
+      expect(await damaged.project(second.id)).toEqual(second);
+      await expect(damaged.reopen(first.id)).rejects.toThrow(rejected);
+      await page.close(); await damaged.close();
+      expect(withDatabase(copiedDatabase, authorityRows)).toEqual(expectedRows);
+      expect(await readFile(original.databasePath)).toEqual(originalBytes);
+    } finally {
+      await page.close();
+      const services = [original, ...(damaged ? [damaged] : [])];
+      await Promise.allSettled(services.map(item => item.close()));
+      await record(testInfo, services, { fixture: "deliberately_damaged_project_row_in_separate_sqlite_copy", damage });
+    }
+  });
 }
 
 test("complete capture includes every file and a paginated full oracle after all known peers close", async ({}, testInfo) => {
