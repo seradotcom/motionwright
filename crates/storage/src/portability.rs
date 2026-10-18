@@ -357,39 +357,6 @@ impl Drop for BundleExportStage {
     }
 }
 
-/// Detect the same finite byte patterns across arbitrary short reads.
-/// Only a bounded suffix survives a call. No media decoder, MIME assertion,
-/// text rewriting or complete-member allocation participates in the check.
-#[derive(Default)]
-struct PortableCredentialScan {
-    tail: [u8; CREDENTIAL_SCAN_OVERLAP],
-    tail_len: usize,
-}
-
-impl PortableCredentialScan {
-    fn check(&mut self, bytes: &[u8], context: &str) -> Result<()> {
-        let head_len = bytes.len().min(CREDENTIAL_SCAN_OVERLAP);
-        let mut crossing = [0_u8; CREDENTIAL_SCAN_OVERLAP * 2];
-        crossing[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
-        crossing[self.tail_len..self.tail_len + head_len].copy_from_slice(&bytes[..head_len]);
-        ensure_secret_free_bytes(&crossing[..self.tail_len + head_len], context)?;
-        ensure_secret_free_bytes(bytes, context)?;
-
-        if bytes.len() >= CREDENTIAL_SCAN_OVERLAP {
-            self.tail
-                .copy_from_slice(&bytes[bytes.len() - CREDENTIAL_SCAN_OVERLAP..]);
-            self.tail_len = CREDENTIAL_SCAN_OVERLAP;
-        } else {
-            let keep = self.tail_len.min(CREDENTIAL_SCAN_OVERLAP - bytes.len());
-            self.tail
-                .copy_within(self.tail_len - keep..self.tail_len, 0);
-            self.tail[keep..keep + bytes.len()].copy_from_slice(bytes);
-            self.tail_len = keep + bytes.len();
-        }
-        Ok(())
-    }
-}
-
 /// The byte budget constrains the actual read, including growth after stat.
 fn transfer_portable_bytes(
     input: impl Read,
@@ -409,7 +376,7 @@ fn transfer_portable_bytes_with_credential_check(
     let mut hasher = Sha256::new();
     let mut size_bytes = 0_u64;
     let mut buffer = [0_u8; 128 * 1024];
-    let mut credentials = PortableCredentialScan::default();
+    let mut credentials = CredentialScan::default();
     loop {
         let read = input.read(&mut buffer)?;
         if read == 0 {

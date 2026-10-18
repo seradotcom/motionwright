@@ -163,10 +163,43 @@ fn contains_credential_like_material(bytes: &[u8]) -> bool {
 fn ensure_secret_free_bytes(bytes: &[u8], context: &str) -> Result<()> {
     if contains_credential_like_material(bytes) {
         return Err(StorageError::InvalidBackup(format!(
-            "{context} contains credential-like material and cannot enter a portable project"
+            "{context} contains credential-like material and cannot enter project storage or export"
         )));
     }
     Ok(())
+}
+
+/// Detect the same finite byte patterns across arbitrary short reads.
+/// Only a bounded suffix survives a call. No media decoder, MIME assertion,
+/// text rewriting or complete-member allocation participates in the check.
+#[derive(Default)]
+struct CredentialScan {
+    tail: [u8; CREDENTIAL_SCAN_OVERLAP],
+    tail_len: usize,
+}
+
+impl CredentialScan {
+    fn check(&mut self, bytes: &[u8], context: &str) -> Result<()> {
+        let head_len = bytes.len().min(CREDENTIAL_SCAN_OVERLAP);
+        let mut crossing = [0_u8; CREDENTIAL_SCAN_OVERLAP * 2];
+        crossing[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        crossing[self.tail_len..self.tail_len + head_len].copy_from_slice(&bytes[..head_len]);
+        ensure_secret_free_bytes(&crossing[..self.tail_len + head_len], context)?;
+        ensure_secret_free_bytes(bytes, context)?;
+
+        if bytes.len() >= CREDENTIAL_SCAN_OVERLAP {
+            self.tail
+                .copy_from_slice(&bytes[bytes.len() - CREDENTIAL_SCAN_OVERLAP..]);
+            self.tail_len = CREDENTIAL_SCAN_OVERLAP;
+        } else {
+            let keep = self.tail_len.min(CREDENTIAL_SCAN_OVERLAP - bytes.len());
+            self.tail
+                .copy_within(self.tail_len - keep..self.tail_len, 0);
+            self.tail[keep..keep + bytes.len()].copy_from_slice(bytes);
+            self.tail_len = keep + bytes.len();
+        }
+        Ok(())
+    }
 }
 
 // Pattern policy is shared by raw backups and bundles. Only the bundle
@@ -557,66 +590,11 @@ impl Store {
         &self.blob_root
     }
 
+    /// Admit new bytes through the same private capture as canonical imports.
+    /// Historical blob reads and receipt recovery remain separate operations.
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> Result<BlobDescriptor> {
-        let source = source.as_ref();
-        ensure_regular_file(source, "blob source")?;
-        ensure_regular_directory(&self.blob_root, "content-addressed storage root")?;
-        let staging_root = self.blob_root.join(".staging");
-        create_checked_blob_directory(&staging_root)?;
-        let staging_path = staging_root.join(format!("{}.part", Uuid::now_v7()));
-
-        let mut input = File::open(source)?;
-        let mut stage_options = OpenOptions::new();
-        stage_options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            stage_options.mode(0o600);
-        }
-        let mut output = stage_options.open(&staging_path)?;
-        let mut hasher = Sha256::new();
-        let mut size_bytes = 0_u64;
-        let mut buffer = [0_u8; 128 * 1024];
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            output.write_all(&buffer[..read])?;
-            hasher.update(&buffer[..read]);
-            size_bytes = size_bytes.saturating_add(read as u64);
-        }
-        output.flush()?;
-        output.sync_all()?;
-        drop(output);
-
-        let sha256 = hex::encode(hasher.finalize());
-        let destination = self.blob_path(&sha256)?;
-        let shas = self.blob_root.join("sha256");
-        create_checked_blob_directory(&shas)?;
-        create_checked_blob_directory(&shas.join(&sha256[..2]))?;
-        match fs::symlink_metadata(&destination) {
-            Ok(_) => {
-                let existing_path = self.checked_existing_blob_path(&sha256)?;
-                let existing = hash_file(&existing_path)?;
-                if existing.sha256 != sha256 || existing.size_bytes != size_bytes {
-                    return Err(StorageError::InvalidBackup(
-                        "content-addressed blob path contains different bytes".into(),
-                    ));
-                }
-                fs::remove_file(&staging_path)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // A hard link is create-new: unlike rename, it refuses to
-                // replace a destination inserted after our preflight check.
-                // Both directories live under the same CAS root/device.
-                fs::hard_link(&staging_path, &destination)?;
-                fs::remove_file(&staging_path)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-
-        Ok(BlobDescriptor { sha256, size_bytes })
+        let staged = self.stage_file_import(source.as_ref())?;
+        self.publish_file_import(&staged)
     }
 
     pub fn verified_blob_path(&self, digest: &str) -> Result<PathBuf> {

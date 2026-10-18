@@ -282,6 +282,7 @@ impl Store {
             let mut input = input.take(max_bytes.saturating_add(1));
             let mut output = output;
             let mut hasher = Sha256::new();
+            let mut credentials = super::CredentialScan::default();
             let mut buffer = [0_u8; 128 * 1024];
             let mut size_bytes = 0_u64;
             loop {
@@ -302,6 +303,7 @@ impl Store {
                         limit: max_bytes,
                     });
                 }
+                credentials.check(&buffer[..count], "file import source")?;
                 output.write_all(&buffer[..count])?;
                 hasher.update(&buffer[..count]);
                 size_bytes = next_size;
