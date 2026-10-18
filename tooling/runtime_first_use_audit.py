@@ -429,12 +429,15 @@ def write_new_receipt(destination: Path, report: dict) -> None:
                         src_dir_fd=directory_fd,
                         dst_dir_fd=directory_fd,
                         follow_symlinks=False)
+                # The public filename already exists from this point onward:
+                # a failing post-link stat is UNCERTAIN, not safe to retry.
+                published = True
                 committed = os.stat(destination.name,
                                     dir_fd=directory_fd, follow_symlinks=False)
             else:
                 os.link(stage_path, destination)
+                published = True
                 committed = destination.lstat()
-            published = True
             require(
                 stat.S_ISREG(committed.st_mode)
                 and committed.st_dev == staged_identity.st_dev

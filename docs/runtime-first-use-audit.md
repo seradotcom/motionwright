@@ -163,3 +163,21 @@ On POSIX it also tests a directory-sync failure **after** publication,
 requiring an uncertain result while preserving the fully published bytes.
 It executes through the selected first-use test module without changes to
 A6-owned workflows.
+
+
+#### Publication succeeded, metadata read failed
+
+A successful exclusive filesystem link makes the complete report visible
+BEFORE the following metadata read. If the read fails (for example a
+transient I/O error querying the newly published name), the outcome is
+receipt_commit_uncertain, never receipt_write_refused: an original report
+may already exist and must not be overwritten or automatically retried.
+The same rule applies to a later directory-sync or handle-close failure.
+The published destination is checked independently from the staging file.
+
+The real-filesystem regression
+test_successful_link_then_metadata_error_is_commit_uncertain injects one
+metadata I/O error AFTER the link has succeeded. It verifies the complete
+JSON exists and that no extra stage remains BEFORE checking the uncertain
+classification. Its RED source commit is
+b893e02d18cbc5959127028221d26a4db76942f6.
