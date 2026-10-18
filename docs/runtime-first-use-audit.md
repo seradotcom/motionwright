@@ -125,3 +125,54 @@ Tauri runtime, Broker and native job authorization still have their own trust
 boundaries. This is not an OS-wide file lock, not Windows DACL verification,
 and not an attestation or consent mechanism. A report never licenses a later
 renderer mutation.
+
+
+### Exclusive, atomic support-report publication
+
+The optional `--output` receipt is local troubleshooting evidence, not a Broker
+operation. Its original writer used `O_EXCL` directly on the public destination
+and could leave partially written JSON after `write()` or `fsync()` failed.
+The incomplete name then blocked a later valid report because the same
+destination must not be overwritten.
+
+The corrected writer creates a unique, mode-0600 staging file in the **same
+parent directory**. It writes the complete redacted JSON, flushes and fsyncs
+the stage, and makes the complete file visible by an **atomic exclusive
+hardlink** to the requested destination. Linking never replaces existing
+reports. Publication failure preserves previous destination bytes and removes
+only this operation's matching staging inode. On POSIX the parent directory
+is held by descriptor for stage creation, linking, cleanup and directory
+sync. The parent pathname is independently revalidated after publication;
+on Windows the same-volume NTFS hardlink operation is used. If a filesystem
+cannot perform this no-replace publication, the operation fails closed and
+does not attempt a weaker direct-write fallback.
+
+`receipt_write_refused` means the new public destination was not accepted.
+If a publication occurred but its final durability or cleanup is uncertain,
+the result is `receipt_commit_uncertain`; the caller must inspect the
+original destination before deciding any subsequent action. It must **not**
+overwrite an existing file or classify that uncertainty as a safe retry.
+Atomic publication of one local JSON support report is not a transaction for
+the installed application, provider or OS filesystem.
+
+The synthetic test suite `test_runtime_first_use_atomic_receipt.py` proves
+a failed stream sync never exposes a partial public name, the first sync
+precedes public visibility, collision preserves an existing report, a
+refused hardlink has no fallback, and two writers have one complete winner.
+On POSIX it also tests a directory-sync failure **after** publication,
+requiring an uncertain result while preserving the fully published bytes.
+The same suite runs via test discovery and dotted module invocation.
+
+Successful linking is recorded before the writer inspects the resulting
+filename. If that inspection fails, the writer retains the published file
+and reports `receipt_commit_uncertain`. The CLI preserves that fixed code
+in its JSON output and exits with code 3, including when the file contains
+a complete report. Inspect the original destination before deciding any
+subsequent action; the failed observation does not authorize overwriting or
+repeating the publication. A refused prepublication operation continues to
+report `receipt_write_refused`.
+
+Three additional filesystem regressions check failure during the first
+post-link inspection, the same outcome through the CLI, and a CLI collision
+that preserves another report byte for byte. The injected error occurs only
+after the actual hardlink succeeds; final byte checks use the real filesystem.
