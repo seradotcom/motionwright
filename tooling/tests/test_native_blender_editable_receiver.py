@@ -15,9 +15,10 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from native_blender_editable_receiver import (
-    EDIT_DELTA_X, ReceiverError, bounded_source_snapshot, compare_edit,
-    compare_reimported_glb,
-    digest, original_glb, root_path, read_json, within_root, write_receipt,
+    EDIT_DELTA_X, ReceiverError, SCHEMA, LEGACY_RECEIPT_SCHEMA,
+    bounded_source_snapshot, compare_edit, compare_reimported_glb,
+    digest, original_glb, root_path, read_json, supported_receipt_schema,
+    within_root, write_receipt,
 )
 
 A="a"*12
@@ -61,8 +62,8 @@ def snapshot():
 
 class BlenderEditableReceiverPureTests(unittest.TestCase):
     def setUp(self):
-        # Use only the authorized Motionwright test tree on the Windows
-        # workstation; never default to C:\Users\...\AppData\Local\Temp.
+        # Keep all test temporaries inside this disposable worktree rather
+        # than an OS-global temp folder or an actual user's Blender project.
         self.tmp=tempfile.TemporaryDirectory(dir=str(pathlib.Path(__file__).resolve().parent))
         self.addCleanup(self.tmp.cleanup)
         self.root=pathlib.Path(self.tmp.name)
@@ -229,11 +230,38 @@ class BlenderEditableReceiverPureTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             write_receipt(file,{"valid":False})
 
+    def test_new_receipt_uses_permanent_product_schema(self):
+        self.assertEqual(SCHEMA,
+            "motionwright.native.blender-editable-interchange/1")
+        self.assertNotIn(".a4.",SCHEMA)
+        self.assertTrue(supported_receipt_schema(SCHEMA))
+        self.assertFalse(supported_receipt_schema("motionwright.native.unsupported/1"))
+        self.assertFalse(supported_receipt_schema(4))
+
+    def test_legacy_receipt_can_be_read_without_rewriting_provenance(self):
+        # The earlier draft's already-created receipts keep their exact bytes
+        # and source/media hashes. Only compatibility checking is permitted;
+        # newly written product receipts always use SCHEMA.
+        legacy={
+            "schema": LEGACY_RECEIPT_SCHEMA,
+            "phase": "imported_first_party_GLB_to_Blend",
+            "source":{"sha256":digest(self.original.read_bytes())},
+            "rights_human_acceptance":False
+        }
+        p=self.root/"legacy.json"
+        write_receipt(p,legacy)
+        before=digest(p.read_bytes())
+        retrieved=read_json(p)
+        self.assertEqual(retrieved,legacy)
+        self.assertTrue(supported_receipt_schema(retrieved["schema"]))
+        self.assertEqual(before,digest(p.read_bytes()))
+        self.assertNotEqual(retrieved["schema"],SCHEMA)
+
     def test_witness_report_json_uses_original_source_bytes_not_provider_claims(self):
         file=self.root/"import.json"
         original=original_glb(self.original,digest(self.original.read_bytes()))
         write_receipt(file,{
-            "schema":"motionwright.a4.blender-first-party-interchange-reopen/1",
+            "schema":SCHEMA,
             "phase":"imported_first_party_GLB_to_Blend",
             "source":original,
             "objects":snapshot(),
