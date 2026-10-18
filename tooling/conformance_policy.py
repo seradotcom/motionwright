@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import stat
+import zipfile
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
@@ -85,6 +86,30 @@ def public_file(root, pointer, *, allow_missing=False):
     if not candidate.is_file():
         raise ValueError("evidence must be a regular file: " + pointer)
     return candidate
+
+
+def validate_archive_member(path, artifact):
+    if "member" not in artifact and "member_sha256" not in artifact:
+        return
+    member = artifact.get("member")
+    if (not isinstance(member, str) or not member or "\\\\" in member
+            or PureWindowsPath(member).drive or ":" in member
+            or any(part in {"", ".", ".."} for part in member.split("/"))):
+        raise ValueError("archive member must have an unambiguous relative identity")
+    expected = _hex(artifact.get("member_sha256"), DIGEST, "archive member digest")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            matches = [item for item in archive.infolist() if item.filename == member]
+            if len(matches) != 1 or matches[0].is_dir():
+                raise ValueError("archive member is missing, duplicated or not a file")
+            actual = hashlib.sha256()
+            with archive.open(matches[0]) as stream:
+                while chunk := stream.read(1024 * 1024):
+                    actual.update(chunk)
+            if actual.hexdigest() != expected:
+                raise ValueError("archive member bytes do not match their digest")
+    except (zipfile.BadZipFile, OSError, KeyError, RuntimeError) as error:
+        raise ValueError("archive member cannot be verified") from error
 
 
 def source_digest(path):
@@ -318,6 +343,7 @@ def load_evidence_index(root, descriptor):
                 actual = public_file(root, pointer)
                 if hashlib.sha256(actual.read_bytes()).hexdigest() != artifact["sha256"]:
                     raise ValueError("artifact bytes do not match their digest")
+                validate_archive_member(actual, artifact)
             else:
                 raise ValueError("execution needs retained artifact bytes; a URL alone is not verified evidence")
         by_id[identity] = record
