@@ -94,9 +94,12 @@ const profileUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{1
 const profileDecimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 const fieldKey = (key: string): boolean => (profileFields as readonly string[]).includes(key)
+  || key === "cut_mode"
   || key.startsWith("text:") && profileUuid.test(key.slice(5));
 const currentField = (current: Record<string, string>, key: string) => current[key] ?? "null";
 const fieldsOf = (profile: DeliverableProfile): Record<string, string> => ({
+  // Local editor state only: canonical [] continues to mean the full sequence.
+  cut_mode: JSON.stringify(profile.included_scene_ids.length ? "custom" : "full"),
   ...Object.fromEntries(profileFields.map(key => [key, JSON.stringify(profile[key])])),
   ...Object.fromEntries(Object.entries(profile.text_overrides).map(([id, value]) => ["text:" + id, JSON.stringify(value)])),
 });
@@ -143,18 +146,42 @@ function rawExactlyMatchesSavedField(key: string, raw: string, saved: string): b
   catch { return false; }
 }
 
+function keepCutContext(draft: ProfileMetadataDraft, key: string, current: Record<string, string>): boolean {
+  const companionKey = key === "cut_mode" ? "included_scene_ids" : key === "included_scene_ids" ? "cut_mode" : null;
+  const companion = companionKey ? draft.edits[companionKey] : undefined;
+  return Boolean(companionKey && companion
+    && !rawExactlyMatchesSavedField(companionKey, companion.value, currentField(current, companionKey)));
+}
+
 export function editProfileMetadata(
   draft: ProfileMetadataDraft, key: string, raw: string, current: Record<string, string>,
 ): ProfileMetadataDraft {
   if (!fieldKey(key) || typeof raw !== "string") throw new Error("Unknown profile field.");
   const next = structuredClone(draft);
   const saved = currentField(current, key);
-  if (rawExactlyMatchesSavedField(key, raw, saved) && !next.awaiting?.fields[key]) delete next.edits[key];
+  if (rawExactlyMatchesSavedField(key, raw, saved) && !next.awaiting?.fields[key] && !keepCutContext(next, key, current)) delete next.edits[key];
   else next.edits[key] = { base: next.edits[key]?.base ?? saved, value: raw };
+  if (key === "cut_mode") {
+    // A mode gesture also owns its current list, including canonical [].
+    // Otherwise a later peer custom list could silently fill an empty draft.
+    if (next.edits.cut_mode && !next.edits.included_scene_ids) {
+      const selection = currentField(current, "included_scene_ids");
+      next.edits.included_scene_ids = { base: selection, value: displayField("included_scene_ids", selection) };
+    }
+    const cutFields = ["included_scene_ids", "cut_mode"];
+    if (cutFields.every(field => !next.awaiting?.fields[field]
+      && (!next.edits[field] || rawExactlyMatchesSavedField(field, next.edits[field].value, currentField(current, field))))) {
+      for (const field of cutFields) delete next.edits[field];
+    }
+  }
   return next;
 }
 
 function parseProfileField(key: string, raw: string): unknown {
+  if (key === "cut_mode") {
+    if (raw !== "full" && raw !== "custom") throw new Error("Choose the full sequence or a custom cut.");
+    return raw;
+  }
   if (key.startsWith("text:")) {
     if (raw === "") return null;
     if (!raw.trim() || bytes(raw) > 16_384) throw new Error("Localized text must contain text and fit within 16,384 UTF-8 bytes.");
@@ -218,6 +245,7 @@ function parseProfileField(key: string, raw: string): unknown {
   return raw;
 }
 function applyProfileField(profile: DeliverableProfile, key: string, value: unknown): void {
+  if (key === "cut_mode") return; // Never add editor-only mode to the canonical profile.
   if (key.startsWith("text:")) {
     if (value === null) delete profile.text_overrides[key.slice(5)];
     else profile.text_overrides[key.slice(5)] = value as string;
@@ -225,10 +253,25 @@ function applyProfileField(profile: DeliverableProfile, key: string, value: unkn
     (profile as unknown as Record<string, unknown>)[key] = value;
   }
 }
+/** Recover historical array-only drafts without guessing a new canonical meaning. */
+export function profileMetadataCutMode(current: DeliverableProfile, draft: ProfileMetadataDraft): "full" | "custom" {
+  const explicit = draft.edits.cut_mode?.value;
+  if (explicit === "full" || explicit === "custom") return explicit;
+  const oldSelection = draft.edits.included_scene_ids;
+  if (oldSelection) {
+    try { return (parseProfileField("included_scene_ids", oldSelection.value) as string[]).length ? "custom" : "full"; }
+    catch { /* Invalid historical raw remains in the review, without a different mode. */ }
+  }
+  return current.included_scene_ids.length ? "custom" : "full";
+}
+
 /** UI parsing of edited fields only. Rust still validates the entire Project. */
 export function proposedProfileMetadata(current: DeliverableProfile, draft: ProfileMetadataDraft): DeliverableProfile {
   const profile = structuredClone(current);
   for (const [key, edit] of Object.entries(draft.edits)) applyProfileField(profile, key, parseProfileField(key, edit.value));
+  const cutMode = profileMetadataCutMode(current, draft);
+  if (cutMode === "custom" && !profile.included_scene_ids.length) throw new Error("Choose at least one scene for the custom cut, or choose Use full sequence explicitly.");
+  if (cutMode === "full" && profile.included_scene_ids.length) throw new Error("The full sequence and custom scene choices disagree. Review the narrative cut.");
   if (profile.framing_strategy === "crop" && !profile.crop_approved) throw new Error("Approve the crop before saving crop framing.");
   if (profile.parent_profile_id !== null && !profile.adaptation_notes.length) throw new Error("A derived profile requires at least one adaptation note.");
   return profile;
@@ -278,13 +321,15 @@ export function reconcileProfileMetadata(
     for (const [key, sent] of Object.entries(awaiting.fields)) {
       const edit = next.edits[key];
       if (!edit) continue;
-      if (edit.value === sent.raw || rawExactlyMatchesSavedField(key, edit.value, currentField(current, key))) delete next.edits[key];
+      if ((edit.value === sent.raw || rawExactlyMatchesSavedField(key, edit.value, currentField(current, key)))
+        && !keepCutContext(next, key, current)) delete next.edits[key];
       else next.edits[key] = { base: currentField(current, key), value: edit.value };
     }
     delete next.awaiting;
   }
   for (const [key, edit] of Object.entries(next.edits)) {
-    if (!next.awaiting?.fields[key] && rawExactlyMatchesSavedField(key, edit.value, currentField(current, key))) delete next.edits[key];
+    if (!next.awaiting?.fields[key] && !keepCutContext(next, key, current)
+      && rawExactlyMatchesSavedField(key, edit.value, currentField(current, key))) delete next.edits[key];
   }
   next.revision = revision;
   return next;
@@ -293,12 +338,17 @@ export function resolveProfileMetadata(
   draft: ProfileMetadataDraft, key: string, current: Record<string, string>, keep: "saved" | "draft",
 ): ProfileMetadataDraft {
   const next = structuredClone(draft);
-  if (keep === "saved") delete next.edits[key];
-  else if (next.edits[key]) next.edits[key] = { base: currentField(current, key), value: next.edits[key].value };
-  // An explicit local review cannot cancel or retry the original request.
-  if (next.awaiting) {
-    delete next.awaiting.fields[key];
-    if (!Object.keys(next.awaiting.fields).length) delete next.awaiting;
+  // The local mode and scene list form one cut decision; reviewing either
+  // resolves that pair, while other metadata inputs remain independent.
+  const keys = key === "cut_mode" || key === "included_scene_ids" ? ["included_scene_ids", "cut_mode"] : [key];
+  for (const field of keys) {
+    if (keep === "saved") delete next.edits[field];
+    else if (next.edits[field]) next.edits[field] = { base: currentField(current, field), value: next.edits[field].value };
+    // An explicit local review cannot cancel or retry the original request.
+    if (next.awaiting) {
+      delete next.awaiting.fields[field];
+      if (!Object.keys(next.awaiting.fields).length) delete next.awaiting;
+    }
   }
   return next;
 }
@@ -354,7 +404,7 @@ export function decodeProfileMetadata(raw: string, scope: string): ProfileMetada
     || !closed(value, ["version", "scope", "revision", "edits"], ["awaiting"])
     || value.version !== 1 || value.scope !== scope || !Number.isSafeInteger(value.revision)
     || (value.revision as number) < 0 || !object(value.edits)
-    || Object.keys(value.edits).length > profileFields.length + 4096) throw new Error("The profile recovery copy has an unsupported identity or format.");
+    || Object.keys(value.edits).length > profileFields.length + 1 + 4096) throw new Error("The profile recovery copy has an unsupported identity or format.");
   for (const [key, edit] of Object.entries(value.edits)) {
     if (!fieldKey(key) || !closed(edit, ["base", "value"]) || !boundedText(edit.base) || !boundedText(edit.value)) {
       throw new Error("The profile recovery copy has an invalid field.");
@@ -367,7 +417,7 @@ export function decodeProfileMetadata(raw: string, scope: string): ProfileMetada
     if (!closed(sent, ["revision", "fields"]) || !Number.isSafeInteger(sent.revision)
       || (sent.revision as number) < 0 || (sent.revision as number) > (value.revision as number)
       || !object(sent.fields) || !Object.keys(sent.fields).length
-      || Object.keys(sent.fields).length > profileFields.length + 4096) throw new Error("Invalid pending profile input.");
+      || Object.keys(sent.fields).length > profileFields.length + 1 + 4096) throw new Error("Invalid pending profile input.");
     for (const [key, field] of Object.entries(sent.fields)) {
       if (!fieldKey(key) || !Object.hasOwn(value.edits, key) || !closed(field, ["raw", "target"])
         || !boundedText(field.raw) || !boundedText(field.target)
@@ -572,8 +622,9 @@ export function useProfileMetadataDraft(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, project.revision, JSON.stringify(current)]);
   const conflicts = profileMetadataConflicts(visible, current);
-  const values = { ...(profile ? profileRawFields(profile) : {}),
-    ...Object.fromEntries(Object.entries(visible.edits).map(([field, edit]) => [field, edit.value])) };
+  const values: Record<string, string> = { ...(profile ? profileRawFields(profile) : {}),
+    ...Object.fromEntries(Object.entries(visible.edits).map(([field, edit]) => [field, edit.value])),
+    cut_mode: profile ? profileMetadataCutMode(profile, visible) : "full" };
   const locked = project.locks.some(lock => lock.kind === "content" && lock.resource === "project:" + project.id);
   const sourceBehind = visible.revision > project.revision;
   const copyView = useRef<{ key: string; epoch: number; copies: ProfileRecoveryCopy[]; warning: string | null }>({ key: "", epoch: -1, copies: [], warning: null });

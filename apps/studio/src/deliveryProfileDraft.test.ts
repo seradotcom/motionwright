@@ -7,7 +7,7 @@ import { fixtureProject } from "./fixture";
 import type { MotionCanvasFilmOptions, Project } from "./types";
 import type { NativeDeliveryDispatchCheck } from "./api";
 import {
-  captureDeliveryDispatch, type DeliveryDispatchView,
+  captureDeliveryDispatch, type DeliveryDispatchView, type ProfileMetadataDraft,
   profileCanonicalFields, profileRawFields, profileMetadataScope, profileMetadataKey,
   newProfileMetadataDraft, editProfileMetadata, proposedProfileMetadata, previewProfileMetadata,
   submitProfileMetadata, reconcileProfileMetadata, profileMetadataConflicts, resolveProfileMetadata,
@@ -836,4 +836,96 @@ for (const target of cases) it(target.name + " keeps otherwise-ready admission b
   expect(invokeFixture.mock.calls.map(call => call[0])).toEqual(["issue_effect_grant", target.command]);
   expect(storage.setItem).not.toHaveBeenCalled();
   expect(storage.removeItem).not.toHaveBeenCalled();
+});
+
+describe("explicit local cut mode", () => {
+  const ids = ["abcde000-1234-4234-8234-000000000221", "abcde000-1234-4234-8234-000000000222"];
+  function choose(draft: ProfileMetadataDraft, current: Record<string, string>, mode: "full" | "custom", selection: string[]) {
+    const list = editProfileMetadata(draft, "included_scene_ids", JSON.stringify(selection), current);
+    return editProfileMetadata(list, "cut_mode", mode, current);
+  }
+  it("retains a custom empty selection separately from the canonical full sequence", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] };
+    const current = profileCanonicalFields(profile);
+    let draft = choose(newProfileMetadataDraft(f.scope, 20), current, "custom", ids);
+    draft = choose(draft, current, "custom", []);
+    expect(draft.edits.cut_mode.value).toBe("custom");
+    expect(() => proposedProfileMetadata(profile, draft)).toThrow("at least one scene");
+    expect(submitProfileMetadata.bind(null, draft, profile, 20)).toThrow("at least one scene");
+    expect(profile.included_scene_ids).toEqual([]);
+    const next = reconcileProfileMetadata(draft, current, 21, f.scope);
+    expect(next.edits).toEqual(draft.edits);
+    const restored = decodeProfileMetadata(JSON.stringify(next), f.scope);
+    expect(restored.edits.cut_mode.value).toBe("custom");
+  });
+  it("requires an explicit full choice without dropping unrelated raw input", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] };
+    const current = profileCanonicalFields(profile);
+    let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "1e", current);
+    draft = choose(draft, current, "custom", []);
+    draft = choose(draft, current, "full", []);
+    expect(draft.edits).toEqual({ width: { base: current.width, value: "1e" } });
+    expect(() => proposedProfileMetadata(profile, draft)).toThrow("complete decimal");
+  });
+  it("keeps an empty edit made after a custom selection was sent through the matching ACK", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] };
+    const current = profileCanonicalFields(profile);
+    const draft = choose(newProfileMetadataDraft(f.scope, 20), current, "custom", ids);
+    const sent = submitProfileMetadata(draft, profile, 20);
+    const later = choose(sent, current, "custom", []);
+    const saved = { ...profile, included_scene_ids: ids };
+    const observed = reconcileProfileMetadata(later, profileCanonicalFields(saved), 21, f.scope);
+    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits.cut_mode.value).toBe("custom");
+    expect(observed.edits.included_scene_ids.value).toBe("[]");
+    expect(() => proposedProfileMetadata(saved, observed)).toThrow("at least one scene");
+    expect(decodeProfileMetadata(JSON.stringify(observed), f.scope).edits).toEqual(observed.edits);
+  });
+  it("does not let a peer full-sequence revision reinterpret a pinned empty custom cut", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: ids };
+    const current = profileCanonicalFields(profile);
+    let draft = choose(newProfileMetadataDraft(f.scope, 20), current, "custom", []);
+    draft = editProfileMetadata(draft, "name", "Unrelated authored name", current);
+    const latest = { ...profile, included_scene_ids: [] }, now = profileCanonicalFields(latest);
+    const observed = reconcileProfileMetadata(draft, now, 21, f.scope);
+    expect(observed.edits.cut_mode).toEqual({ base: '"custom"', value: "custom" });
+    expect(profileMetadataConflicts(observed, now)).toContain("cut_mode");
+    expect(() => proposedProfileMetadata(latest, observed)).toThrow("at least one scene");
+    const mine = resolveProfileMetadata(observed, "cut_mode", now, "draft");
+    expect(profileMetadataConflicts(mine, now)).toEqual([]);
+    expect(() => proposedProfileMetadata(latest, mine)).toThrow("at least one scene");
+    const saved = resolveProfileMetadata(observed, "cut_mode", now, "saved");
+    expect(saved.edits).toEqual({ name: observed.edits.name });
+  });
+  it("reviews the mode and scene list together and never adds local mode to the canonical wire", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: ids };
+    const current = profileCanonicalFields(profile);
+    let draft = choose(newProfileMetadataDraft(f.scope, 20), current, "custom", [ids[0]]);
+    draft = editProfileMetadata(draft, "width", "001280", current);
+    const proposed = proposedProfileMetadata(profile, draft);
+    expect(proposed.included_scene_ids).toEqual([ids[0]]);
+    expect(Object.hasOwn(proposed, "cut_mode")).toBe(false);
+    const resolved = resolveProfileMetadata(draft, "included_scene_ids", current, "saved");
+    expect(resolved.edits).toEqual({ width: draft.edits.width });
+  });
+  it("does not inherit a peer custom scene list over a locally empty cut from full sequence", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] };
+    const current = profileCanonicalFields(profile);
+    const draft = choose(newProfileMetadataDraft(f.scope, 20), current, "custom", []);
+    const peer = { ...profile, included_scene_ids: [ids[1]] }, now = profileCanonicalFields(peer);
+    const observed = reconcileProfileMetadata(draft, now, 21, f.scope);
+    expect(observed.edits.included_scene_ids?.value).toBe("[]");
+    expect(observed.edits.cut_mode?.value).toBe("custom");
+    expect(profileMetadataConflicts(observed, now)).toContain("included_scene_ids");
+    expect(() => proposedProfileMetadata(peer, observed)).toThrow("at least one scene");
+    expect(decodeProfileMetadata(JSON.stringify(observed), f.scope).edits).toEqual(observed.edits);
+  });
+  it("accepts old array-only recovery copies with their existing full/custom meanings", () => {
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] };
+    const current = profileCanonicalFields(profile);
+    const old = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "included_scene_ids", JSON.stringify(ids), current);
+    const restored = decodeProfileMetadata(JSON.stringify(old), f.scope);
+    expect(proposedProfileMetadata(profile, restored).included_scene_ids).toEqual(ids);
+    expect(restored.edits.cut_mode).toBeUndefined();
+  });
 });
