@@ -458,6 +458,29 @@ mod tests {
     }
 
     #[test]
+    fn remember_verified_preserves_a_valid_foreign_project_reference() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let existing = tmp.path().join("original-owner.json");
+        let requested = tmp.path().join("new-owner.json");
+        registry.remember_verified(project, generation, &existing).unwrap();
+        let destination = registry.destination(project);
+
+        // The physical filename belongs to the requested project, but the
+        // actual valid v1 record explicitly belongs to another project.
+        let mut alien: SavedConnectionReference =
+            serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        alien.project_id = Uuid::now_v7();
+        let foreign_bytes = serde_json::to_vec(&alien).unwrap();
+        fs::write(&destination, &foreign_bytes).unwrap();
+
+        assert!(registry.remember_verified(project, generation, &requested).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), foreign_bytes);
+    }
+
+    #[test]
     fn missing_registry_root_rejects_all_operations() {
         let temporary = TempDir::new().unwrap();
         let base = fs::canonicalize(temporary.path()).unwrap();
