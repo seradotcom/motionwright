@@ -23,6 +23,7 @@ mod expressive;
 pub mod film;
 pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
+pub mod manim_camera_projection;
 pub mod multi_renderer;
 pub mod owner_reconciliation;
 pub mod production;

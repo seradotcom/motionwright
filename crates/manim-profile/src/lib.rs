@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+// Camera source is admitted only by its typed closed profile and the original Host.
+pub mod planar_camera;
+
 pub const SCENE_CLASS: &str = "MotionwrightScene";
 pub const MAX_PRIMITIVES: usize = 512;
 const MAX_TEXT_BYTES: usize = 16 * 1024;
