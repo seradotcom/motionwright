@@ -377,6 +377,59 @@ mod tests {
     }
 
     #[test]
+    fn clear_saved_rejects_corrupt_reference_without_deleting_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let destination = registry.destination(project);
+        let malformed = b"{\"schema_version\":999,\"foreign\":true}";
+        fs::write(&destination, malformed).unwrap();
+
+        assert!(registry.clear_saved(project).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), malformed);
+    }
+
+    #[test]
+    fn clear_saved_rejects_foreign_project_scope_without_deleting_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let destination = registry.destination(project);
+        registry
+            .remember_verified(project, generation, &tmp.path().join("owner.json"))
+            .unwrap();
+        let mut foreign: serde_json::Value =
+            serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        foreign["project_id"] = serde_json::json!(Uuid::now_v7());
+        let foreign_bytes = serde_json::to_vec(&foreign).unwrap();
+        fs::write(&destination, &foreign_bytes).unwrap();
+
+        assert!(registry.clear_saved(project).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), foreign_bytes);
+    }
+
+    #[test]
+    fn clear_saved_rejects_relative_reference_without_deleting_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let destination = registry.destination(project);
+        registry
+            .remember_verified(project, generation, &tmp.path().join("owner.json"))
+            .unwrap();
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        forged["connection_file"] = serde_json::json!("relative-foreign.json");
+        let forged_bytes = serde_json::to_vec(&forged).unwrap();
+        fs::write(&destination, &forged_bytes).unwrap();
+
+        assert!(registry.clear_saved(project).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), forged_bytes);
+    }
+
+    #[test]
     fn missing_registry_root_rejects_all_operations() {
         let temporary = TempDir::new().unwrap();
         let base = fs::canonicalize(temporary.path()).unwrap();
