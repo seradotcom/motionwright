@@ -1,7 +1,7 @@
-"""Pure source custody and private editable receiver negative tests, no bpy.
+"""Source custody and editable receiver conformance tests without Blender.
 
-All temporary bytes are created under E:/Projects/motionwright/...
-These tests do not claim Blender imported an original GLB or reopened .blend.
+Temporary fixtures stay within this test tree. These unit tests do not
+claim a real Blender application import or native-file reopen.
 """
 from __future__ import annotations
 import copy
@@ -15,9 +15,10 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from native_blender_editable_receiver import (
-    EDIT_DELTA_X, ReceiverError, bounded_source_snapshot, compare_edit,
-    compare_reimported_glb,
-    digest, original_glb, root_path, read_json, within_root, write_receipt,
+    EDIT_DELTA_X, LEGACY_SCHEMA, SCHEMA, PHASES, ReceiverError,
+    bounded_source_snapshot, compare_edit, compare_reimported_glb,
+    digest, original_glb, receipt_schemas_compatible,
+    root_path, read_json, within_root, write_receipt,
 )
 
 A="a"*12
@@ -229,11 +230,54 @@ class BlenderEditableReceiverPureTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             write_receipt(file,{"valid":False})
 
+    def test_product_receipt_version_and_legacy_compatibility_are_explicit(self):
+        self.assertEqual(SCHEMA,"motionwright.native.blender-editable-receiver/2")
+        self.assertEqual(PHASES,(
+            "import","edit","verify","reimport","reopen-reimport"
+        ))
+        self.assertEqual(LEGACY_SCHEMA,
+                         "motionwright.a4.blender-first-party-interchange-reopen/1")
+        self.assertTrue(receipt_schemas_compatible(
+            {"schema": LEGACY_SCHEMA, "phase":"imported_first_party_GLB_to_Blend"},
+            {"schema": SCHEMA, "phase":"original_Blend_reopened_and_edited"},
+            {"schema": SCHEMA, "phase":"edited_Blend_reopened_in_new_Blender_process"}
+        ))
+        self.assertFalse(receipt_schemas_compatible({"schema":"unrecognized/99"}))
+        self.assertFalse(receipt_schemas_compatible({"source":"forged"}))
+        self.assertFalse(receipt_schemas_compatible({"schema":SCHEMA}, "raw"))
+        self.assertFalse(receipt_schemas_compatible({"schema":None}))
+
+    def test_fifth_stage_requires_reimported_geometry_and_edit_together(self):
+        initial=snapshot()
+        changed=copy.deepcopy(initial)
+        changed[0]["location"][0]=round(
+            changed[0]["location"][0]+EDIT_DELTA_X,6)
+        same=copy.deepcopy(changed)
+        self.assertTrue(compare_reimported_glb(initial,changed,same)[
+            "original_GLB_to_saved_Blend_to_edit_to_new_GLB_to_new_Blend"])
+        # Exported GLB that omits the user's change must never count as a
+        # completed fifth process even if an importer successfully opens it.
+        with self.assertRaisesRegex(ReceiverError,
+                                    "GLTF_reimport_lost_edited_position"):
+            compare_reimported_glb(initial,changed,initial)
+        # A new mesh ID or silently recolored object is equally unacceptable.
+        altered=copy.deepcopy(same)
+        altered[1]["name"]="Motionwright-panel-"+"f"*12
+        altered[1]["material"]["name"]=altered[1]["name"]+"-material"
+        with self.assertRaisesRegex(ReceiverError,
+                                    "GLTF_reimport_lost_edited_topology_or_original_name"):
+            compare_reimported_glb(initial,changed,altered)
+        altered=copy.deepcopy(same)
+        altered[0]["material"]["color"][0]=0.0
+        with self.assertRaisesRegex(ReceiverError,
+                                    "GLTF_reimport_material_PBR_color_changed"):
+            compare_reimported_glb(initial,changed,altered)
+
     def test_witness_report_json_uses_original_source_bytes_not_provider_claims(self):
         file=self.root/"import.json"
         original=original_glb(self.original,digest(self.original.read_bytes()))
         write_receipt(file,{
-            "schema":"motionwright.a4.blender-first-party-interchange-reopen/1",
+            "schema":SCHEMA,
             "phase":"imported_first_party_GLB_to_Blend",
             "source":original,
             "objects":snapshot(),
