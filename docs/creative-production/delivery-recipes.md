@@ -89,3 +89,12 @@ Existing Film and native-audio UI contract fixtures also save a canonical recipe
 The full sequence and a custom cut are explicit choices in the output profile editor. A custom cut can temporarily contain no scenes while it is being edited. The editor preserves that empty choice across revisions, profile switches and local recovery, and asks the author to include a scene or choose **Use full sequence**. An empty custom cut cannot be saved or used for Film, native production or export. Its local mode is not added to the Project schema: the canonical empty scene list continues to represent the full sequence.
 
 The local mode and scene list are reviewed together when another author changes the cut. Keeping the saved cut resolves both parts without discarding unrelated metadata input. Saving a valid custom cut retains the approved Project scene order. A delayed save reply confirms only its submitted selection; a later empty selection remains available for review.
+
+
+## Retained input from removed output profiles
+
+If a later revision removes an output profile, its local metadata draft remains available in **Retained output profile drafts**. The inventory is scoped to the exact project, generation and branch and excludes profiles that still exist. Review shows the original raw fields, their saved bases and any unconfirmed submitted input. The editor does not recreate a removed profile or treat that input as saved.
+
+A newer window draft and a different or unreadable recovery copy remain separate. Each snapshot can be downloaded without replacing its original storage bytes. A storage failure is visible; input that only exists in the current window is labelled accordingly. Long fields have a bounded preview, and the download preserves their complete raw copy.
+
+When the same profile ID is explicitly restored in a later saved revision, its matching local input returns to the ordinary editable profile controls. The existing conflict review and explicit Save path apply. Other profiles, projects, generations and branches keep their own drafts.

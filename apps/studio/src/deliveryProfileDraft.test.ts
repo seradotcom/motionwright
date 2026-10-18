@@ -12,7 +12,7 @@ import {
   newProfileMetadataDraft, editProfileMetadata, proposedProfileMetadata, previewProfileMetadata,
   submitProfileMetadata, reconcileProfileMetadata, profileMetadataConflicts, resolveProfileMetadata,
   decodeProfileMetadata, loadProfileMetadata, persistProfileMetadata, discardUnreadableProfileMetadata,
-  profileMetadataCopies, recoverProfileMetadata, rereadProfileMetadata,
+  profileMetadataCopies, recoverProfileMetadata, rereadProfileMetadata, retainedProfileMetadataCopies,
 } from "./deliveryProfileDraft";
 import { ProjectMutationGate, type ProjectRevision } from "./projectMutation";
 
@@ -927,5 +927,120 @@ describe("explicit local cut mode", () => {
     const restored = decodeProfileMetadata(JSON.stringify(old), f.scope);
     expect(proposedProfileMetadata(profile, restored).included_scene_ids).toEqual(ids);
     expect(restored.edits.cut_mode).toBeUndefined();
+  });
+});
+
+describe("retained metadata for removed profiles", () => {
+  function retainedFixture() {
+    const f = metadataFixture();
+    f.project.id = metadataWriter(); f.project.generation = metadataWriter();
+    return { ...f, scope: profileMetadataScope(f.project, f.profile.id),
+      removed: { ...f.project, deliverables: f.project.deliverables.filter(profile => profile.id !== f.profile.id) } };
+  }
+  it("lists one exact durable copy after removal without rewriting storage, and hides it again after restoration", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "", f.current);
+    draft = editProfileMetadata(draft, "height", "-", f.current);
+    persistProfileMetadata(key, draft, storage);
+    const raw = entries.get(key)!;
+    storage.setItem.mockClear(); storage.removeItem.mockClear();
+    expect(retainedProfileMetadataCopies(f.project, storage).copies).toEqual([]);
+    const collected = retainedProfileMetadataCopies(f.removed, storage);
+    expect(collected.copies).toEqual([{ key, profileId: f.profile.id, source: "storage", raw, draft, warning: null }]);
+    expect(collected.warning).toBeNull();
+    expect(retainedProfileMetadataCopies({ ...f.removed, revision: 24 }, storage).copies[0].raw).toBe(raw);
+    expect(retainedProfileMetadataCopies(f.project, storage).copies).toEqual([]);
+    expect(entries.get(key)).toBe(raw);
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("does not mix project, generation, branch or present-profile copies", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "  Kept  ", f.current);
+    entries.set(profileMetadataKey(f.scope, metadataWriter()), JSON.stringify(draft));
+    for (const changed of [
+      { ...f.removed, id: metadataWriter() }, { ...f.removed, generation: metadataWriter() },
+      { ...f.removed, active_branch: metadataWriter() }, f.project,
+    ]) expect(retainedProfileMetadataCopies(changed, storage).copies).toEqual([]);
+    expect(retainedProfileMetadataCopies(f.removed, storage).copies).toHaveLength(1);
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("keeps a newer window draft separate from a corrupt durable copy", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "1e", f.current);
+    persistProfileMetadata(key, draft, storage);
+    const corrupt = "{original bytes do not parse";
+    entries.set(key, corrupt);
+    const later = editProfileMetadata(draft, "name", "Later window input", f.current);
+    persistProfileMetadata(key, later, storage);
+    storage.setItem.mockClear(); storage.removeItem.mockClear();
+    const copies = retainedProfileMetadataCopies(f.removed, storage).copies;
+    expect(copies).toHaveLength(2);
+    expect(copies.find(copy => copy.source === "storage")).toMatchObject({ key, raw: corrupt, draft: null });
+    expect(copies.find(copy => copy.source === "window")).toMatchObject({ key, raw: JSON.stringify(later), draft: later });
+    expect(entries.get(key)).toBe(corrupt);
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("retains quota-failed raw input in memory and explains that it is not a durable copy", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "height", "", f.current);
+    storage.setItem.mockImplementation(() => { throw new Error("quota exceeded"); });
+    persistProfileMetadata(key, draft, storage);
+    const copies = retainedProfileMetadataCopies(f.removed, storage).copies;
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ source: "window", raw: JSON.stringify(draft), draft });
+    expect(copies[0].warning).toContain("quota exceeded");
+    expect(entries.has(key)).toBe(false);
+  });
+  it("surfaces failed storage observation while preserving its in-memory snapshot", () => {
+    const f = retainedFixture(), { storage } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "language", " es ", f.current);
+    persistProfileMetadata(key, draft, storage);
+    Object.defineProperty(storage, "length", { get() { throw new Error("storage blocked"); } });
+    const collected = retainedProfileMetadataCopies(f.removed, storage);
+    expect(collected.warning).toContain("storage blocked");
+    expect(collected.copies).toHaveLength(1);
+    expect(collected.copies[0]).toMatchObject({ source: "window", raw: JSON.stringify(draft), draft });
+  });
+  it("does not present changing storage bytes as a stable recovery copy", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    const raw = JSON.stringify(editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "1280", f.current));
+    entries.set(key, raw);
+    let reads = 0;
+    storage.getItem.mockImplementation(() => ++reads === 1 ? raw : raw + " changed");
+    const collected = retainedProfileMetadataCopies(f.removed, storage);
+    expect(collected.copies).toEqual([]);
+    expect(collected.warning).toContain("changed while it was read");
+    expect(entries.get(key)).toBe(raw);
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("keeps submitted input explicitly unconfirmed and does not create a retry", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    const draft = submitProfileMetadata(editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "1280", f.current), f.profile, 20);
+    entries.set(key, JSON.stringify(draft));
+    const copy = retainedProfileMetadataCopies(f.removed, storage).copies[0];
+    expect(copy.draft?.awaiting).toEqual(draft.awaiting);
+    expect(copy.raw).toBe(JSON.stringify(draft));
+    expect(invokeFixture).not.toHaveBeenCalled();
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("bounds the visible recovery inventory without evicting original copies", () => {
+    const f = retainedFixture(), { storage, entries } = storageFixture();
+    for (let index = 0; index < 65; index++) {
+      const scope = profileMetadataScope(f.project, metadataWriter());
+      const draft = editProfileMetadata(newProfileMetadataDraft(scope, 20), "name", "Copy " + index, f.current);
+      entries.set(profileMetadataKey(scope, metadataWriter()), JSON.stringify(draft));
+    }
+    const before = [...entries];
+    const collected = retainedProfileMetadataCopies(f.removed, storage);
+    expect(collected.copies).toHaveLength(64);
+    expect(collected.warning).toContain("64 retained profile snapshots");
+    expect([...entries]).toEqual(before);
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
   });
 });
