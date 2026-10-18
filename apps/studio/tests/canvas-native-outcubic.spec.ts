@@ -1,4 +1,4 @@
-import {expect,test} from "@playwright/test";
+import {expect,test} from "./support/selectedSyntheticProject";
 import {fixtureBootstrap} from "../src/fixture";
 
 test("Canvas writes one atomic cubic-out X/Y move through the saved native bridge",async({page})=>{
@@ -16,7 +16,14 @@ test("Canvas writes one atomic cubic-out X/Y move through the saved native bridg
     mock.__CUBIC_NATIVE_REQUESTS__=[];
     mock.__TAURI_INTERNALS__={
       invoke:async(command,args)=>{
-        if(command==="bootstrap")return {...initialBoot,project:structuredClone(source)};
+        if (command === "bootstrap") {
+          const syntheticResponse = {...initialBoot,project:structuredClone(source)};
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if(command==="issue_effect_grant")return {token:"synthetic-only-grant"};
         if(command==="apply_change"){
           const request=args?.request as {

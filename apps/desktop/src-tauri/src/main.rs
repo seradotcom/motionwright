@@ -5,6 +5,7 @@ mod generation_journal;
 mod media_integrity;
 mod narration_native;
 mod original_mix_native;
+mod project_library;
 mod runtime_setup;
 
 use av_delivery::{
@@ -40,9 +41,11 @@ use motionwright_native::{
 };
 use motionwright_service::{
     AssetIntegrityPage, MltCleanupInventory, ModelRequestDraft, ModelRequestPreflight,
-    ProductionJobProjection, ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
+    ProductionJobProjection, ProjectCreationIntent, ProjectCreationOutcome, ProjectEvent,
+    StudioService, VoiceImportMetadata, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
+use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +61,9 @@ const SEMWRIGHT_VERSION: &str = "1.0.0";
 #[derive(Clone)]
 struct AppState {
     service: StudioService,
+    /// This non-nil identity and Store are fixed for this AppState's lifetime.
+    /// Creation grants bind the actual invoking window label in this session.
+    workspace_session: Uuid,
     effect_grants: EffectGrantRegistry,
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
@@ -74,7 +80,8 @@ struct NativeSdkInfo {
 
 #[derive(Debug, Serialize)]
 struct BootstrapResponse {
-    project: Project,
+    project: Option<Project>,
+    project_selection: BootstrapProjectSelection,
     native_sdk: NativeSdkInfo,
 }
 
@@ -515,16 +522,20 @@ struct BundleExportResponse {
 }
 
 #[tauri::command]
-fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
-    let project = state
-        .service
-        .projects(1)
-        .map_err(sanitized)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "No Motionwright project is available".to_string())?;
+fn bootstrap(
+    state: State<'_, AppState>,
+    request: Option<BootstrapRequest>,
+) -> Result<BootstrapResponse, String> {
+    // The saved UI selection is a read hint, never a grant or permission to
+    // create/replace a document. An unavailable id must not choose a fallback.
+    let (project, mut project_selection) =
+        project_library::bootstrap_project(&state.service, request.unwrap_or_default());
+    if let BootstrapProjectSelection::Unavailable { message, .. } = &mut project_selection {
+        *message = sanitized(&*message);
+    }
     Ok(BootstrapResponse {
         project,
+        project_selection,
         native_sdk: NativeSdkInfo {
             application: motionwright_native::APP_ID,
             pinned_revision: SEMWRIGHT_REVISION,
@@ -532,6 +543,61 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
             mode: "tauri",
         },
     })
+}
+
+#[tauri::command]
+fn list_projects(
+    state: State<'_, AppState>,
+    request: project_library::ListProjectsRequest,
+) -> Result<project_library::ProjectLibraryPage, String> {
+    project_library::list_projects(&state.service, request).map_err(sanitized)
+}
+
+#[tauri::command]
+fn open_project(
+    state: State<'_, AppState>,
+    request: project_library::OpenProjectRequest,
+) -> Result<Project, String> {
+    project_library::open_project(&state.service, request).map_err(sanitized)
+}
+
+#[tauri::command]
+fn issue_project_creation_grant(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    request: ProjectCreationIntent,
+) -> Result<EffectGrantReceipt, String> {
+    project_library::issue_creation_grant(
+        &state.effect_grants,
+        state.workspace_session,
+        window.label(),
+        &request,
+    )
+    .map_err(sanitized)
+}
+
+#[tauri::command]
+fn create_project(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    request: project_library::CreateProjectRequest,
+) -> Result<ProjectCreationOutcome, String> {
+    project_library::create_project(
+        &state.service,
+        &state.effect_grants,
+        state.workspace_session,
+        window.label(),
+        request,
+    )
+    .map_err(sanitized)
+}
+
+#[tauri::command]
+fn recover_project_creation(
+    state: State<'_, AppState>,
+    request: ProjectCreationIntent,
+) -> Result<Option<ProjectCreationOutcome>, String> {
+    project_library::recover_project_creation(&state.service, &request).map_err(sanitized)
 }
 
 fn checked_effect_scope(
@@ -552,6 +618,11 @@ fn issue_effect_grant(
     state: State<'_, AppState>,
     request: IssueEffectGrantRequest,
 ) -> Result<EffectGrantReceipt, String> {
+    if request.effect == EffectKind::ProjectCreate {
+        return Err(
+            "Use the dedicated project creation command with its exact retained intent.".into(),
+        );
+    }
     let scope = match (request.project_id, request.generation, request.revision) {
         (Some(project_id), Some(generation), Some(revision)) => {
             checked_effect_scope(&state, project_id, generation, revision)?
@@ -1108,9 +1179,17 @@ async fn read_original_native_job_status(
                 .map_err(|_| {
                     "Source-bound native job history could not be confirmed.".to_owned()
                 })?;
+            // A job_ref can recur under another provider or Project stamp.
+            // Select the original Motion Canvas row from this trusted snapshot
+            // before applying the existing native authority validator.
             let job = jobs
                 .iter()
-                .find(|job| job.job_ref == selected)
+                .find(|job| {
+                    job.job_ref == selected
+                        && job.provider == "driver:motion-canvas"
+                        && job.generation == generation
+                        && job.revision == revision
+                })
                 .ok_or_else(|| {
                     "No acknowledged native render job matches the selection.".to_owned()
                 })?;
@@ -2445,15 +2524,9 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
             let service = StudioService::open(data_dir.join("motionwright.sqlite3"))
                 .map_err(|error| format!("local project store unavailable: {error}"))?;
-            if service
-                .projects(1)
-                .map_err(|error| format!("project index unavailable: {error}"))?
-                .is_empty()
-            {
-                service
-                    .create_project("Untitled Motion Project")
-                    .map_err(|error| format!("initial project unavailable: {error}"))?;
-            }
+            // Register the existing store even when no project is selected or
+            // its latest document is unreadable. The library reads its index;
+            // opening or creating a project is a separate explicit operation.
 
             // Build the public Native SDK cooperation surface during application setup.
             // Driver Host runs the same surface through the standalone provider executable.
@@ -2462,6 +2535,7 @@ fn main() {
 
             app.manage(AppState {
                 service,
+                workspace_session: Uuid::now_v7(),
                 effect_grants: EffectGrantRegistry::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
@@ -2471,6 +2545,11 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            list_projects,
+            open_project,
+            issue_project_creation_grant,
+            create_project,
+            recover_project_creation,
             issue_effect_grant,
             project_history,
             project_history_recent,

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { PaidGenerationJob, PaidGenerationSpec } from "../src/paidGenerationTypes";
 
@@ -20,7 +20,12 @@ async function installSyntheticDesktop(page: Page, delayed = false) {
     runtime.__TAURI_INTERNALS__={invoke:async(name,args)=>{
       calls.push(name);
       const request=args?.request as Record<string,unknown> | undefined;
-      if(name==="bootstrap")return {...boot,project:structuredClone(project),native_sdk:{...boot.native_sdk,mode:"tauri"}};
+      if (name === "bootstrap") {
+        const syntheticResponse = {...boot,project:structuredClone(project),native_sdk:{...boot.native_sdk,mode:"tauri"}};
+        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if(name==="native_paid_generation_journal")return structuredClone(journal());
       if(name==="native_paid_generation_preflight") {
         const spec={...(request!.specification as PaidGenerationSpec),logical_idempotency_sha256:"d".repeat(64)};
