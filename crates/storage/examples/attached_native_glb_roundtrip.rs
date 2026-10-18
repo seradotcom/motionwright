@@ -54,7 +54,7 @@ fn require(condition: bool, message: &str) -> Result<()> {
 fn synthetic_glb() -> Vec<u8> {
     fn chunk(output: &mut Vec<u8>, kind: &[u8; 4], bytes: &[u8], padding: u8) {
         let mut aligned = bytes.to_vec();
-        while aligned.len() % 4 != 0 {
+        while !aligned.len().is_multiple_of(4) {
             aligned.push(padding);
         }
         output.extend_from_slice(&(aligned.len() as u32).to_le_bytes());
