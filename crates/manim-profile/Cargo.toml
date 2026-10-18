@@ -10,3 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+semwright-media-time.workspace = true
+sha2.workspace = true
+hex.workspace = true
+zip = { version = "=9.0.4", default-features = false }
