@@ -171,7 +171,34 @@ impl RuntimeConnectionRegistry {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
                 return Err("Previous Semwright connection reference is not a regular file".into());
             }
-            Ok(_) => {}
+            Ok(metadata) => {
+                // A regular file on the expected pathname can still belong
+                // to another project. Preserve explicit foreign ownership
+                // rather than silently replacing its original bytes.
+                if metadata.len() > MAX_CONFIG_BYTES {
+                    return Err(
+                        "Previous Semwright connection reference exceeds storage budget".into(),
+                    );
+                }
+                let existing = fs::read(&destination)
+                    .map_err(|_| "Previous Semwright connection reference is unreadable")?;
+                if existing.len() as u64 > MAX_CONFIG_BYTES {
+                    return Err(
+                        "Previous Semwright connection reference exceeds storage budget".into(),
+                    );
+                }
+                // An unreadable/malformed old record may be repaired by an
+                // explicit already-verified owner selection, preserving the
+                // prior recovery behavior. A *valid* record with foreign
+                // scope or a future schema must not be overwritten.
+                if let Ok(saved) = serde_json::from_slice::<SavedConnectionReference>(&existing) {
+                    if saved.project_id != project_id || saved.schema_version != REGISTRY_SCHEMA {
+                        return Err(
+                            "Previous Semwright connection reference has foreign scope".into()
+                        );
+                    }
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => {
                 return Err("Previous Semwright connection reference cannot be inspected".into());
@@ -465,7 +492,9 @@ mod tests {
         let generation = Uuid::now_v7();
         let existing = tmp.path().join("original-owner.json");
         let requested = tmp.path().join("new-owner.json");
-        registry.remember_verified(project, generation, &existing).unwrap();
+        registry
+            .remember_verified(project, generation, &existing)
+            .unwrap();
         let destination = registry.destination(project);
 
         // The physical filename belongs to the requested project, but the
@@ -476,7 +505,11 @@ mod tests {
         let foreign_bytes = serde_json::to_vec(&alien).unwrap();
         fs::write(&destination, &foreign_bytes).unwrap();
 
-        assert!(registry.remember_verified(project, generation, &requested).is_err());
+        assert!(
+            registry
+                .remember_verified(project, generation, &requested)
+                .is_err()
+        );
         assert_eq!(fs::read(&destination).unwrap(), foreign_bytes);
     }
 
