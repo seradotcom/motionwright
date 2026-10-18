@@ -15,6 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import runtime_first_use_audit as audit  # noqa: E402
+from test_runtime_first_use_atomic_receipt import AtomicSupportReceiptTests  # noqa: E402,F401
 
 
 class FirstUseAuditTests(unittest.TestCase):
