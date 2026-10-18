@@ -279,4 +279,105 @@ mod production {
         assert!(MAX_SOURCE_ENTRY_BYTES_V2 < 32 * 180 * 1024);
         assert!(plan.sample(0).is_err());
     }
+
+    #[test]
+    fn trusted_camera_compiler_has_canonical_bytes_hash_and_no_user_code_interpolation() {
+        use camera_source::{CAMERA_COMPILER_V1, compile_camera_program_source_only};
+        use sha2::{Digest, Sha256};
+
+        let source = finite_fixture();
+        let original = compile_camera_program_source_only(&source).unwrap();
+        let replay = compile_camera_program_source_only(&source).unwrap();
+        assert_eq!(
+            original, replay,
+            "exact source must compile deterministically"
+        );
+        assert_eq!(original.compiler_id, CAMERA_COMPILER_V1);
+        assert!(original.plan_document.ends_with(b"\n"));
+        assert_eq!(
+            serde_json::from_slice::<ManimCameraScenePlanV1>(&original.plan_document).unwrap(),
+            source
+        );
+        assert_eq!(
+            original.plan_sha256,
+            hex::encode(Sha256::digest(&original.plan_document))
+        );
+        assert_eq!(
+            original.source_sha256,
+            hex::encode(Sha256::digest(original.python_source.as_bytes()))
+        );
+        assert!(
+            original.python_source.len() <= MAX_SOURCE_ENTRY_BYTES_V2
+                && !original.native_execution_performed
+                && !original.runtime_sample_pts_verified
+        );
+        assert!(
+            original
+                .python_source
+                .contains("class MotionwrightScene(MovingCameraScene):")
+        );
+        assert!(original.python_source.contains("UpdateFromAlphaFunc"));
+        assert!(original.python_source.contains("run_time=seconds"));
+        assert!(original.python_source.contains("self.camera.frame.move_to"));
+        assert!(
+            original
+                .python_source
+                .contains("native_grants_verified_by_this_script")
+        );
+        assert!(
+            !original.python_source.contains("subprocess")
+                && !original.python_source.contains("os.system(")
+        );
+
+        // Malicious display names are only JSON-string values. The only
+        // variation in the emitted program is the quoted _DATA literal;
+        // absolutely no authored bytes may become executable statements.
+        let mut adversarial = source.clone();
+        adversarial.nodes[0].display_name = "'); __import__('os').system('evil'); #".into();
+        let alternate = compile_camera_program_source_only(&adversarial).unwrap();
+        let fixed_program = "from manim import Circle, Rectangle, MovingCameraScene";
+        assert_eq!(
+            original.python_source.split_once(fixed_program).unwrap().1,
+            alternate.python_source.split_once(fixed_program).unwrap().1,
+            "the native program must be static across all authored source values"
+        );
+        assert_ne!(original.plan_sha256, alternate.plan_sha256);
+        assert_ne!(original.source_sha256, alternate.source_sha256);
+
+        // A canonical camera edit has exactly one authored endpoint and one
+        // derived saved terminal camera. The trusted source and its closure
+        // must necessarily change as well.
+        let mut edited = source;
+        edited.reframe.end_center_x = 1012.0;
+        edited.camera.center_x = 1012.0;
+        edited.binding.revision += 1;
+        let next = compile_camera_program_source_only(&edited).unwrap();
+        assert_ne!(original.plan_sha256, next.plan_sha256);
+        assert_ne!(original.source_sha256, next.source_sha256);
+        assert_eq!(
+            original.python_source.split_once(fixed_program).unwrap().1,
+            next.python_source.split_once(fixed_program).unwrap().1
+        );
+    }
+
+    #[test]
+    fn source_compiler_rejects_foreign_clock_camera_and_transport_budget() {
+        use camera_source::compile_camera_program_source_only;
+        let valid = finite_fixture();
+        let mut bad = valid.clone();
+        bad.reframe.component_version = 1;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = valid.clone();
+        bad.camera.center_x = 12_000.0;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = valid.clone();
+        bad.clock.frame_count += 1;
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = valid.clone();
+        bad.nodes[0].fill_hex = "'; raise Exception(); #".into();
+        assert!(compile_camera_program_source_only(&bad).is_err());
+        let mut bad = valid;
+        bad.nodes[0].display_name = "X".repeat(161);
+        assert!(compile_camera_program_source_only(&bad).is_err());
+    }
 }

@@ -236,20 +236,34 @@ def measured_camera_phase_from_pixels(pixels: bytes, original_oracle: dict,
         lastx=min(WIDTH,int(math.ceil(px+w+5)))
         firsty=max(0,int(math.floor(py-5)))
         lasty=min(HEIGHT,int(math.ceil(py+h+5)))
+        color=bytes.fromhex(source["fill"][1:])
+        require(len(color)==3 and
+                ((shape=="rectangle" and color[0]>0) or
+                 (shape=="circle" and color[1]>0 and color[2]>0)),
+                "camera_phase_admitted_source_signal")
         area=sx=sy=0.0
         for y in range(firsty,lasty):
             for x in range(firstx,lastx):
                 offset=(y*WIDTH+x)*3
                 red,green,blue=pixels[offset:offset+3]
+                # H.264 4:2:0 spreads antialiased edge colors across pixels.
+                # A hard color-dominance cutoff systematically shifts their
+                # centroid. Instead infer bounded alpha coverage from source
+                # channels. The 2-code black-level floor only rejects codec
+                # background noise; it does not change the <0.2-frame gate.
                 if shape=="rectangle":
-                    weight=max(0,red-max(green,blue)-40)
+                    weight=min(1.0,max(0.0,(red-2)/color[0]))
                 else:
-                    weight=max(0,min(green,blue)-red-40)
+                    weight=min(1.0,max(0.0,
+                        min(green/color[1],blue/color[2])-2/255))
                 if weight:
                     area+=weight
                     sx+=(x+.5)*weight
                     sy+=(y+.5)*weight
-        require(area>10_000,"camera_phase_shape_signal_incomplete")
+        # A plausible centroid still requires almost the entire declared
+        # opaque shape's coverage, not one bright pixel or an empty frame.
+        target_area=w*h*(math.pi/4 if shape=="circle" else 1.0)
+        require(area>=target_area*0.6,"camera_phase_shape_signal_incomplete")
         observed_x=sx/area
         observed_y=sy/area
         center=prediction["output_center"]
