@@ -1,7 +1,7 @@
 use motionwright_storage::ProductionReceipt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,7 +234,8 @@ pub(crate) fn derive_production_jobs_all(
     // provider/stamp/reference gets one original; a second start makes that
     // lineage ambiguous. Old 256-row UI windows are not authority.
     type JobScope = (String, String, Uuid, u64);
-    let mut acknowledged_starts: BTreeMap<JobScope, Vec<Option<u64>>> = BTreeMap::new();
+    let mut acknowledged_starts: BTreeMap<JobScope, Vec<(Option<u64>, &ProductionReceipt)>> =
+        BTreeMap::new();
     for receipt in &ordered {
         let Some((provider, RenderCommand::Start)) = classify(&receipt.command) else {
             continue;
@@ -274,10 +275,11 @@ pub(crate) fn derive_production_jobs_all(
                 receipt.revision,
             ))
             .or_default()
-            .push(provider_generation(wrapper));
+            .push((provider_generation(wrapper), receipt));
     }
 
     let mut jobs: BTreeMap<(String, Uuid, u64, String), ProductionJobProjection> = BTreeMap::new();
+    let mut observed_starts = BTreeSet::new();
     for receipt in &ordered {
         let Some((provider, kind)) = classify(&receipt.command) else {
             continue;
@@ -302,6 +304,10 @@ pub(crate) fn derive_production_jobs_all(
             receipt.revision,
         ));
         let ambiguous_original = original.is_none_or(|roots| roots.len() != 1);
+        let original_start = original
+            .filter(|roots| roots.len() == 1)
+            .and_then(|roots| roots.first())
+            .map(|(_, start)| *start);
         let foreign_returned_job = receipt.stage == "completed"
             && matches!(
                 kind,
@@ -323,7 +329,7 @@ pub(crate) fn derive_production_jobs_all(
         let provider_generation_drift = receipt.stage == "completed"
             && original
                 .and_then(|roots| roots.first())
-                .and_then(|generation| *generation)
+                .and_then(|(generation, _)| *generation)
                 .is_some_and(|expected| wrapper.and_then(provider_generation) != Some(expected));
         let unbound_observation = guarded_provider
             && (ambiguous_original
@@ -347,6 +353,17 @@ pub(crate) fn derive_production_jobs_all(
             })
         };
 
+        // A status/result can be persisted before the original start ACK.
+        // Its request must never become the root of the admitted mutation.
+        let root_receipt = original_start.unwrap_or(receipt);
+        let late_start_ack = matches!(kind, RenderCommand::Start)
+            && original_start.is_some_and(|start| observed_starts.contains(&start.id));
+        if !matches!(kind, RenderCommand::Start)
+            && let Some(start) = original_start
+        {
+            observed_starts.insert(start.id);
+        }
+
         let entry = jobs
             .entry((
                 provider.to_owned(),
@@ -359,14 +376,14 @@ pub(crate) fn derive_production_jobs_all(
                 ProductionJobProjection {
                     job_ref: job_ref.clone(),
                     provider: provider.to_owned(),
-                    root_request_id: receipt.request_id.clone(),
+                    root_request_id: root_receipt.request_id.clone(),
                     generation: receipt.generation,
                     revision: receipt.revision,
                     state: initial_state,
                     cancellation_requested,
                     applicability: ProductionJobApplicability::Current,
                     last_command: receipt.command.clone(),
-                    created_at: receipt.created_at.clone(),
+                    created_at: root_receipt.created_at.clone(),
                     last_observed_at: receipt.created_at.clone(),
                     local_observations: 0,
                     provider_generation: None,
@@ -377,12 +394,6 @@ pub(crate) fn derive_production_jobs_all(
                 }
             });
 
-        if matches!(kind, RenderCommand::Start) && entry.local_observations == 0 {
-            entry.root_request_id = receipt.request_id.clone();
-            entry.generation = receipt.generation;
-            entry.revision = receipt.revision;
-            entry.created_at = receipt.created_at.clone();
-        }
         entry.last_command = receipt.command.clone();
         entry.last_observed_at = receipt.created_at.clone();
         entry.local_observations = entry.local_observations.saturating_add(1);
@@ -409,15 +420,22 @@ pub(crate) fn derive_production_jobs_all(
                     } else {
                         state
                     };
-                    entry.state =
-                        apply_observed_state(entry.state, state, entry.cancellation_requested);
+                    // A delayed admission ACK is not a fresh status read.
+                    // Valid terminal evidence may close an active/unknown job.
+                    if !late_start_ack || state.definitive_terminal() {
+                        entry.state =
+                            apply_observed_state(entry.state, state, entry.cancellation_requested);
+                    }
                 }
                 if let Some(wrapper) = wrapper {
                     entry.provider_generation =
                         provider_generation(wrapper).or(entry.provider_generation);
                 }
                 if let Some(data) = data {
-                    entry.progress = progress_from_data(data).or_else(|| entry.progress.clone());
+                    if !late_start_ack || entry.progress.is_none() {
+                        entry.progress =
+                            progress_from_data(data).or_else(|| entry.progress.clone());
+                    }
                     entry.artifact_available |= artifact_available(data);
                 }
                 if matches!(kind, RenderCommand::Result) {
