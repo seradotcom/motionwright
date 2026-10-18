@@ -37,6 +37,9 @@
 !ifndef NSIS_UNICODE
 !error "Motionwright ownership guard requires Unicode NSIS."
 !endif
+!if ${NSIS_PTR_SIZE} != 4
+!error "The fixed FILE_RENAME_INFO header requires 32-bit NSIS System."
+!endif
 !define MWOWN_MATCHED 0
 !define MWOWN_DELETE_MARKED 1
 !define MWOWN_MISSING 2
@@ -52,6 +55,7 @@
 !define MWOWN_MAX_FILE_BYTES 2147483647
 
 Var MWOWN_LastReason
+Var MWOWN_LastWin32Error
 Var MWOWN_Root
 Var MWOWN_Relative
 Var MWOWN_ExpectedSha
@@ -179,6 +183,7 @@ Function ${Prefix}MWOWN_Guard
 mwown_error_saved:
   StrCpy $MWOWN_Result ${MWOWN_PRESERVED}
   StrCpy $MWOWN_LastReason "invalid_arguments"
+  StrCpy $MWOWN_LastWin32Error 0
   StrCpy $MWOWN_RootHandle 0
   StrCpy $MWOWN_FileHandle 0
   StrCpy $MWOWN_Algorithm 0
@@ -436,6 +441,7 @@ mwown_parent_char:
     System::Call 'kernel32::GetFileAttributesW(w r2) i.r0 ?e'
     Pop $1
     ${If} $0 = -1
+      StrCpy $MWOWN_LastWin32Error $1
       ${If} $1 = 2
       ${OrIf} $1 = 3
         StrCpy $MWOWN_Result ${MWOWN_MISSING}
@@ -473,6 +479,7 @@ mwown_parent_char:
   Pop $1
   ${If} $0 = 0
   ${OrIf} $0 = -1
+    StrCpy $MWOWN_LastWin32Error $1
     ${If} $1 = 2
     ${OrIf} $1 = 3
       StrCpy $MWOWN_Result ${MWOWN_MISSING}
@@ -672,6 +679,7 @@ mwown_hex_byte:
     System::Call 'kernel32::SetFileInformationByHandle(p $MWOWN_FileHandle, i 3, p $MWOWN_RenameInfo, i $MWOWN_PublishBufferBytes) i.r0 ?e'
     Pop $1
     ${If} $0 = 0
+      StrCpy $MWOWN_LastWin32Error $1
       StrCpy $MWOWN_LastReason "publication_rename_failed"
       Goto mwown_exit
     ${EndIf}

@@ -148,3 +148,12 @@ No execution result is asserted by this document. Admission must use the actual 
 - [NSIS GetFullPathName](https://nsis.sourceforge.io/Reference/GetFullPathName): explicit long-path conversion is distinct from full-path resolution.
 - [NSIS System plug-in](https://nsis.sourceforge.io/Docs/System/System.html): Unicode structure allocation, pointer-size layout and target buffer passed to the real Win32 API.
 - [Windows SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle): disposition through an open handle.
+
+
+## Disposable-runner known failure classification
+
+A silent NSIS installer reports only its native exit code by default. That cannot distinguish a failed preflight from an interrupted staged write or a rejected same-handle publication. The original clean-update acceptance run 39075887666 ended with known exit code 2; its preserved artifact contained source and project hashes but not the specific `MWOWN_LastReason`. This is a known *unresolved* installed defect, not permission to replay its original installer attempt.
+
+For a **new build on a disposable Windows runner only**, the installer may be compiled with `/DMWINST_CI_DIAGNOSTICS`. That optional compile-time flag emits a fixed-name file `$TEMP\motionwright-nsis-failure-v1.log` when `MWINST_FAIL` executes. The record contains only the closed stage identifier, the guard's static reason and a numeric Windows error captured from a failed native operation, with no absolute paths, tokens or machine identity. A6 must retain the original result, output files, stage bytes and both registry views before collecting the diagnostic. Installed production packages compiled without the flag perform no diagnostic file I/O.
+
+The test-only error record is not evidence of file publication or rollback: actual FileRenameInfo success, uncertain outcome, handle close and prior-file removal remain separate. The source now refuses a non-32-bit NSIS System plug-in at compile time because its FILE_RENAME_INFO structure uses the reviewed 32-bit header layout. A compiled 32-bit helper and a new complete installer/update execution are still required for acceptance. Do not change `PUBLISH_UNCERTAIN` into a known-failed disposition based on the presence or absence of this diagnostic file.
