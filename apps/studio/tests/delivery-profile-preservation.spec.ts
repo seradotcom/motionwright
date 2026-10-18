@@ -492,3 +492,168 @@ test("a known quota warning still permits one explicit real Save without changin
     });
   }
 });
+
+
+test("custom cut stays empty until an explicit full-sequence choice across reload and real revisions", async ({ page, profileCase: c }) => {
+  await page.goto("/"); await delivery(page, c.a);
+  const count = profileRequests(c.service, c.a.id).length;
+  const cut = page.getByRole("region", { name: "Variant content", exact: true });
+  const include = cut.getByRole("checkbox", { name: "Include", exact: true });
+  expect(c.project.scenes.length).toBeGreaterThan(1);
+  await button(page, "Customize cut").click();
+  await expect(include).toHaveCount(c.project.scenes.length);
+  for (let index = 0; index < c.project.scenes.length; index++) await include.nth(index).uncheck();
+  const verifyEmpty = async () => {
+    await expect(button(page, "Use full sequence")).toBeVisible();
+    for (let index = 0; index < c.project.scenes.length; index++) {
+      await expect(include.nth(index)).not.toBeChecked();
+      await expect(include.nth(index)).toBeEnabled();
+    }
+    await expect(cut.getByRole("status")).toContainText("Choose at least one scene");
+    await expect(button(page, "Save profile")).toBeDisabled();
+    await expect(button(page, "Check Film projection")).toBeDisabled();
+  };
+  await verifyEmpty();
+  await input(page, "Width").fill("1e");
+  await selectProfile(page, c.b); await selectProfile(page, c.a);
+  await verifyEmpty(); await expect(input(page, "Width")).toHaveValue("1e");
+  await page.reload(); await delivery(page, c.a); await verifyEmpty();
+  await expect(input(page, "Width")).toHaveValue("1e");
+  const peer = await c.service.peer(); c.peers.push(peer);
+  const renamed = await peer.apply(await peer.project(c.project.id), { type: "rename_project", title: "Unrelated revision with empty local cut" });
+  await reopenInUi(page, renamed); await delivery(page, c.a); await verifyEmpty();
+  expect(profileRequests(c.service, c.a.id)).toHaveLength(count);
+  expect((await c.service.project(c.project.id)).deliverables.find(item => item.id === c.a.id)).toEqual(c.a);
+  c.observations.emptyCutCopies = await recoveryCopies(page);
+  await cut.screenshot({ path: test.info().outputPath("empty-custom-cut.png") });
+  await button(page, "Use full sequence").focus();
+  await page.keyboard.press("Space");
+  await expect(button(page, "Customize cut")).toBeFocused();
+  for (let index = 0; index < c.project.scenes.length; index++) {
+    await expect(include.nth(index)).toBeChecked(); await expect(include.nth(index)).toBeDisabled();
+  }
+  await expect(input(page, "Width")).toHaveValue("1e");
+  await input(page, "Width").fill(String(c.a.width));
+  await expect(button(page, "Save profile")).toBeDisabled();
+  await button(page, "Customize cut").click();
+  for (let index = 1; index < c.project.scenes.length; index++) await include.nth(index).uncheck();
+  await button(page, "Save profile").click(); await revision(page, renamed.revision + 1);
+  const saved = await c.service.project(c.project.id);
+  expect(saved.deliverables.find(item => item.id === c.a.id)?.included_scene_ids).toEqual([c.project.scenes[0].id]);
+  expect(saved.deliverables.find(item => item.id === c.b.id)).toEqual(c.b);
+  expect(profileRequests(c.service, c.a.id)).toHaveLength(count + 1);
+  expect(nativeRequests(c.service)).toEqual([]);
+  await c.service.close(); await c.service.start();
+  expect(await c.service.project(saved.id)).toEqual(saved);
+  await page.reload(); await delivery(page, c.a);
+  await expect(include.nth(0)).toBeChecked();
+  for (let index = 1; index < c.project.scenes.length; index++) await expect(include.nth(index)).not.toBeChecked();
+  c.observations.finalOracle = await c.service.observeStoredProject(saved);
+  c.observations.behaviorAssertionsCompleted = true;
+});
+
+
+test("a custom cut typed empty after a real save stays empty through ACK, reload and a peer full-sequence conflict", async ({ page, profileCase: c }) => {
+  await page.goto("/"); await delivery(page, c.a);
+  const count = profileRequests(c.service, c.a.id).length;
+  const cut = page.getByRole("region", { name: "Variant content", exact: true });
+  const include = cut.getByRole("checkbox", { name: "Include", exact: true });
+  await button(page, "Customize cut").click();
+  for (let index = 1; index < c.project.scenes.length; index++) await include.nth(index).uncheck();
+  const hold = holdProfile(c.service, "after", c.a.id); c.gates.push(hold);
+  await button(page, "Save profile").click();
+  const sent = await hold.entered, outcome = await hold.observed;
+  if (!("project" in outcome)) throw outcome.error;
+  expect(outcome.project.deliverables.find(item => item.id === c.a.id)?.included_scene_ids).toEqual([c.project.scenes[0].id]);
+  await include.nth(0).uncheck();
+  await expect(cut.getByRole("status")).toContainText("Choose at least one scene");
+  hold.release(); await revision(page, outcome.project.revision);
+  await expect(button(page, "Save profile")).toBeDisabled();
+  for (let index = 0; index < c.project.scenes.length; index++) await expect(include.nth(index)).not.toBeChecked();
+  await page.reload(); await delivery(page, c.a);
+  await expect(button(page, "Use full sequence")).toBeVisible();
+  await expect(cut.getByRole("status")).toContainText("Choose at least one scene");
+  const peer = await c.service.peer(); c.peers.push(peer);
+  const baseProject = await peer.project(c.project.id);
+  const peerProfile = baseProject.deliverables.find(item => item.id === c.a.id)!;
+  const changed = await peer.apply(baseProject, { type: "upsert_deliverable", profile: { ...peerProfile, included_scene_ids: [] } });
+  await reopenInUi(page, changed); await delivery(page, c.a);
+  const modeReview = review(page).getByRole("group", { name: "cut mode pending input", exact: true });
+  await expect(modeReview).toContainText("saved value changed");
+  await expect(modeReview).toContainText("custom");
+  await expect(button(page, "Save profile")).toBeDisabled();
+  await modeReview.getByRole("button", { name: "Keep my input cut mode", exact: true }).click();
+  await expect(cut.getByRole("status")).toContainText("Choose at least one scene");
+  await expect(button(page, "Save profile")).toBeDisabled();
+  await include.nth(1).check();
+  await button(page, "Save profile").click(); await revision(page, changed.revision + 1);
+  const saved = await c.service.project(c.project.id);
+  expect(saved.deliverables.find(item => item.id === c.a.id)?.included_scene_ids).toEqual([c.project.scenes[1].id]);
+  expect(saved.deliverables.find(item => item.id === c.b.id)).toEqual(c.b);
+  expect(profileRequests(c.service, c.a.id)).toHaveLength(count + 2);
+  expect(nativeRequests(c.service)).toEqual([]);
+  await c.service.close(); await c.service.start();
+  expect(await c.service.project(saved.id)).toEqual(saved);
+  c.observations.originalSent = sent; c.observations.originalObserved = outcome.project;
+  c.observations.peerFullSequence = changed;
+  c.observations.finalOracle = await c.service.observeStoredProject(saved);
+  c.observations.behaviorAssertionsCompleted = true;
+});
+
+test("a locally empty cut does not adopt a peer custom list and reviews repeated saved cuts without losing other raw input", async ({ page, profileCase: c }) => {
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await page.goto("/"); await delivery(page, c.a);
+  const count = profileRequests(c.service, c.a.id).length;
+  const cut = page.getByRole("region", { name: "Variant content", exact: true });
+  const include = cut.getByRole("checkbox", { name: "Include", exact: true });
+  await button(page, "Customize cut").click();
+  for (let index = 0; index < c.project.scenes.length; index++) await include.nth(index).uncheck();
+  await input(page, "Cut label").fill("  My independent decision  ");
+  const peer = await c.service.peer(); c.peers.push(peer);
+  const peerProject = await peer.project(c.project.id);
+  const first = await peer.apply(peerProject, { type: "upsert_deliverable",
+    profile: { ...c.a, included_scene_ids: [c.project.scenes[0].id] } });
+  await reopenInUi(page, first); await delivery(page, c.a);
+  const listReview = review(page).getByRole("group", { name: "included scene ids pending input", exact: true });
+  await expect(listReview).toContainText("saved value changed");
+  for (let index = 0; index < c.project.scenes.length; index++) await expect(include.nth(index)).not.toBeChecked();
+  await expect(cut.getByRole("status")).toContainText("Choose at least one scene");
+  await expect(button(page, "Save profile")).toBeDisabled();
+  await expect(button(page, "Check Film projection")).toBeDisabled();
+  await page.reload(); await delivery(page, c.a);
+  await expect(listReview).toContainText("saved value changed");
+  await listReview.getByRole("button", { name: "Keep my input included scene ids", exact: true }).click();
+  await expect(cut.getByRole("status")).toContainText("Choose at least one scene");
+  const second = await peer.apply(await peer.project(c.project.id), { type: "upsert_deliverable",
+    profile: { ...c.a, included_scene_ids: [c.project.scenes[1].id] } });
+  await reopenInUi(page, second); await delivery(page, c.a);
+  await expect(listReview).toContainText("saved value changed");
+  await expect(input(page, "Cut label")).toHaveValue("  My independent decision  ");
+  c.observations.repeatedCutCopies = await recoveryCopies(page);
+  // Global text-input sizing must not separate a native checkbox from its label
+  // when the profile workbench switches to the 1024px composition.
+  for (const checkbox of await cut.getByRole("checkbox").all()) {
+    const bounds = await checkbox.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.width).toBeLessThanOrEqual(24);
+    expect(bounds!.height).toBeLessThanOrEqual(24);
+  }
+  await cut.screenshot({ path: test.info().outputPath("empty-cut-at-1024px.png") });
+  await listReview.getByRole("button", { name: "Keep saved included scene ids", exact: true }).click();
+  await expect(button(page, "Use full sequence")).toBeVisible();
+  await expect(include.nth(0)).not.toBeChecked(); await expect(include.nth(1)).toBeChecked();
+  await expect(input(page, "Cut label")).toHaveValue("  My independent decision  ");
+  await button(page, "Save profile").click(); await revision(page, second.revision + 1);
+  const saved = await c.service.project(c.project.id);
+  expect(saved.deliverables.find(item => item.id === c.a.id)).toEqual({
+    ...c.a, included_scene_ids: [c.project.scenes[1].id], cut_label: "  My independent decision  ",
+  });
+  expect(saved.deliverables.find(item => item.id === c.b.id)).toEqual(c.b);
+  expect(profileRequests(c.service, c.a.id)).toHaveLength(count + 1);
+  expect(nativeRequests(c.service)).toEqual([]);
+  await c.service.close(); await c.service.start();
+  expect(await c.service.project(saved.id)).toEqual(saved);
+  c.observations.peerCuts = [first, second];
+  c.observations.finalOracle = await c.service.observeStoredProject(saved);
+  c.observations.behaviorAssertionsCompleted = true;
+});

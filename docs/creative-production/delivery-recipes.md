@@ -83,3 +83,9 @@ npm run test:e2e -- tests/delivery-recipe.spec.ts --workers=1
 The browser cases exercise the actual StudioService, grants, SQLite journal and CAS through explicitly identified test transport. They cover two profiles and both groups, multiple revisions, late replies, scope changes, conflicts, raw invalid input, recovery failures, locks/revoked grants and export/import into an independent store. Stores are closed completely and copied without filtering SQLite sidecars. Their full Project and journal observations accompany the sealed snapshots for independent reopen comparison.
 
 Existing Film and native-audio UI contract fixtures also save a canonical recipe before requesting preflight. Those fixtures use explicitly simulated native responses and certify their UI contracts only. They do not substitute for the real-service persistence tests, a Tauri installation test, native renders or required human evaluation.
+
+## Narrative cut editing
+
+The full sequence and a custom cut are explicit choices in the output profile editor. A custom cut can temporarily contain no scenes while it is being edited. The editor preserves that empty choice across revisions, profile switches and local recovery, and asks the author to include a scene or choose **Use full sequence**. An empty custom cut cannot be saved or used for Film, native production or export. Its local mode is not added to the Project schema: the canonical empty scene list continues to represent the full sequence.
+
+The local mode and scene list are reviewed together when another author changes the cut. Keeping the saved cut resolves both parts without discarding unrelated metadata input. Saving a valid custom cut retains the approved Project scene order. A delayed save reply confirms only its submitted selection; a later empty selection remains available for review.

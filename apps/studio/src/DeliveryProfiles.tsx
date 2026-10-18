@@ -294,6 +294,12 @@ export default function DeliveryProfiles({
   const selected = project.deliverables.find((profile) => profile.id === selectedId) ?? project.deliverables[0] ?? null;
   const profileDraft = useProfileMetadataDraft(project, selected?.id ?? "", commit, currentProjectState);
   const draft = profileDraft.profile;
+  const customCut = profileDraft.values.cut_mode === "custom";
+  const emptyCustomCut = customCut && draft?.included_scene_ids.length === 0;
+  const setCut = (mode: "full" | "custom", ids: string[]) => {
+    noteNativeInput();
+    profileDraft.setFields({ included_scene_ids: JSON.stringify(ids), cut_mode: mode });
+  };
   const setDraft = (value: DeliverableProfile) => {
     noteNativeInput();
     profileDraft.setPreview(value);
@@ -366,7 +372,7 @@ export default function DeliveryProfiles({
 
   const textNodes = useMemo(() => {
     const selectedSceneIds = draft?.included_scene_ids ?? [];
-    const included = selectedSceneIds.length > 0 ? new Set(selectedSceneIds) : null;
+    const included = customCut ? new Set(selectedSceneIds) : null;
     return project.scenes
       .filter((scene) => !included || included.has(scene.id))
       .flatMap((scene) =>
@@ -374,7 +380,7 @@ export default function DeliveryProfiles({
           .filter((node) => node.kind === "text")
           .map((node) => ({ scene, node })),
       );
-  }, [draft?.included_scene_ids, project.scenes]);
+  }, [draft?.included_scene_ids, project.scenes, customCut]);
 
   const profileTranscript = useMemo(
     () => draft?.voice_track_id
@@ -395,7 +401,7 @@ export default function DeliveryProfiles({
     : null;
   const localizedVariant = Boolean(draft && parentProfile && draft.language !== parentProfile.language);
   const dirty = profileDraft.dirty;
-  const profileDraftBlocked = dirty || profileDraft.awaiting || profileDraft.pending
+  const profileDraftBlocked = dirty || emptyCustomCut || profileDraft.awaiting || profileDraft.pending
     || profileDraft.conflicts.length > 0 || profileDraft.recoveryBlocked || profileDraft.sourceBehind;
   const captionReady = Boolean(
     draft?.captions &&
@@ -1080,42 +1086,42 @@ export default function DeliveryProfiles({
                 <button
                   type="button"
                   className="button"
-                  onClick={() => setDraft({
-                    ...draft,
-                    included_scene_ids: draft.included_scene_ids.length > 0 ? [] : project.scenes.map((scene) => scene.id),
-                  })}
+                  onClick={() => setCut(customCut ? "full" : "custom", customCut ? [] : project.scenes.map(scene => scene.id))}
                 >
-                  {draft.included_scene_ids.length > 0 ? "Use full sequence" : "Customize cut"}
+                  {customCut ? "Use full sequence" : "Customize cut"}
                 </button>
               </header>
               <div className="variant-scene-ledger">
                 {project.scenes.map((scene) => {
-                  const customCut = draft.included_scene_ids.length > 0;
                   const included = !customCut || draft.included_scene_ids.includes(scene.id);
                   const protectedScene = draft.protected_scene_ids.includes(scene.id);
                   return (
-                    <div className="variant-scene-row" key={scene.id}>
-                      <div>
+                    <div className="variant-scene-row" key={scene.id}
+                      style={{ display: "flex", flexWrap: "wrap", columnGap: 20, rowGap: 8 }}>
+                      <div style={{ flex: "1 1 260px" }}>
                         <strong>{scene.name}</strong>
                         <span>{scene.objective}</span>
                       </div>
-                      <label className="caption-toggle">
+                      <div className="caption-toggle-group" style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+                      <label className="caption-toggle" style={{ minHeight: 32 }}>
                         <input
                           type="checkbox"
+                          style={{ width: 16, height: 16, minHeight: 16, margin: 0, flexShrink: 0 }}
                           checked={included}
                           disabled={!customCut}
                           onChange={(event) => {
                             const ids = event.target.checked
                               ? project.scenes.filter(item => draft.included_scene_ids.includes(item.id) || item.id === scene.id).map(item => item.id)
                               : draft.included_scene_ids.filter((id) => id !== scene.id);
-                            setDraft({ ...draft, included_scene_ids: ids });
+                            setCut("custom", ids);
                           }}
                         />
                         Include
                       </label>
-                      <label className="caption-toggle">
+                      <label className="caption-toggle" style={{ minHeight: 32 }}>
                         <input
                           type="checkbox"
+                          style={{ width: 16, height: 16, minHeight: 16, margin: 0, flexShrink: 0 }}
                           checked={protectedScene}
                           onChange={(event) => {
                             const ids = event.target.checked
@@ -1126,17 +1132,23 @@ export default function DeliveryProfiles({
                         />
                         Protect
                       </label>
+                      </div>
                     </div>
                   );
                 })}
               </div>
-              {draft.included_scene_ids.length > 0 && draft.protected_scene_ids.some((id) => !draft.included_scene_ids.includes(id)) && (
+              {emptyCustomCut && <p className="delivery-truth-note warning" role="status">
+                Choose at least one scene for the custom cut, or choose Use full sequence explicitly. Your empty selection is retained; saving and production remain blocked.
+              </p>}
+              {customCut && draft.protected_scene_ids.some((id) => !draft.included_scene_ids.includes(id)) && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> A protected scene is outside this cut. Saving will remain blocked until it is included.</div>
               )}
             </section>
 
-            <VariantContinuityReview project={project} profile={draft} saved={selected} />
-            <DeliveryVariantImpactReview project={project} draft={draft} saved={selected} />
+            {!emptyCustomCut && <>
+              <VariantContinuityReview project={project} profile={draft} saved={selected} />
+              <DeliveryVariantImpactReview project={project} draft={draft} saved={selected} />
+            </>}
 
             {(localizedVariant || Object.keys(draft.text_overrides).length > 0) && (
               <section className="caption-export-panel" aria-label="Localized text">
@@ -1175,7 +1187,7 @@ export default function DeliveryProfiles({
 
             <div className="delivery-editor-actions">
               <button type="button" className="button button-primary"
-                disabled={!dirty || busy !== null || profileDraft.pending || profileDraft.awaiting || profileDraft.locked
+                disabled={!dirty || emptyCustomCut || busy !== null || profileDraft.pending || profileDraft.awaiting || profileDraft.locked
                   || profileDraft.sourceBehind || profileDraft.recoveryBlocked || profileDraft.conflicts.length > 0}
                 onClick={saveProfile}>
                 <Save size={14} /> {busy === "save" ? "Saving…" : "Save profile"}
