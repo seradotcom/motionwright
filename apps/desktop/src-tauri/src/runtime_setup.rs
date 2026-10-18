@@ -219,7 +219,35 @@ impl RuntimeConnectionRegistry {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
                 Err("Saved Semwright reference is not a regular file".into())
             }
-            Ok(_) => {
+            Ok(metadata) => {
+                // A regular pathname alone is not proof of ownership.
+                // Never delete forged, malformed, stale-format or otherwise
+                // unbounded records: they may contain unrelated user bytes.
+                if metadata.len() == 0 || metadata.len() > MAX_CONFIG_BYTES {
+                    return Err("Saved Semwright reference is invalid".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if metadata.permissions().mode() & 0o077 != 0 {
+                        return Err(
+                            "Saved Semwright connection reference has unsafe permissions".into(),
+                        );
+                    }
+                }
+                let bytes = fs::read(&destination)
+                    .map_err(|_| "Saved Semwright reference cannot be inspected")?;
+                if bytes.is_empty() || bytes.len() as u64 > MAX_CONFIG_BYTES {
+                    return Err("Saved Semwright reference is invalid".into());
+                }
+                let selected: SavedConnectionReference = serde_json::from_slice(&bytes)
+                    .map_err(|_| "Saved Semwright reference is malformed")?;
+                if selected.schema_version != REGISTRY_SCHEMA
+                    || selected.project_id != project_id
+                    || !selected.connection_file.is_absolute()
+                {
+                    return Err("Saved Semwright reference has incorrect scope".into());
+                }
                 fs::remove_file(&destination)
                     .map_err(|_| "Saved Semwright reference could not be cleared")?;
                 Ok(true)
@@ -374,6 +402,59 @@ mod tests {
         forged["project_id"] = serde_json::json!(Uuid::now_v7());
         fs::write(&path, serde_json::to_vec(&forged).unwrap()).unwrap();
         assert!(registry.resolve(project_id, generation).is_err());
+    }
+
+    #[test]
+    fn clear_saved_rejects_corrupt_reference_without_deleting_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let destination = registry.destination(project);
+        let malformed = b"{\"schema_version\":999,\"foreign\":true}";
+        fs::write(&destination, malformed).unwrap();
+
+        assert!(registry.clear_saved(project).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), malformed);
+    }
+
+    #[test]
+    fn clear_saved_rejects_foreign_project_scope_without_deleting_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let destination = registry.destination(project);
+        registry
+            .remember_verified(project, generation, &tmp.path().join("owner.json"))
+            .unwrap();
+        let mut foreign: serde_json::Value =
+            serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        foreign["project_id"] = serde_json::json!(Uuid::now_v7());
+        let foreign_bytes = serde_json::to_vec(&foreign).unwrap();
+        fs::write(&destination, &foreign_bytes).unwrap();
+
+        assert!(registry.clear_saved(project).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), foreign_bytes);
+    }
+
+    #[test]
+    fn clear_saved_rejects_relative_reference_without_deleting_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let destination = registry.destination(project);
+        registry
+            .remember_verified(project, generation, &tmp.path().join("owner.json"))
+            .unwrap();
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        forged["connection_file"] = serde_json::json!("relative-foreign.json");
+        let forged_bytes = serde_json::to_vec(&forged).unwrap();
+        fs::write(&destination, &forged_bytes).unwrap();
+
+        assert!(registry.clear_saved(project).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), forged_bytes);
     }
 
     #[test]
