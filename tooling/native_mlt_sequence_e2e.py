@@ -14,9 +14,11 @@ import struct
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -24,7 +26,8 @@ from native_av_failure_guard import run_sanitized_json
 from native_mlt_caption_pixels import prove_native_captioned_master
 from native_mlt_public_artifact import (
     PublicationError, SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
-    verify_source_unchanged, verify_staged_source_receipt,
+    read_bounded, source_file_token, strict_object, verify_source_unchanged,
+    verify_staged_source_receipt,
 )
 
 from mlt_failure_diagnostic import safe_observation_diagnostic
@@ -100,34 +103,278 @@ def inspect_decoded_ci_stereo(pcm: bytes, *, mode: str = "final-mp4") -> dict:
     }
 
 
+def new_private_binary(path: Path):
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+    return os.fdopen(os.open(path, flags, 0o600), "wb")
+
+
+def write_new_private_json(path: Path, value: object) -> None:
+    with new_private_binary(path) as output:
+        output.write((json.dumps(value, indent=2, sort_keys=True) + "\n").encode())
+        output.flush()
+        os.fsync(output.fileno())
+
+
+
+class AudioReadbackLimitExceeded(OSError):
+    def __init__(self, streams: list[str], returncode: int):
+        self.streams = sorted(streams)
+        self.returncode = returncode
+        super().__init__("Independent audio readback exceeded its capture budget")
+
+
+def run_bounded_audio_readback(argv: list[str], *, env: dict, stdout, stderr,
+                               timeout: float, stdout_limit: int,
+                               stderr_limit: int, check: bool = False):
+    """Capture exact output up to explicit budgets; any excess is a failure.
+
+    This function starts only the independent read-only decoder/probe supplied
+    by the wrapper. A capped prefix is never a successful media observation.
+    Two pipe readers bound memory and disk on Windows as well as POSIX.
+    """
+    if (check or not math.isfinite(timeout) or timeout <= 0
+        or any(type(value) is not int or value <= 0
+               for value in (stdout_limit, stderr_limit))):
+        raise ValueError("Independent audio readback requires positive capture budgets")
+    process = subprocess.Popen(
+        argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, bufsize=0,
+    )
+    exceeded = []
+    failures = []
+
+    def stop():
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+
+    def capture(name, stream, output, maximum):
+        count = 0
+        try:
+            while True:
+                # Read one byte beyond the remaining budget only to detect
+                # truncation; that byte is never written to the evidence file.
+                data = stream.read(min(16384, maximum - count + 1))
+                if not data:
+                    break
+                kept = min(len(data), maximum - count)
+                output.write(data[:kept])
+                count += kept
+                if kept != len(data):
+                    exceeded.append(name)
+                    stop()
+                    break
+        except (OSError, ValueError) as error:
+            failures.append(type(error).__name__)
+            stop()
+        finally:
+            stream.close()
+
+    threads = [threading.Thread(target=capture, args=values, daemon=True)
+               for values in (("stdout", process.stdout, stdout, stdout_limit),
+                              ("stderr", process.stderr, stderr, stderr_limit))]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        stop()
+    finally:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            stop()
+        cleanup_deadline = time.monotonic() + 5
+        for thread in threads:
+            thread.join(max(0, cleanup_deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in threads):
+            timed_out = True
+            stop()
+    if timed_out:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    if exceeded:
+        raise AudioReadbackLimitExceeded(exceeded, process.returncode)
+    if failures:
+        raise OSError("Independent audio pipe capture failed")
+    return subprocess.CompletedProcess(argv, process.returncode)
+
+
+def verify_original_aac_clock(clock_bytes: bytes, contract) -> None:
+    clock = strict_object(clock_bytes)
+    streams = clock.get("streams")
+    if (not isinstance(streams, list) or len(streams) != 1
+        or not isinstance(streams[0], dict)
+        or streams[0].get("codec_type") != "audio"
+        or streams[0].get("codec_name") != "aac"
+        or streams[0].get("sample_rate") != str(contract.sample_rate)
+        or type(streams[0].get("channels")) is not int
+        or streams[0]["channels"] != contract.channels):
+        raise AssertionError("Original AAC clock does not have the admitted stereo profile")
+    rows = clock.get("packets_and_frames", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise AssertionError("Native audio packet/frame clock is malformed")
+    packets = clock.get("packets", [row for row in rows if row.get("type") == "packet"])
+    frames = clock.get("frames", [row for row in rows if row.get("type") == "frame"])
+    if (not isinstance(packets, list) or not packets
+        or not isinstance(frames, list) or not frames
+        or any(not isinstance(row, dict) for row in (*packets, *frames))):
+        raise AssertionError("Native audio packet/frame clock was not retained")
+
+
 def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
-                                          *, mode: str = "final-mp4") -> dict:
-    """Decode the real signed-off owner MP4 using fixed CI ffmpeg arguments;
-    no application runtime, local backend or user-controlled filters.
-    Temp disk output ensures even a hostile decoder cannot grow Python RAM.
+                                          *, source_wav: Path, ffprobe: Path,
+                                          evidence_root: Path,
+                                          mode: str = "final-mp4") -> dict:
+    """Retain source-bound full PCM and clock before evaluating either channel.
+
+    This independent readback never runs a producer. Raw observations remain
+    private; the public artifact allowlist does not include these files.
+    Packet/priming data is preserved, not promoted to a timing acceptance.
     """
     if mode not in {"final-mp4", "captioned-mp4"}:
         raise AssertionError("Legacy stereo decoder admits only its measured-voice fixture")
     contract = mode_contract(mode)
-    with tempfile.TemporaryFile() as output:
-        decoded = subprocess.run(
-            [str(ffmpeg), "-nostdin", "-v", "error", "-i", str(master),
-             "-map", "0:a:0", "-acodec", "pcm_s16le", "-ac", "2",
-             "-ar", "48000", "-f", "s16le", "-"],
-            env=env, stdout=output, stderr=subprocess.PIPE,
-            timeout=45, check=False,
-        )
-        if decoded.returncode != 0:
-            raise AssertionError("Independent bounded CI AAC-to-PCM decoder failed")
-        output.seek(0, 2)
-        size = output.tell()
-        if not (contract.pcm_frames * 4 <= size <= (contract.pcm_frames + 1024) * 4):
+    if not evidence_root.is_dir() or evidence_root.is_symlink():
+        raise AssertionError("Native audio evidence root must be an existing real directory")
+    outputs = {
+        "clock": evidence_root / "native-master-audio-clock.json",
+        "clock_stderr": evidence_root / "native-master-audio-clock.stderr.log",
+        "pcm": evidence_root / "native-master-decoded.s16le",
+        "decode_stderr": evidence_root / "native-master-decode.stderr.log",
+    }
+    observation_path = evidence_root / "native-master-audio-observation.json"
+    failure_path = evidence_root / "native-master-audio-failure.json"
+    if any(path.exists() or path.is_symlink() for path in
+           (*outputs.values(), observation_path, failure_path)):
+        raise AssertionError("Existing native audio observations must not be overwritten")
+    source_bytes, source_proof, source_token = read_synthetic_source_wav(source_wav, mode)
+    before = master.lstat()
+    if (not stat.S_ISREG(before.st_mode)
+        or getattr(before, "st_file_attributes", 0) & 0x400
+        or not 0 < before.st_size <= 256_000_000):
+        raise AssertionError("Native AAC master is not a bounded regular file")
+    master_token = source_file_token(before)
+    master_sha256 = digest(master)
+    tool_identity = {"ffmpeg_sha256": digest(ffmpeg), "ffprobe_sha256": digest(ffprobe)}
+    commands = (
+        ("clock", "clock_stderr", 30,
+         [str(ffprobe), "-v", "error", "-select_streams", "a",
+          "-show_streams", "-show_frames", "-show_packets", "-of", "json", str(master)]),
+        ("pcm", "decode_stderr", 45,
+         [str(ffmpeg), "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
+          "-i", str(master), "-map", "0:a:0", "-acodec", "pcm_s16le",
+          "-f", "s16le", "-"]),
+    )
+    limits = {"clock": 2_000_000, "pcm": (contract.pcm_frames + 1024) * 4,
+              "clock_stderr": 65_536, "decode_stderr": 65_536}
+    exit_codes = {}
+    interrupted = None
+    clock_error = None
+    clock_bytes = None
+    for name, stderr_name, timeout, command in commands:
+        try:
+            with new_private_binary(outputs[name]) as output, \
+                    new_private_binary(outputs[stderr_name]) as errors:
+                try:
+                    result = run_bounded_audio_readback(
+                        command, env=env, stdout=output, stderr=errors,
+                        timeout=timeout, check=False,
+                        stdout_limit=limits[name], stderr_limit=limits[stderr_name],
+                    )
+                finally:
+                    output.flush()
+                    errors.flush()
+                    os.fsync(output.fileno())
+                    os.fsync(errors.fileno())
+            exit_codes[name] = result.returncode
+        except (OSError, subprocess.TimeoutExpired) as error:
+            interrupted = {"stage": name, "error_type": type(error).__name__}
+            if isinstance(error, AudioReadbackLimitExceeded):
+                interrupted["truncated_streams"] = error.streams
+                exit_codes[name] = error.returncode
+            break
+        if result.returncode != 0:
+            break
+        if name == "clock":
+            try:
+                clock_bytes = read_bounded(evidence_root, outputs[name].name, limits[name])
+                verify_original_aac_clock(clock_bytes, contract)
+            except (AssertionError, PublicationError, OSError) as error:
+                clock_error = (str(error) if isinstance(error, AssertionError)
+                               else "native_audio_custody_refused")
+                break  # Refuse the original profile before starting a decoder.
+    observed = {
+        name: {"name": path.name, "bytes": path.stat().st_size, "sha256": digest(path)}
+        for name, path in outputs.items() if path.is_file()
+    }
+    observation = {
+        "schema": "motionwright.native-mlt-ci.audio-observation/1",
+        "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN, "mode": mode,
+        "github": {name: os.environ.get(name, "") for name in (
+            "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_WORKFLOW_REF",
+        )},
+        "reader_sha256": digest(Path(__file__)),
+        "envelope_sha256": digest(Path(__file__).with_name("native_mlt_ci_pcm_envelope.py")),
+        "source_wav": source_proof, "master_sha256": master_sha256,
+        "master_bytes": before.st_size, "tools": tool_identity,
+        "outputs": observed, "exit_codes": exit_codes, "interrupted": interrupted,
+        "capture_limits_bytes": limits, "clock_error": clock_error,
+        "capture_complete": (interrupted is None and clock_error is None
+                             and exit_codes == {"clock": 0, "pcm": 0}),
+        "inspection": "CAPTURED_NOT_YET_VALIDATED",
+        "native_execution_performed": False,
+        "media_packet_priming_and_skip_verified": False,
+        "native_provider_receipt_verified": False,
+    }
+    # Preserve the original observations before a bad clock, short decode or
+    # missing final channel energy can fail the gate. Never retry a producer.
+    write_new_private_json(observation_path, observation)
+    try:
+        if clock_error is not None:
+            raise AssertionError(clock_error)
+        if interrupted is not None:
+            raise AssertionError("Independent native audio readback was interrupted; no retry")
+        if exit_codes != {"clock": 0, "pcm": 0}:
+            raise AssertionError("Independent native audio probe or decoder failed")
+        size = observed["pcm"]["bytes"]
+        maximum_pcm = (contract.pcm_frames + 1024) * 4
+        if not contract.pcm_frames * 4 <= size <= maximum_pcm:
             raise AssertionError("Decoded source speaker PCM exceeded the AV clock budget")
-        output.seek(0)
-        pcm = output.read((contract.pcm_frames + 1024) * 4 + 1)
-        if len(pcm) != size:
+        pcm = read_bounded(evidence_root, outputs["pcm"].name, maximum_pcm)
+        if (len(pcm) != size or hashlib.sha256(pcm).hexdigest() != observed["pcm"]["sha256"]
+            or hashlib.sha256(clock_bytes).hexdigest() != observed["clock"]["sha256"]):
             raise AssertionError("Decoded AV speaker bytes changed during bounded read")
-        return inspect_decoded_ci_stereo(pcm, mode=mode)
+        verify_source_unchanged(source_wav, source_token)
+        checked_source, checked_proof, _ = read_synthetic_source_wav(source_wav, mode)
+        if checked_source != source_bytes or checked_proof != source_proof:
+            raise AssertionError("Original source WAV changed during native audio readback")
+        if source_file_token(master.lstat()) != master_token or digest(master) != master_sha256:
+            raise AssertionError("Original AAC master changed during independent decode")
+        # The separate pure envelope imports the existing midstream oracle.
+        # Defer this import until both modules are initialized; retain both gates.
+        from native_mlt_ci_pcm_envelope import inspect_fixed_ci_stereo_envelope
+        envelope = inspect_fixed_ci_stereo_envelope(source_bytes, pcm)
+    except (AssertionError, PublicationError, OSError) as error:
+        reason = str(error) if isinstance(error, AssertionError) else "native_audio_custody_refused"
+        write_new_private_json(failure_path, {
+            "schema": "motionwright.native-mlt-ci.audio-failure/1",
+            "observation_sha256": digest(observation_path), "reason": reason,
+            "status": "FAIL", "native_job_retried": False,
+        })
+        raise AssertionError(reason) from None
+    return {
+        **envelope["existing_midstream_stereo_observation"],
+        "full_source_pcm_envelope": envelope,
+        "audio_observation_sha256": digest(observation_path),
+        "decoded_master_full_pcm_sha256": observed["pcm"]["sha256"],
+        "audio_clock_sha256": observed["clock"]["sha256"],
+        "media_packet_priming_and_skip_verified": False,
+    }
 
 
 def digest(path: Path) -> str:
@@ -729,10 +976,29 @@ def main() -> None:
                 master = paths["output"] / relative
                 if not master.is_file():
                     raise AssertionError("Native final AV mux did not publish a real MP4")
+                master_metadata = master.lstat()
+                if (not stat.S_ISREG(master_metadata.st_mode)
+                    or getattr(master_metadata, "st_file_attributes", 0) & 0x400
+                    or not 0 < master_metadata.st_size <= 256_000_000):
+                    raise AssertionError("Native AAC master is not a bounded regular file")
                 if (master.stat().st_size != result.get("master_artifact_bytes")
                     or digest(master) != result.get("master_artifact_sha256")
                     or digest(master) != av_receipt["master"]["artifact"]["sha256"]):
                     raise AssertionError("Actual MP4 bytes do not match both native receipts")
+                # Retain admitted originals before any decoded-content gate
+                # can fail and the native temporary directory is removed.
+                retained_source = retain_native_master_source(
+                    paths["output"], EVIDENCE, av_receipt, MODE,
+                )
+                retained_master = EVIDENCE / "native-multisegment-master.mp4"
+                with master.open("rb") as original, new_private_binary(retained_master) as retained:
+                    shutil.copyfileobj(original, retained)
+                    retained.flush()
+                    os.fsync(retained.fileno())
+                if (retained_master.stat().st_size != result["master_artifact_bytes"]
+                    or digest(retained_master) != result["master_artifact_sha256"]):
+                    raise AssertionError("Retained original AAC master differs from native receipts")
+                master = retained_master
                 mux_probe = subprocess.run(
                     [
                         str(ffprobe), "-v", "error", "-count_frames",
@@ -762,12 +1028,11 @@ def main() -> None:
                     raise AssertionError("MLT native decoded PCM audit is missing or changed")
                 # The actual MP4, not the receipt or source WAV, must retain
                 # the authored, distinct 400/600 Hz left/right test signals.
-                decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE)
-                write_private_json(EVIDENCE / "decoded-stereo-content-proof.json", decoded_content)
-                retained_source = retain_native_master_source(
-                    paths["output"], EVIDENCE, av_receipt, MODE,
+                decoded_content = inspect_native_master_decoded_content(
+                    master, ffmpeg, env, source_wav=EVIDENCE / SOURCE_WAV_NAME,
+                    ffprobe=ffprobe, evidence_root=EVIDENCE, mode=MODE,
                 )
-                shutil.copyfile(master, EVIDENCE / "native-multisegment-master.mp4")
+                write_private_json(EVIDENCE / "decoded-stereo-content-proof.json", decoded_content)
                 master_check = {
                     "retained_source_audio": retained_source,
                     "final_master_frames":CONTRACT.video_frames,

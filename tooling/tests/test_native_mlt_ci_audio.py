@@ -1,14 +1,18 @@
-"""Pure adversarial gate for the exact native CI stereo content oracle.
+"""Adversarial CI stereo and retained-readback adapter controls.
 
-The independent ffmpeg decoder runs only in the real Host E2E. This suite
-tests the bounded decoded PCM evaluator without a browser or native process.
+Pure PCM cases and mocked decoder observations exercise the gates and custody.
+One real FFmpeg control encodes only this synthetic WAV; it is not an MLT
+provider run, native acceptance, packet/priming proof or a human verdict.
 """
 import copy
 import hashlib
 import io
+import json
 import os
 import pathlib
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,7 +20,11 @@ from unittest.mock import patch
 import wave
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from native_mlt_sequence_e2e import inspect_decoded_ci_stereo, retain_native_master_source
+from native_mlt_sequence_e2e import (
+    AudioReadbackLimitExceeded, inspect_decoded_ci_stereo,
+    inspect_native_master_decoded_content, retain_native_master_source,
+    run_bounded_audio_readback,
+)
 import native_mlt_public_artifact as pub
 
 
@@ -238,6 +246,315 @@ class NativeSourceWavCustodyTests(unittest.TestCase):
             pub.MltModeContract(1, (1,), fps_num=30000, fps_den=1001)
         with self.assertRaises(AssertionError):
             inspect_decoded_ci_stereo(original_pcm(), mode="original-mix-mp4")
+
+
+class NativeRetainedAudioReadbackTests(unittest.TestCase):
+    """Decoder mocks test adapter wiring, never actual native media production."""
+
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory(prefix="mw-audio-readback-")
+        self.addCleanup(self.root.cleanup)
+        self.root_path = pathlib.Path(self.root.name)
+        self.evidence = self.root_path / "retained"
+        self.evidence.mkdir()
+        self.source = self.evidence / "native-master-source.wav"
+        self.source_data = synthetic_voice_wav()
+        self.source.write_bytes(self.source_data)
+        self.master = self.evidence / "native-multisegment-master.mp4"
+        self.master_data = b"synthetic-decoder-adapter-input-not-an-mp4"
+        self.master.write_bytes(self.master_data)
+        self.ffmpeg = self.root_path / "ffmpeg-test-executable"
+        self.ffprobe = self.root_path / "ffprobe-test-executable"
+        self.ffmpeg.write_bytes(b"synthetic-ffmpeg-identity")
+        self.ffprobe.write_bytes(b"synthetic-ffprobe-identity")
+        self.commands = []
+
+    @staticmethod
+    def clock():
+        return {
+            "streams": [{"codec_type": "audio", "codec_name": "aac",
+                         "sample_rate": "48000", "channels": 2,
+                         "time_base": "1/48000"}],
+            "packets_and_frames": [
+                {"type": "packet", "pts": -1024, "duration": 1024},
+                {"type": "frame", "best_effort_timestamp": 0, "nb_samples": 1024},
+            ],
+        }
+
+    def inspect(self, pcm, *, clock=None, decoder_exit=0, after_decode=None):
+        clock = self.clock() if clock is None else clock
+        clock_bytes = clock if isinstance(clock, bytes) else json.dumps(clock).encode()
+
+        def decoder(command, *, env, stdout, stderr, timeout, check,
+                    stdout_limit, stderr_limit):
+            self.commands.append(command)
+            self.assertFalse(check)
+            self.assertLessEqual(stdout_limit, 2_000_000)
+            self.assertEqual(stderr_limit, 65_536)
+            if command[0] == str(self.ffprobe):
+                stdout.write(clock_bytes)
+                return subprocess.CompletedProcess(command, 0)
+            self.assertEqual(command[0], str(self.ffmpeg))
+            stdout.write(pcm)
+            stderr.write(b"synthetic-decoder-diagnostic\n")
+            if after_decode:
+                after_decode(command, timeout)
+            return subprocess.CompletedProcess(command, decoder_exit)
+
+        with patch("native_mlt_sequence_e2e.run_bounded_audio_readback", side_effect=decoder):
+            return inspect_native_master_decoded_content(
+                self.master, self.ffmpeg, dict(os.environ), source_wav=self.source,
+                ffprobe=self.ffprobe, evidence_root=self.evidence,
+            )
+
+    def retained_failure(self, pcm=None):
+        if pcm is None:
+            self.assertFalse((self.evidence / "native-master-decoded.s16le").exists())
+        else:
+            self.assertEqual((self.evidence / "native-master-decoded.s16le").read_bytes(), pcm)
+        clock = self.evidence / "native-master-audio-clock.json"
+        self.assertTrue(clock.is_file())
+        observation_path = self.evidence / "native-master-audio-observation.json"
+        observation = json.loads(observation_path.read_bytes())
+        failure = json.loads((self.evidence / "native-master-audio-failure.json").read_bytes())
+        self.assertEqual(failure["status"], "FAIL")
+        self.assertFalse(failure["native_job_retried"])
+        self.assertEqual(failure["observation_sha256"],
+                         hashlib.sha256(observation_path.read_bytes()).hexdigest())
+        if pcm is None:
+            self.assertNotIn("pcm", observation["outputs"])
+            self.assertEqual(len(self.commands), 1)
+        else:
+            self.assertEqual(observation["outputs"]["pcm"]["sha256"],
+                             hashlib.sha256(pcm).hexdigest())
+        self.assertEqual(observation["outputs"]["clock"]["sha256"],
+                         hashlib.sha256(clock.read_bytes()).hexdigest())
+        self.assertFalse(observation["native_execution_performed"])
+        self.assertFalse(observation["media_packet_priming_and_skip_verified"])
+        return observation, failure
+
+    def test_full_source_hook_retains_originals_and_never_normalizes_audio(self):
+        pcm = original_pcm() + bytes(448 * 4)
+        result = self.inspect(pcm)
+        envelope = result["full_source_pcm_envelope"]
+        self.assertEqual(envelope["source_windows_checked_per_channel"], 825)
+        self.assertEqual(envelope["source_frames"], 52800)
+        self.assertEqual(envelope["decoded_frames"], 53248)
+        self.assertEqual(envelope["unexplained_aac_extra_frames"], 448)
+        self.assertFalse(result["media_packet_priming_and_skip_verified"])
+        self.assertFalse(envelope["native_provider_receipt_verified"])
+        self.assertFalse(envelope["human_listening_approved"])
+        self.assertEqual(self.source.read_bytes(), self.source_data)
+        self.assertEqual(self.master.read_bytes(), self.master_data)
+        self.assertEqual((self.evidence / "native-master-decoded.s16le").read_bytes(), pcm)
+        self.assertEqual(len(self.commands), 2)
+        for forbidden in ("-ac", "-ar", "-af", "-filter:a", "-filter_complex", "-t", "-ss"):
+            self.assertNotIn(forbidden, self.commands[1])
+        self.assertIn("-show_packets", self.commands[0])
+        self.assertIn("-show_frames", self.commands[0])
+        self.assertFalse((self.evidence / "native-master-audio-failure.json").exists())
+
+    def test_known_right_tail_blind_spot_now_fails_with_complete_originals(self):
+        # Synthetic reproduction of the defect geometry, not the original
+        # historical AAC bytes: 256 authored right samples + 448 extra frames.
+        pcm = b"".join(struct.pack(
+            "<hh", ((index % 120) - 60) * 250,
+            ((index % 80) - 40) * 260 if index < 52544 else 0,
+        ) for index in range(53248))
+        inspect_decoded_ci_stereo(pcm)  # The unchanged old gate was insufficient.
+        with self.assertRaisesRegex(AssertionError,
+                                    "ci_source_channel_envelope_lost:right:52544:52608"):
+            self.inspect(pcm)
+        self.retained_failure(pcm)
+        self.assertEqual(self.source.read_bytes(), self.source_data)
+        self.assertEqual(self.master.read_bytes(), self.master_data)
+
+    def test_partial_stereo_sample_is_retained_and_rejected(self):
+        pcm = (original_pcm() + bytes(448 * 4))[:-1]
+        with self.assertRaisesRegex(AssertionError, "complete stereo s16"):
+            self.inspect(pcm)
+        self.retained_failure(pcm)
+
+    def test_swapped_channels_still_fail_the_original_midstream_gate(self):
+        pcm = b"".join(struct.pack("<hh", right, left)
+                       for left, right in struct.iter_unpack("<hh", original_pcm()))
+        with self.assertRaisesRegex(AssertionError, "lost distinct authored stereo"):
+            self.inspect(pcm)
+        self.retained_failure(pcm)
+
+    def test_nonzero_decoder_exit_keeps_stdout_stderr_and_clock(self):
+        pcm = original_pcm()[:40]
+        with self.assertRaisesRegex(AssertionError, "probe or decoder failed"):
+            self.inspect(pcm, decoder_exit=19)
+        observation, _ = self.retained_failure(pcm)
+        self.assertEqual(observation["exit_codes"], {"clock": 0, "pcm": 19})
+        self.assertEqual((self.evidence / "native-master-decode.stderr.log").read_bytes(),
+                         b"synthetic-decoder-diagnostic\n")
+        self.assertEqual(len(self.commands), 2)
+
+    def test_clock_channel_mismatch_is_not_hidden_by_resampling(self):
+        clock = self.clock()
+        clock["streams"][0]["channels"] = 1
+        pcm = original_pcm()
+        with self.assertRaisesRegex(AssertionError, "admitted stereo profile"):
+            self.inspect(pcm, clock=clock)
+        self.retained_failure()
+
+    def test_malformed_packet_frame_row_is_retained_and_rejected(self):
+        clock = self.clock()
+        clock["packets_and_frames"].append(None)
+        pcm = original_pcm()
+        with self.assertRaisesRegex(AssertionError, "clock is malformed"):
+            self.inspect(pcm, clock=clock)
+        self.retained_failure()
+
+    def test_malformed_json_clock_is_retained_without_becoming_success(self):
+        pcm = original_pcm()
+        with self.assertRaisesRegex(AssertionError, "native_audio_custody_refused"):
+            self.inspect(pcm, clock=b"not a JSON object")
+        self.retained_failure()
+        self.assertEqual((self.evidence / "native-master-audio-clock.json").read_bytes(),
+                         b"not a JSON object")
+
+    def test_existing_observation_is_not_overwritten_or_reexecuted(self):
+        existing = self.evidence / "native-master-decoded.s16le"
+        existing.write_bytes(b"previous-original-observation")
+        with self.assertRaisesRegex(AssertionError, "must not be overwritten"):
+            self.inspect(original_pcm())
+        self.assertEqual(existing.read_bytes(), b"previous-original-observation")
+        self.assertEqual(self.commands, [])
+
+    def test_source_replacement_during_decode_is_detected(self):
+        def replace_source(command, timeout):
+            replacement = self.root_path / "replacement.wav"
+            replacement.write_bytes(self.source_data)
+            replacement.replace(self.source)
+        pcm = original_pcm()
+        with self.assertRaisesRegex(AssertionError, "native_audio_custody_refused"):
+            self.inspect(pcm, after_decode=replace_source)
+        self.retained_failure(pcm)
+
+    def test_master_replacement_during_decode_is_detected(self):
+        def replace_master(command, timeout):
+            replacement = self.root_path / "replacement.mp4"
+            replacement.write_bytes(self.master_data)
+            replacement.replace(self.master)
+        pcm = original_pcm()
+        with self.assertRaisesRegex(AssertionError, "master changed"):
+            self.inspect(pcm, after_decode=replace_master)
+        self.retained_failure(pcm)
+
+    def test_timeout_keeps_partial_observations_without_retry(self):
+        def time_out(command, timeout):
+            raise subprocess.TimeoutExpired(command, timeout)
+        pcm = original_pcm()[:40]
+        with self.assertRaisesRegex(AssertionError, "interrupted; no retry"):
+            self.inspect(pcm, after_decode=time_out)
+        observation, _ = self.retained_failure(pcm)
+        self.assertEqual(observation["interrupted"],
+                         {"stage": "pcm", "error_type": "TimeoutExpired"})
+        self.assertEqual(observation["exit_codes"], {"clock": 0})
+        self.assertEqual(len(self.commands), 2)
+
+    def test_budget_truncation_cannot_pass_even_when_retained_pcm_is_valid(self):
+        from native_mlt_ci_pcm_envelope import inspect_fixed_ci_stereo_envelope
+        pcm = original_pcm() + bytes(1024 * 4)
+        inspect_fixed_ci_stereo_envelope(self.source_data, pcm)
+
+        def capped_prefix(command, timeout):
+            raise AudioReadbackLimitExceeded(["stdout"], -9)
+
+        with self.assertRaisesRegex(AssertionError, "interrupted; no retry"):
+            self.inspect(pcm, after_decode=capped_prefix)
+        observation, _ = self.retained_failure(pcm)
+        self.assertFalse(observation["capture_complete"])
+        self.assertEqual(observation["interrupted"]["truncated_streams"], ["stdout"])
+        self.assertEqual(observation["outputs"]["pcm"]["bytes"],
+                         observation["capture_limits_bytes"]["pcm"])
+
+
+class BoundedReadbackCaptureTests(unittest.TestCase):
+    """Real harmless child processes test pipe budgets and exit propagation."""
+
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory(prefix="mw-bounded-readback-")
+        self.addCleanup(self.root.cleanup)
+        self.stdout_path = pathlib.Path(self.root.name) / "stdout.bin"
+        self.stderr_path = pathlib.Path(self.root.name) / "stderr.bin"
+
+    def run_child(self, program, *, stdout_limit=1024, stderr_limit=1024, timeout=3):
+        with self.stdout_path.open("xb") as output, self.stderr_path.open("xb") as errors:
+            return run_bounded_audio_readback(
+                [sys.executable, "-B", "-E", "-s", "-c", program],
+                env=dict(os.environ), stdout=output, stderr=errors, timeout=timeout,
+                stdout_limit=stdout_limit, stderr_limit=stderr_limit,
+            )
+
+    def test_exact_budget_preserves_all_binary_bytes_and_success(self):
+        result = self.run_child("import os; os.write(1, b'a\\x00' * 512); os.write(2, b'warn')")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.stdout_path.read_bytes(), b"a\x00" * 512)
+        self.assertEqual(self.stderr_path.read_bytes(), b"warn")
+
+    def test_stdout_flood_is_capped_and_cannot_be_success(self):
+        with self.assertRaises(AudioReadbackLimitExceeded) as caught:
+            self.run_child("import os, time; os.write(1, b'x' * 65536); time.sleep(10)")
+        self.assertIn("stdout", caught.exception.streams)
+        self.assertEqual(self.stdout_path.read_bytes(), b"x" * 1024)
+        self.assertLessEqual(self.stderr_path.stat().st_size, 1024)
+        self.assertNotEqual(caught.exception.returncode, 0)
+
+    def test_stderr_flood_is_capped_independently(self):
+        with self.assertRaises(AudioReadbackLimitExceeded) as caught:
+            self.run_child("import os, time; os.write(1, b'ok'); os.write(2, b'e' * 65536); time.sleep(10)")
+        self.assertIn("stderr", caught.exception.streams)
+        self.assertEqual(self.stdout_path.read_bytes(), b"ok")
+        self.assertEqual(self.stderr_path.read_bytes(), b"e" * 1024)
+
+    def test_deadline_keeps_partial_bytes_and_never_returns_success(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_child("import os, time; os.write(1, b'partial'); os.write(2, b'diagnostic'); time.sleep(10)",
+                           timeout=0.5)
+        self.assertEqual(self.stdout_path.read_bytes(), b"partial")
+        self.assertEqual(self.stderr_path.read_bytes(), b"diagnostic")
+
+    def test_real_nonzero_exit_is_propagated_with_original_bytes(self):
+        result = self.run_child("import os; os.write(1, b'partial'); os.write(2, b'failure'); raise SystemExit(23)")
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual(self.stdout_path.read_bytes(), b"partial")
+        self.assertEqual(self.stderr_path.read_bytes(), b"failure")
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                     "The real synthetic AAC readback control requires FFmpeg and FFprobe")
+class RealSyntheticAacReadbackControl(unittest.TestCase):
+    def test_real_decoder_retains_full_pcm_and_original_clock(self):
+        # Only a reader control with synthetic input; no MLT, Host or producer.
+        with tempfile.TemporaryDirectory(prefix="mw-synthetic-aac-reader-") as directory:
+            evidence = pathlib.Path(directory)
+            source = evidence / "native-master-source.wav"
+            source.write_bytes(synthetic_voice_wav())
+            master = evidence / "synthetic-aac-reader.mp4"
+            ffmpeg = pathlib.Path(shutil.which("ffmpeg"))
+            ffprobe = pathlib.Path(shutil.which("ffprobe"))
+            subprocess.run([
+                str(ffmpeg), "-nostdin", "-v", "error", "-i", str(source),
+                "-c:a", "aac", "-b:a", "192k", str(master),
+            ], check=True, capture_output=True, timeout=30)
+            result = inspect_native_master_decoded_content(
+                master, ffmpeg, dict(os.environ), source_wav=source,
+                ffprobe=ffprobe, evidence_root=evidence,
+            )
+            self.assertEqual(result["full_source_pcm_envelope"]
+                             ["source_windows_checked_per_channel"], 825)
+            self.assertEqual(result["full_source_pcm_envelope"]["source_frames"], 52800)
+            self.assertFalse(result["media_packet_priming_and_skip_verified"])
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), SOURCE_SHA)
+            clock = json.loads((evidence / "native-master-audio-clock.json").read_bytes())
+            self.assertEqual(clock["streams"][0]["channels"], 2)
+            self.assertEqual(clock["streams"][0]["sample_rate"], "48000")
+            self.assertGreaterEqual((evidence / "native-master-decoded.s16le").stat().st_size,
+                                    52800 * 4)
 
 
 if __name__ == "__main__":
