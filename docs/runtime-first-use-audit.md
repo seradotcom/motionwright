@@ -161,5 +161,18 @@ precedes public visibility, collision preserves an existing report, a
 refused hardlink has no fallback, and two writers have one complete winner.
 On POSIX it also tests a directory-sync failure **after** publication,
 requiring an uncertain result while preserving the fully published bytes.
-It executes through the selected first-use test module without changes to
-A6-owned workflows.
+The same suite runs via test discovery and dotted module invocation.
+
+Successful linking is recorded before the writer inspects the resulting
+filename. If that inspection fails, the writer retains the published file
+and reports `receipt_commit_uncertain`. The CLI preserves that fixed code
+in its JSON output and exits with code 3, including when the file contains
+a complete report. Inspect the original destination before deciding any
+subsequent action; the failed observation does not authorize overwriting or
+repeating the publication. A refused prepublication operation continues to
+report `receipt_write_refused`.
+
+Three additional filesystem regressions check failure during the first
+post-link inspection, the same outcome through the CLI, and a CLI collision
+that preserves another report byte for byte. The injected error occurs only
+after the actual hardlink succeeds; final byte checks use the real filesystem.
