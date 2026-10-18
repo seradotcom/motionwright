@@ -1,8 +1,8 @@
-use motionwright_domain::{Change, Project};
+use motionwright_domain::{Asset, Change, Project};
 use motionwright_service::StudioService;
 use motionwright_storage::{BundleFingerprint, ProjectBackup, ProjectEvent, StorageError};
 use sha2::{Digest, Sha256};
-use std::{fs, path::Path};
+use std::{fs, io::Write, path::Path};
 
 // Constructed canaries exercise the existing credential patterns. None are
 // credentials; negative result messages must not echo the matching bytes.
@@ -74,6 +74,67 @@ fn add_asset(
         )
         .unwrap()
         .project
+}
+
+// Fixture-only seed of a project that already held these bytes before the
+// current admission policy. Store::apply verifies the digest and creates the
+// real coherent journal/receipt; no insecure import API or SQL shortcut is
+// needed. The export tests reopen this state before exercising the boundary.
+fn add_legacy_asset(
+    service: &StudioService,
+    project: &Project,
+    source: &Path,
+    name: &str,
+    media_type: &str,
+) -> Project {
+    let bytes = fs::read(source).unwrap();
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let shared = service.store();
+    let mut store = shared.lock();
+    let leaf = store
+        .blob_root()
+        .join("sha256")
+        .join(&digest[..2])
+        .join(&digest);
+    fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options.open(&leaf).unwrap();
+    output.write_all(&bytes).unwrap();
+    output.sync_all().unwrap();
+    drop(output);
+    assert_eq!(
+        store.verify_blob(&digest).unwrap().size_bytes,
+        bytes.len() as u64
+    );
+    store
+        .apply(
+            project.id,
+            &project.stamp(),
+            &format!("legacy-import-{name}"),
+            &Change::AddAsset {
+                asset: Asset {
+                    id: uuid::Uuid::now_v7(),
+                    name: name.into(),
+                    media_type: media_type.into(),
+                    content_sha256: Some(digest),
+                    source_revision: Some("local-import".into()),
+                },
+            },
+        )
+        .unwrap()
+        .project
+}
+
+fn reopen(service: StudioService) -> StudioService {
+    let database = service.store().lock().path().to_path_buf();
+    drop(service);
+    StudioService::open(database).unwrap()
 }
 
 fn blob_bytes(service: &StudioService, digest: &str, length: usize) -> Vec<u8> {
@@ -182,7 +243,8 @@ fn portable_text_credential_rejection_does_not_depend_on_declared_mime() {
         let bytes = format!("ordinary note\ncredential={marker}\n").into_bytes();
         let original = temp.path().join("notes.txt");
         fs::write(&original, &bytes).unwrap();
-        let project = add_asset(&source, &project, &original, "notes.txt", media_type);
+        let project = add_legacy_asset(&source, &project, &original, "notes.txt", media_type);
+        let source = reopen(source);
         let digest = project.assets[0].content_sha256.clone().unwrap();
         let history = source.history(project.id, 0, 100).unwrap();
         let destination = temp.path().join("legacy-bundle");
@@ -322,13 +384,14 @@ fn credential_patterns_cross_portable_read_boundaries_without_mime_trust() {
             bytes.extend_from_slice(&[0, 0xff, 0x80]);
             let original = temp.path().join("source.bin");
             fs::write(&original, &bytes).unwrap();
-            let project = add_asset(
+            let project = add_legacy_asset(
                 &source,
                 &project,
                 &original,
                 "source.bin",
                 "application/octet-stream",
             );
+            let source = reopen(source);
             let destination = temp.path().join("bundle");
 
             rejected(

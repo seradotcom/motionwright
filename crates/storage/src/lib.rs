@@ -1858,7 +1858,28 @@ mod tests {
             ),
         )
         .unwrap();
-        let descriptor = store.ingest_blob_file(&source).unwrap();
+        // Explicit legacy fixture: new admission must refuse these bytes.
+        // Seed only this fixture-owned CAS path, keeping the portable-export
+        // oracle independent of the current ingestion policy.
+        let bytes = fs::read(&source).unwrap();
+        let descriptor = BlobDescriptor {
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            size_bytes: bytes.len() as u64,
+        };
+        let leaf = store.blob_path(&descriptor.sha256).unwrap();
+        fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options.open(&leaf).unwrap();
+        output.write_all(&bytes).unwrap();
+        output.sync_all().unwrap();
+        drop(output);
+        assert_eq!(store.verify_blob(&descriptor.sha256).unwrap(), descriptor);
         let changed = store
             .apply(
                 project.id,
@@ -1875,6 +1896,13 @@ mod tests {
                 },
             )
             .unwrap();
+        let database = store.path().to_path_buf();
+        drop(store);
+        let mut store = Store::open(database).unwrap();
+        assert_eq!(
+            store.load_project(changed.project.id).unwrap(),
+            changed.project
+        );
         let bundle = temp.path().join("portable");
 
         let error = store
