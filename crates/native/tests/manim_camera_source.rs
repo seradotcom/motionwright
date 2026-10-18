@@ -381,4 +381,147 @@ mod production {
         bad.nodes[0].display_name = "X".repeat(161);
         assert!(compile_camera_program_source_only(&bad).is_err());
     }
+
+    fn persisted_camera_projection_fixture()
+    -> motionwright_native::manim_camera_projection::PreparedManimCameraSourceV1 {
+        use motionwright_native::manim_camera_projection::PreparedManimCameraSourceV1;
+        use sha2::{Digest, Sha256};
+
+        // Native module's public, exported source type, not the private path
+        // copy used by older tests. Preserve the entire plan wire.
+        let authored = serde_json::to_value(finite_fixture()).unwrap();
+        let source: motionwright_manim_profile::planar_camera::ManimCameraScenePlanV1 =
+            serde_json::from_value(authored).unwrap();
+        let original_compact_plan = serde_json::to_vec(&source).unwrap();
+        PreparedManimCameraSourceV1 {
+            source,
+            source_plan_sha256: hex::encode(Sha256::digest(&original_compact_plan)),
+            source_plan_bytes: original_compact_plan.len() as u64,
+            native_execution_performed: false,
+            permissions_verified: false,
+            native_source_compiler_registered: false,
+            imported_source_authority_used: false,
+            losses: vec!["scene_video_contribution_without_voice_or_captions"],
+        }
+    }
+
+    #[test]
+    fn persisted_canonical_source_reopens_exact_original_native_compiler_bytes() {
+        use sha2::{Digest, Sha256};
+
+        let original = persisted_camera_projection_fixture();
+        let prepared = original
+            .clone()
+            .compile_trusted_program_source_only()
+            .unwrap();
+        assert!(prepared.original_source_snapshot_checked);
+        assert!(prepared.program_semantically_bound_to_source);
+        assert!(!prepared.native_execution_performed);
+        assert!(!prepared.native_source_compiler_registered);
+        assert!(!prepared.native_permissions_verified);
+        assert_eq!(
+            prepared.prepared.source_plan_sha256,
+            original.source_plan_sha256
+        );
+        assert_eq!(
+            prepared.prepared.source_plan_bytes,
+            original.source_plan_bytes
+        );
+        assert_eq!(
+            prepared.trusted_compiler.plan_sha256,
+            hex::encode(Sha256::digest(&prepared.trusted_compiler.plan_document))
+        );
+        assert_eq!(
+            prepared.trusted_compiler.source_sha256,
+            hex::encode(Sha256::digest(
+                prepared.trusted_compiler.python_source.as_bytes()
+            ))
+        );
+        let actually_reopened: motionwright_manim_profile::planar_camera::ManimCameraScenePlanV1 =
+            serde_json::from_slice(&prepared.trusted_compiler.plan_document).unwrap();
+        assert_eq!(actually_reopened, original.source);
+        assert_eq!(
+            prepared.trusted_compiler.compiler_id,
+            motionwright_manim_profile::planar_camera::CAMERA_COMPILER_V1
+        );
+        assert!(
+            prepared
+                .trusted_compiler
+                .python_source
+                .contains("class MotionwrightScene(MovingCameraScene):")
+        );
+        assert_eq!(prepared.trusted_compiler.plan_document.last(), Some(&b'\n'));
+        assert_eq!(
+            prepared.trusted_compiler.python_source,
+            original
+                .compile_trusted_program_source_only()
+                .unwrap()
+                .trusted_compiler
+                .python_source,
+            "the same canonical snapshot must produce the same inert Manim source"
+        );
+    }
+
+    #[test]
+    fn compiled_camera_refuses_stale_hash_forged_authority_and_unrelated_editor_changes() {
+        use sha2::{Digest, Sha256};
+
+        let original = persisted_camera_projection_fixture();
+        let original_compiled = original
+            .clone()
+            .compile_trusted_program_source_only()
+            .unwrap();
+
+        let mut changed = original.clone();
+        changed.source.reframe.end_center_x = 1012.0;
+        changed.source.camera.center_x = 1012.0;
+        changed.source.binding.revision += 1;
+        assert!(
+            changed
+                .clone()
+                .compile_trusted_program_source_only()
+                .is_err(),
+            "a persisted change cannot reuse the old source digest"
+        );
+        let compact = serde_json::to_vec(&changed.source).unwrap();
+        changed.source_plan_bytes = compact.len() as u64;
+        changed.source_plan_sha256 = hex::encode(Sha256::digest(&compact));
+        let edited = changed.compile_trusted_program_source_only().unwrap();
+        assert_ne!(
+            original_compiled.trusted_compiler.plan_sha256,
+            edited.trusted_compiler.plan_sha256
+        );
+        assert_ne!(
+            original_compiled.trusted_compiler.source_sha256,
+            edited.trusted_compiler.source_sha256
+        );
+        assert_eq!(
+            original_compiled.prepared.source.binding.project_id,
+            edited.prepared.source.binding.project_id
+        );
+        assert_eq!(
+            original_compiled.prepared.source.binding.generation,
+            edited.prepared.source.binding.generation
+        );
+
+        for authority in 0..4 {
+            let mut forged = original.clone();
+            match authority {
+                0 => forged.native_execution_performed = true,
+                1 => forged.permissions_verified = true,
+                2 => forged.native_source_compiler_registered = true,
+                _ => forged.imported_source_authority_used = true,
+            }
+            assert!(
+                forged.compile_trusted_program_source_only().is_err(),
+                "source JSON must never assert native execution or Host authorization"
+            );
+        }
+        let mut false_length = original.clone();
+        false_length.source_plan_bytes += 1;
+        assert!(false_length.compile_trusted_program_source_only().is_err());
+        let mut false_digest = original;
+        false_digest.source_plan_sha256 = "0".repeat(64);
+        assert!(false_digest.compile_trusted_program_source_only().is_err());
+    }
 }

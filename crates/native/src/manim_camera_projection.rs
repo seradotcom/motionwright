@@ -11,7 +11,8 @@ use motionwright_manim_profile::{
     ManimSceneBindingV2, ManimSourceShapeKindV2, ManimStaticShapeV2,
     planar_camera::{
         CAMERA_SCHEMA_V1, CAMERA_VERSION_V2, CameraMoveV1, ManimCameraPoseV1,
-        ManimCameraProfileIdV1, ManimCameraScenePlanV1,
+        ManimCameraProfileIdV1, ManimCameraScenePlanV1, PreparedCameraProgramV1,
+        compile_camera_program_source_only,
     },
 };
 use motionwright_service::StudioService;
@@ -274,6 +275,92 @@ pub struct PreparedManimCameraSourceV1 {
     pub native_source_compiler_registered: bool,
     pub imported_source_authority_used: bool,
     pub losses: Vec<&'static str>,
+}
+
+/// Source compiler output tied to one canonical, already validated Project
+/// stamp. This is not an executable Host ticket, source-import permission,
+/// job receipt, backend readiness or evidence of physically decoded frames.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedManimCameraProgramV1 {
+    pub prepared: PreparedManimCameraSourceV1,
+    pub trusted_compiler: PreparedCameraProgramV1,
+    pub original_source_snapshot_checked: bool,
+    pub program_semantically_bound_to_source: bool,
+    pub native_execution_performed: bool,
+    pub native_source_compiler_registered: bool,
+    pub native_permissions_verified: bool,
+}
+
+/// Keep both hash domains explicit. The original Project projection stores
+/// SHA256(serde_json compact Plan); the trusted compiler separately binds
+/// SHA256(pretty Plan+LF) to its fixed Manim Python source. Mixing them would
+/// falsely associate a source package with the wrong native camera source.
+impl PreparedManimCameraSourceV1 {
+    pub fn compile_trusted_program_source_only(self) -> NativeResult<PreparedManimCameraProgramV1> {
+        if self.native_execution_performed
+            || self.permissions_verified
+            || self.native_source_compiler_registered
+            || self.imported_source_authority_used
+        {
+            return Err(reject(
+                "Untrusted externally asserted Manim camera effect or grant",
+            ));
+        }
+        let compact = serde_json::to_vec(&self.source)
+            .map_err(|_| invalid("Canonical Manim camera compact source serialization failed"))?;
+        let compact_sha256 = hex::encode(Sha256::digest(&compact));
+        if self.source_plan_sha256 != compact_sha256
+            || self.source_plan_bytes != compact.len() as u64
+        {
+            return Err(invalid(
+                "Canonical saved camera source hash or byte count changed before compilation",
+            ));
+        }
+        let compiled = compile_camera_program_source_only(&self.source)
+            .map_err(|_| reject("Closed Manim camera source compiler refused original plan"))?;
+        let recovered: ManimCameraScenePlanV1 = serde_json::from_slice(&compiled.plan_document)
+            .map_err(|_| invalid("Compiled Manim camera source plan cannot be reopened"))?;
+        if recovered != self.source
+            || compiled.plan_sha256 != hex::encode(Sha256::digest(&compiled.plan_document))
+            || compiled.source_sha256
+                != hex::encode(Sha256::digest(compiled.python_source.as_bytes()))
+            || compiled.native_execution_performed
+            || compiled.runtime_sample_pts_verified
+        {
+            return Err(invalid(
+                "Manim camera compiler bytes or reopened editable plan differ from saved source",
+            ));
+        }
+        Ok(PreparedManimCameraProgramV1 {
+            prepared: self,
+            trusted_compiler: compiled,
+            original_source_snapshot_checked: true,
+            program_semantically_bound_to_source: true,
+            native_execution_performed: false,
+            native_source_compiler_registered: false,
+            native_permissions_verified: false,
+        })
+    }
+}
+
+/// Actual persisted source -> strictly compiled, inert Manim source bytes,
+/// with a full Project reread after compilation to reject concurrent human
+/// edits. The ORIGINAL service/Host/worker alone may schedule native effects.
+pub fn prepare_saved_manim_camera_program_source_only(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    scene_id: Uuid,
+    deliverable_id: Uuid,
+) -> NativeResult<PreparedManimCameraProgramV1> {
+    let before = current_project(service, project_id, expected)?;
+    let prepared =
+        prepare_saved_manim_camera_source(service, project_id, expected, scene_id, deliverable_id)?;
+    let compiled = prepared.compile_trusted_program_source_only()?;
+    if current_project(service, project_id, expected)? != before {
+        return Err(stale());
+    }
+    Ok(compiled)
 }
 
 pub fn prepare_saved_manim_camera_source(
