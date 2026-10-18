@@ -12,7 +12,7 @@ const test = base.extend<{ audio: { service: ScopedChangeService; peers: ScopedC
     const peers: ScopedChangeService[] = [];
     let initial: Project | undefined;
     try {
-      initial = (await service.bootstrap()).project;
+      initial = (await service.fixtureBootstrap()).project;
       const source = testInfo.outputPath("synthetic-authored-pcm.wav"); await writeFile(source, pcmWav());
       initial = await service.importVoice(initial, source, "Synthetic audio preservation fixture");
       const track = initial.audio.voice_tracks.at(-1)!;
@@ -25,7 +25,7 @@ const test = base.extend<{ audio: { service: ScopedChangeService; peers: ScopedC
       initial = await service.apply(initial, { type: "upsert_audio_cue", cue: {
         id: cueId, label: "Original cue", at: { num: "1", den: "3" }, source_segment_id: segmentId, evidence: "manual",
       } });
-      await service.attachPage(page); await page.goto("/"); await button(page, "Audio").click();
+      await service.attachFixturePage(page); await page.goto("/"); await button(page, "Audio").click();
       await expect(page.getByRole("region", { name: "Audio workspace", exact: true })).toBeVisible();
       await use({ service, peers, initial, segmentId, cueId });
     } finally {

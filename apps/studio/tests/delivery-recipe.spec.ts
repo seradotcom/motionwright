@@ -141,10 +141,10 @@ async function scenario(info: TestInfo, run: (proof: CaseProof) => Promise<void>
   const proof: CaseProof = { info, services: [], pages: [], gates: [], ids: new Map(), observations: { behaviorAssertionsCompleted: false },
     async create(name, desktop = false) {
       const service = await ScopedChangeService.create({ databasePath: info.outputPath(name, "studio.sqlite3"), desktopInvokeFixture: desktop });
-      this.services.push(service); this.track(service, (await service.bootstrap()).project); return service;
+      this.services.push(service); this.track(service, (await service.fixtureBootstrap()).project); return service;
     },
     async peer(service) { const peer = await service.peer(); this.services.push(peer); return peer; },
-    async attach(service, page) { this.pages.push(page); await service.attachPage(page); await page.goto("/"); },
+    async attach(service, page) { this.pages.push(page); await service.attachFixturePage(page); await page.goto("/"); },
     track(service, project) { const ids = this.ids.get(service.directory) ?? new Set<string>(); ids.add(project.id); this.ids.set(service.directory, ids); },
   };
   try { await run(proof); proof.observations.behaviorAssertionsCompleted = true; }
@@ -152,7 +152,7 @@ async function scenario(info: TestInfo, run: (proof: CaseProof) => Promise<void>
   finally { await closeAndSeal(proof); }
 }
 async function setup(proof: CaseProof, service: ScopedChangeService, withAudio = false) {
-  let project = (await service.bootstrap()).project;
+  let project = (await service.fixtureBootstrap()).project;
   for (const scene of project.scenes) if (scene.renderer !== "motion-canvas") {
     project = await service.apply(project, { type: "set_scene_renderer", scene_id: scene.id, renderer: "motion-canvas" });
   }
@@ -757,7 +757,7 @@ test("portable export and verified import preserve both recipes and CAS while is
   }
   await mix(page, a); await field(page, "SFX gain dB").fill("-13"); // Old generation's unsaved input.
   const target = await proof.create("target-service", true), targetPage = await context.newPage();
-  const targetOriginal = (await target.bootstrap()).project;
+  const targetOriginal = (await target.fixtureBootstrap()).project;
   expect(targetOriginal.id).not.toBe(donor.id);
   await proof.attach(target, targetPage); await button(targetPage, "Deliver").click();
   await field(targetPage, "Portable import path").fill(bundlePath);
