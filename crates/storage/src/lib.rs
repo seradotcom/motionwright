@@ -338,6 +338,56 @@ fn parse_measured_source_rows(source: &[u8]) -> Result<Vec<motionwright_domain::
     Ok(rows)
 }
 
+// A valid document is not authority to redirect the row that contains it.
+// Every full-document consumer decodes the SQL identity and JSON together.
+struct StoredProjectRow {
+    id: String,
+    generation: String,
+    revision: i64,
+    title: String,
+    document_json: String,
+}
+
+impl StoredProjectRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            generation: row.get(1)?,
+            revision: row.get(2)?,
+            title: row.get(3)?,
+            document_json: row.get(4)?,
+        })
+    }
+
+    fn into_project(self) -> Result<Project> {
+        let project: Project = serde_json::from_str(&self.document_json)?;
+        project.validate()?;
+        if project.id.to_string() != self.id
+            || project.generation.is_nil()
+            || project.generation.to_string() != self.generation
+            || i64::try_from(project.revision).ok() != Some(self.revision)
+            || project.title != self.title
+        {
+            return Err(DomainError::Invalid(
+                "stored project authority columns differ from the document".into(),
+            )
+            .into());
+        }
+        Ok(project)
+    }
+}
+
+fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
+    conn.query_row(
+        "SELECT id,generation,revision,title,document_json FROM projects WHERE id=?1",
+        [id.to_string()],
+        StoredProjectRow::read,
+    )
+    .optional()?
+    .ok_or(StorageError::NotFound)?
+    .into_project()
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -360,7 +410,7 @@ impl Store {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)?;
+        let mut conn = Connection::open(&path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         let observed_schema: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -370,12 +420,25 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        // Connection pragmas must execute outside a transaction. All
+        // schema DDL and its authoritative user_version stamp are committed
+        // together under one SQLite IMMEDIATE writer lock.
         conn.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+        )?;
+        let schema_tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // An independent opener may have advanced the schema since our
+        // fast-fail check. Revalidate AFTER acquiring the writer lock.
+        let locked_schema: u32 =
+            schema_tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if locked_schema > STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::UnsupportedSchemaVersion {
+                found: locked_schema,
+                supported: STORAGE_SCHEMA_VERSION,
+            });
+        }
+        schema_tx.execute_batch(
             r#"
-            PRAGMA foreign_keys=ON;
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
-
             CREATE TABLE IF NOT EXISTS projects(
               id TEXT PRIMARY KEY,
               generation TEXT NOT NULL,
@@ -475,9 +538,10 @@ impl Store {
               ON production_receipts(project_id, request_id, receipt_id DESC);
             "#,
         )?;
-        if observed_schema < STORAGE_SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
+        if locked_schema < STORAGE_SCHEMA_VERSION {
+            schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
+        schema_tx.commit()?;
         fs::create_dir_all(&blob_root)?;
         ensure_regular_directory(&blob_root, "content-addressed storage root")?;
         let store = Self {
@@ -799,31 +863,19 @@ impl Store {
     }
 
     pub fn load_project(&self, id: Uuid) -> Result<Project> {
-        let json: String = self
-            .conn
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
-        Ok(project)
+        load_project_from_row(&self.conn, id)
     }
 
     pub fn list_projects(&self, limit: usize) -> Result<Vec<Project>> {
         let limit = limit.clamp(1, 100);
-        let mut stmt = self
-            .conn
-            .prepare("SELECT document_json FROM projects ORDER BY updated_at DESC, id LIMIT ?1")?;
-        let rows = stmt.query_map([limit as i64], |row| row.get::<_, String>(0))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id,generation,revision,title,document_json
+             FROM projects ORDER BY updated_at DESC, id LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], StoredProjectRow::read)?;
         let mut projects = Vec::new();
         for row in rows {
-            let project: Project = serde_json::from_str(&row?)?;
-            project.validate()?;
-            projects.push(project);
+            projects.push(row?.into_project()?);
         }
         Ok(projects)
     }
@@ -1084,16 +1136,7 @@ impl Store {
 
         // Durable results retain their original revision, but cannot grant
         // access across a different resource or project generation.
-        let json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let mut project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
+        let mut project = load_project_from_row(&tx, id)?;
 
         if expected.resource != project.resource_key() || expected.generation != project.generation
         {
