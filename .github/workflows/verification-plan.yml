@@ -1,0 +1,222 @@
+name: Verification Plan (shadow)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Full lowercase comparison base; empty plans the entire candidate
+        type: string
+        required: false
+        default: ""
+      candidate:
+        description: Include every observed workflow in the candidate plan (no dispatch)
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+# This concurrency group affects only cheap planning/guardrail execution. It is
+# separate from native operations and never cancels or retries another workflow.
+concurrency:
+  group: verification-plan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan-and-contracts:
+    name: Source-bound plan and conformance guardrails (shadow)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      MW_SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Exercise conformance and selection controls in both real entrypoints
+        shell: bash
+        run: |
+          python tooling/ci_test_runner.py --repo . \
+            --test-directory tooling/tests \
+            --pattern test_ci_impact_plan.py \
+            --pattern test_conformance_policy.py \
+            --pattern test_acceptance_policy.py \
+            --pattern test_acceptance_session.py \
+            --pattern test_acceptance_evidence_identity.py \
+            --pattern test_acceptance_cross_checkout.py \
+            --mode both --expected-source "$MW_SOURCE_SHA" \
+            --report "$RUNNER_TEMP/verification/g0-receipt.json" \
+            --require-complete
+      - name: Compute full-source shadow selection without dispatching jobs
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          kind = os.environ["GITHUB_EVENT_NAME"]
+          checkout = os.environ["GITHUB_SHA"]
+          candidate = False
+          if kind == "pull_request":
+              base = event["pull_request"]["base"]["sha"]
+              head = event["pull_request"]["head"]["sha"]
+          elif kind == "push":
+              base, head = event["before"], event["after"]
+          elif kind == "workflow_dispatch":
+              inputs = event.get("inputs") or {}
+              base = inputs.get("base_sha") or checkout
+              head = checkout
+              candidate = (not inputs.get("base_sha") or
+                           inputs.get("candidate") in (True, "true"))
+          else:
+              raise SystemExit("Unsupported source event")
+
+          destination = Path(os.environ["RUNNER_TEMP"]) / "verification"
+          destination.mkdir(parents=True, exist_ok=True)
+          command = [
+              sys.executable, "tooling/ci_impact_plan.py", "plan", "--repo", ".",
+              "--repository", os.environ["GITHUB_REPOSITORY"], "--event", kind,
+              "--base", base, "--head", head, "--checkout", checkout,
+              "--output", str(destination / "impact-plan.json"),
+          ]
+          if candidate:
+              command.append("--candidate")
+          if kind == "pull_request":
+              # Preserve the event base; reconcile only a proven descendant
+              # first parent of this exact GitHub event checkout.
+              command.append("--allow-advanced-pr-base")
+          result = subprocess.run(command, capture_output=True, check=False)
+          (destination / "plan-stdout.log").write_bytes(result.stdout)
+          (destination / "plan-stderr.log").write_bytes(result.stderr)
+          receipt = {
+              "kind": "shadow-plan-execution", "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "event_sha": checkout, "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"], "argv": command,
+              "exit_code": result.returncode,
+              "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(),
+              "stderr_sha256": hashlib.sha256(result.stderr).hexdigest(),
+              "executions_avoided": 0, "minutes_saved": 0,
+              "product_test_verdict": "NOT_ASSERTED",
+          }
+          (destination / "planning-receipt.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+          )
+          print(result.stdout.decode("utf-8", errors="replace"), end="")
+          print(result.stderr.decode("utf-8", errors="replace"), end="", file=sys.stderr)
+          if result.returncode:
+              raise SystemExit(result.returncode)
+          plan = json.loads((destination / "impact-plan.json").read_text())
+          summary = (
+              "## Shadow verification selection\n\n"
+              f"Source: `{plan['source']['checkout_sha']}`\n\n"
+              f"Plan: `{plan['plan_id']}`\n\n"
+              f"Recommended workflows: {len(plan['selected_workflows'])}; "
+              f"unknown paths: {len(plan['unknown_paths'])}; "
+              f"unresolved dispositions: {len(plan['blockers'])}.\n\n"
+              "Existing jobs remain unchanged. Executions avoided: 0. Minutes saved: 0. "
+              "This run tests planning and evidence guardrails; it does not verify native output "
+              "or establish release readiness.\n"
+          )
+          reconciled = plan["source"].get("pr_base_reconciliation")
+          if reconciled and reconciled["advanced"]:
+              summary += (
+                  "\nThe PR event base remains recorded as "
+                  f"`{reconciled['event_base_sha']}`; the exact merge first parent is "
+                  f"`{reconciled['actual_merge_parent_sha']}`. "
+                  "Their ancestry was verified and the full observed workflow inventory "
+                  "was included in this shadow recommendation.\n"
+              )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+              output.write(summary)
+      - name: Preserve original planning and guardrail evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-plan-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verification
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-manifest-contracts:
+    name: Windows manifest and NTFS conformance guardrails
+    runs-on: windows-2025
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      MW_SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Exercise the complete manifest suite on real Windows in both entrypoints
+        shell: pwsh
+        env:
+          # Private-evidence fixtures must be outside every source checkout.
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $verificationReport = Join-Path $env:RUNNER_TEMP 'verification-windows/g0-receipt.json'
+          python -B -E -s tooling/ci_test_runner.py --repo . `
+            --test-directory tooling/tests `
+            --pattern test_acceptance_manifest_reparse.py `
+            --mode both --expected-source "$env:MW_SOURCE_SHA" `
+            --report "$verificationReport" --require-complete
+          if ($LASTEXITCODE -ne 0) { throw 'The complete Windows manifest conformance suite failed' }
+      - name: Preserve original Windows conformance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-windows-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verification-windows
+          if-no-files-found: error
+          retention-days: 30
+
+  g0-complete:
+    name: G0 verification complete
+    needs: [plan-and-contracts, windows-manifest-contracts]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both source-bound G0 jobs to succeed
+        shell: python
+        env:
+          G0_JOB_RESULTS: ${{ toJSON(needs) }}
+          MW_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          import json
+          import os
+
+          required = {"plan-and-contracts", "windows-manifest-contracts"}
+          observed = json.loads(os.environ["G0_JOB_RESULTS"])
+          if not isinstance(observed, dict) or set(observed) != required:
+              raise SystemExit("G0 requires exactly the Linux and Windows job results")
+          results = {
+              job: value.get("result") if isinstance(value, dict) else None
+              for job, value in observed.items()
+          }
+          if any(result != "success" for result in results.values()):
+              raise SystemExit("G0 incomplete: " + json.dumps(results, sort_keys=True))
+          print("G0 guardrails complete for source " + os.environ["MW_SOURCE_SHA"]
+                + ": Linux and Windows jobs succeeded; native product verification is not asserted")

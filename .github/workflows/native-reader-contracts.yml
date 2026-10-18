@@ -1,0 +1,188 @@
+name: Native reader contracts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/native-reader-contracts.yml'
+      - 'SOURCE_LOCK.json'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/native_motion_canvas_roundtrip.py'
+      - 'tooling/native_direct_mediated_parity.py'
+      - 'tooling/native_render_stage_cost.py'
+      - 'tooling/native_mlt_sequence_e2e.py'
+      - 'tooling/native_mlt_ci_pcm_envelope.py'
+      - 'tooling/native_mlt_public_artifact.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/native_av_failure_guard.py'
+      - 'tooling/native_mlt_caption_pixels.py'
+      - 'tooling/mlt_failure_diagnostic.py'
+      - 'tooling/tests/test_native_motion_canvas_roundtrip.py'
+      - 'tooling/tests/test_native_mlt_ci_audio.py'
+      - 'tooling/tests/test_native_mlt_ci_pcm_envelope.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-reader-contracts-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  native-reader-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Prepare isolated reader evidence and exact source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          evidence="$RUNNER_TEMP/native-reader-evidence/$GITHUB_SHA"
+          test ! -e "$evidence"
+          mkdir -p "$evidence" "$RUNNER_TEMP/native-reader-tmp"
+          echo "NATIVE_READER_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP/native-reader-tmp" >> "$GITHUB_ENV"
+
+      - name: Install independent media reader
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+
+      - name: Record source dependencies and actual runtime identities
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess, sys
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = pathlib.Path(os.environ['NATIVE_READER_EVIDENCE'])
+          paths = [
+              'SOURCE_LOCK.json', 'tooling/ci_test_runner.py',
+              'tooling/native_motion_canvas_roundtrip.py',
+              'tooling/native_direct_mediated_parity.py',
+              'tooling/native_render_stage_cost.py',
+              'tooling/native_mlt_sequence_e2e.py',
+              'tooling/native_mlt_ci_pcm_envelope.py',
+              'tooling/native_mlt_public_artifact.py',
+              'tooling/cross_app_public_artifact.py',
+              'tooling/native_av_failure_guard.py',
+              'tooling/native_mlt_caption_pixels.py',
+              'tooling/mlt_failure_diagnostic.py',
+              'tooling/tests/test_native_motion_canvas_roundtrip.py',
+              'tooling/tests/test_native_mlt_ci_audio.py',
+              'tooling/tests/test_native_mlt_ci_pcm_envelope.py',
+              '.github/workflows/native-reader-contracts.yml',
+          ]
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          runtime = {}
+          for name in ('ffmpeg', 'ffprobe'):
+              path = shutil.which(name)
+              if path is None:
+                  raise SystemExit('Required media reader absent: ' + name)
+              binary = pathlib.Path(path).resolve(strict=True)
+              version = subprocess.run([path, '-version'], check=True,
+                                       capture_output=True, timeout=10)
+              runtime[name] = {'path': str(binary), 'sha256': digest(binary),
+                               'version': version.stdout.decode('utf-8', errors='replace')}
+          value = {
+              'schema': 'motionwright.native-reader-runtime/1',
+              'executed_source_sha': os.environ['GITHUB_SHA'],
+              'github': {key: os.environ.get(key, '') for key in (
+                  'GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB')},
+              'python': sys.version, 'tools': runtime,
+              'source_dependency_sha256': {path: digest(root / path) for path in paths},
+              'scope': 'Reader contracts with synthetic fixtures; no native or human acceptance',
+          }
+          with (evidence / 'runtime.json').open('x', encoding='utf-8') as output:
+              json.dump(value, output, indent=2, sort_keys=True)
+              output.write('\n')
+          PY
+
+      - name: Execute selected reader suites with zero omissions
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
+            --test-directory tooling/tests --mode discovery --require-complete \
+            --pattern test_native_motion_canvas_roundtrip.py \
+            --pattern test_native_mlt_ci_pcm_envelope.py \
+            --pattern test_native_mlt_ci_audio.py \
+            --timeout 180 --report "$NATIVE_READER_EVIDENCE/result.json"
+
+      - name: Verify the observed reader coverage and runtime binding
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, re, shutil
+          root = pathlib.Path(os.environ['NATIVE_READER_EVIDENCE'])
+          report_bytes = (root / 'result.json').read_bytes()
+          report = json.loads(report_bytes)
+          runtime_bytes = (root / 'runtime.json').read_bytes()
+          runtime = json.loads(runtime_bytes)
+          for name, recorded in runtime['tools'].items():
+              actual = pathlib.Path(shutil.which(name)).resolve(strict=True)
+              assert str(actual) == recorded['path']
+              assert hashlib.sha256(actual.read_bytes()).hexdigest() == recorded['sha256']
+          for relative, digest in runtime['source_dependency_sha256'].items():
+              actual = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / relative
+              assert hashlib.sha256(actual.read_bytes()).hexdigest() == digest
+          assert report['status'] == 'PASS' and report['exit_code'] == 0
+          assert report['executed_source_sha'] == runtime['executed_source_sha'] == os.environ['GITHUB_SHA']
+          for key in ('GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'):
+              assert report['github'][key] == runtime['github'][key] == os.environ[key]
+          expected = {'test_native_motion_canvas_roundtrip.py': 26,
+                      'test_native_mlt_ci_pcm_envelope.py': 9,
+                      'test_native_mlt_ci_audio.py': 11}
+          steps = {step['entry_point']: step for step in report['steps']}
+          assert set(steps) == {'discovery:' + name for name in expected}
+          for name, minimum in expected.items():
+              step = steps['discovery:' + name]
+              assert step['status'] == 'PASS' and step['exit_code'] == 0
+              assert step['counts']['tests_run'] >= minimum
+              assert step['counts']['passed'] == step['counts']['tests_run']
+          mc = steps['discovery:test_native_motion_canvas_roundtrip.py']
+          log = (root / mc['stderr']['file']).read_bytes()
+          assert hashlib.sha256(log).hexdigest() == mc['stderr']['sha256']
+          ffmpeg_cases = re.findall(
+              r'(?m)^test_[^\r\n]*\(test_native_motion_canvas_roundtrip\.RealSourceAndFrameInspection\.[^)]+\) \.\.\. ok$',
+              log.decode('utf-8', errors='replace'))
+          assert len(ffmpeg_cases) >= 20
+          value = {
+              'schema': 'motionwright.native-reader-coverage/1',
+              'executed_source_sha': os.environ['GITHUB_SHA'],
+              'result_sha256': hashlib.sha256(report_bytes).hexdigest(),
+              'runtime_sha256': hashlib.sha256(runtime_bytes).hexdigest(),
+              'motion_canvas_ffmpeg_enabled_cases_passed': len(ffmpeg_cases),
+              'suite_counts': {name: step['counts'] for name, step in steps.items()},
+              'scope': 'Synthetic reader controls, including pre-decode negatives; not native four-phase proof',
+          }
+          with (root / 'coverage.json').open('x', encoding='utf-8') as output:
+              json.dump(value, output, indent=2, sort_keys=True)
+              output.write('\n')
+          print(json.dumps(value, sort_keys=True))
+          PY
+
+      - name: Preserve original source-bound reader results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-reader-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-reader-evidence/${{ github.sha }}/
+          if-no-files-found: error
+          retention-days: 14
