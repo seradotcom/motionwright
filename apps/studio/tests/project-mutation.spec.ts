@@ -859,7 +859,7 @@ test.describe("real service imports and portable restore", () => {
       let held: ReturnType<typeof holdRealReply> | undefined;
       const observations: Record<string, unknown> = {};
       try {
-        const boot = await service.bootstrap();
+        const boot = await service.fixtureBootstrap();
         const initial = boot.project;
         observations.initial = initial;
         expect(boot.test_transport).toBe("service-test-jsonl");
@@ -867,7 +867,7 @@ test.describe("real service imports and portable restore", () => {
         const sourceBytes = kind === "asset" ? svgBytes : pcm16Wav();
         const sourcePath = testInfo.outputPath(`actual-synthetic-source.${kind === "asset" ? "svg" : "wav"}`);
         await writeFile(sourcePath, sourceBytes);
-        await service.attachPage(page);
+        await service.attachFixturePage(page);
         await page.goto("/");
         await expect(page.locator(".command-bar .revision-chip")).toHaveText(`r${initial.revision}`);
         if (kind === "asset") {
@@ -972,7 +972,7 @@ test.describe("real service imports and portable restore", () => {
     let peer: ScopedChangeService | undefined;
     const observations: Record<string, unknown> = {};
     try {
-      const boot = await service.bootstrap();
+      const boot = await service.fixtureBootstrap();
       expect(boot.desktop_invoke_fixture).toBe(false);
       expect(boot.native_sdk.mode).toBe("browser-demo");
       const initial = boot.project;
@@ -1040,15 +1040,15 @@ test.describe("real service imports and portable restore", () => {
       });
       const sourceFile = testInfo.outputPath("portable-authored-source.svg");
       await writeFile(sourceFile, svgBytes);
-      let donor = (await source.bootstrap()).project;
+      let donor = (await source.fixtureBootstrap()).project;
       donor = await source.importAsset(donor, sourceFile, "Actual portable source bytes");
       donor = await source.apply(donor, { type: "rename_project", title: "Portable source from a real service" });
-      const original = (await target.bootstrap()).project;
+      const original = (await target.fixtureBootstrap()).project;
       const donorHistory = await source.history(donor.id, 0, 256);
       observations.source = donor; observations.targetBefore = original;
       expect(donor.id).not.toBe(original.id);
       const bundlePath = testInfo.outputPath("portable-export.motionwright");
-      await source.attachPage(page);
+      await source.attachFixturePage(page);
       await page.goto("/");
       await button(page, "Deliver").click();
       await field(page, "Portable export path").fill(bundlePath);
@@ -1073,7 +1073,7 @@ test.describe("real service imports and portable restore", () => {
       expect(await source.history(donor.id, 0, 256)).toEqual(donorHistory);
 
       const targetPage = await context.newPage();
-      await target.attachPage(targetPage);
+      await target.attachFixturePage(targetPage);
       await targetPage.goto("/");
       await button(targetPage, "Deliver").click();
       const corruptBundle = testInfo.outputPath("corrupt-bundle.motionwright");

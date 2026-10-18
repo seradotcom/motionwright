@@ -51,7 +51,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
   let final: Project | undefined;
   try {
-    const boot = await service.bootstrap();
+    const boot = await service.fixtureBootstrap();
     const initial = boot.project;
     const scene = initial.scenes.find(item => item.id === boot.fixture.scene_id)!;
     const target = scene.nodes.find(item => item.id === boot.fixture.node_id)!;
@@ -64,7 +64,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     const transform = { ...nodeTransform(target), x: target.x + 18 };
     const patch: CreativePatch = { scene_id: scene.id, base_revision: initial.revision, rationale,
       edits: [{ kind: "text", node_id: target.id, text }, { kind: "transform", node_id: target.id, transform }] };
-    await service.attachPage(page);
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openProposal(page, scene.id);
     await queueText(page, target.id, text, rationale);
@@ -173,11 +173,11 @@ test("two Studio clients reject a stale commit and let the author resolve only t
   try {
     peer = await service.peer();
     secondPage = await context.newPage();
-    const initial = (await service.bootstrap()).project;
+    const initial = (await service.fixtureBootstrap()).project;
     const scene = initial.scenes[0];
     const target = scene.nodes.find(item => item.name === "ProductHeroReveal / body")!;
-    await service.attachPage(page);
-    await peer.attachPage(secondPage);
+    await service.attachFixturePage(page);
+    await peer.attachFixturePage(secondPage);
     await page.goto("/");
     await secondPage.goto("/");
     await openProposal(page, scene.id);

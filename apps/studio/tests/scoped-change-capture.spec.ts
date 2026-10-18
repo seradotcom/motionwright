@@ -39,7 +39,7 @@ test("complete capture includes every file and a paginated full oracle after all
   let peer: ScopedChangeService | undefined;
   let finalized = false;
   try {
-    const initial = (await service.bootstrap()).project;
+    const initial = (await service.fixtureBootstrap()).project;
     const initialHistory = await service.observeStoredProject(initial);
     peer = await service.peer();
     await rejectedCapture(service, testInfo, "denied-live-peer");
@@ -81,7 +81,7 @@ test("complete capture includes every file and a paginated full oracle after all
 test("pending at close remains tainted despite exit zero and a later clean restart", async ({}, testInfo) => {
   const service = await create(testInfo);
   try {
-    const initial = (await service.bootstrap()).project;
+    const initial = (await service.fixtureBootstrap()).project;
     // rawRequest registers its pending entry synchronously before close sends EOF.
     const requested = service.project(initial.id).then(
       value => ({ status: "fulfilled", value }), error => ({ status: "rejected", error: String(error) }));
@@ -107,7 +107,7 @@ test("pending at close remains tainted despite exit zero and a later clean resta
 test("a timed out real response followed by exit zero never becomes clean capture evidence", async ({}, testInfo) => {
   const service = await create(testInfo, 500);
   try {
-    const initial = (await service.bootstrap()).project;
+    const initial = (await service.fixtureBootstrap()).project;
     const child = childOf(service);
     child.stdout.pause();
     try { await expect(service.project(initial.id)).rejects.toThrow("timed out"); }
@@ -144,7 +144,7 @@ test("a real stdin transport error is permanent even when EOF lets the process e
 test("a broken response pipe records the real nonzero exit and vetoes capture", async ({}, testInfo) => {
   const service = await create(testInfo, 1_000);
   try {
-    const initial = (await service.bootstrap()).project;
+    const initial = (await service.fixtureBootstrap()).project;
     const child = childOf(service);
     // The Rust writer returns an error when its actual output pipe is closed.
     child.stdout.destroy();
@@ -188,7 +188,7 @@ test("finalization attempts every peer and retains every outcome when preparatio
   let attemptedSecondPreparation = false;
   try {
     peer = await service.peer();
-    const final = (await service.bootstrap()).project;
+    const final = (await service.fixtureBootstrap()).project;
     const child = childOf(peer);
     const pipeError = once(child.stdin, "error");
     child.stdin.destroy(new Error("Injected peer pipe failure"));

@@ -135,8 +135,8 @@ test("saving the title or brief commits only that group and conserves the other 
   let initial: Project | undefined;
   let final: Project | undefined;
   try {
-    initial = (await service.bootstrap()).project;
-    await service.attachPage(page);
+    initial = (await service.fixtureBootstrap()).project;
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openBrief(page);
     const raw = ["  Synthetic authored title  ", "Keep the original editorial argument.\nMake its scope explicit.",
@@ -198,8 +198,8 @@ test("a late real reply preserves newer typing and reload never replays an alrea
   let initial: Project | undefined;
   let final: Project | undefined;
   try {
-    initial = (await service.bootstrap()).project;
-    await service.attachPage(page);
+    initial = (await service.fixtureBootstrap()).project;
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openBrief(page);
     await input(page, "Project title").fill("The title actually submitted");
@@ -268,12 +268,12 @@ test("returning an in-flight field to its original value survives navigation and
   let initial: Project | undefined;
   let final: Project | undefined;
   try {
-    const seed = (await service.bootstrap()).project;
+    const seed = (await service.fixtureBootstrap()).project;
     initial = await service.apply(seed, { type: "set_brief", objective: "Old",
       audience: seed.brief.audience, constraints: seed.brief.constraints, exclusions: seed.brief.exclusions,
     });
     const requestsBefore = applyRequests(service).length;
-    await service.attachPage(page);
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openBrief(page);
     await expect(input(page, "Production objective")).toHaveValue("Old");
@@ -348,8 +348,8 @@ test("a real brief validation failure preserves every input through reload and c
   let initial: Project | undefined;
   let final: Project | undefined;
   try {
-    initial = (await service.bootstrap()).project;
-    await service.attachPage(page);
+    initial = (await service.fixtureBootstrap()).project;
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openBrief(page);
     const raw = ["  Do not silently save this separate title  ", "Keep this valid objective after the refusal.",
@@ -399,9 +399,9 @@ for (const resolution of ["saved", "draft"] as const) {
     try {
       peer = await service.peer();
       second = await context.newPage();
-      initial = (await service.bootstrap()).project;
-      await service.attachPage(page);
-      await peer.attachPage(second);
+      initial = (await service.fixtureBootstrap()).project;
+      await service.attachFixturePage(page);
+      await peer.attachFixturePage(second);
       await page.goto("/");
       await second.goto("/");
       await openBrief(page);
@@ -474,8 +474,8 @@ test("reopening revokes a real grant without changing the revision or clearing t
   let initial: Project | undefined;
   let final: Project | undefined;
   try {
-    initial = (await service.bootstrap()).project;
-    await service.attachPage(page);
+    initial = (await service.fixtureBootstrap()).project;
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openBrief(page);
     const raw = ["  This title is still separate  ", "Keep the brief after a permission refusal.",

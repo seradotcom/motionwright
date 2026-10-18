@@ -90,13 +90,13 @@ test("six real revisions preserve an authored plan, pending text, source bytes a
   let freshContext: BrowserContext | undefined;
   const snapshots: Record<string, unknown> = {};
   try {
-    const seed = (await service.bootstrap()).project;
+    const seed = (await service.fixtureBootstrap()).project;
     const claimText = "Synthetic source note for an author-controlled shot plan.";
     const withClaim = await service.apply(seed, { type: "add_claim", text: claimText,
       source: { kind: "manual_note", label: "Synthetic preservation test source" },
       context: "Test fixture only; no observed product behavior is asserted.", source_revision: null,
     });
-    await service.attachPage(page);
+    await service.attachFixturePage(page);
     await page.goto("/");
     const plan = await openPlan(page);
     await planField(plan, "Objective").fill("Retain the author's saved production direction.");
@@ -215,7 +215,7 @@ test("six real revisions preserve an authored plan, pending text, source bytes a
     // SQLite state; the pending title must not masquerade as a saved project.
     freshContext = await browser.newContext();
     const freshPage = await freshContext.newPage();
-    await service.attachPage(freshPage);
+    await service.attachFixturePage(freshPage);
     await freshPage.goto(page.url());
     await openBrief(freshPage);
     await expect(field(freshPage, "Project title")).toHaveValue(final.title);
@@ -233,13 +233,13 @@ test("a newly saved brief seeds the real initial plan without overwriting a late
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
   const snapshots: Record<string, unknown> = {};
   try {
-    const initial = (await service.bootstrap()).project;
+    const initial = (await service.fixtureBootstrap()).project;
     expect(initial.production_design?.plan).toBeNull();
     const baseline = await service.apply(initial, { type: "set_narrative_premise",
       premise: "An existing narrative premise that the author can develop into a plan.",
     });
     snapshots.baseline = baseline;
-    await service.attachPage(page);
+    await service.attachFixturePage(page);
     await page.goto("/");
     await openBrief(page);
     await field(page, "Production objective").fill("The newly committed brief objective.");

@@ -30,7 +30,30 @@ fn invoke(session: &mut Session, command: &str, args: Value) -> Result<Value, St
 }
 
 fn bootstrap(session: &mut Session) -> Project {
-    let response = invoke(session, "bootstrap", json!({})).unwrap();
+    // Test arrangement explicitly selects the seeded project; production's
+    // no-selection bootstrap must leave the library visible.
+    let listed = invoke(
+        session,
+        "list_projects",
+        json!({"request": {
+            "cursor": null, "limit": 2
+        }}),
+    )
+    .unwrap();
+    let items = listed["items"].as_array().expect("project list");
+    assert_eq!(items.len(), 1, "fixture must contain one seeded project");
+    assert_eq!(listed["truncated"], false);
+    let id = items[0]["id"].as_str().expect("stored identity");
+    let response = invoke(
+        session,
+        "bootstrap",
+        json!({"request": {
+            "project_id": id
+        }}),
+    )
+    .unwrap();
+    assert_eq!(response["project_selection"]["status"], "selected");
+    assert_eq!(response["project_selection"]["project_id"], id);
     assert_eq!(response["test_transport"], "service-test-jsonl");
     assert_eq!(response["fixture"]["label"], "synthetic_test_fixture");
     assert!(
