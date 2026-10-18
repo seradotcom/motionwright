@@ -285,6 +285,65 @@ class FirstUseAuditTests(unittest.TestCase):
             audit.write_new_receipt(Path("relative.json"), self.inspect())
         self.assertEqual(failure.exception.code, "receipt_destination_invalid")
 
+    def substitute_hardlink_at_open(self, target, replacement, callback):
+        """Replace the checked pathname just before the product opens it.
+
+        A real hardlink avoids requiring privileged symlink creation on
+        Windows; original and substituted files have distinct inode IDs.
+        Both remain under this test's disposable directory.
+        """
+        original_open = audit.os.open
+        prior = self.root / (target.name + ".original-inode")
+        self.assertNotEqual(target.stat().st_ino, replacement.stat().st_ino)
+        swapped = False
+
+        def hijacked_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(path) == target:
+                swapped = True
+                os.replace(target, prior)
+                os.link(replacement, target)
+            return original_open(path, flags, *args, **kwargs)
+
+        try:
+            with patch.object(audit.os, "open", side_effect=hijacked_open):
+                callback()
+        finally:
+            self.assertTrue(swapped, "the original product open must be exercised")
+
+    def test_connection_inode_swap_after_path_preflight_fails_closed(self):
+        """A different valid file cannot replace the checked connection."""
+        alt = self.root / "different-owner.json"
+        alt.write_bytes(self.connection.read_bytes())
+        alt.chmod(0o600)
+
+        with self.assertRaises(audit.AuditError) as failure:
+            self.substitute_hardlink_at_open(self.connection, alt, self.inspect)
+        self.assertEqual(failure.exception.code, "connection_invalid")
+
+    def test_executable_inode_swap_after_path_preflight_fails_closed(self):
+        """An identity substitution must be rejected despite equal digest."""
+        alt = self.root / "different-cli.bin"
+        alt.write_bytes(self.cli.read_bytes())
+        alt.chmod(0o700)
+
+        with self.assertRaises(audit.AuditError) as failure:
+            self.substitute_hardlink_at_open(self.cli, alt, self.inspect)
+        self.assertEqual(failure.exception.code, "executable_changed")
+
+    def test_registry_reference_inode_swap_after_preflight_fails_closed(self):
+        """Scope-valid bytes on another inode do not inherit checked status."""
+        alt = self.root / "different-reference.json"
+        alt.write_bytes(self.saved.read_bytes())
+        alt.chmod(0o600)
+
+        with self.assertRaises(audit.AuditError) as failure:
+            self.substitute_hardlink_at_open(
+                self.saved, alt,
+                lambda: self.inspect(connection_file=None, registry_root=self.registry),
+            )
+        self.assertEqual(failure.exception.code, "registry_invalid")
+
     def test_real_subprocess_arguments_are_readonly_and_secret_free(self):
         from unittest.mock import Mock
         process = Mock()
