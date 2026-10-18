@@ -255,23 +255,192 @@ class DeliveryIntegrityTests(unittest.TestCase):
         self.assertFalse(doc["delivery_boundary"]["automatic_publish"])
 
     def test_script_cannot_claim_success_if_checkout_changes_after_build(self):
-        from unittest.mock import patch
-        original = manifest._checkout
-        calls = 0
+        document = manifest.build_manifest(self.root, self.sha)
+        expected = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        real_checkout = manifest._checkout
+        real_writer = manifest.write_new_manifest
+        real_link = manifest.os.link
+        real_unlink = manifest.os.unlink
+        real_remove = manifest.os.remove
+        license_path = self.root / "LICENSE"
+        changed_license = license_path.read_bytes() + b"fixture tracked change after publication\n"
+        checkout_calls = []
+        checkout_failures = []
+        link_calls = []
+        committed = []
+        removed_final = []
+        observed_before_source_change = []
+
+        def is_final(path, directory_fd):
+            if isinstance(path, int):
+                return False
+            value = os.fsdecode(os.fspath(path))
+            if directory_fd is None and value == str(self.output):
+                return True
+            return bool(committed and directory_fd == committed[0][1]
+                        and value == os.fsdecode(os.fspath(committed[0][0])))
+
+        def link_once(source, target, *args, **kwargs):
+            link_calls.append((source, target))
+            if len(link_calls) != 1:
+                raise AssertionError("Manifest publication must not retry os.link")
+            result = real_link(source, target, *args, **kwargs)
+            committed.append((target, kwargs.get("dst_dir_fd")))
+            return result
 
         def changed_after_output(root, sha):
-            nonlocal calls
-            calls += 1
-            if calls == 3:
-                raise manifest.ManifestError("source_checkout_changed_after_write")
-            return original(root, sha)
+            checkout_calls.append((root, sha))
+            if len(checkout_calls) == 3:
+                observed_before_source_change.append(self.output.read_bytes())
+                license_path.write_bytes(changed_license)
+            try:
+                return real_checkout(root, sha)
+            except manifest.ManifestError as exc:
+                checkout_failures.append((len(checkout_calls), exc.code))
+                raise
 
-        with patch.object(manifest, "_checkout", side_effect=changed_after_output):
+        def track_unlink(path, *args, **kwargs):
+            if is_final(path, kwargs.get("dir_fd")):
+                removed_final.append("unlink")
+            return real_unlink(path, *args, **kwargs)
+
+        def track_remove(path, *args, **kwargs):
+            if is_final(path, kwargs.get("dir_fd")):
+                removed_final.append("remove")
+            return real_remove(path, *args, **kwargs)
+
+        with contextlib.ExitStack() as patches:
+            writer = patches.enter_context(
+                patch.object(manifest, "write_new_manifest", wraps=real_writer)
+            )
+            patches.enter_context(
+                patch.object(manifest, "_checkout", side_effect=changed_after_output)
+            )
+            patches.enter_context(patch.object(manifest.os, "link", side_effect=link_once))
+            patches.enter_context(patch.object(manifest.os, "unlink", side_effect=track_unlink))
+            patches.enter_context(patch.object(manifest.os, "remove", side_effect=track_remove))
             code, stdout, stderr = self.invoke()
+
+        self.assertEqual(len(checkout_calls), 3)
+        self.assertEqual(checkout_failures, [(3, "source_metadata_dirty")])
+        self.assertEqual(observed_before_source_change, [expected])
+        self.assertEqual(license_path.read_bytes(), changed_license)
+        self.assertEqual(writer.call_count, 1, "Do not retry a published manifest")
+        self.assertEqual((len(link_calls), len(committed)), (1, 1))
+        self.assertEqual(
+            removed_final, [], "A failed post-publication checkout must not unlink the final path"
+        )
         self.assertEqual((code, stdout), (2, ""))
-        self.assertIn("source_checkout_changed_after_write", stderr)
-        self.assertEqual(calls, 3)
-        self.assertFalse(self.output.exists(), "False manifest must be cleaned up")
+        self.assertEqual(
+            stderr, "delivery-manifest=REFUSED code=manifest_output_commit_uncertain\n"
+        )
+        self.assertEqual(self.output.read_bytes(), expected)
+        self.assertEqual(list(self.output_dir.iterdir()), [self.output])
+
+
+    def test_file_fsync_failure_does_not_publish_manifest(self):
+        observed = []
+
+        def fail_file_sync(descriptor):
+            info = os.fstat(descriptor)
+            observed.append({
+                "regular": stat.S_ISREG(info.st_mode),
+                "size": info.st_size,
+                "final_visible": os.path.lexists(self.output),
+            })
+            raise OSError("fixture_file_fsync_failure")
+
+        with patch.object(manifest.os, "fsync", side_effect=fail_file_sync):
+            code, stdout, stderr = self.invoke()
+
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(
+            stderr, "delivery-manifest=REFUSED code=manifest_output_refused\n"
+        )
+        self.assertEqual(len(observed), 1, "The real file-sync boundary must run")
+        self.assertTrue(observed[0]["regular"])
+        self.assertGreater(observed[0]["size"], 0, "Bytes must reach the real file")
+        self.assertFalse(
+            os.path.lexists(self.output),
+            "A known file-sync failure must leave no final manifest",
+        )
+        self.assertFalse(
+            observed[0]["final_visible"],
+            "The final name must not be visible before file synchronization",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(_git(self.root, "rev-parse", "HEAD"), self.sha)
+        self.assertEqual(
+            _git(self.root, "status", "--porcelain", "--untracked-files=no"), ""
+        )
+
+    def test_partial_write_failure_does_not_publish_manifest(self):
+        real_fdopen = manifest.os.fdopen
+        output_streams = []
+        observed = []
+        final_output = self.output
+
+        class PartialWriteThenFail:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *exception):
+                return self.stream.__exit__(*exception)
+
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+
+            def write(self, content):
+                prefix = content[:17]
+                written = self.stream.write(prefix)
+                self.stream.flush()
+                observed.append({
+                    "content_size": len(content),
+                    "written": written,
+                    "file_size": os.fstat(self.stream.fileno()).st_size,
+                    "final_visible": os.path.lexists(final_output),
+                })
+                raise OSError("fixture_partial_write_failure")
+
+        def fail_only_output_stream(descriptor, mode="r", *args, **kwargs):
+            stream = real_fdopen(descriptor, mode, *args, **kwargs)
+            if mode != "wb":
+                return stream
+            wrapped = PartialWriteThenFail(stream)
+            output_streams.append(wrapped)
+            return wrapped
+
+        with patch.object(manifest.os, "fdopen", side_effect=fail_only_output_stream):
+            code, stdout, stderr = self.invoke()
+
+        self.assertEqual(len(output_streams), 1, "Only the real output is wrapped")
+        self.assertTrue(output_streams[0].stream.closed, "Close the owned handle")
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(
+            stderr, "delivery-manifest=REFUSED code=manifest_output_refused\n"
+        )
+        self.assertEqual(len(observed), 1, "Inject exactly one failed write")
+        self.assertGreater(observed[0]["content_size"], 17)
+        self.assertEqual(observed[0]["written"], 17)
+        self.assertEqual(observed[0]["file_size"], 17)
+        self.assertFalse(
+            os.path.lexists(self.output),
+            "A known partial-write failure must leave no final manifest",
+        )
+        self.assertFalse(
+            observed[0]["final_visible"],
+            "Partial bytes must not be visible at the final name",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(_git(self.root, "rev-parse", "HEAD"), self.sha)
+        self.assertEqual(
+            _git(self.root, "status", "--porcelain", "--untracked-files=no"), ""
+        )
+
 
 
 if __name__ == "__main__":

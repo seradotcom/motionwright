@@ -272,7 +272,14 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     except OwnerCandidateError as exc:
         print("owner-candidate-provenance=REFUSED code=" + str(exc), file=sys.stderr)
         return 2
-    except (ManifestError, OSError, ValueError):
+    except ManifestError as exc:
+        reason = ("manifest_output_commit_uncertain"
+                  if exc.code == "manifest_output_commit_uncertain"
+                  else "owner_output_refused")
+        print("owner-candidate-provenance=REFUSED code=" + reason,
+              file=sys.stderr)
+        return 2
+    except (OSError, ValueError):
         print("owner-candidate-provenance=REFUSED code=owner_output_refused",
               file=sys.stderr)
         return 2

@@ -323,6 +323,125 @@ class OwnerCandidateProvenanceTests(unittest.TestCase):
         finally:
             junction.rmdir()
 
+    def invoke(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = owner.main([
+                "--source-sha", self.sha,
+                "--bundle-kind", "nsis",
+                "--artifact", str(self.artifact),
+                "--candidate-receipt", str(self.receipt),
+                "--output", str(self.output),
+            ], root=self.root)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def assert_uncertain_result(self, result):
+        code, stdout, stderr = result
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(
+            stderr,
+            "owner-candidate-provenance=REFUSED "
+            "code=manifest_output_commit_uncertain\n",
+        )
+
+    def check_failure_after_publication(self, *, replace_output):
+        clean = self.verify()
+        real_link = os.link
+        retained = []
+        replacement = self.dir / "external-replacement.json"
+        if replace_output:
+            replacement.write_bytes(b"independent replacement evidence")
+
+        def link_then_fail(*args, **kwargs):
+            real_link(*args, **kwargs)
+            if replace_output:
+                replacement.replace(self.output)
+            info = self.output.stat()
+            retained.append((
+                self.output.read_bytes(),
+                (info.st_dev, info.st_ino),
+            ))
+            raise OSError("private post-publication diagnostic")
+
+        with (
+            patch.object(owner, "validate_owner_candidate",
+                         return_value=clean) as validate,
+            patch.object(owner, "write_new_manifest",
+                         wraps=owner.write_new_manifest) as publish,
+            patch.object(owner, "_discard_new_output_on_source_change",
+                         wraps=owner._discard_new_output_on_source_change) as discard,
+            patch.object(os, "link", side_effect=link_then_fail) as link,
+        ):
+            result = self.invoke()
+
+        self.assert_uncertain_result(result)
+        validate.assert_called_once()
+        publish.assert_called_once()
+        link.assert_called_once()
+        discard.assert_not_called()
+        self.assertEqual(len(retained), 1)
+        contents, identity = retained[0]
+        info = self.output.stat()
+        self.assertEqual(self.output.read_bytes(), contents)
+        self.assertEqual((info.st_dev, info.st_ino), identity)
+
+    def test_error_after_publication_preserves_output_without_retry(self):
+        self.check_failure_after_publication(replace_output=False)
+
+    def test_external_replacement_after_publication_is_untouched(self):
+        self.check_failure_after_publication(replace_output=True)
+
+    def test_checkout_change_after_publication_preserves_uncertain_output(self):
+        clean = self.verify()
+        real_write = owner.write_new_manifest
+        retained = []
+
+        def write_then_change_source(root, output, report):
+            real_write(root, output, report)
+            retained.append(self.output.read_bytes())
+            (root / "Cargo.lock").write_text(
+                "changed after publication", encoding="utf-8"
+            )
+
+        with (
+            patch.object(owner, "validate_owner_candidate",
+                         return_value=clean) as validate,
+            patch.object(owner, "write_new_manifest",
+                         side_effect=write_then_change_source) as publish,
+            patch.object(owner, "_discard_new_output_on_source_change",
+                         wraps=owner._discard_new_output_on_source_change) as discard,
+        ):
+            result = self.invoke()
+
+        self.assert_uncertain_result(result)
+        validate.assert_called_once()
+        publish.assert_called_once()
+        discard.assert_called_once()
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(self.output.read_bytes(), retained[0])
+
+    def test_other_manifest_failure_remains_redacted(self):
+        clean = self.verify()
+        with (
+            patch.object(owner, "validate_owner_candidate",
+                         return_value=clean),
+            patch.object(
+                owner, "write_new_manifest",
+                side_effect=owner.ManifestError(
+                    "private output path or backend diagnostic"
+                ),
+            ) as publish,
+        ):
+            code, stdout, stderr = self.invoke()
+
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(
+            stderr,
+            "owner-candidate-provenance=REFUSED code=owner_output_refused\n",
+        )
+        publish.assert_called_once()
+        self.assertFalse(self.output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
