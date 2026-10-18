@@ -130,6 +130,9 @@ ManifestDPIAwareness PerMonitorV2
 ; That policy and the adjacent CHECK calls do not form an install transaction.
 
 !macro MWINST_FAIL Reason
+!ifdef MWINST_CI_DIAGNOSTICS
+  Call MWINST_CaptureFailure
+!endif
   DetailPrint "Installation refused: ${Reason}"
   SetErrorLevel 2
   Abort "Installation stopped: ${Reason}"
@@ -197,6 +200,7 @@ Var NoShortcutMode
 !macroend
 
 !macro MWINST_PREPARE_PAYLOAD Symbol
+  StrCpy $MWINST_DiagnosticPhase "prepare-${Symbol}"
   !insertmacro MWOWN_CHECK "" "$MWINST_PluginRoot" "mw-prepared-${Symbol}.bin" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
   ${If} $0 != ${MWOWN_MISSING}
     !insertmacro MWINST_FAIL "The payload staging name is not absent."
@@ -213,6 +217,7 @@ Var NoShortcutMode
 !macroend
 
 !macro MWINST_INSTALL_PAYLOAD Relative Symbol
+  StrCpy $MWINST_DiagnosticPhase "install-${Symbol}"
   ; First classify the existing immutable destination. A matching current
   ; payload needs neither an extraction nor another publication.
   StrCpy $MWINST_Relative "${Relative}"
@@ -284,6 +289,7 @@ Var MWINST_PrevSha
 Var MWINST_PrevSize
 Var MWINST_Classification
 Var MWINST_NeedFile
+Var MWINST_DiagnosticPhase
 Var MWINST_StageLeaf
 
 Name "${PRODUCTNAME}"
@@ -508,6 +514,21 @@ Function .onInit
 FunctionEnd
 
 
+!ifdef MWINST_CI_DIAGNOSTICS
+; Explicit disposable-runner opt-in only. Never enabled in release binaries.
+; The receipt includes fixed stage identifiers and guard diagnostics, no paths.
+Function MWINST_CaptureFailure
+  Push $0
+  ClearErrors
+  FileOpen $0 "$TEMP\motionwright-nsis-failure-v1.log" a
+  ${IfNot} ${Errors}
+    FileWrite $0 "v1|phase=$MWINST_DiagnosticPhase|reason=$MWOWN_LastReason|win32=$MWOWN_LastWin32Error$\r$\n"
+    FileClose $0
+  ${EndIf}
+  Pop $0
+FunctionEnd
+!endif
+
 Function MWINST_LookupCurrent
   StrCpy $MWINST_CurrentFound 0
   StrCpy $MWINST_CurrentSha ""
@@ -556,6 +577,7 @@ Function MWINST_Classify
 FunctionEnd
 
 Function MWINST_DeletePrevious
+  StrCpy $MWINST_DiagnosticPhase "withdraw-previous"
   !insertmacro MWPREV_LOOKUP "$MWINST_Relative"
   ${If} $MWINST_PrevFound != 1
     !insertmacro MWINST_FAIL "No pinned predecessor authorizes this removal: $MWINST_Relative"
@@ -616,6 +638,7 @@ Function MWINST_PrepareSources
 FunctionEnd
 
 Function MWINST_Preflight
+  StrCpy $MWINST_DiagnosticPhase "preflight"
   ; Registry values can cause a refusal, but never grant file ownership or
   ; authorize an executable. A partial installation may have no registration.
   ReadRegStr $R0 SHCTX "${MANUPRODUCTKEY}" ""
@@ -803,6 +826,7 @@ Section WebView2
 SectionEnd
 
 Section Install
+  StrCpy $MWINST_DiagnosticPhase "install-begin"
   SetOverwrite off
   ClearErrors
   SetOutPath $INSTDIR
@@ -848,6 +872,7 @@ Section Install
     ; WriteUninstaller cannot be embedded in File. Copy its fully checked
     ; private source to a same-volume stage, preserving the old executable
     ; until that staged copy is byte-verified.
+    StrCpy $MWINST_DiagnosticPhase "self-stage"
     StrCpy $MWINST_StageLeaf "mw-uninstaller-stage-$MWINST_NewSelfSha.bin"
     !insertmacro MWOWN_CHECK "" "$INSTDIR" "$MWINST_StageLeaf" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
     ${If} $0 = ${MWOWN_MISSING}
@@ -859,6 +884,7 @@ Section Install
       System::Call 'kernel32::CopyFileW(w r2, w r3, i 1) i.r0 ?e'
       Pop $1
       ${If} $0 = 0
+        StrCpy $MWOWN_LastWin32Error $1
         !insertmacro MWINST_FAIL "The uninstaller staging copy was refused; previous bytes retained."
       ${EndIf}
     ${ElseIf} $0 != ${MWOWN_MATCHED}
@@ -872,6 +898,7 @@ Section Install
     Call MWINST_MakeDestinationAvailable
     ${If} $MWINST_NeedFile = 1
       !insertmacro MWINST_REQUIRE_ABSENT "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize"
+      StrCpy $MWINST_DiagnosticPhase "self-publish"
       !insertmacro MWOWN_PUBLISH "$INSTDIR" "$MWINST_StageLeaf" "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
       ${If} $0 = ${MWOWN_PUBLISH_UNCERTAIN}
         SetErrorLevel 3
