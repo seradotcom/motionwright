@@ -85,6 +85,43 @@ const MAX_BUNDLE_BLOBS: usize = 4096;
 const MAX_BUNDLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_SECRET_SCAN_BYTES: u64 = 8 * 1024 * 1024;
 
+// One finite byte-pattern policy is shared by metadata and streamed members.
+// This recognizes the existing credential shapes; it is not a proof that
+// arbitrary, encoded or encrypted credentials are absent.
+const PRIVATE_KEY_MARKER: &[u8] = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
+const CREDENTIAL_PREFIXES: [(&[u8], usize); 10] = [
+    (b"ghp_", 20),
+    (b"gho_", 20),
+    (b"ghu_", 20),
+    (b"ghs_", 20),
+    (b"xoxb-", 20),
+    (b"xoxa-", 20),
+    (b"xoxp-", 20),
+    (b"xoxr-", 20),
+    (b"xoxs-", 20),
+    (b"sk-", 24),
+];
+const ACCESS_KEY_WIDTH: usize = 20;
+
+const fn credential_pattern_width() -> usize {
+    let mut width = PRIVATE_KEY_MARKER.len();
+    let mut index = 0;
+    while index < CREDENTIAL_PREFIXES.len() {
+        let (prefix, suffix) = CREDENTIAL_PREFIXES[index];
+        let candidate = prefix.len() + suffix;
+        if candidate > width {
+            width = candidate;
+        }
+        index += 1;
+    }
+    if ACCESS_KEY_WIDTH > width {
+        width = ACCESS_KEY_WIDTH;
+    }
+    width
+}
+
+const CREDENTIAL_SCAN_OVERLAP: usize = credential_pattern_width() - 1;
+
 fn secret_token_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
 }
@@ -97,37 +134,25 @@ fn has_prefixed_secret(bytes: &[u8], prefix: &[u8], min_suffix: usize) -> bool {
             if window != prefix {
                 return false;
             }
-            bytes[index + prefix.len()..]
-                .iter()
-                .take_while(|byte| secret_token_char(**byte))
-                .count()
-                >= min_suffix
+            let suffix = &bytes[index + prefix.len()..];
+            suffix.len() >= min_suffix
+                && suffix[..min_suffix].iter().copied().all(secret_token_char)
         })
 }
 
 fn contains_credential_like_material(bytes: &[u8]) -> bool {
-    let private_key = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
     if bytes
-        .windows(private_key.len())
-        .any(|window| window == private_key)
+        .windows(PRIVATE_KEY_MARKER.len())
+        .any(|window| window == PRIVATE_KEY_MARKER)
     {
         return true;
     }
-
-    for prefix in [b"ghp_".as_slice(), b"gho_", b"ghu_", b"ghs_"] {
-        if has_prefixed_secret(bytes, prefix, 20) {
+    for (prefix, min_suffix) in CREDENTIAL_PREFIXES {
+        if has_prefixed_secret(bytes, prefix, min_suffix) {
             return true;
         }
     }
-    for prefix in [b"xoxb-".as_slice(), b"xoxa-", b"xoxp-", b"xoxr-", b"xoxs-"] {
-        if has_prefixed_secret(bytes, prefix, 20) {
-            return true;
-        }
-    }
-    if has_prefixed_secret(bytes, b"sk-", 24) {
-        return true;
-    }
-    bytes.windows(20).any(|window| {
+    bytes.windows(ACCESS_KEY_WIDTH).any(|window| {
         window.starts_with(b"AKIA")
             && window[4..]
                 .iter()
@@ -138,10 +163,43 @@ fn contains_credential_like_material(bytes: &[u8]) -> bool {
 fn ensure_secret_free_bytes(bytes: &[u8], context: &str) -> Result<()> {
     if contains_credential_like_material(bytes) {
         return Err(StorageError::InvalidBackup(format!(
-            "{context} contains credential-like material and cannot enter a portable bundle"
+            "{context} contains credential-like material and cannot enter project storage or export"
         )));
     }
     Ok(())
+}
+
+/// Detect the same finite byte patterns across arbitrary short reads.
+/// Only a bounded suffix survives a call. No media decoder, MIME assertion,
+/// text rewriting or complete-member allocation participates in the check.
+#[derive(Default)]
+struct CredentialScan {
+    tail: [u8; CREDENTIAL_SCAN_OVERLAP],
+    tail_len: usize,
+}
+
+impl CredentialScan {
+    fn check(&mut self, bytes: &[u8], context: &str) -> Result<()> {
+        let head_len = bytes.len().min(CREDENTIAL_SCAN_OVERLAP);
+        let mut crossing = [0_u8; CREDENTIAL_SCAN_OVERLAP * 2];
+        crossing[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        crossing[self.tail_len..self.tail_len + head_len].copy_from_slice(&bytes[..head_len]);
+        ensure_secret_free_bytes(&crossing[..self.tail_len + head_len], context)?;
+        ensure_secret_free_bytes(bytes, context)?;
+
+        if bytes.len() >= CREDENTIAL_SCAN_OVERLAP {
+            self.tail
+                .copy_from_slice(&bytes[bytes.len() - CREDENTIAL_SCAN_OVERLAP..]);
+            self.tail_len = CREDENTIAL_SCAN_OVERLAP;
+        } else {
+            let keep = self.tail_len.min(CREDENTIAL_SCAN_OVERLAP - bytes.len());
+            self.tail
+                .copy_within(self.tail_len - keep..self.tail_len, 0);
+            self.tail[keep..keep + bytes.len()].copy_from_slice(bytes);
+            self.tail_len = keep + bytes.len();
+        }
+        Ok(())
+    }
 }
 
 fn ensure_backup_secret_free(backup: &ProjectBackup) -> Result<()> {
@@ -501,65 +559,8 @@ impl Store {
     }
 
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> Result<BlobDescriptor> {
-        let source = source.as_ref();
-        ensure_regular_file(source, "blob source")?;
-        ensure_regular_directory(&self.blob_root, "content-addressed storage root")?;
-        let staging_root = self.blob_root.join(".staging");
-        create_checked_blob_directory(&staging_root)?;
-        let staging_path = staging_root.join(format!("{}.part", Uuid::now_v7()));
-
-        let mut input = File::open(source)?;
-        let mut stage_options = OpenOptions::new();
-        stage_options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            stage_options.mode(0o600);
-        }
-        let mut output = stage_options.open(&staging_path)?;
-        let mut hasher = Sha256::new();
-        let mut size_bytes = 0_u64;
-        let mut buffer = [0_u8; 128 * 1024];
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            output.write_all(&buffer[..read])?;
-            hasher.update(&buffer[..read]);
-            size_bytes = size_bytes.saturating_add(read as u64);
-        }
-        output.flush()?;
-        output.sync_all()?;
-        drop(output);
-
-        let sha256 = hex::encode(hasher.finalize());
-        let destination = self.blob_path(&sha256)?;
-        let shas = self.blob_root.join("sha256");
-        create_checked_blob_directory(&shas)?;
-        create_checked_blob_directory(&shas.join(&sha256[..2]))?;
-        match fs::symlink_metadata(&destination) {
-            Ok(_) => {
-                let existing_path = self.checked_existing_blob_path(&sha256)?;
-                let existing = hash_file(&existing_path)?;
-                if existing.sha256 != sha256 || existing.size_bytes != size_bytes {
-                    return Err(StorageError::InvalidBackup(
-                        "content-addressed blob path contains different bytes".into(),
-                    ));
-                }
-                fs::remove_file(&staging_path)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // A hard link is create-new: unlike rename, it refuses to
-                // replace a destination inserted after our preflight check.
-                // Both directories live under the same CAS root/device.
-                fs::hard_link(&staging_path, &destination)?;
-                fs::remove_file(&staging_path)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-
-        Ok(BlobDescriptor { sha256, size_bytes })
+        let staged = self.stage_file_import(source.as_ref())?;
+        self.publish_file_import(&staged)
     }
 
     pub fn verified_blob_path(&self, digest: &str) -> Result<PathBuf> {
@@ -1549,6 +1550,78 @@ fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
     }
     let bytes = fs::read(path)?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod credential_stream_tests {
+    use super::*;
+
+    struct ShortReads<'a> {
+        remaining: &'a [u8],
+        stride: usize,
+    }
+
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let count = output.len().min(self.stride).min(self.remaining.len());
+            output[..count].copy_from_slice(&self.remaining[..count]);
+            self.remaining = &self.remaining[count..];
+            Ok(count)
+        }
+    }
+
+    fn scan_short_reads(mut input: impl Read) -> Result<()> {
+        let mut scanner = CredentialScan::default();
+        let mut buffer = [0_u8; 128];
+        loop {
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                return Ok(());
+            }
+            scanner.check(&buffer[..count], "file admission test")?;
+        }
+    }
+
+    #[test]
+    fn credential_patterns_and_ordinary_thresholds_survive_every_short_read_width() {
+        let mut markers = CREDENTIAL_PREFIXES
+            .iter()
+            .map(|(prefix, suffix)| {
+                let mut marker = prefix.to_vec();
+                marker.extend(std::iter::repeat_n(b'A', *suffix));
+                marker
+            })
+            .collect::<Vec<_>>();
+        markers.push(PRIVATE_KEY_MARKER.to_vec());
+        markers.push([b"AKIA".as_slice(), &[b'A'; ACCESS_KEY_WIDTH - 4]].concat());
+        for marker in markers {
+            let ordinary = &marker[..marker.len() - 1];
+            assert!(contains_credential_like_material(&marker));
+            assert!(!contains_credential_like_material(ordinary));
+            for stride in 1..=credential_pattern_width() + 1 {
+                for (sample, should_reject) in [(&marker[..], true), (ordinary, false)] {
+                    let mut bytes = vec![0xff; 17];
+                    bytes.extend_from_slice(sample);
+                    bytes.extend_from_slice(&[0, 0x80]);
+                    let result = scan_short_reads(ShortReads {
+                        remaining: &bytes,
+                        stride,
+                    });
+                    if should_reject {
+                        let error = result.unwrap_err();
+                        assert!(matches!(error, StorageError::InvalidBackup(_)));
+                        assert!(
+                            !error
+                                .to_string()
+                                .contains(std::str::from_utf8(&marker).unwrap())
+                        );
+                    } else {
+                        result.unwrap();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
