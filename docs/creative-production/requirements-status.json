@@ -3,7 +3,7 @@
   "conformance_schema_version": 1,
   "current_assessment_source": {
     "digest_kind": "git-text-lf",
-    "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+    "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
     "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
   },
   "evidence_rule": "Use exact-SHA CI artifacts for test outcomes. Code status does not synthesize PASS, human reviews or a release claim.",
@@ -65,6 +65,23 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
+        },
+        {
+          "previous_main_commit": "ec6fcaffd6dedd3734fb81b1baf7d3cf8702fe3c",
+          "prior_criterion_statuses": {
+            "MW05-E00-01#/negative_case": "stale"
+          },
+          "prior_evidence_ids": [
+            "a5-ledger-id-negatives-main-ce22"
+          ],
+          "prior_status": "stale",
+          "reason": "Source currency advanced after A1 integrated criterion-currency repair into main df056; historical proofs cannot imply a new execution.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -81,15 +98,14 @@
       "technical_assessment": {
         "artifact_verification": {
           "currency_note": "Prior CE22 media/integration artifacts are preserved, not promoted on BF487 until their exact source identities are revalidated.",
-          "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
-          "status": "not_admitted"
+          "media_persistence_or_installed_artifacts": "No installed or native source media admission from these selected CI tests",
+          "status": "source_bound_selected_original_CI_logs"
         },
         "contract_acceptance": {
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
             "MW05-E00-01#/acceptance",
-            "MW05-E00-01#/negative_case",
             "MW05-E00-01#/requirement"
           ],
           "status": "open"
@@ -117,18 +133,17 @@
           },
           {
             "evidence_ids": [
-              "a5-ledger-id-negatives-main-ce22"
+              "a5-source-identity-main-5ed"
             ],
             "id": "MW05-E00-01#/negative_case",
-            "missing_assertions": [
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
-            ],
+            "missing_assertions": [],
             "scope_notes": [
               "Exact current-main fixture rejects renaming/source identity forgery; no positive release claim.",
-              "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS."
+              "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
+              "Current 5ed CI five synthetic original negative tests admitted; all other acceptance remains open."
             ],
             "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d",
-            "status": "stale"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -140,8 +155,10 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_record_ids": [
+            "a5-source-identity-main-5ed"
+          ],
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [
             "a5-ledger-id-negatives-main-ce22"
           ],
@@ -158,29 +175,29 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "selected_source_and_assertion_review"
+          "scope": "exact_5ed_technical_CI_selected_assertions_without_complete_product_acceptance"
         },
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
           "evidence_ids": [
-            "a5-ledger-id-negatives-main-ce22"
+            "a5-source-identity-main-5ed"
           ],
           "execution_kinds": [
             "synthetic"
           ],
-          "status": "stale"
+          "status": "partial"
         }
       }
     },
@@ -233,6 +250,26 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
+        },
+        {
+          "previous_main_commit": "ec6fcaffd6dedd3734fb81b1baf7d3cf8702fe3c",
+          "prior_criterion_statuses": {
+            "MW05-E00-02#/acceptance": "stale",
+            "MW05-E00-02#/negative_case": "stale",
+            "MW05-E00-02#/requirement": "stale"
+          },
+          "prior_evidence_ids": [
+            "backup-compatibility-main-ce22",
+            "restored-authority-main-ce22"
+          ],
+          "prior_status": "stale",
+          "reason": "Source currency advanced after A1 integrated criterion-currency repair into main df056; historical proofs cannot imply a new execution.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -273,7 +310,8 @@
             "id": "MW05-E00-02#/requirement",
             "missing_assertions": [
               "remaining_canonical_obligations_not_demonstrated_by_the_scoped_storage_or_domain_assertions",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
@@ -290,7 +328,8 @@
             "id": "MW05-E00-02#/acceptance",
             "missing_assertions": [
               "remaining_canonical_obligations_not_demonstrated_by_the_scoped_storage_or_domain_assertions",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
@@ -305,7 +344,8 @@
             ],
             "id": "MW05-E00-02#/negative_case",
             "missing_assertions": [
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Complete canonical field supported by its current execution/source evidence and separately bound sufficiency review.",
@@ -327,7 +367,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [
             "backup-compatibility-main-ce22",
             "restored-authority-main-ce22"
@@ -351,7 +391,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -363,7 +403,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -487,7 +527,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -514,7 +554,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -526,7 +566,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -597,6 +637,24 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
+        },
+        {
+          "previous_main_commit": "ec6fcaffd6dedd3734fb81b1baf7d3cf8702fe3c",
+          "prior_criterion_statuses": {
+            "MW05-E00-04#/negative_case": "stale"
+          },
+          "prior_evidence_ids": [
+            "a5-ledger-id-negatives-main-ce22",
+            "intake-source-main-ce22"
+          ],
+          "prior_status": "stale",
+          "reason": "Source currency advanced after A1 integrated criterion-currency repair into main df056; historical proofs cannot imply a new execution.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -612,15 +670,14 @@
       "technical_assessment": {
         "artifact_verification": {
           "currency_note": "Prior CE22 media/integration artifacts are preserved, not promoted on BF487 until their exact source identities are revalidated.",
-          "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
-          "status": "scoped_logs_retained"
+          "media_persistence_or_installed_artifacts": "No installed or native source media admission from these selected CI tests",
+          "status": "source_bound_selected_original_CI_logs"
         },
         "contract_acceptance": {
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
             "MW05-E00-04#/acceptance",
-            "MW05-E00-04#/negative_case",
             "MW05-E00-04#/requirement"
           ],
           "status": "open"
@@ -648,19 +705,17 @@
           },
           {
             "evidence_ids": [
-              "a5-ledger-id-negatives-main-ce22",
-              "intake-source-main-ce22"
+              "a5-source-identity-main-5ed"
             ],
             "id": "MW05-E00-04#/negative_case",
-            "missing_assertions": [
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
-            ],
+            "missing_assertions": [],
             "scope_notes": [
               "Exact current-main fixture rejects renaming/source identity forgery; no positive release claim.",
-              "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS."
+              "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
+              "Current 5ed CI five synthetic original negative tests admitted; all other acceptance remains open."
             ],
             "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
-            "status": "stale"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -672,8 +727,10 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_record_ids": [
+            "a5-source-identity-main-5ed"
+          ],
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [
             "a5-ledger-id-negatives-main-ce22",
             "intake-source-main-ce22"
@@ -690,30 +747,29 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "selected_source_and_assertion_review"
+          "scope": "exact_5ed_technical_CI_selected_assertions_without_complete_product_acceptance"
         },
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
           "evidence_ids": [
-            "a5-ledger-id-negatives-main-ce22",
-            "intake-source-main-ce22"
+            "a5-source-identity-main-5ed"
           ],
           "execution_kinds": [
             "synthetic"
           ],
-          "status": "stale"
+          "status": "partial"
         }
       }
     },
@@ -832,7 +888,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -865,7 +921,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -877,7 +933,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -990,7 +1046,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1011,7 +1067,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1023,7 +1079,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1132,7 +1188,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1149,7 +1205,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1161,7 +1217,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1267,7 +1323,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1281,7 +1337,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1293,7 +1349,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1400,7 +1456,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1415,7 +1471,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1427,7 +1483,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1533,7 +1589,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1547,7 +1603,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1559,7 +1615,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1666,7 +1722,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1681,7 +1737,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1693,7 +1749,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1800,7 +1856,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1815,7 +1871,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1827,7 +1883,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1937,7 +1993,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1955,7 +2011,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1967,7 +2023,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2084,7 +2140,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2109,7 +2165,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2121,7 +2177,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2239,7 +2295,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2265,7 +2321,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2277,7 +2333,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2386,7 +2442,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2403,7 +2459,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2415,7 +2471,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2520,7 +2576,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2531,7 +2587,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2543,7 +2599,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2658,7 +2714,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2681,7 +2737,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2693,7 +2749,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2805,7 +2861,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2823,7 +2879,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2835,7 +2891,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2941,7 +2997,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2955,7 +3011,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2967,7 +3023,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3078,7 +3134,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3097,7 +3153,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3109,7 +3165,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3218,7 +3274,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3235,7 +3291,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3247,7 +3303,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3378,7 +3434,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3417,7 +3473,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3429,7 +3485,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3548,7 +3604,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3575,7 +3631,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3587,7 +3643,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3697,7 +3753,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3715,7 +3771,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3727,7 +3783,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3841,7 +3897,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3863,7 +3919,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3875,7 +3931,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4003,7 +4059,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4039,7 +4095,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4051,7 +4107,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4175,7 +4231,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4207,7 +4263,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4219,7 +4275,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4357,7 +4413,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4403,7 +4459,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4415,7 +4471,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4547,7 +4603,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4587,7 +4643,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4599,7 +4655,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4718,7 +4774,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4745,7 +4801,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4757,7 +4813,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4860,7 +4916,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4871,7 +4927,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4883,7 +4939,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5006,7 +5062,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5037,7 +5093,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5049,7 +5105,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5169,7 +5225,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5197,7 +5253,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5209,7 +5265,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5331,7 +5387,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5361,7 +5417,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5373,7 +5429,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5434,6 +5490,26 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
+        },
+        {
+          "previous_main_commit": "ec6fcaffd6dedd3734fb81b1baf7d3cf8702fe3c",
+          "prior_criterion_statuses": {
+            "MW05-E08-04#/acceptance": "stale",
+            "MW05-E08-04#/negative_case": "stale",
+            "MW05-E08-04#/requirement": "stale"
+          },
+          "prior_evidence_ids": [
+            "delivery-recipes-main-ce22",
+            "duck-envelope-main-ce22"
+          ],
+          "prior_status": "stale",
+          "reason": "Source currency advanced after A1 integrated criterion-currency repair into main df056; historical proofs cannot imply a new execution.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -5483,7 +5559,8 @@
             "id": "MW05-E08-04#/requirement",
             "missing_assertions": [
               "remaining_canonical_obligations_not_demonstrated_by_the_scoped_storage_or_domain_assertions",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
@@ -5500,7 +5577,8 @@
             "id": "MW05-E08-04#/acceptance",
             "missing_assertions": [
               "complete_canonical_obligation_evidence_not_admitted",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Related observed assertions remain bounded by their evidence record limitations.",
@@ -5516,7 +5594,8 @@
             "id": "MW05-E08-04#/negative_case",
             "missing_assertions": [
               "complete_canonical_obligation_evidence_not_admitted",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Related observed assertions remain bounded by their evidence record limitations.",
@@ -5536,7 +5615,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [
             "delivery-recipes-main-ce22",
             "duck-envelope-main-ce22"
@@ -5565,7 +5644,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5577,7 +5656,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5690,7 +5769,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5705,7 +5784,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5717,7 +5796,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5836,7 +5915,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5863,7 +5942,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5875,7 +5954,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5984,7 +6063,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6001,7 +6080,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6013,7 +6092,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6116,7 +6195,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6127,7 +6206,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6139,7 +6218,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6198,6 +6277,25 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
+        },
+        {
+          "previous_main_commit": "ec6fcaffd6dedd3734fb81b1baf7d3cf8702fe3c",
+          "prior_criterion_statuses": {
+            "MW05-E10-01#/acceptance": "stale",
+            "MW05-E10-01#/negative_case": "stale",
+            "MW05-E10-01#/requirement": "stale"
+          },
+          "prior_evidence_ids": [
+            "cas-replay-main-ce22"
+          ],
+          "prior_status": "stale",
+          "reason": "Source currency advanced after A1 integrated criterion-currency repair into main df056; historical proofs cannot imply a new execution.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -6238,7 +6336,8 @@
             "id": "MW05-E10-01#/requirement",
             "missing_assertions": [
               "complete_canonical_obligation_evidence_not_admitted",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Related observed assertions remain bounded by their evidence record limitations.",
@@ -6254,7 +6353,8 @@
             "id": "MW05-E10-01#/acceptance",
             "missing_assertions": [
               "complete_canonical_obligation_evidence_not_admitted",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Related observed assertions remain bounded by their evidence record limitations.",
@@ -6270,7 +6370,8 @@
             "id": "MW05-E10-01#/negative_case",
             "missing_assertions": [
               "complete_canonical_obligation_evidence_not_admitted",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Related observed assertions remain bounded by their evidence record limitations.",
@@ -6290,7 +6391,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [
             "cas-replay-main-ce22"
           ],
@@ -6310,7 +6411,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6322,7 +6423,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6434,7 +6535,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6450,7 +6551,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6462,7 +6563,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6568,7 +6669,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6582,7 +6683,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6594,7 +6695,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6707,7 +6808,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6728,7 +6829,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6740,7 +6841,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6847,7 +6948,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6862,7 +6963,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6874,7 +6975,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6981,7 +7082,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6996,7 +7097,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7008,7 +7109,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7080,6 +7181,25 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-18T07:14:46.654504+00:00"
+        },
+        {
+          "previous_main_commit": "ec6fcaffd6dedd3734fb81b1baf7d3cf8702fe3c",
+          "prior_criterion_statuses": {
+            "MW05-E11-03#/negative_case": "stale",
+            "MW05-E11-03#/requirement": "stale"
+          },
+          "prior_evidence_ids": [
+            "otio-native-video-main-4a2",
+            "otio-real-media-main-ce22"
+          ],
+          "prior_status": "stale",
+          "reason": "Source currency advanced after A1 integrated criterion-currency repair into main df056; historical proofs cannot imply a new execution.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -7139,7 +7259,8 @@
             "id": "MW05-E11-03#/requirement",
             "missing_assertions": [
               "external_NLE_receipt_and_positive_bounded_cut_reimport_missing",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "Current synthetic OTIO export/source references are verified; the complete native NLE exchange is not.",
@@ -7164,7 +7285,8 @@
             ],
             "id": "MW05-E11-03#/negative_case",
             "missing_assertions": [
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history."
+              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
             ],
             "scope_notes": [
               "The original synthetic OTIO retains MissingReference; current-source negative parser cases passed. No receiving NLE is asserted.",
@@ -7186,7 +7308,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [
             "otio-native-video-main-4a2",
             "otio-real-media-main-ce22"
@@ -7221,7 +7343,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7233,7 +7355,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7347,7 +7469,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7362,7 +7484,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7374,7 +7496,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7492,7 +7614,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7518,7 +7640,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7530,7 +7652,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7648,7 +7770,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7674,7 +7796,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7686,7 +7808,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7804,7 +7926,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7830,7 +7952,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7842,7 +7964,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7959,7 +8081,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7984,7 +8106,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7996,7 +8118,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8112,7 +8234,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8136,7 +8258,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8148,7 +8270,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8260,7 +8382,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8280,7 +8402,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8292,7 +8414,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8400,7 +8522,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8416,7 +8538,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8428,7 +8550,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8542,7 +8664,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8564,7 +8686,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8576,7 +8698,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8693,7 +8815,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8718,7 +8840,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8730,7 +8852,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8851,7 +8973,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8880,7 +9002,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8892,7 +9014,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9031,7 +9153,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9078,7 +9200,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9090,7 +9212,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9206,7 +9328,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9228,7 +9350,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9240,7 +9362,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9347,7 +9469,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9362,7 +9484,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9374,7 +9496,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9487,7 +9609,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9508,7 +9630,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9520,7 +9642,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9628,7 +9750,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9642,7 +9764,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9654,7 +9776,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9764,7 +9886,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "current_source": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9782,7 +9904,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "source_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9794,7 +9916,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+          "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9817,8 +9939,8 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "b4ec4be9f919e1af014280eda064aa61da867a5253837e465b606ff8ef749ced"
+    "sha256": "bec9be34c143f9e76b19ee33dc81badf152dd0228a4f7dba5faad0fb1f821652"
   },
-  "upstream_integrated_sha": "bf487dc3ae0cb458098aeb47a1b0b2c3e34efa9c",
+  "upstream_integrated_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
   "v05_release_ready": false
 }
