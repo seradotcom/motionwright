@@ -98,3 +98,30 @@ independently audit NTFS access-control lists or prove that the owner socket
 belongs to the expected Broker. Filesystem checks can be subject to concurrent
 modification; the trusted Tauri backend revalidates before every operation.
 Owners must still verify OS permissions and Broker policy separately.
+
+
+### Open-handle identity and race checks
+
+The original preflight validated a filename before opening it. A different regular
+file could be renamed or hardlinked into place immediately afterward, supplying
+scope-valid JSON or the same executable bytes from a different inode. The
+auditor now compares the file's device/inode identity before and after opening,
+checks the held descriptor's type, size and permitted modes, and revalidates
+the complete filesystem path (including reparse/junction ancestors) while the
+descriptor remains open. It rechecks the descriptor and path after bounded
+JSON reads and after hashing the executable. The session token remains unread;
+only metadata from its held descriptor is checked, without exporting secrets.
+
+Three synthetic hardlink-substitution regressions cover saved connection JSON,
+the executable and the app's registry reference. They failed on the old source
+without needing a Broker or native render and must pass on the corrected
+source on Windows, Linux and macOS. Additional after-open substitutions cover
+the connection and session files. These checks prevent a *false snapshot
+preflight* caused by a filename swapping between the checks.
+
+**Scope limit:** Closing the descriptor ends this inspection's identity
+protection. An independently executed `--version` process, the installed
+Tauri runtime, Broker and native job authorization still have their own trust
+boundaries. This is not an OS-wide file lock, not Windows DACL verification,
+and not an attestation or consent mechanism. A report never licenses a later
+renderer mutation.

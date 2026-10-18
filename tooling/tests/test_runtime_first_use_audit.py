@@ -344,6 +344,45 @@ class FirstUseAuditTests(unittest.TestCase):
             )
         self.assertEqual(failure.exception.code, "registry_invalid")
 
+    def substitute_after_checked_open(self, target, alternate, callback):
+        """Mutate only synthetic fixture paths after the descriptor opens."""
+        original = audit.open_checked_regular
+        former = self.root / (target.name + ".late-original")
+        invoked = False
+
+        def late_swap(path, *, code, changed_code=None):
+            nonlocal invoked
+            source = original(path, code=code, changed_code=changed_code)
+            if not invoked and Path(path) == target:
+                invoked = True
+                os.replace(target, former)
+                os.link(alternate, target)
+            return source
+
+        try:
+            with patch.object(audit, "open_checked_regular", side_effect=late_swap):
+                callback()
+        finally:
+            self.assertTrue(invoked, "late replacement must exercise the opened file")
+
+    @unittest.skipIf(os.name == "nt", "Windows held file denies rename/delete sharing")
+    def test_connection_file_swapped_after_descriptor_open_is_rejected(self):
+        alternate = self.root / "late-valid-connection.json"
+        alternate.write_bytes(self.connection.read_bytes())
+        alternate.chmod(0o600)
+        with self.assertRaises(audit.AuditError) as failure:
+            self.substitute_after_checked_open(self.connection, alternate, self.inspect)
+        self.assertEqual(failure.exception.code, "connection_invalid")
+
+    @unittest.skipIf(os.name == "nt", "Windows held file denies rename/delete sharing")
+    def test_session_file_swapped_after_descriptor_open_is_rejected(self):
+        alternate = self.root / "late-owner-session.json"
+        alternate.write_bytes(self.session.read_bytes())
+        alternate.chmod(0o600)
+        with self.assertRaises(audit.AuditError) as failure:
+            self.substitute_after_checked_open(self.session, alternate, self.inspect)
+        self.assertEqual(failure.exception.code, "session_invalid")
+
     def test_real_subprocess_arguments_are_readonly_and_secret_free(self):
         from unittest.mock import Mock
         process = Mock()
