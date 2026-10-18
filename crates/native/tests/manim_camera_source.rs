@@ -276,7 +276,8 @@ mod production {
             plan.validate_source_only().is_err(),
             "32x180 getter transport cannot fit current inline budget"
         );
-        assert!(MAX_SOURCE_ENTRY_BYTES_V2 < 32 * 180 * 1024);
+        // A fixed transport capacity is a compile-time invariant, not a runtime claim.
+        const { assert!(MAX_SOURCE_ENTRY_BYTES_V2 < 32 * 180 * 1024) };
         assert!(plan.sample(0).is_err());
     }
 
