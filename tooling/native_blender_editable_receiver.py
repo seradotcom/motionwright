@@ -162,6 +162,130 @@ def within_root(path, root, *, must_exist=False):
     return path
 
 
+CONTENT_SNAPSHOT_VERSION = 1
+GEOMETRY_TOLERANCE = 0.00001
+NORMAL_TOLERANCE = 0.00001
+TRANSFORM_TOLERANCE = 0.0005
+
+
+def _finite_vector(value, size, limit):
+    return (type(value) is list and len(value) == size and
+            all(type(x) in (int, float) and math.isfinite(x) and
+                abs(x) <= limit for x in value))
+
+
+def _numeric_socket_value(value):
+    if type(value) in (int, float):
+        require(math.isfinite(value) and abs(value) <= 1_000_000,
+                "Blender_shader_input_not_bounded")
+        return round(float(value), 7)
+    try:
+        values = list(value)
+    except TypeError as exc:
+        raise ReceiverError("Blender_shader_input_type_not_admitted") from exc
+    require(1 <= len(values) <= 4 and
+            _finite_vector(values, len(values), 1_000_000),
+            "Blender_shader_input_not_bounded")
+    return [round(float(x), 7) for x in values]
+
+
+def _validate_content(node):
+    # Earlier receipts remain readable, but absent measurements cannot be
+    # promoted into a new proof of vertex, surface or transform preservation.
+    require(type(node.get("content_snapshot_version")) is int and
+            node["content_snapshot_version"] == CONTENT_SNAPSHOT_VERSION,
+            "Blender_receipt_missing_full_content_measurement")
+    matrix = node.get("matrix_world")
+    require(type(matrix) is list and len(matrix) == 4 and
+            all(_finite_vector(row, 4, 1000) for row in matrix) and
+            matrix[3] == [0, 0, 0, 1],
+            "Blender_world_matrix_not_bounded_affine")
+    mesh = node.get("mesh")
+    require(type(mesh) is dict, "Blender_mesh_content_missing")
+    positions = mesh.get("positions")
+    triangles = mesh.get("triangles")
+    normals = mesh.get("corner_normals")
+    require(type(positions) is list and len(positions) == node["vertices"] and
+            all(_finite_vector(point, 3, 100) for point in positions),
+            "Blender_vertex_coordinates_not_bounded")
+    require(type(triangles) is list and len(triangles) == node["faces"] and
+            all(type(face) is list and len(face) == 3 and
+                all(type(index) is int and 0 <= index < len(positions)
+                    for index in face) and len(set(face)) == 3
+                for face in triangles),
+            "Blender_triangle_connectivity_not_bounded")
+    require(type(normals) is list and len(normals) == len(triangles) and
+            all(type(face) is list and len(face) == 3 and
+                all(_finite_vector(normal, 3, 1.00001) and
+                    abs(sum(x*x for x in normal)-1) <= 0.0001
+                    for normal in face) for face in normals),
+            "Blender_corner_normals_not_bounded")
+    inputs = node["material"].get("shader_inputs")
+    require(type(inputs) is dict and 4 <= len(inputs) <= 64 and
+            all(type(key) is str and 0 < len(key) <= 128 for key in inputs),
+            "Blender_PBR_input_measurements_missing")
+    for value in inputs.values():
+        _numeric_socket_value(value)
+
+
+def _oriented_triangles(node):
+    mesh = node["mesh"]
+    return [[(mesh["positions"][index], normal)
+             for index, normal in zip(indices, normals)]
+            for indices, normals in zip(mesh["triangles"], mesh["corner_normals"])]
+
+
+def _same_oriented_triangle(expected, actual):
+    # glTF may renumber vertices, reorder triangles and rotate a triangle's
+    # first index. Reversing its winding or normal is a semantic change.
+    return any(all(
+        all(abs(x-y) <= GEOMETRY_TOLERANCE for x, y in zip(
+            expected[corner][0], actual[(corner+shift) % 3][0])) and
+        all(abs(x-y) <= NORMAL_TOLERANCE for x, y in zip(
+            expected[corner][1], actual[(corner+shift) % 3][1]))
+        for corner in range(3)) for shift in range(3))
+
+
+def _compare_mesh_content(expected, actual):
+    left = _oriented_triangles(expected)
+    right = _oriented_triangles(actual)
+    require(len(left) == len(right), "GLTF_reimport_triangle_content_count_changed")
+    candidates = [[j for j, triangle in enumerate(right)
+                   if _same_oriented_triangle(wanted, triangle)] for wanted in left]
+    require(all(candidates), "GLTF_reimport_vertex_winding_or_normal_changed")
+    # A bijection preserves multiplicity; a duplicate face cannot stand in for
+    # two distinct source faces. Augmenting paths avoid greedy false rejects
+    # when several near-identical corners are within serialization tolerance.
+    matching = [-1] * len(right)
+
+    def assign(index, visited):
+        for target in candidates[index]:
+            if target in visited:
+                continue
+            visited.add(target)
+            if matching[target] == -1 or assign(matching[target], visited):
+                matching[target] = index
+                return True
+        return False
+
+    require(all(assign(index, set()) for index in range(len(left))),
+            "GLTF_reimport_triangle_multiplicity_changed")
+
+
+def _compare_shader_inputs(expected, actual):
+    require(expected.keys() == actual.keys(), "GLTF_reimport_shader_input_set_changed")
+    for name in expected:
+        a, b = expected[name], actual[name]
+        require(type(a) is type(b), "GLTF_reimport_shader_input_type_changed")
+        a = a if type(a) is list else [a]
+        b = b if type(b) is list else [b]
+        # Only base color retains the existing color serialization tolerance.
+        tolerance = 0.01 if name == "Base Color" else 0.00001
+        require(len(a) == len(b) and
+                all(abs(x-y) <= tolerance for x, y in zip(a, b)),
+                "GLTF_reimport_shader_input_value_changed:" + name)
+
+
 def bounded_source_snapshot(objects):
     require(type(objects) is list and len(objects)==2, "imported_Blender_object_count")
     names = set()
@@ -198,6 +322,7 @@ def bounded_source_snapshot(objects):
                 all(type(x) in (int,float) and math.isfinite(x) and 0<=x<=1
                     for x in material["color"]),
                 "Blender_import_lost_editable_PBR_material")
+        _validate_content(node)
         out[label] = node
     require(names == set(EXPECTED), "Blender_import_source_fixture_incomplete")
     return out
@@ -210,7 +335,7 @@ def compare_edit(original, edited, *, change=EDIT_DELTA_X):
     for label in EXPECTED:
         before=a[label]
         after=b[label]
-        for field in ("label","name","type","vertices","faces","dimensions","material"):
+        for field in ("label","name","type","vertices","faces","dimensions","mesh","material"):
             require(before[field]==after[field],
                     "edited_scene_unapproved_semantic_change:"+field)
         expected_location=before["location"][:]
@@ -219,9 +344,17 @@ def compare_edit(original, edited, *, change=EDIT_DELTA_X):
         require(all(abs(x-y)<=1e-5
                     for x,y in zip(expected_location,after["location"])),
                 "edited_Blender_scene_transform_did_not_persist:"+label)
+        expected_matrix = [row[:] for row in before["matrix_world"]]
+        if label == "focus":
+            expected_matrix[0][3] += change
+        require(all(abs(x-y) <= 0.00001
+                    for arow, brow in zip(expected_matrix, after["matrix_world"])
+                    for x, y in zip(arow, brow)),
+                "edited_Blender_scene_world_matrix_changed:" + label)
     return {"changed_label":"focus","change_x":change,
             "original_source_mesh_ids_retained_by_name":True,
             "material_and_topology_preserved":True,
+            "content_snapshot_version":CONTENT_SNAPSHOT_VERSION,
             "Project_UUID_and_original_blend_authority":"NOT_PROVEN"}
 
 
@@ -239,7 +372,7 @@ def compare_reimported_glb(original, expected_edit, new_import):
         a=source[label]
         b=edited[label]
         c=seen[label]
-        for field in ("name", "type", "vertices", "faces"):
+        for field in ("name", "type", "faces"):
             require(a[field]==b[field]==c[field],
                     "GLTF_reimport_lost_edited_topology_or_original_name:"+field)
         original_dimensions=a["dimensions"]
@@ -253,12 +386,25 @@ def compare_reimported_glb(original, expected_edit, new_import):
         require(all(abs(x-y)<=0.01 for x,y in zip(
                 a["material"]["color"], c["material"]["color"])),
                 "GLTF_reimport_material_PBR_color_changed")
+        require(all(abs(x-y) <= TRANSFORM_TOLERANCE
+                    for arow, brow in zip(b["matrix_world"], c["matrix_world"])
+                    for x, y in zip(arow, brow)),
+                "GLTF_reimport_world_matrix_changed")
+        _compare_mesh_content(b, c)
+        _compare_shader_inputs(a["material"]["shader_inputs"],
+                               c["material"]["shader_inputs"])
     return {
         "source_semantics": "FIRST_PARTY_GLTF_INTERCHANGE",
         "original_GLB_to_saved_Blend_to_edit_to_new_GLB_to_new_Blend": True,
         "original_Project_UUID_binding_or_Motionwright_blend_source": False,
         "material_color_max_tolerance": 0.01,
-        "world_transform_max_tolerance": 0.0005,
+        "world_transform_max_tolerance": TRANSFORM_TOLERANCE,
+        "mesh_coordinate_max_tolerance": GEOMETRY_TOLERANCE,
+        "corner_normal_max_tolerance": NORMAL_TOLERANCE,
+        "content_snapshot_version": CONTENT_SNAPSHOT_VERSION,
+        "mesh_winding_normals_and_shader_inputs_preserved": True,
+        "vertex_indices_used_as_object_identity": False,
+        "initial_GLB_import_geometry_equivalence_proven": False,
     }
 
 
@@ -279,17 +425,52 @@ def source_scene_snapshot(bpy):
         require(len(bsdf)==1,"Blender_PBR_principled_shader_missing")
         color=bsdf[0].inputs.get("Base Color")
         require(color is not None,"Blender_PBR_color_property_missing")
+        require(not obj.modifiers and not obj.constraints and
+                obj.animation_data is None and obj.data.shape_keys is None,
+                "Blender_unmeasured_deformation_or_animation")
+        outputs = [node for node in mat.node_tree.nodes
+                   if node.type == "OUTPUT_MATERIAL" and node.is_active_output]
+        require(len(mat.node_tree.nodes) == 2 and len(outputs) == 1,
+                "Blender_unadmitted_material_graph")
+        surface = outputs[0].inputs.get("Surface")
+        require(surface is not None and len(surface.links) == 1 and
+                surface.links[0].from_node == bsdf[0],
+                "Blender_material_surface_not_bound_to_PBR")
+        inputs = {}
+        for socket in bsdf[0].inputs:
+            require(not socket.is_linked and socket.identifier not in inputs,
+                    "Blender_linked_or_duplicate_shader_input_not_admitted")
+            inputs[socket.identifier] = _numeric_socket_value(socket.default_value)
+        mesh = obj.data
+        require(all(len(face.vertices) == 3 and face.material_index == 0
+                    for face in mesh.polygons),
+                "Blender_unadmitted_triangle_or_material_assignment")
+        normals = mesh.corner_normals
+        require(len(normals) == len(mesh.loops), "Blender_corner_normals_missing")
+        mesh_content = {
+            "positions": [[round(float(x), 7) for x in vertex.co]
+                          for vertex in mesh.vertices],
+            "triangles": [list(face.vertices) for face in mesh.polygons],
+            "corner_normals": [[[round(float(x), 7) for x in normals[index].vector]
+                               for index in face.loop_indices]
+                              for face in mesh.polygons],
+        }
         result.append({
             "label":match.group(1),
             "name":obj.name,
             "type":obj.type,
+            "content_snapshot_version":CONTENT_SNAPSHOT_VERSION,
+            "matrix_world":[[round(float(x),7) for x in row]
+                            for row in obj.matrix_world],
+            "mesh":mesh_content,
             "vertices":len(obj.data.vertices),
             "faces":len(obj.data.polygons),
             "location":[round(float(x),6) for x in obj.location],
             "dimensions":[round(float(x),6) for x in obj.dimensions],
             "material":{
                 "name":mat.name,
-                "color":[round(float(x),6) for x in color.default_value],
+                "color":[round(float(x),7) for x in color.default_value],
+                "shader_inputs":inputs,
             },
         })
     result.sort(key=lambda item:item["label"])
