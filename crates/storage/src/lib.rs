@@ -401,7 +401,7 @@ impl Store {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)?;
+        let mut conn = Connection::open(&path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         let observed_schema: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -411,12 +411,25 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        // Connection pragmas must execute outside a transaction. All
+        // schema DDL and its authoritative user_version stamp are committed
+        // together under one SQLite IMMEDIATE writer lock.
         conn.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+        )?;
+        let schema_tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // An independent opener may have advanced the schema since our
+        // fast-fail check. Revalidate AFTER acquiring the writer lock.
+        let locked_schema: u32 =
+            schema_tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if locked_schema > STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::UnsupportedSchemaVersion {
+                found: locked_schema,
+                supported: STORAGE_SCHEMA_VERSION,
+            });
+        }
+        schema_tx.execute_batch(
             r#"
-            PRAGMA foreign_keys=ON;
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
-
             CREATE TABLE IF NOT EXISTS projects(
               id TEXT PRIMARY KEY,
               generation TEXT NOT NULL,
@@ -516,9 +529,10 @@ impl Store {
               ON production_receipts(project_id, request_id, receipt_id DESC);
             "#,
         )?;
-        if observed_schema < STORAGE_SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
+        if locked_schema < STORAGE_SCHEMA_VERSION {
+            schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
+        schema_tx.commit()?;
         fs::create_dir_all(&blob_root)?;
         ensure_regular_directory(&blob_root, "content-addressed storage root")?;
         let store = Self {
