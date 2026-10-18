@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Independent first-party Blender GLB -> .blend -> edit -> .blend/GLB receiver.
+"""Blender 4.5.14 LTS: GLB interchange and editable-file roundtrip verifier.
 
-Run *inside original Blender 4.5.14 LTS*, using five separately opened
-processes (including edited GLB import and a separate final native reopen). Does not run the Semwright Broker/Driver Host or modify its
-authority, and does not treat the reconstructed .blend as original native
-project source. This is a destination-editor roundtrip witness, not release
-approval; retain private .blend receipts only with A5-approved custody.
+Runs inside five separate Blender processes, including edited GLB reimport
+and a subsequent independent native-file reopen. It cannot execute jobs
+through the production Broker/Host, change its permissions, or reconstruct
+an original Studio-authored .blend source from a GLB. Interchange fidelity
+is separate from native project provenance, licensed media rights, and
+human visual approval.
 
-Example (A6-owned GH Actions workflow is responsible for provision/grants):
+Example (run in a managed, authorized Blender environment):
   blender -b --factory-startup --python tooling/native_blender_editable_receiver.py \
     -- --phase import --source "$ORIGINAL_GLB" --source-sha256 "$SHA" --root "$PRIVATE"
   blender -b "$PRIVATE/original.blend" --python tooling/native_blender_editable_receiver.py \
@@ -31,10 +32,16 @@ import re
 import struct
 import sys
 
-SCHEMA = "motionwright.a4.blender-first-party-interchange-reopen/1"
+# Receipt v2 uses a permanent product contract identifier. v1 remains
+# readable for previously issued first-party interchange receipts, without
+# rewriting historical evidence or silently changing the meaning of .blend.
+SCHEMA = "motionwright.native.blender-editable-receiver/2"
+LEGACY_SCHEMA = "motionwright.a4.blender-first-party-interchange-reopen/1"
+COMPATIBLE_SCHEMAS = frozenset((SCHEMA, LEGACY_SCHEMA))
 MAX_GLB = 8 * 1024 * 1024
 MAX_BLEND = 64 * 1024 * 1024
 EDIT_DELTA_X = 0.25
+PHASES = ("import", "edit", "verify", "reimport", "reopen-reimport")
 EXPECTED = {
     "panel": {"faces": 2, "rgba": "#4F7CAC"},
     "focus": {"faces": 124, "rgba": "#F5B84A"},
@@ -73,6 +80,13 @@ def read_json(path, max_bytes=256 * 1024):
                 ReceiverError("nonfinite_receipt_value")))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ReceiverError("receiver_receipt_invalid_json") from exc
+
+
+def receipt_schemas_compatible(*records):
+    """Recognize historical v1 and current v2 receipts; emit only v2."""
+    return all(type(record) is dict and
+               record.get("schema") in COMPATIBLE_SCHEMAS
+               for record in records)
 
 
 def original_glb(path, expected_sha):
@@ -340,7 +354,7 @@ def run_phase(args):
         within_root(edited_blend,root)
         within_root(output_glb,root)
         first=read_json(imported)
-        require(first["schema"]==SCHEMA and first["phase"]==
+        require(receipt_schemas_compatible(first) and first["phase"]==
                 "imported_first_party_GLB_to_Blend" and
                 first["source"]["sha256"]==info["sha256"],
                 "original_import_receipt_not_bound_to_same_media")
@@ -380,7 +394,7 @@ def run_phase(args):
         within_root(final,root)
         first=read_json(imported)
         second=read_json(edited)
-        require(first["schema"]==second["schema"]==SCHEMA and
+        require(receipt_schemas_compatible(first, second) and
                 second["phase"]=="original_Blend_reopened_and_edited" and
                 first["source"]["sha256"]==second["source"]["sha256"]==
                     info["sha256"],"Blender_revision_receipts_not_bound_to_original")
@@ -415,8 +429,8 @@ def run_phase(args):
         first=read_json(imported)
         second=read_json(edited)
         third=read_json(root/"verified.json")
-        require(first["schema"]==second["schema"]==third["schema"]==SCHEMA,
-                "Blender_five_stage_source_receipts_have_different_contracts")
+        require(receipt_schemas_compatible(first, second, third),
+                "Blender_five_stage_source_receipts_have_incompatible_contracts")
         require(first["source"]["sha256"]==
                 second["source"]["sha256"]==
                 third["source"]["sha256"]==info["sha256"],
@@ -448,7 +462,7 @@ def run_phase(args):
         within_root(final,root)
         first=read_json(imported)
         edited_source=read_json(root/"verified.json")
-        require(reimport["schema"]==edited_source["schema"]==SCHEMA and
+        require(receipt_schemas_compatible(reimport, edited_source) and
                 reimport["phase"]=="edited_GLTF_reimported_into_new_Blend" and
                 reimport["source"]["sha256"]==info["sha256"],
                 "Blender_final_native_reopen_receipt_not_source_bound")
@@ -474,7 +488,7 @@ def run_phase(args):
             "complete_first_party_GLTF_external_editable_interchange":True,
             "original_Motionwright_native_blend_source_proven":False,
             "original_Studio_UUID_binding_proven":False,
-            "independent_A5_human_or_rights_acceptance":False,
+            "human_visual_or_rights_acceptance":False,
             "original_Semwright_Broker_jobs_started":0,
         })
     else:
@@ -483,9 +497,7 @@ def run_phase(args):
 
 def cli(argv):
     parser=argparse.ArgumentParser(description="original Blender 4.5.14 first-party receiver")
-    parser.add_argument("--phase",required=True,choices=(
-        "import","edit","verify","reimport","reopen-reimport"
-    ))
+    parser.add_argument("--phase", required=True, choices=PHASES)
     parser.add_argument("--source",required=True)
     parser.add_argument("--source-sha256",required=True)
     parser.add_argument("--root",required=True)
