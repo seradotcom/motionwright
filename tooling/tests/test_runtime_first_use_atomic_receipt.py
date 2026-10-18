@@ -79,6 +79,26 @@ class AtomicSupportReceiptTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.assertEqual(list(self.root.iterdir()), [])
 
+    @unittest.skipUnless(os.name == "posix", "directory fsync is POSIX-only")
+    def test_post_publish_directory_sync_error_keeps_complete_report(self):
+        """An uncertain durability result is not a refused prepublication."""
+        original = audit.os.fsync
+        calls = 0
+
+        def refuse_directory_sync(descriptor):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError(errno.EIO, "synthetic parent directory sync failed")
+            return original(descriptor)
+
+        with patch.object(audit.os, "fsync", side_effect=refuse_directory_sync):
+            with self.assertRaises(audit.AuditError) as caught:
+                audit.write_new_receipt(self.destination, self.value)
+        self.assertEqual(caught.exception.code, "receipt_commit_uncertain")
+        self.assertEqual(json.loads(self.destination.read_bytes()), self.value)
+        self.assertEqual(set(self.root.iterdir()), {self.destination})
+
     def test_two_simultaneous_writers_have_one_complete_winner(self):
         start = threading.Barrier(3)
         outcomes: list[str] = []
