@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const CAMERA_REFRAME_VERSION: u32 = 1;
+/// Closed Manim Community source contract; legacy Motion Canvas records stay v1.
+pub const CAMERA_REFRAME_MANIM_VERSION: u32 = 2;
 pub const CAMERA_REFRAME_FPS: i64 = 30;
 pub const CAMERA_REFRAME_MAX: usize = 16;
 pub const CAMERA_REF_CANVAS_WIDTH: f64 = 1920.0;
@@ -30,9 +32,12 @@ pub struct CameraReframe {
 }
 impl CameraReframe {
     pub fn validate(&self, scene: &Scene) -> Result<()> {
-        if self.component_version != CAMERA_REFRAME_VERSION
+        let admitted_pair = (self.component_version == CAMERA_REFRAME_VERSION
+            && scene.renderer == RendererKind::MotionCanvas)
+            || (self.component_version == CAMERA_REFRAME_MANIM_VERSION
+                && scene.renderer == RendererKind::ManimCommunity);
+        if !admitted_pair
             || scene.id != self.scene_id
-            || scene.renderer != RendererKind::MotionCanvas
             || scene.nodes.is_empty()
             || scene.nodes.len() > 32
             || !scene.beats.is_empty()
@@ -48,6 +53,54 @@ impl CameraReframe {
             return Err(DomainError::Invalid(
                 "Planar camera reframe cannot replace unsupported optical zoom or rotation".into(),
             ));
+        }
+        // Manim Community v2 uses the existing bounded static shape source.
+        // A domain-level save must not admit a feature that this native
+        // contributor silently drops (text, opacity, stroke, rotation, font,
+        // hierarchy, non-pixel coordinates or unsupported fill).
+        if self.component_version == CAMERA_REFRAME_MANIM_VERSION {
+            if scene.camera.safe_margin < 0.05 {
+                return Err(DomainError::Invalid(
+                    "Manim camera requires an authored safe margin of at least 0.05".into(),
+                ));
+            }
+            for node in &scene.nodes {
+                if !matches!(node.kind.as_str(), "rectangle" | "circle")
+                    || node.coordinate_space != CoordinateSpace::ProjectPixels
+                    || !node.relations.is_empty()
+                    || node.opacity != 1.0
+                    || node.rotation_deg != 0.0
+                    || node.text.is_some()
+                    || node.style.stroke.is_some()
+                    || node.style.stroke_width != 0.0
+                    || node.style.blend_mode != BlendMode::Normal
+                    || node.style.font_family.is_some()
+                    || node.style.font_size.is_some()
+                    || node.style.font_weight.is_some()
+                    || node.style.line_height.is_some()
+                    || (node.kind == "circle" && node.width != node.height)
+                {
+                    return Err(DomainError::Invalid(format!(
+                        "Manim camera source cannot preserve the authored shape semantics of node {}",
+                        node.id
+                    )));
+                }
+                let fill = node.style.fill.as_deref().ok_or_else(|| {
+                    DomainError::Invalid(format!(
+                        "Manim camera requires explicit opaque hex fill for node {}",
+                        node.id
+                    ))
+                })?;
+                if !fill.starts_with('#')
+                    || fill.len() != 7
+                    || !fill[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(DomainError::Invalid(format!(
+                        "Manim camera requires #RRGGBB fill without inferred alpha on node {}",
+                        node.id
+                    )));
+                }
+            }
         }
         for (label, value, min, max) in [
             ("start x", self.start_center_x, 720.0, 1200.0),
@@ -212,5 +265,173 @@ impl ProductionDesign {
             reframe.validate(scene)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod manim_camera_closed_pair_tests {
+    use super::*;
+
+    fn reference_project() -> (Project, Uuid) {
+        let mut project = Project::new("Original editable Manim camera").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Bounded planar scene".into(),
+                objective: "Preserve two original vector shapes".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        for (index, kind) in ["rectangle", "circle"].iter().enumerate() {
+            let circle = *kind == "circle";
+            let node = CanvasNode {
+                id: Uuid::now_v7(),
+                name: format!("Vector object {index}"),
+                kind: (*kind).into(),
+                parent_id: None,
+                x: if circle { 1050.0 } else { 400.0 },
+                y: if circle { 430.0 } else { 400.0 },
+                width: if circle { 160.0 } else { 220.0 },
+                height: if circle { 160.0 } else { 120.0 },
+                rotation_deg: 0.0,
+                opacity: 1.0,
+                text: None,
+                coordinate_space: CoordinateSpace::ProjectPixels,
+                z_index: index as i32,
+                style: NodeStyle {
+                    fill: Some("#86C8D1".into()),
+                    ..NodeStyle::default()
+                },
+                relations: vec![],
+                property_locks: BTreeSet::new(),
+                keyframes: vec![],
+            };
+            project
+                .apply_change(&Change::AddCanvasNode { scene_id, node })
+                .unwrap();
+        }
+        project.scenes[0].renderer = RendererKind::ManimCommunity;
+        (project, scene_id)
+    }
+
+    fn v2(scene_id: Uuid) -> CameraReframe {
+        CameraReframe {
+            id: Uuid::now_v7(),
+            scene_id,
+            component_version: 2,
+            start_center_x: 960.0,
+            start_center_y: 540.0,
+            end_center_x: 1000.0,
+            end_center_y: 544.0,
+            duration_frames: 24,
+        }
+    }
+
+    #[test]
+    fn manim_v2_closed_pair_preserves_original_shapes_and_json_after_edit() {
+        let (mut project, scene_id) = reference_project();
+        let original_objects = project.scenes[0].nodes.clone();
+        let original_branch = project.active_branch;
+        let original_id = project.id;
+        let reframe = v2(scene_id);
+        project
+            .apply_change(&Change::UpsertCameraReframe {
+                reframe: reframe.clone(),
+            })
+            .unwrap();
+        assert_eq!(project.scenes[0].nodes, original_objects);
+        assert_eq!(project.id, original_id);
+        assert_eq!(project.active_branch, original_branch);
+        assert_eq!(project.scenes[0].camera.center_x, 1000.0);
+        assert_eq!(project.scenes[0].camera.center_y, 544.0);
+        assert_eq!(
+            project.production_design.camera_reframes,
+            vec![reframe.clone()]
+        );
+        let saved = serde_json::to_vec(&project).unwrap();
+        let mut reopened: Project = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(reopened, project);
+        let new_end = CameraReframe {
+            end_center_x: 1012.0,
+            ..reframe
+        };
+
+        reopened
+            .apply_change(&Change::UpsertCameraReframe { reframe: new_end })
+            .unwrap();
+        assert_eq!(reopened.scenes[0].nodes, original_objects);
+        assert_eq!(reopened.production_design.camera_reframes.len(), 1);
+    }
+
+    #[test]
+    fn version_renderer_cross_pairs_are_not_migrated_or_inferred() {
+        let (mut manim, scene_id) = reference_project();
+        let original = manim.clone();
+        let mut legacy = v2(scene_id);
+        legacy.component_version = CAMERA_REFRAME_VERSION;
+        assert!(
+            manim
+                .apply_change(&Change::UpsertCameraReframe { reframe: legacy })
+                .is_err()
+        );
+        assert_eq!(manim, original);
+
+        manim.scenes[0].renderer = RendererKind::MotionCanvas;
+        let motion_original = manim.clone();
+        let new_manim = v2(scene_id);
+        assert!(
+            manim
+                .apply_change(&Change::UpsertCameraReframe { reframe: new_manim })
+                .is_err()
+        );
+        assert_eq!(manim, motion_original);
+
+        let mut original_motion = v2(scene_id);
+        original_motion.component_version = CAMERA_REFRAME_VERSION;
+        manim
+            .apply_change(&Change::UpsertCameraReframe {
+                reframe: original_motion,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn manim_v2_rejects_unrepresented_visual_state_without_mutation() {
+        let (project, scene_id) = reference_project();
+        type ProjectMutation = Box<dyn Fn(&mut Project)>;
+        let cases: Vec<ProjectMutation> = vec![
+            Box::new(|p| p.scenes[0].nodes[0].kind = "text".into()),
+            Box::new(|p| p.scenes[0].nodes[1].height = 159.0),
+            Box::new(|p| p.scenes[0].nodes[0].opacity = 0.7),
+            Box::new(|p| p.scenes[0].nodes[0].rotation_deg = 5.0),
+            Box::new(|p| p.scenes[0].nodes[0].style.stroke = Some("#101010".into())),
+            Box::new(|p| p.scenes[0].nodes[0].style.fill = None),
+            Box::new(|p| p.scenes[0].nodes[0].style.fill = Some("red".into())),
+            Box::new(|p| p.scenes[0].nodes[0].style.font_family = Some("system".into())),
+            Box::new(|p| {
+                let target_id = p.scenes[0].nodes[1].id;
+                p.scenes[0].nodes[0].relations.push(NodeRelation {
+                    id: Uuid::now_v7(),
+                    target_id,
+                    kind: RelationKind::AlignCenterX,
+                });
+            }),
+        ];
+        for mutate in cases {
+            let mut changed = project.clone();
+            mutate(&mut changed);
+            let original = changed.clone();
+            assert!(
+                changed
+                    .apply_change(&Change::UpsertCameraReframe {
+                        reframe: v2(scene_id),
+                    })
+                    .is_err()
+            );
+            assert_eq!(
+                changed, original,
+                "rejected camera must not alter human content"
+            );
+        }
     }
 }
