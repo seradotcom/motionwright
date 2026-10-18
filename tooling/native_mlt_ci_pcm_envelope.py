@@ -3,7 +3,7 @@
 This is NOT the MLT renderer, a decoder, a new authority, or a complete
 AAC master acceptance gate. It closes the known tail-blind spot in the existing
 400/600 Hz midstream inspector without changing that inspector or any CI workflow.
-The native Host and A6 must independently bind WAV, media, PTS, edit lists,
+The canonical native Host and independent release checks must bind WAV, media, PTS, edit lists,
 skip/priming and grants before release.
 """
 from __future__ import annotations
