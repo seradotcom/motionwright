@@ -79,6 +79,58 @@ class AtomicSupportReceiptTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_successful_link_then_metadata_error_is_commit_uncertain(self):
+        """The public report may exist even if its post-link stat fails.
+
+        Exercise actual os.link on real synthetic filesystem files, then
+        simulate a single failed metadata read from the just-created public
+        name. The original effect must not be repeated or overwritten.
+        """
+        original_link = audit.os.link
+        original_stat = audit.os.stat
+        original_lstat = Path.lstat
+        linked = False
+        failed_reads = 0
+
+        def traced_link(*args, **kwargs):
+            nonlocal linked
+            result = original_link(*args, **kwargs)
+            linked = True
+            return result
+
+        def failed_stat(path, *args, **kwargs):
+            nonlocal failed_reads
+            if linked and path == self.destination.name and "dir_fd" in kwargs:
+                failed_reads += 1
+                raise OSError(errno.EIO, "synthetic stat after successful link")
+            return original_stat(path, *args, **kwargs)
+
+        def failed_lstat(path, *args, **kwargs):
+            nonlocal failed_reads
+            if linked and Path(path) == self.destination:
+                failed_reads += 1
+                raise OSError(errno.EIO, "synthetic lstat after successful link")
+            return original_lstat(path, *args, **kwargs)
+
+        with patch.object(audit.os, "link", side_effect=traced_link):
+            if os.name == "posix":
+                inspector = patch.object(audit.os, "stat", side_effect=failed_stat)
+            else:
+                inspector = patch.object(Path, "lstat", new=failed_lstat)
+            with inspector, self.assertRaises(audit.AuditError) as caught:
+                audit.write_new_receipt(self.destination, self.value)
+
+        self.assertTrue(linked)
+        self.assertEqual(failed_reads, 1)
+        # The durable source bytes exist before checking the exception label:
+        # no claim of a safe-to-retry prepublication failure is defensible.
+        self.assertEqual(json.loads(self.destination.read_bytes()), self.value)
+        self.assertEqual(set(self.root.iterdir()), {self.destination})
+        self.assertEqual(
+            caught.exception.code, "receipt_commit_uncertain",
+            "published bytes cannot be labeled safe-to-retry after a failed stat",
+        )
+
     @unittest.skipUnless(os.name == "posix", "directory fsync is POSIX-only")
     def test_post_publish_directory_sync_error_keeps_complete_report(self):
         """An uncertain durability result is not a refused prepublication."""
