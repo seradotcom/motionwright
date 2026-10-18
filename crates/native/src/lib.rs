@@ -21,6 +21,7 @@ mod component_text;
 pub mod creative_doctor;
 mod expressive;
 pub mod film;
+pub mod manim_camera_projection;
 pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
 pub mod multi_renderer;
