@@ -326,6 +326,96 @@ const rawMetadataCases: [string, string][] = [
   ["container", "mkv"], ["adaptation_notes", "  first decision \n\n second decision \n"],
   ["text:abcde000-1234-4234-8234-000000000444", "  localized text being typed  "],
 ];
+
+describe("frame rate property order", () => {
+  it("projects Rust JSON property order without changing the received exact integers", () => {
+    const f = metadataFixture();
+    const encoded = '{"den":"1001","num":"30000"}';
+    const profile = { ...f.profile, frame_rate: JSON.parse(encoded) };
+    expect(profileCanonicalFields(profile).frame_rate).toBe('{"num":"30000","den":"1001"}');
+    expect(profileRawFields(profile).frame_rate).toBe("30000/1001");
+    expect(JSON.stringify(profile.frame_rate)).toBe(encoded);
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "frame_rate", "30/1", profileCanonicalFields(profile));
+    expect(decodeProfileMetadata(JSON.stringify(draft), f.scope)).toEqual(draft);
+  });
+
+  it("acknowledges all submitted fields from Rust JSON while preserving later frame-rate and incomplete input", () => {
+    const f = metadataFixture(), before = { ...f.profile, frame_rate: { num: "24", den: "1" } };
+    const current = profileCanonicalFields(before);
+    let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "frame_rate", "30/1", current);
+    draft = editProfileMetadata(draft, "language", "es-MX", current);
+    const sent = submitProfileMetadata(draft, before, 20);
+    let later = editProfileMetadata(sent, "frame_rate", "30000/1001", current);
+    later = editProfileMetadata(later, "height", "1e", current);
+    const partial = { ...before, frame_rate: JSON.parse('{"den":"1","num":"30"}') };
+    const unconfirmed = reconcileProfileMetadata(later, profileCanonicalFields(partial), 21, f.scope);
+    expect(unconfirmed.awaiting).toEqual(sent.awaiting);
+    const saved = { ...partial, language: "es-MX" }, savedFields = profileCanonicalFields(saved);
+    const observed = reconcileProfileMetadata(unconfirmed, savedFields, 22, f.scope);
+    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits).toEqual({
+      frame_rate: { base: '{"num":"30","den":"1"}', value: "30000/1001" },
+      height: { base: current.height, value: "1e" },
+    });
+    expect(profileMetadataConflicts(observed, savedFields)).toEqual([]);
+    expect(decodeProfileMetadata(JSON.stringify(observed), f.scope)).toEqual(observed);
+    expect(sent.awaiting?.fields.frame_rate.target).toBe('{"num":"30","den":"1"}');
+  });
+
+  it("recovers historical den-num bases and pending targets without rewriting their original bytes", () => {
+    const f = metadataFixture(), { storage, entries } = storageFixture();
+    const key = profileMetadataKey(f.scope, metadataWriter());
+    const historical: ProfileMetadataDraft = {
+      version: 1, scope: f.scope, revision: 20,
+      edits: { frame_rate: { base: '{"den":"1","num":"24"}', value: "30000/1001" } },
+      awaiting: { revision: 20, fields: { frame_rate: { raw: "30/1", target: '{"den":"1","num":"30"}' } } },
+    };
+    const raw = JSON.stringify(historical); entries.set(key, raw);
+    const loaded = loadProfileMetadata(key, f.scope, 21, storage);
+    expect(loaded.blocked).toBeNull(); expect(loaded.observedRaw).toBe(raw);
+    expect(loaded.draft.edits.frame_rate.base).toBe('{"num":"24","den":"1"}');
+    expect(loaded.draft.awaiting?.fields.frame_rate.target).toBe('{"num":"30","den":"1"}');
+    const current = profileCanonicalFields({ ...f.profile, frame_rate: JSON.parse('{"den":"1","num":"30"}') });
+    const observed = reconcileProfileMetadata(loaded.draft, current, 21, f.scope);
+    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits.frame_rate).toEqual({ base: current.frame_rate, value: "30000/1001" });
+    expect(entries.get(key)).toBe(raw);
+    expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it("keeps distinct i64 values exact rather than comparing rounded numbers or equal ratios", () => {
+    const f = metadataFixture();
+    const rate = JSON.parse('{"den":"9223372036854775806","num":"9223372036854775807"}');
+    expect(profileCanonicalFields({ ...f.profile, frame_rate: rate }).frame_rate)
+      .toBe('{"num":"9223372036854775807","den":"9223372036854775806"}');
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "frame_rate", "60/2", f.current);
+    const sent = submitProfileMetadata(draft, f.profile, 20);
+    const observed = reconcileProfileMetadata(sent, profileCanonicalFields({ ...f.profile, frame_rate: { den: "1", num: "30" } }), 21, f.scope);
+    expect(observed.awaiting).toEqual(sent.awaiting);
+    expect(observed.edits.frame_rate.value).toBe("60/2");
+  });
+
+  const invalidRates = [
+    '{"num":"24","num":"30","den":"1"}',
+    '{"num":"30","den":"1","den":"1"}',
+    '{"den":"1","num":"30","approved":true}',
+    '{"num":"30"}', '{"den":"1","num":30}', '{"den":1,"num":"30"}',
+    '{"den":"0","num":"30"}', '{"den":"1","num":"0"}',
+    '{"den":"1","num":"030"}', '{"den":"1","num":"241"}',
+    '{"den":"9223372036854775808","num":"30"}',
+  ];
+  for (const encoded of invalidRates) it("rejects malformed saved or pending rate " + encoded, () => {
+    const f = metadataFixture();
+    const draft: ProfileMetadataDraft = { version: 1, scope: f.scope, revision: 20,
+      edits: { frame_rate: { base: encoded, value: "30/1" } } };
+    expect(() => decodeProfileMetadata(JSON.stringify(draft), f.scope)).toThrow();
+    draft.edits.frame_rate.base = '{"num":"24","den":"1"}';
+    draft.awaiting = { revision: 20, fields: { frame_rate: { raw: "30/1", target: encoded } } };
+    expect(() => decodeProfileMetadata(JSON.stringify(draft), f.scope)).toThrow();
+    expect(draft.awaiting.fields.frame_rate.target).toBe(encoded);
+  });
+});
+
 describe("raw output metadata continuity", () => {
   for (const [field, raw] of rawMetadataCases) it("retains raw " + field + " across an unrelated saved revision", () => {
     const f = metadataFixture(), original = structuredClone(f.profile);

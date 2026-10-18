@@ -97,10 +97,26 @@ const fieldKey = (key: string): boolean => (profileFields as readonly string[]).
   || key === "cut_mode"
   || key.startsWith("text:") && profileUuid.test(key.slice(5));
 const currentField = (current: Record<string, string>, key: string) => current[key] ?? "null";
+function profileFrameRateJson(value: unknown): string {
+  if (!closed(value, ["num", "den"]) || typeof value.num !== "string" || typeof value.den !== "string") {
+    throw new Error("The saved frame rate requires exact num and den strings.");
+  }
+  // Object property order is a transport detail. Preserve the exact validated
+  // integers; do not round, reduce the fraction, or normalize other fields.
+  return JSON.stringify(parseProfileField("frame_rate", value.num + "/" + value.den));
+}
+function recoveredFrameRateJson(encoded: string): string {
+  const value: unknown = JSON.parse(encoded);
+  // Check the original spelling before reordering. In particular, JSON.parse
+  // must not silently admit duplicate keys from a retained recovery copy.
+  if (JSON.stringify(value) !== encoded) throw new Error("Invalid saved frame rate JSON.");
+  return profileFrameRateJson(value);
+}
 const fieldsOf = (profile: DeliverableProfile): Record<string, string> => ({
   // Local editor state only: canonical [] continues to mean the full sequence.
   cut_mode: JSON.stringify(profile.included_scene_ids.length ? "custom" : "full"),
-  ...Object.fromEntries(profileFields.map(key => [key, JSON.stringify(profile[key])])),
+  ...Object.fromEntries(profileFields.map(key => [key, key === "frame_rate"
+    ? profileFrameRateJson(profile[key]) : JSON.stringify(profile[key])])),
   ...Object.fromEntries(Object.entries(profile.text_overrides).map(([id, value]) => ["text:" + id, JSON.stringify(value)])),
 });
 function displayField(key: string, encoded: string): string {
@@ -388,6 +404,7 @@ function scopedProfileCopy(scope: string, key: string): boolean {
 }
 function canonicalProfileField(key: string, encoded: string): boolean {
   try {
+    if (key === "frame_rate") { recoveredFrameRateJson(encoded); return true; }
     const value: unknown = JSON.parse(encoded);
     if (JSON.stringify(value) !== encoded) return false;
     if (key === "adaptation_notes") return Array.isArray(value) && value.length <= 64
@@ -411,6 +428,7 @@ export function decodeProfileMetadata(raw: string, scope: string): ProfileMetada
     }
     // A base is an encoded canonical field; authored raw may be incomplete.
     if (!canonicalProfileField(key, edit.base)) throw new Error("Invalid canonical base in the recovery copy.");
+    if (key === "frame_rate") edit.base = recoveredFrameRateJson(edit.base);
   }
   if (Object.hasOwn(value, "awaiting")) {
     const sent = value.awaiting;
@@ -420,8 +438,10 @@ export function decodeProfileMetadata(raw: string, scope: string): ProfileMetada
       || Object.keys(sent.fields).length > profileFields.length + 1 + 4096) throw new Error("Invalid pending profile input.");
     for (const [key, field] of Object.entries(sent.fields)) {
       if (!fieldKey(key) || !Object.hasOwn(value.edits, key) || !closed(field, ["raw", "target"])
-        || !boundedText(field.raw) || !boundedText(field.target)
-        || JSON.stringify(parseProfileField(key, field.raw)) !== field.target) throw new Error("Invalid pending profile field.");
+        || !boundedText(field.raw) || !boundedText(field.target)) throw new Error("Invalid pending profile field.");
+      const target = key === "frame_rate" ? recoveredFrameRateJson(field.target) : field.target;
+      if (JSON.stringify(parseProfileField(key, field.raw)) !== target) throw new Error("Invalid pending profile field.");
+      if (key === "frame_rate") field.target = target;
     }
   }
   return value as unknown as ProfileMetadataDraft;
