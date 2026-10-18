@@ -274,11 +274,13 @@ impl Store {
             let mut hasher = Sha256::new();
             let mut buffer = [0_u8; 128 * 1024];
             let mut size_bytes = 0_u64;
+            let mut credential_scan = crate::CredentialScan::default();
             loop {
                 let count = input.read(&mut buffer)?;
                 if count == 0 {
                     break;
                 }
+                credential_scan.check(&buffer[..count], "file import source")?;
                 output.write_all(&buffer[..count])?;
                 hasher.update(&buffer[..count]);
                 size_bytes = size_bytes.saturating_add(count as u64);
