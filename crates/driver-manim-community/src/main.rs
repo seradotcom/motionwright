@@ -1184,7 +1184,7 @@ mod tests {
                 "render_profile": {"width": 640, "height": 360, "frame_rate": 30},
                 "canvas": {"width": 1920, "height": 1080,
                            "coordinate_space": "project_pixels"},
-                "background": {"kind": "solid", "color": "#000000", "opacity": 255},
+                "background": {"kind": "solid", "color": "#000000", "opacity": 1},
                 "camera": {"center_x": 1000.0, "center_y": 520.0,
                            "zoom": 1.0, "rotation_deg": 0.0,
                            "safe_margin": 0.05},
