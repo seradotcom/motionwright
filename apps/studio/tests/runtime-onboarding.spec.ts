@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("browser demo cannot silently grant or configure a native Semwright runtime", async ({ page }) => {
   await page.goto("/");
+  await expect(page.locator(".sdk-chip")).toContainText("browser demo");
   const revision = await page.locator(".revision-chip").first().innerText();
 
   await page.getByRole("button", { name: "Integrations", exact: true }).click();

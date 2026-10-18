@@ -272,30 +272,122 @@ fn refuses_incorrect_voice_rights_unmeasured_alignment_and_stale_source() {
 }
 
 #[test]
-fn refuses_overlaps_cross_shot_timings_unaligned_frames_and_unrendered_renderer() {
+fn refuses_overlapping_caption_intervals() {
     let mut p = fixture();
     p.audio.transcript[1].start = RationalTime::new(1, 1).unwrap();
     assert!(output(&p).is_err());
-    p = fixture();
+}
+
+#[test]
+fn crossing_a_native_shot_boundary_preserves_source_and_exact_fragment_coverage() {
+    let mut p = fixture();
     p.audio.transcript[0].end = RationalTime::new(5, 2).unwrap();
-    assert!(
-        output(&p)
-            .unwrap_err()
-            .contains("within one native Motion Canvas shot")
+    let source = serde_json::to_value(&p).unwrap();
+    let rendered = output(&p).unwrap();
+    assert_eq!(rendered.len(), 1);
+    assert_eq!(rendered[0].frame_count, 120);
+    let film = &rendered[0].film;
+    let shots = film
+        .sequences
+        .iter()
+        .flat_map(|sequence| &sequence.beats)
+        .flat_map(|beat| &beat.shots)
+        .collect::<Vec<_>>();
+    assert_eq!(shots.len(), 2);
+    assert_eq!(shots[0].captions.len(), 1);
+    assert_eq!(shots[1].captions.len(), 2);
+    assert_eq!(film.cues.cues.len(), 3);
+    let first_id = p.audio.transcript[0].id.simple().to_string();
+    let second_id = p.audio.transcript[1].id.simple().to_string();
+    let expected = [
+        (
+            0,
+            0,
+            format!("mw-caption-cue-{first_id}-p1"),
+            "Original first caption",
+            (1, 2),
+            (2, 1),
+        ),
+        (
+            1,
+            0,
+            format!("mw-caption-cue-{first_id}-p2"),
+            "Original first caption",
+            (2, 1),
+            (5, 2),
+        ),
+        (
+            1,
+            1,
+            format!("mw-caption-cue-{second_id}"),
+            "Original second caption",
+            (5, 2),
+            (7, 2),
+        ),
+    ];
+    let resolved = film.cues.resolve().unwrap();
+    for (shot, index, id, text, start, end) in expected {
+        let caption = &shots[shot].captions[index];
+        assert_eq!(caption.cue_id, id);
+        assert_eq!(caption.text, text);
+        let cue = film.cues.cues.iter().find(|cue| cue.id == id).unwrap();
+        assert_eq!(
+            cue.source,
+            semwright_semantic_composition::Digest::parse("ab".repeat(32)).unwrap()
+        );
+        let subject = shots[shot]
+            .subjects
+            .iter()
+            .find(|node| node.id == caption.subject)
+            .unwrap();
+        let SubjectContent::Text { runs, .. } = &subject.content else {
+            panic!("caption fragments must remain editable native text");
+        };
+        assert_eq!(runs[0].text, text);
+        let ResolvedCue::Resolved {
+            start: actual_start,
+            end: actual_end,
+        } = resolved.get(&id).unwrap()
+        else {
+            panic!("explicit caption timing must resolve");
+        };
+        assert_eq!(*actual_start, RationalTime::new(start.0, start.1).unwrap());
+        assert_eq!(*actual_end, RationalTime::new(end.0, end.1).unwrap());
+    }
+    assert_eq!(
+        realize(film)
+            .unwrap()
+            .schedule
+            .frame_count(&film.output)
+            .unwrap(),
+        120
     );
-    p = fixture();
+    let sidecar = caption_sidecar(&p, p.deliverables[0].id).unwrap();
+    assert_eq!(sidecar.cue_count, 2);
+    assert!(sidecar.body.contains("00:00:00.500 --> 00:00:02.500"));
+    assert!(sidecar.body.contains("00:00:02.500 --> 00:00:03.500"));
+    assert_eq!(serde_json::to_value(&p).unwrap(), source);
+}
+
+#[test]
+fn refuses_caption_times_between_output_frames() {
+    let mut p = fixture();
     p.audio.transcript[0].start = RationalTime::new(53, 100).unwrap();
     assert!(
         output(&p)
             .unwrap_err()
             .contains("exact output-frame boundaries")
     );
-    p = fixture();
+}
+
+#[test]
+fn refuses_caption_intervals_owned_by_an_unrendered_renderer() {
+    let mut p = fixture();
     p.scenes[1].renderer = RendererKind::Blender;
     assert!(
         output(&p)
             .unwrap_err()
-            .contains("within one native Motion Canvas shot")
+            .contains("complete contiguous native Motion Canvas coverage")
     );
 }
 

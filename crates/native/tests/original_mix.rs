@@ -1,6 +1,7 @@
 use motionwright_domain as domain;
 use motionwright_native::original_mix::{
-    OriginalMixPlan, PcmStemReceipt, VoiceActivityWindow, render_original_source_mix, write_mix_wav,
+    OriginalMixPlan, PcmStemReceipt, VoiceActivityWindow, original_mix_plan_from_canonical_recipe,
+    render_original_source_mix, write_mix_wav,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -109,6 +110,164 @@ fn fixture() -> (domain::Project, OriginalMixPlan, [Vec<u8>; 3]) {
 fn left_at(data: &[u8], sample: usize) -> i16 {
     i16::from_le_bytes([data[4 * sample], data[4 * sample + 1]])
 }
+
+fn save_test_recipe(project: &mut domain::Project, plan: &OriginalMixPlan) {
+    project.production_design.delivery_recipes.insert(
+        plan.deliverable_profile_id,
+        domain::DeliveryRecipe {
+            schema: domain::DeliveryRecipeSchema::V1,
+            scene_intents: vec![],
+            original_mix: Some(domain::OriginalMixRecipe {
+                music_asset_id: Some(plan.original_music.asset_id),
+                sfx_asset_id: Some(plan.original_sfx.asset_id),
+                sfx_gain_db: plan.sfx_gain_db,
+                duck_attenuation_db: plan.duck_attenuation_db,
+                duck_attack_samples: plan.duck_attack_samples,
+                duck_release_samples: plan.duck_release_samples,
+            }),
+        },
+    );
+}
+
+fn from_saved_recipe(project: &domain::Project, source: &OriginalMixPlan) -> OriginalMixPlan {
+    original_mix_plan_from_canonical_recipe(
+        project,
+        source.deliverable_profile_id,
+        source.measured_voice.clone(),
+        source.original_music.clone(),
+        source.original_sfx.clone(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn canonical_mix_plan_consumes_saved_source_ids_settings_and_global_gains() {
+    let (mut project, mut expected, pcm) = fixture();
+    expected.sample_peak_guard_dbfs = -1.0;
+    save_test_recipe(&mut project, &expected);
+    let source = serde_json::to_vec(&project).unwrap();
+    let initial = from_saved_recipe(&project, &expected);
+    assert_eq!(initial, expected);
+    assert_eq!(serde_json::to_vec(&project).unwrap(), source);
+    let (first_pcm, _) =
+        render_original_source_mix(&initial, &project, &pcm[0], &pcm[1], &pcm[2]).unwrap();
+
+    project.audio.mix.music_gain_db = -18.0;
+    project.audio.mix.voice_gain_db = -3.0;
+    let mix = project
+        .production_design
+        .delivery_recipes
+        .get_mut(&expected.deliverable_profile_id)
+        .unwrap()
+        .original_mix
+        .as_mut()
+        .unwrap();
+    mix.sfx_gain_db = -5.0;
+    mix.duck_attenuation_db = 6.0;
+    mix.duck_attack_samples = 1_200;
+    mix.duck_release_samples = 2_400;
+    project.revision += 1;
+    let fresh = from_saved_recipe(&project, &expected);
+    assert_eq!(fresh.voice_gain_db, -3.0);
+    assert_eq!(fresh.music_gain_db, -18.0);
+    assert_eq!(fresh.sfx_gain_db, -5.0);
+    assert_eq!(fresh.duck_attenuation_db, 6.0);
+    assert_eq!(fresh.duck_attack_samples, 1_200);
+    assert_eq!(fresh.duck_release_samples, 2_400);
+    assert_eq!(fresh.project_revision, project.revision);
+    assert!(initial.validate(&project).is_err());
+    let (next_pcm, _) =
+        render_original_source_mix(&fresh, &project, &pcm[0], &pcm[1], &pcm[2]).unwrap();
+    assert_ne!(first_pcm, next_pcm);
+    let expected_gain = 10.0_f64.powf(-6.0 / 20.0);
+    let observed_gain = f64::from(left_at(&next_pcm, 1000)) / f64::from(left_at(&first_pcm, 1000));
+    assert!((observed_gain - expected_gain).abs() < 0.001);
+}
+
+#[test]
+fn canonical_mix_plan_rejects_missing_recipe_bus_substitution_and_unaligned_voice() {
+    let (mut project, source, _) = fixture();
+    let try_plan = |p: &domain::Project,
+                    voice: PcmStemReceipt,
+                    music: PcmStemReceipt,
+                    sfx: PcmStemReceipt| {
+        original_mix_plan_from_canonical_recipe(p, source.deliverable_profile_id, voice, music, sfx)
+    };
+    assert!(
+        try_plan(
+            &project,
+            source.measured_voice.clone(),
+            source.original_music.clone(),
+            source.original_sfx.clone()
+        )
+        .is_err()
+    );
+    save_test_recipe(&mut project, &source);
+    assert!(
+        try_plan(
+            &project,
+            source.measured_voice.clone(),
+            source.original_sfx.clone(),
+            source.original_music.clone()
+        )
+        .is_err()
+    );
+    let mut absent_bus = project.clone();
+    absent_bus
+        .production_design
+        .delivery_recipes
+        .get_mut(&source.deliverable_profile_id)
+        .unwrap()
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .sfx_asset_id = None;
+    assert!(
+        try_plan(
+            &absent_bus,
+            source.measured_voice.clone(),
+            source.original_music.clone(),
+            source.original_sfx.clone()
+        )
+        .is_err()
+    );
+    let mut no_selected_voice = project.clone();
+    no_selected_voice.deliverables[0].voice_track_id = None;
+    assert!(
+        try_plan(
+            &no_selected_voice,
+            source.measured_voice.clone(),
+            source.original_music.clone(),
+            source.original_sfx.clone()
+        )
+        .is_err()
+    );
+    project.audio.transcript[0].alignment = domain::AlignmentEvidence::Unknown;
+    assert!(
+        try_plan(
+            &project,
+            source.measured_voice.clone(),
+            source.original_music.clone(),
+            source.original_sfx.clone()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn canonical_source_plan_preserves_unrealized_mastering_intent_without_approving_it() {
+    let (mut project, source, _) = fixture();
+    save_test_recipe(&mut project, &source);
+    project.audio.mix.target_lufs = Some(-16.0);
+    project.audio.mix.target_true_peak_dbfs = Some(-1.0);
+    let before = serde_json::to_vec(&project).unwrap();
+    let plan = from_saved_recipe(&project, &source);
+    assert!(!plan.is_mastered);
+    assert!(!plan.owner_mixing_approval_authenticated);
+    assert_eq!(plan.sample_peak_guard_dbfs, -1.0);
+    assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+}
+
 #[test]
 fn true_native_music_ducking_is_sample_accurate_and_does_not_change_voice_source() {
     let (project, plan, [voice, music, sfx]) = fixture();
@@ -318,6 +477,45 @@ fn low_confidence_asr_never_drives_mixer_ducking_automation() {
     };
     assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err());
 }
+#[test]
+fn measured_ducking_alignment_must_belong_to_the_exact_selected_voice_source() {
+    let (mut project, plan, [voice, music, sfx]) = fixture();
+    save_test_recipe(&mut project, &plan);
+    project.audio.transcript[0].alignment = domain::AlignmentEvidence::Measured {
+        engine: "Measured source alignment fixture".into(),
+        source_sha256: project.audio.voice_tracks[0].source_sha256.clone(),
+        confidence_millis: Some(800),
+    };
+    project.validate().unwrap();
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_ok());
+    assert_eq!(
+        from_saved_recipe(&project, &plan).voice_windows,
+        plan.voice_windows
+    );
+
+    if let domain::AlignmentEvidence::Measured { source_sha256, .. } =
+        &mut project.audio.transcript[0].alignment
+    {
+        *source_sha256 = "ab".repeat(32);
+    }
+    // The domain admits this well-shaped historical alignment. The native
+    // consumer must reject it because it belongs to another physical take.
+    project.validate().unwrap();
+    let before = serde_json::to_vec(&project).unwrap();
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err());
+    assert!(
+        original_mix_plan_from_canonical_recipe(
+            &project,
+            plan.deliverable_profile_id,
+            plan.measured_voice.clone(),
+            plan.original_music.clone(),
+            plan.original_sfx.clone(),
+        )
+        .is_err()
+    );
+    assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+}
+
 #[test]
 fn no_clip_guard_or_unbounded_normalization_automatically_hides_clipping() {
     let (project, mut plan, [voice, music, sfx]) = fixture();

@@ -162,6 +162,80 @@ class NativeAVFailureRedactionTests(unittest.TestCase):
         self.assertEqual(report["source_outcome"], "FAILED_NOT_MEDIA_VERIFIED")
         self.assertFalse(report["provider_generation_inactive_observed"])
 
+
+    def test_backend_failure_code_preserves_explicit_outcome_with_stderr_noise(self) -> None:
+        for known, outcome in ((False, "UNKNOWN"), (True, "FAILED_NOT_MEDIA_VERIFIED")):
+            with self.subTest(outcome_known=known):
+                raw = json.dumps({
+                    "error": {"code": "BackendFailed", "outcome_known": known,
+                              "message": PRIVATE},
+                    "receipts": [],
+                }).encode()
+                report = classify_native_command_failure(
+                    stdout=raw, stderr=("Error: " + PRIVATE).encode(), exit_code=1)
+                self.assert_closed(report)
+                self.assertEqual(report["reported_error_code"], "BackendFailed")
+                self.assertEqual(report["source_outcome"], outcome)
+                self.assertEqual(report["original_render_start_receipts_observed"], 0)
+
+    def test_pinned_protocol_error_categories_remain_closed(self) -> None:
+        # These spellings belong to the pinned Semwright ErrorCode wire enum.
+        codes = (
+            "Unsupported", "Unavailable", "PermissionDenied",
+            "ConsentRequired", "PolicyDenied", "NotFound",
+            "AmbiguousTarget", "StaleReference", "BackendFailed",
+            "Timeout", "InvalidArgument", "PluginProtocolError",
+            "SandboxDenied", "Conflict", "Cancelled",
+            "Internal", "ProtocolMismatch", "ResourceExhausted",
+        )
+        for code in codes:
+            with self.subTest(code=code):
+                raw = json.dumps({
+                    "error": {"code": code, "outcome_known": False, "message": PRIVATE},
+                    "receipts": [],
+                }).encode()
+                report = classify_native_command_failure(
+                    stdout=raw, stderr=b"", exit_code=1)
+                self.assert_closed(report)
+                self.assertEqual(report["reported_error_code"], code)
+                self.assertEqual(report["source_outcome"], "UNKNOWN")
+        for code in ("InvalidArguments", "Unknown", "backendfailed", PRIVATE, None, 17):
+            with self.subTest(non_protocol_code=code):
+                raw = json.dumps({
+                    "error": {"code": code, "outcome_known": False, "message": PRIVATE},
+                    "receipts": [],
+                }).encode()
+                report = classify_native_command_failure(
+                    stdout=raw, stderr=b"", exit_code=1)
+                self.assert_closed(report)
+                self.assertEqual(report["reported_error_code"], "OtherOrMissing")
+                self.assertEqual(report["source_outcome"], "UNKNOWN")
+
+    def test_json_embedded_in_rust_diagnostics_does_not_become_authority(self) -> None:
+        raw = json.dumps({
+            "error": {"code": "BackendFailed", "outcome_known": True, "message": PRIVATE},
+            "receipts": [],
+        }).encode()
+        report = classify_native_command_failure(
+            stdout=b"", stderr=raw + b"\nError: " + PRIVATE.encode(), exit_code=1)
+        self.assert_closed(report)
+        self.assertEqual(report["reason"], "malformed_native_failure_response")
+        self.assertEqual(report["reported_error_code"], "OtherOrMissing")
+        self.assertEqual(report["source_outcome"], "NOT_VERIFIED")
+
+    def test_typed_stdout_never_overrides_uncertain_secondary_error(self) -> None:
+        def channel(known: bool) -> bytes:
+            return json.dumps({
+                "error": {"code": "BackendFailed", "outcome_known": known,
+                          "message": PRIVATE},
+                "receipts": [],
+            }).encode()
+        report = classify_native_command_failure(
+            stdout=channel(True), stderr=channel(False), exit_code=1)
+        self.assert_closed(report)
+        self.assertEqual(report["reported_error_code"], "BackendFailed")
+        self.assertEqual(report["source_outcome"], "UNKNOWN")
+
     def test_successful_json_command_unchanged(self) -> None:
         with patch.object(native_av_master_e2e.subprocess, "run",
                           return_value=SimpleNamespace(

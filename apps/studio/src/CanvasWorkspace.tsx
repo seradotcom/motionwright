@@ -90,6 +90,7 @@ export default function CanvasWorkspace({
   project,
   scene,
   commit,
+  commitRequired,
   playhead,
   onSeek,
   profile,
@@ -97,11 +98,19 @@ export default function CanvasWorkspace({
   project: Project;
   scene: Scene | null;
   commit: Commit;
+  commitRequired: Commit;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
   profile: Project["deliverables"][number] | null;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
+  const [addBusy, setAddBusy] = useState(false);
+  const addPending = useRef(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const creationScope = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null]);
+  const visibleCreationScope = useRef(creationScope);
+  visibleCreationScope.current = creationScope;
+  const localInteractionVersion = useRef(0);
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
   const [formTransform, setFormTransform] = useState<CanvasTransform | null>(scene?.nodes[0] ? nodeTransform(scene.nodes[0]) : null);
   const [textValue, setTextValue] = useState(scene?.nodes[0]?.text ?? "");
@@ -125,6 +134,8 @@ export default function CanvasWorkspace({
     at: number;
     interpolation: MotionInterpolation;
   } | null>(null);
+
+  useEffect(() => { setAddError(null); }, [creationScope]);
 
   useEffect(() => {
     const next = scene?.nodes[0] ?? null;
@@ -162,9 +173,12 @@ export default function CanvasWorkspace({
     selectedNode?.text,
   ]);
 
+  const selectedMotionValue = selectedNode?.[motionProperty];
   useEffect(() => {
-    if (selectedNode) setMotionValue(nodeTransform(selectedNode)[motionProperty]);
-  }, [selectedNode, motionProperty]);
+    // An unrelated canonical publication can clone the selected object without
+    // changing this property. Preserve its unsent motion input in that case.
+    if (selectedMotionValue !== undefined) setMotionValue(selectedMotionValue);
+  }, [selectedNode?.id, selectedMotionValue, motionProperty]);
 
   useEffect(() => {
     setNativeStartX(selectedNode ? selectedNode.x - 100 : 0);
@@ -211,14 +225,34 @@ export default function CanvasWorkspace({
   };
 
   const addNode = async (kind: "text" | "shape" | "group") => {
+    if (addPending.current) return;
+    addPending.current = true;
+    setAddBusy(true);
+    setAddError(null);
+    const submittedScope = creationScope;
+    const submittedInteraction = localInteractionVersion.current;
     const node = createNode(scene, kind);
-    await commit({ type: "add_canvas_node", scene_id: scene.id, node });
-    setSelectedNodeId(node.id);
-    setFormTransform(nodeTransform(node));
-    setTextValue(node.text ?? "");
+    try {
+      await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
+      // Canonical publication is independent of the local inspector. Even in
+      // this same scene, a later selection or edit supersedes auto-selection.
+      if (visibleCreationScope.current !== submittedScope
+        || localInteractionVersion.current !== submittedInteraction) return;
+      setSelectedNodeId(node.id);
+      setFormTransform(nodeTransform(node));
+      setTextValue(node.text ?? "");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setAddError(visibleCreationScope.current === submittedScope ? message
+        : "Creating " + kind + " in “" + scene.name + "” needs attention: " + message);
+    } finally {
+      addPending.current = false;
+      setAddBusy(false);
+    }
   };
 
   const selectNode = (node: CanvasNode) => {
+    localInteractionVersion.current += 1;
     setSelectedNodeId(node.id);
     setFormTransform(draftTransforms[node.id] ?? nodeTransform(node));
     setTextValue(node.text ?? "");
@@ -393,7 +427,7 @@ export default function CanvasWorkspace({
                 type="button"
                 className="canvas-create-button"
                 key={kind}
-                disabled={sceneContentLocked || scenePositionLocked}
+                disabled={sceneContentLocked || scenePositionLocked || addBusy}
                 onClick={() => void addNode(kind)}
               >
                 <Plus size={10} />
@@ -401,6 +435,7 @@ export default function CanvasWorkspace({
               </button>
             ))}
           </div>
+          {addError && <p className="production-error" role="alert">{addError}</p>}
           {scene.nodes.length === 0 ? (
             <div className="canvas-empty-note">This scene has no semantic canvas objects yet.</div>
           ) : (
@@ -492,7 +527,8 @@ export default function CanvasWorkspace({
           </div>
         </section>
 
-        <aside className="canvas-properties" aria-label="Canvas properties">
+        <aside className="canvas-properties" aria-label="Canvas properties"
+          onChangeCapture={() => { localInteractionVersion.current += 1; }}>
           <div className="canvas-panel-heading">Object</div>
           {!selectedNode || !formTransform ? (
             <div className="canvas-empty-note">Select an object to inspect its semantic properties.</div>
