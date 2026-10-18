@@ -9,7 +9,10 @@ import VariantContinuityReview from "./VariantContinuityReview";
 import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import { useDeliveryRecipeDraft } from "./deliveryRecipe";
-import { captureDeliveryDispatch, useProfileMetadataDraft, type DeliveryProjectState } from "./deliveryProfileDraft";
+import {
+  captureDeliveryDispatch, useProfileMetadataDraft, retainedProfileMetadataCopies,
+  type DeliveryProjectState, type RetainedProfileMetadataCopy,
+} from "./deliveryProfileDraft";
 import {
   assembleNativeAvMaster,
   assembleNativeMultisegmentAvMaster,
@@ -251,6 +254,77 @@ function freshProfile(index: number): DeliverableProfile {
     container: "mp4",
     adaptation_notes: [],
   };
+}
+
+function RetainedProfileCopyReview({ copy }: { copy: RetainedProfileMetadataCopy }) {
+  const [open, setOpen] = useState(false), [limit, setLimit] = useState(20);
+  const [error, setError] = useState<string | null>(null);
+  const fields = Object.entries(copy.draft?.edits ?? {});
+  const previewLimit = 16_384;
+  return <details data-retained-profile-id={copy.profileId} data-retained-origin={copy.source}
+    onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>Profile {copy.profileId.slice(0, 8)} · {copy.source === "window" ? "window input" : "recovery copy"}
+      {copy.draft ? " · r" + copy.draft.revision + " · " + fields.length + " field(s)" : " · unreadable original retained"}</summary>
+    {open && <>
+      <p className="production-help">Removed profile {copy.profileId}. This snapshot is separate from the saved Project.</p>
+      {copy.warning && <p className="portable-message error" role="status">{copy.warning}</p>}
+      {copy.draft?.awaiting && <p className="portable-message error" role="status">This copy contains unconfirmed submitted input. It does not prove a save or authorize a retry.</p>}
+      {copy.draft ? <div style={{ display: "grid", gap: 12 }}>
+        {fields.slice(0, limit).map(([field, edit]) => {
+          const label = field.replaceAll("_", " ");
+          const sent = copy.draft?.awaiting?.fields[field];
+          return <div key={field}>
+            <label style={{ display: "grid", gap: 5 }}>
+              <span className="field-label">{label} · retained input</span>
+              <textarea aria-label={label + " retained input"} readOnly rows={2} value={edit.value.slice(0, previewLimit)}
+                style={{ resize: "vertical", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }} />
+            </label>
+            {edit.value.length > previewLimit && <p className="production-help">Showing the first {previewLimit.toLocaleString()} characters. The download contains the complete input.</p>}
+            <details><summary>Saved value before editing{sent ? " and submitted input" : ""}</summary>
+              <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>Saved before: {edit.base.slice(0, previewLimit)}</p>
+              {sent && <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>Input sent: {sent.raw.slice(0, previewLimit)}</p>}
+            </details>
+          </div>;
+        })}
+        {fields.length > limit && <button type="button" className="button" onClick={() => setLimit(value => value + 20)}>Show more retained fields</button>}
+      </div> : <>
+        <p className="portable-message error">The recovery format could not be read. The original bytes remain available as a snapshot; they cannot be applied as profile settings.</p>
+        <textarea aria-label="Unreadable retained profile copy" readOnly rows={4} value={copy.raw.slice(0, previewLimit)}
+          style={{ resize: "vertical", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }} />
+        {copy.raw.length > previewLimit && <p className="production-help">Showing the first {previewLimit.toLocaleString()} characters. The download contains the complete original copy.</p>}
+      </>}
+      <button type="button" className="button" onClick={() => {
+        try {
+          const url = URL.createObjectURL(new Blob([copy.raw], { type: "application/json" }));
+          const anchor = document.createElement("a");
+          anchor.href = url; anchor.download = "motionwright-profile-recovery-" + copy.profileId + "-" + copy.source + ".json";
+          anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+          setError(null);
+        } catch (failure) { setError("The retained snapshot could not be downloaded: " + String(failure)); }
+      }}>Download retained profile copy</button>
+      {error && <p className="portable-message error" role="alert">{error}</p>}
+    </>}
+  </details>;
+}
+
+function RetainedProfileDrafts({ project }: { project: Project }) {
+  const [epoch, setEpoch] = useState(0), [limit, setLimit] = useState(12);
+  const view = useMemo(() => retainedProfileMetadataCopies(project), [project, epoch]);
+  useEffect(() => {
+    const refresh = () => setEpoch(value => value + 1);
+    window.addEventListener("storage", refresh);
+    return () => window.removeEventListener("storage", refresh);
+  }, []);
+  if (!view.copies.length && !view.warning) return null;
+  return <section className="caption-export-panel" aria-label="Retained output profile drafts">
+    <header><div><strong>Retained output profile drafts</strong>
+      <span>Input from removed profiles remains available for review. A matching profile must be restored before its input can be edited or saved.</span></div></header>
+    <p className="production-help">Only this project generation and branch are shown. Download preserves the exact snapshot displayed here. It does not recreate a profile or start production.</p>
+    {view.warning && <p className="portable-message error" role="alert">{view.warning}</p>}
+    <button type="button" className="button" onClick={() => setEpoch(value => value + 1)}>Refresh retained profile copies</button>
+    {view.copies.slice(0, limit).map(copy => <RetainedProfileCopyReview key={copy.source + ":" + copy.key} copy={copy} />)}
+    {view.copies.length > limit && <button type="button" className="button" onClick={() => setLimit(value => value + 12)}>Show more retained profile drafts</button>}
+  </section>;
 }
 
 export default function DeliveryProfiles({
@@ -835,6 +909,8 @@ export default function DeliveryProfiles({
           </button>
         </div>
       </header>
+
+      <RetainedProfileDrafts project={project} />
 
       <div className="delivery-profile-layout">
         <div className="delivery-profile-index" role="list" aria-label="Delivery profile index">

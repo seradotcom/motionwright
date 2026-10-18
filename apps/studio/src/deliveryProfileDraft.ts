@@ -588,6 +588,72 @@ export function recoverProfileMetadata(
 }
 
 
+export interface RetainedProfileMetadataCopy {
+  key: string;
+  profileId: string;
+  source: "storage" | "window";
+  /** Exact snapshot bytes represented by this row; never authority to recreate a profile. */
+  raw: string;
+  draft: ProfileMetadataDraft | null;
+  warning: string | null;
+}
+function removedProfileScope(project: Project, key: string): { scope: string; profileId: string } | null {
+  if (key.length > 300 || !key.startsWith(PROFILE_DRAFT_STORAGE_PREFIX)) return null;
+  const end = key.lastIndexOf("]:");
+  if (end < PROFILE_DRAFT_STORAGE_PREFIX.length) return null;
+  const scope = key.slice(PROFILE_DRAFT_STORAGE_PREFIX.length, end + 1);
+  if (!scopedProfileCopy(scope, key)) return null;
+  const [projectId, generation, branch, profileId] = JSON.parse(scope) as string[];
+  if (projectId !== project.id || generation !== project.generation || branch !== project.active_branch
+    || project.deliverables.some(profile => profile.id === profileId)) return null;
+  return { scope, profileId };
+}
+/** Read retained input for missing profiles. Neither scanning nor downloading a
+ * snapshot updates recovery storage, recreates a profile, or admits production. */
+export function retainedProfileMetadataCopies(project: Project, storage?: ProfileStorage):
+  { copies: RetainedProfileMetadataCopy[]; warning: string | null } {
+  const copies = new Map<string, RetainedProfileMetadataCopy>();
+  const stored = new Map<string, string>(), warnings = new Set<string>();
+  const add = (key: string, raw: string, source: "storage" | "window", warning: string | null = null) => {
+    const identity = removedProfileScope(project, key);
+    if (!identity) return;
+    if (copies.size >= 64) {
+      warnings.add("More than 64 retained profile snapshots require review. Their original copies remain untouched.");
+      return;
+    }
+    let draft: ProfileMetadataDraft | null;
+    try { draft = decodeProfileMetadata(raw, identity.scope); }
+    catch { draft = null; }
+    if (draft && !draft.awaiting && !Object.keys(draft.edits).length) return;
+    copies.set(source + ":" + key, { key, profileId: identity.profileId, source, raw, draft, warning });
+  };
+  try {
+    const target = storage ?? localStorage;
+    if (target.length > 4096) throw new Error("Too many recovery keys to inspect.");
+    for (let index = 0; index < target.length; index++) {
+      const key = target.key(index);
+      if (!key || !removedProfileScope(project, key)) continue;
+      try {
+        const raw = target.getItem(key);
+        if (target.getItem(key) !== raw) throw new Error("A retained recovery copy changed while it was read. Refresh to review its current bytes.");
+        if (raw !== null) { stored.set(key, raw); add(key, raw, "storage"); }
+      } catch (failure) { warnings.add("A retained profile copy could not be read: " + String(failure)); }
+    }
+  } catch (failure) { warnings.add("Retained profile recovery could not be fully read: " + String(failure)); }
+  // A failed write may leave more recent authored input only in this window.
+  // Keep it separate from different or corrupt stored bytes; never overwrite
+  // the stored row with the cached draft as part of a read operation.
+  for (const [key, entry] of profileMemory) {
+    if (!removedProfileScope(project, key) || !entry.draft.awaiting && !Object.keys(entry.draft.edits).length) continue;
+    const raw = JSON.stringify(entry.draft);
+    if (stored.get(key) === raw) continue;
+    add(key, raw, "window", entry.warning ?? entry.blocked ?? (stored.has(key)
+      ? "This window's input is separate from its stored recovery copy. Both snapshots are retained."
+      : "This input is kept in this window. Download a copy before closing the window."));
+  }
+  return { copies: [...copies.values()], warning: [...warnings].join(" ") || null };
+}
+
 export function useProfileMetadataDraft(
   project: Project, profileId: string, commit: (change: Change) => Promise<void>,
   currentProjectState: () => DeliveryProjectState,
