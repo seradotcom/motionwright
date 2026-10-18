@@ -370,21 +370,123 @@ def inspect_connection(
 
 
 def write_new_receipt(destination: Path, report: dict) -> None:
-    """Creates a NEW receipt; never overwrites an old support/evidence file."""
+    """Atomically publish a fully synced new report; never replace another.
+
+    A failed write/fsync must leave the public destination absent. A collision
+    must preserve the previous report byte-for-byte. No pathname-only fallback
+    may rewrite the final file after hardlink publication has failed.
+    """
     require(destination.is_absolute(), "receipt_destination_invalid")
-    safe_path(str(destination.parent), kind="directory",
-              code="receipt_destination_invalid")
+    parent = safe_path(str(destination.parent), kind="directory",
+                       code="receipt_destination_invalid")
     data = (json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    stage_name = f".{destination.name}.{uuid.uuid4().hex}.stage"
+    stage_path = parent / stage_name
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
+
+    directory_fd: int | None = None
+    temporary_created = False
+    published = False
+    staged_identity = None
+    inspected_parent = None
     try:
-        descriptor = os.open(destination, flags, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
+        inspected_parent = parent.lstat()
+        require(stat.S_ISDIR(inspected_parent.st_mode),
+                "receipt_destination_invalid")
+        # On POSIX, keep the inspected directory inode open for both atomic
+        # hardlink and cleanup. On Windows, CreateHardLinkW is used through
+        # os.link on one same-volume temporary path. Never replace a target.
+        if os.name == "posix":
+            folder_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+            directory_fd = os.open(parent, folder_flags)
+            stat_dir = os.fstat(directory_fd)
+            require(
+                stat.S_ISDIR(stat_dir.st_mode)
+                and stat_dir.st_dev == inspected_parent.st_dev
+                and stat_dir.st_ino == inspected_parent.st_ino,
+                "receipt_destination_invalid",
+            )
+            fd = os.open(stage_name, flags, 0o600, dir_fd=directory_fd)
+        else:
+            fd = os.open(stage_path, flags, 0o600)
+        temporary_created = True
+        with os.fdopen(fd, "wb") as stream:
+            staged_identity = os.fstat(stream.fileno())
+            require(stat.S_ISREG(staged_identity.st_mode), "receipt_write_refused")
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+            complete = os.fstat(stream.fileno())
+            require(
+                complete.st_dev == staged_identity.st_dev
+                and complete.st_ino == staged_identity.st_ino
+                and complete.st_size == len(data),
+                "receipt_write_refused",
+            )
+            if directory_fd is not None:
+                os.link(stage_name, destination.name,
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                        follow_symlinks=False)
+                committed = os.stat(destination.name,
+                                    dir_fd=directory_fd, follow_symlinks=False)
+            else:
+                os.link(stage_path, destination)
+                committed = destination.lstat()
+            published = True
+            require(
+                stat.S_ISREG(committed.st_mode)
+                and committed.st_dev == staged_identity.st_dev
+                and committed.st_ino == staged_identity.st_ino
+                and committed.st_size == len(data),
+                "receipt_commit_uncertain",
+            )
+        # Remove only the name created by this call, not a previous report.
+        if directory_fd is not None:
+            os.unlink(stage_name, dir_fd=directory_fd)
+            temporary_created = False
+            os.fsync(directory_fd)
+        else:
+            os.unlink(stage_path)
+            temporary_created = False
+        safe_path(str(parent), kind="directory",
+                  code="receipt_commit_uncertain")
+        observed_parent = parent.lstat()
+        require(
+            stat.S_ISDIR(observed_parent.st_mode)
+            and inspected_parent is not None
+            and observed_parent.st_dev == inspected_parent.st_dev
+            and observed_parent.st_ino == inspected_parent.st_ino,
+            "receipt_commit_uncertain",
+        )
     except OSError as exc:
-        raise AuditError("receipt_write_refused") from exc
+        raise AuditError(
+            "receipt_commit_uncertain" if published else "receipt_write_refused"
+        ) from exc
+    finally:
+        if temporary_created and staged_identity is not None:
+            try:
+                current = (
+                    os.stat(stage_name, dir_fd=directory_fd, follow_symlinks=False)
+                    if directory_fd is not None else stage_path.lstat()
+                )
+                if (current.st_dev == staged_identity.st_dev
+                        and current.st_ino == staged_identity.st_ino):
+                    if directory_fd is not None:
+                        os.unlink(stage_name, dir_fd=directory_fd)
+                    else:
+                        os.unlink(stage_path)
+            except OSError:
+                # Never delete a new occupant or the published destination.
+                pass
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError as exc:
+                raise AuditError(
+                    "receipt_commit_uncertain" if published else "receipt_write_refused"
+                ) from exc
 
 
 def main(argv: list[str] | None = None) -> int:
