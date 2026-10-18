@@ -128,6 +128,17 @@ def original_glb(path, expected_sha):
             len(source.get("buffers", []))==1 and
             source["buffers"][0].get("uri") is None,
             "original_GLB_not_bounded_two_object_fixture")
+    for material in source["materials"]:
+        require(type(material) is dict and
+                material.get("alphaMode", "OPAQUE") == "OPAQUE" and
+                material.get("doubleSided") is True,
+                "original_GLB_unadmitted_opacity_or_culling")
+        pbr = material.get("pbrMetallicRoughness")
+        require(type(pbr) is dict and
+                _finite_vector(pbr.get("baseColorFactor"), 4, 1) and
+                all(value >= 0 for value in pbr["baseColorFactor"]) and
+                pbr["baseColorFactor"][3] == 1,
+                "original_GLB_unadmitted_opaque_base_color")
     names = {}
     for item in source["nodes"]:
         match = NAMES.fullmatch(str(item.get("name", "")))
@@ -166,6 +177,28 @@ CONTENT_SNAPSHOT_VERSION = 1
 GEOMETRY_TOLERANCE = 0.00001
 NORMAL_TOLERANCE = 0.00001
 TRANSFORM_TOLERANCE = 0.0005
+# Observed Blender 4.5.14 reception of this opaque, double-sided glTF profile.
+# These are current RNA properties, not deprecated blend_method aliases.
+MATERIAL_RENDER_SETTINGS = {
+    "surface_render_method": "DITHERED",
+    "use_transparency_overlap": True,
+    "use_backface_culling": False,
+    "use_backface_culling_shadow": False,
+    "use_backface_culling_lightprobe_volume": True,
+    "use_transparent_shadow": True,
+    "use_thickness_from_shadow": False,
+}
+VISIBLE_OBJECT = {
+    "hide_render": False, "hide_viewport": False,
+    "hide_get": False, "visible_get": True,
+}
+
+
+def _same_typed_settings(actual, expected):
+    return (type(actual) is dict and actual.keys() == expected.keys() and
+            all(type(actual[key]) is type(value) and actual[key] == value
+                for key, value in expected.items()))
+
 
 
 def _finite_vector(value, size, limit):
@@ -195,6 +228,11 @@ def _validate_content(node):
     require(type(node.get("content_snapshot_version")) is int and
             node["content_snapshot_version"] == CONTENT_SNAPSHOT_VERSION,
             "Blender_receipt_missing_full_content_measurement")
+    require(_same_typed_settings(node.get("visibility"), VISIBLE_OBJECT),
+            "Blender_unadmitted_object_visibility")
+    require(_same_typed_settings(node["material"].get("render_settings"),
+                                 MATERIAL_RENDER_SETTINGS),
+            "Blender_unadmitted_material_render_settings")
     matrix = node.get("matrix_world")
     require(type(matrix) is list and len(matrix) == 4 and
             all(_finite_vector(row, 4, 1000) for row in matrix) and
@@ -205,6 +243,7 @@ def _validate_content(node):
     positions = mesh.get("positions")
     triangles = mesh.get("triangles")
     normals = mesh.get("corner_normals")
+    uv0 = mesh.get("corner_uv0")
     require(type(positions) is list and len(positions) == node["vertices"] and
             all(_finite_vector(point, 3, 100) for point in positions),
             "Blender_vertex_coordinates_not_bounded")
@@ -214,25 +253,34 @@ def _validate_content(node):
                     for index in face) and len(set(face)) == 3
                 for face in triangles),
             "Blender_triangle_connectivity_not_bounded")
+    require({index for face in triangles for index in face} == set(range(len(positions))),
+            "Blender_unreferenced_editable_vertex_not_admitted")
     require(type(normals) is list and len(normals) == len(triangles) and
             all(type(face) is list and len(face) == 3 and
                 all(_finite_vector(normal, 3, 1.00001) and
                     abs(sum(x*x for x in normal)-1) <= 0.0001
                     for normal in face) for face in normals),
             "Blender_corner_normals_not_bounded")
+    require(type(uv0) is list and len(uv0) == len(triangles) and
+            all(type(face) is list and len(face) == 3 and
+                all(_finite_vector(uv, 2, 100) for uv in face) for face in uv0),
+            "Blender_UV0_coordinates_not_bounded")
     inputs = node["material"].get("shader_inputs")
     require(type(inputs) is dict and 4 <= len(inputs) <= 64 and
             all(type(key) is str and 0 < len(key) <= 128 for key in inputs),
             "Blender_PBR_input_measurements_missing")
     for value in inputs.values():
         _numeric_socket_value(value)
+    require(inputs.get("Alpha") == 1 and node["material"]["color"][3] == 1,
+            "Blender_profile_requires_opaque_material")
 
 
 def _oriented_triangles(node):
     mesh = node["mesh"]
-    return [[(mesh["positions"][index], normal)
-             for index, normal in zip(indices, normals)]
-            for indices, normals in zip(mesh["triangles"], mesh["corner_normals"])]
+    return [[(mesh["positions"][index], normal, uv)
+             for index, normal, uv in zip(indices, normals, uv0)]
+            for indices, normals, uv0 in zip(
+                mesh["triangles"], mesh["corner_normals"], mesh["corner_uv0"])]
 
 
 def _same_oriented_triangle(expected, actual):
@@ -242,7 +290,9 @@ def _same_oriented_triangle(expected, actual):
         all(abs(x-y) <= GEOMETRY_TOLERANCE for x, y in zip(
             expected[corner][0], actual[(corner+shift) % 3][0])) and
         all(abs(x-y) <= NORMAL_TOLERANCE for x, y in zip(
-            expected[corner][1], actual[(corner+shift) % 3][1]))
+            expected[corner][1], actual[(corner+shift) % 3][1])) and
+        all(abs(x-y) <= GEOMETRY_TOLERANCE for x, y in zip(
+            expected[corner][2], actual[(corner+shift) % 3][2]))
         for corner in range(3)) for shift in range(3))
 
 
@@ -335,7 +385,7 @@ def compare_edit(original, edited, *, change=EDIT_DELTA_X):
     for label in EXPECTED:
         before=a[label]
         after=b[label]
-        for field in ("label","name","type","vertices","faces","dimensions","mesh","material"):
+        for field in ("label","name","type","vertices","faces","dimensions","mesh","material","visibility"):
             require(before[field]==after[field],
                     "edited_scene_unapproved_semantic_change:"+field)
         expected_location=before["location"][:]
@@ -403,13 +453,33 @@ def compare_reimported_glb(original, expected_edit, new_import):
         "corner_normal_max_tolerance": NORMAL_TOLERANCE,
         "content_snapshot_version": CONTENT_SNAPSHOT_VERSION,
         "mesh_winding_normals_and_shader_inputs_preserved": True,
+        "first_UV_layer_coordinates_preserved": True,
+        "UV_coordinate_max_tolerance": GEOMETRY_TOLERANCE,
+        "unmeasured_source_semantics": [
+            "original_Studio_UUIDs", "original_Motionwright_Blend_source",
+            "custom_mesh_attributes", "custom_object_properties",
+        ],
         "vertex_indices_used_as_object_identity": False,
+        "oriented_triangle_surface_preserved": True,
+        "vertex_welding_equivalence_proven": False,
         "initial_GLB_import_geometry_equivalence_proven": False,
     }
 
 
 def source_scene_snapshot(bpy):
     scene = bpy.context.scene
+    require(scene.animation_data is None, "Blender_unadmitted_scene_animation")
+    # An invisible ancestor collection can hide otherwise visible objects.
+    pending = [scene.collection]
+    seen = {}
+    while pending:
+        collection = pending.pop()
+        require(id(collection) not in seen and len(seen) < 16,
+                "Blender_collection_visibility_budget")
+        seen[id(collection)] = collection
+        require(not collection.hide_render and not collection.hide_viewport,
+                "Blender_unadmitted_collection_visibility")
+        pending.extend(collection.children)
     result=[]
     for obj in scene.objects:
         require(obj.type=="MESH" and obj.parent is None,
@@ -423,6 +493,18 @@ def source_scene_snapshot(bpy):
                 "Blender_material_not_node_editable")
         bsdf=[node for node in mat.node_tree.nodes if node.type=="BSDF_PRINCIPLED"]
         require(len(bsdf)==1,"Blender_PBR_principled_shader_missing")
+        visibility = {
+            "hide_render": obj.hide_render, "hide_viewport": obj.hide_viewport,
+            "hide_get": obj.hide_get(), "visible_get": obj.visible_get(),
+        }
+        require(_same_typed_settings(visibility, VISIBLE_OBJECT),
+                "Blender_unadmitted_object_visibility")
+        settings = {key: getattr(mat, key) for key in MATERIAL_RENDER_SETTINGS}
+        require(_same_typed_settings(settings, MATERIAL_RENDER_SETTINGS),
+                "Blender_unadmitted_material_render_settings")
+        require(obj.data.animation_data is None and mat.animation_data is None and
+                mat.node_tree.animation_data is None,
+                "Blender_unmeasured_data_or_material_animation")
         color=bsdf[0].inputs.get("Base Color")
         require(color is not None,"Blender_PBR_color_property_missing")
         require(not obj.modifiers and not obj.constraints and
@@ -430,7 +512,8 @@ def source_scene_snapshot(bpy):
                 "Blender_unmeasured_deformation_or_animation")
         outputs = [node for node in mat.node_tree.nodes
                    if node.type == "OUTPUT_MATERIAL" and node.is_active_output]
-        require(len(mat.node_tree.nodes) == 2 and len(outputs) == 1,
+        require(len(mat.node_tree.nodes) == 2 and len(outputs) == 1 and
+                outputs[0].target == "ALL",
                 "Blender_unadmitted_material_graph")
         surface = outputs[0].inputs.get("Surface")
         require(surface is not None and len(surface.links) == 1 and
@@ -447,7 +530,14 @@ def source_scene_snapshot(bpy):
                 "Blender_unadmitted_triangle_or_material_assignment")
         normals = mesh.corner_normals
         require(len(normals) == len(mesh.loops), "Blender_corner_normals_missing")
+        require(len(mesh.uv_layers) == 1 and mesh.uv_layers.active is not None and
+                len(mesh.uv_layers.active.data) == len(mesh.loops),
+                "Blender_first_UV_layer_missing_or_ambiguous")
+        uv0 = mesh.uv_layers.active.data
         mesh_content = {
+            "corner_uv0": [[[round(float(x), 7) for x in uv0[index].uv]
+                            for index in face.loop_indices]
+                           for face in mesh.polygons],
             "positions": [[round(float(x), 7) for x in vertex.co]
                           for vertex in mesh.vertices],
             "triangles": [list(face.vertices) for face in mesh.polygons],
@@ -460,6 +550,7 @@ def source_scene_snapshot(bpy):
             "name":obj.name,
             "type":obj.type,
             "content_snapshot_version":CONTENT_SNAPSHOT_VERSION,
+            "visibility":visibility,
             "matrix_world":[[round(float(x),7) for x in row]
                             for row in obj.matrix_world],
             "mesh":mesh_content,
@@ -471,6 +562,7 @@ def source_scene_snapshot(bpy):
                 "name":mat.name,
                 "color":[round(float(x),7) for x in color.default_value],
                 "shader_inputs":inputs,
+                "render_settings":settings,
             },
         })
     result.sort(key=lambda item:item["label"])
@@ -488,6 +580,31 @@ def measure_saved_file(path, root):
     within_root(path, root, must_exist=True)
     return {"name":path.name,"bytes":path.stat().st_size,
             "sha256":digest(path.read_bytes())}
+
+
+def validate_final_receipts(info, first, second, verified, reimport):
+    expected_phases = (
+        (first, "imported_first_party_GLB_to_Blend"),
+        (second, "original_Blend_reopened_and_edited"),
+        (verified, "edited_Blend_reopened_in_new_Blender_process"),
+        (reimport, "edited_GLTF_reimported_into_new_Blend"),
+    )
+    for row, phase in expected_phases:
+        require(type(row) is dict and supported_receipt_schema(row.get("schema")) and
+                row.get("phase") == phase and type(row.get("source")) is dict and
+                row["source"].get("sha256") == info["sha256"],
+                "Blender_final_receipt_chain_not_source_bound")
+    try:
+        joined = (first["native_saved_file"] == second["original_blend"] ==
+                    verified["original_native_blend"] and
+                  second["artifacts"]["edited_blend"] == verified["edited_native_blend"] and
+                  second["artifacts"]["edited_glb"] == verified["edited_interchange_glb"] ==
+                    reimport["original_exported_glb"] and
+                  first["objects"] == verified["original_objects"] and
+                  second["objects"] == verified["verified_edited_objects"])
+    except (KeyError, TypeError) as exc:
+        raise ReceiverError("Blender_final_receipt_artifact_or_snapshot_shape") from exc
+    require(joined, "Blender_final_receipt_artifact_or_snapshot_join_changed")
 
 
 def run_phase(args):
@@ -643,12 +760,13 @@ def run_phase(args):
         final=root/"complete.json"
         within_root(final,root)
         first=read_json(imported)
+        second=read_json(edited)
         edited_source=read_json(root/"verified.json")
-        require(supported_receipt_schema(reimport["schema"]) and
-                supported_receipt_schema(edited_source["schema"]) and
-                reimport["phase"]=="edited_GLTF_reimported_into_new_Blend" and
-                reimport["source"]["sha256"]==info["sha256"],
-                "Blender_final_native_reopen_receipt_not_source_bound")
+        validate_final_receipts(info, first, second, edited_source, reimport)
+        require(measure_saved_file(original_blend, root) == first["native_saved_file"] and
+                measure_saved_file(edited_blend, root) == second["artifacts"]["edited_blend"] and
+                measure_saved_file(output_glb, root) == second["artifacts"]["edited_glb"],
+                "Blender_final_original_or_edited_artifact_changed")
         saved=root/"reimport.blend"
         require(measure_saved_file(saved,root)==
                 reimport["reimported_native_blend"],
