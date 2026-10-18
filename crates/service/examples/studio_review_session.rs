@@ -26,12 +26,16 @@ mod project_library;
 #[path = "../../../apps/desktop/src-tauri/src/caption_export.rs"]
 mod caption_export;
 
+#[path = "../../../apps/desktop/src-tauri/src/file_import.rs"]
+#[allow(dead_code)] // The exact desktop import/recovery module, without Tauri transport.
+mod file_import;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, HeroConfig, NodeStyle,
     Project, RevisionStamp, hero_node_id,
 };
-use motionwright_service::{StudioService, VoiceImportMetadata};
+use motionwright_service::StudioService;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -115,34 +119,6 @@ struct RecentHistoryRequest {
     limit: usize,
 }
 
-// These request fields and defaults follow apps/desktop/src-tauri/src/main.rs
-// at descendant base 101ac038775a6201bcb16f7ca056bfdd0ab05805. Only transport
-// parsing and response shaping live here; StudioService owns every operation.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImportAssetRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    effect_grant: Uuid,
-    path: String,
-    name: Option<String>,
-    media_type: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImportVoiceRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    effect_grant: Uuid,
-    path: String,
-    name: Option<String>,
-    media_type: Option<String>,
-    label: Option<String>,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaveformPageRequest {
@@ -186,18 +162,6 @@ fn request<T: DeserializeOwned>(args: Value) -> Result<T, String> {
     serde_json::from_value(value.clone()).map_err(|error| error.to_string())
 }
 
-fn absolute_asset_path(value: &str) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute asset file path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Asset file paths must be absolute.".into());
-    }
-    Ok(path)
-}
-
 fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -208,51 +172,6 @@ fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
         return Err("Portable bundle paths must be absolute.".into());
     }
     Ok(path)
-}
-
-fn infer_media_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
-        "ogg" | "oga" => "audio/ogg",
-        "m4a" | "aac" => "audio/mp4",
-        "aif" | "aiff" => "audio/aiff",
-        "caf" => "audio/x-caf",
-        "mp4" => "video/mp4",
-        "mov" => "video/quicktime",
-        "webm" => "video/webm",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "glb" => "model/gltf-binary",
-        "gltf" => "model/gltf+json",
-        "json" => "application/json",
-        "srt" => "application/x-subrip",
-        "vtt" => "text/vtt",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    }
-}
-
-fn import_name(source: &Path, name: Option<&str>, kind: &str) -> Result<String, String> {
-    name.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| format!("{kind} file name is unavailable."))
 }
 
 fn fixture_node(text: &str) -> CanvasNode {
@@ -571,97 +490,22 @@ impl Session {
                     .map_err(|error| error.to_string())?,
                 )
             }
-            "import_asset_file" => {
-                let request: ImportAssetRequest = request(args)?;
-                let source = absolute_asset_path(&request.path)?;
-                let project =
-                    self.checked_project(request.project_id, request.generation, request.revision)?;
-                self.grants.consume(
-                    request.effect_grant,
-                    EffectKind::ImportLocal,
-                    EffectScope::project(request.project_id, request.generation, request.revision),
-                    request.path.trim(),
-                )?;
-                if !source.is_file() {
-                    return Err("Asset source must be an existing local file.".into());
-                }
-                let name = import_name(&source, request.name.as_deref(), "Asset")?;
-                let media_type = request
-                    .media_type
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| infer_media_type(&source).to_owned());
-                encoded(
-                    self.service
-                        .import_asset_file(
-                            request.project_id,
-                            &project.stamp(),
-                            &Uuid::now_v7().to_string(),
-                            &source,
-                            name,
-                            media_type,
-                        )
-                        .map_err(|error| error.to_string())?
-                        .project,
-                )
-            }
-            "import_voice_file" => {
-                let request: ImportVoiceRequest = request(args)?;
-                let source = absolute_asset_path(&request.path)?;
-                let project =
-                    self.checked_project(request.project_id, request.generation, request.revision)?;
-                self.grants.consume(
-                    request.effect_grant,
-                    EffectKind::ImportLocal,
-                    EffectScope::project(request.project_id, request.generation, request.revision),
-                    request.path.trim(),
-                )?;
-                if !source.is_file() {
-                    return Err("Voice source must be an existing local file.".into());
-                }
-                let name = import_name(&source, request.name.as_deref(), "Voice")?;
-                let label = request
-                    .label
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        source
-                            .file_stem()
-                            .and_then(|value| value.to_str())
-                            .map(str::to_owned)
-                    })
-                    .unwrap_or_else(|| "Voice take".into());
-                let media_type = request
-                    .media_type
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| infer_media_type(&source).to_owned());
-                if !media_type.starts_with("audio/") {
-                    return Err("Voice import requires a supported audio file.".into());
-                }
-                encoded(
-                    self.service
-                        .import_voice_file(
-                            request.project_id,
-                            &project.stamp(),
-                            &Uuid::now_v7().to_string(),
-                            &source,
-                            VoiceImportMetadata {
-                                name,
-                                media_type,
-                                label,
-                            },
-                        )
-                        .map_err(|error| error.to_string())?
-                        .project,
-                )
-            }
+            "prepare_file_import" => encoded(
+                file_import::prepare_file_import(&self.service, request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "import_asset_file" => encoded(
+                file_import::import_asset_file(&self.service, &self.grants, request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "import_voice_file" => encoded(
+                file_import::import_voice_file(&self.service, &self.grants, request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "recover_file_import" => encoded(
+                file_import::recover_file_import(&self.service, request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "waveform_page" => {
                 let request: WaveformPageRequest = request(args)?;
                 encoded(

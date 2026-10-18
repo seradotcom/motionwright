@@ -2,6 +2,7 @@ mod av_delivery;
 mod av_master;
 mod caption_export;
 mod effect_grants;
+mod file_import;
 mod generation_journal;
 mod media_integrity;
 mod narration_native;
@@ -43,7 +44,7 @@ use motionwright_native::{
 use motionwright_service::{
     AssetIntegrityPage, MltCleanupInventory, ModelRequestDraft, ModelRequestPreflight,
     ProductionJobProjection, ProjectCreationIntent, ProjectCreationOutcome, ProjectEvent,
-    StudioService, VoiceImportMetadata, WaveformPage,
+    StudioService, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use project_library::{BootstrapProjectSelection, BootstrapRequest};
@@ -454,29 +455,6 @@ struct OtioExportResponse {
     path: String,
     scene_count: usize,
     loss_report: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportAssetRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    effect_grant: Uuid,
-    path: String,
-    name: Option<String>,
-    media_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportVoiceRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    effect_grant: Uuid,
-    path: String,
-    name: Option<String>,
-    media_type: Option<String>,
-    label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1975,151 +1953,74 @@ async fn preview_native_frame(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[tauri::command]
-fn import_asset_file(
-    state: State<'_, AppState>,
-    request: ImportAssetRequest,
-) -> Result<Project, String> {
-    let source = absolute_asset_path(&request.path)?;
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::ImportLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    if !source.is_file() {
-        return Err("Asset source must be an existing local file.".into());
+fn file_import_error(error: file_import::FileImportError) -> String {
+    match error {
+        file_import::FileImportError::Invalid(message) => message,
+        file_import::FileImportError::Storage(message) => sanitized(message),
     }
-    let name = request
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| "Asset file name is unavailable.".to_string())?;
-    let media_type = request
-        .media_type
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| infer_media_type(&source).to_owned());
-    let current = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let expected = RevisionStamp {
-        resource: current.resource_key(),
-        generation: request.generation,
-        revision: request.revision,
-    };
-    state
-        .service
-        .import_asset_file(
-            request.project_id,
-            &expected,
-            &Uuid::now_v7().to_string(),
-            &source,
-            name,
-            media_type,
-        )
-        .map(|outcome| outcome.project)
-        .map_err(sanitized)
 }
 
 #[tauri::command]
-fn import_voice_file(
+async fn prepare_file_import(
     state: State<'_, AppState>,
-    request: ImportVoiceRequest,
-) -> Result<Project, String> {
-    let source = absolute_asset_path(&request.path)?;
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::ImportLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    if !source.is_file() {
-        return Err("Voice source must be an existing local file.".into());
-    }
-    let name = request
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| "Voice file name is unavailable.".to_string())?;
-    let label = request
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "Voice take".into());
-    let media_type = request
-        .media_type
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| infer_media_type(&source).to_owned());
-    if !media_type.starts_with("audio/") {
-        return Err("Voice import requires a supported audio file.".into());
-    }
-    let current = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let expected = RevisionStamp {
-        resource: current.resource_key(),
-        generation: request.generation,
-        revision: request.revision,
-    };
-    state
-        .service
-        .import_voice_file(
-            request.project_id,
-            &expected,
-            &Uuid::now_v7().to_string(),
-            &source,
-            VoiceImportMetadata {
-                name,
-                media_type,
-                label,
-            },
-        )
-        .map(|outcome| outcome.project)
-        .map_err(sanitized)
+    request: file_import::FileImportPrepareRequest,
+) -> Result<file_import::PreparedFileImport, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::prepare_file_import(&service, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| "Import preparation task failed.".to_string())?
+}
+
+#[tauri::command]
+async fn import_asset_file(
+    state: State<'_, AppState>,
+    request: file_import::FileImportDispatchRequest,
+) -> Result<file_import::FileImportReceipt, String> {
+    let service = state.service.clone();
+    // The clone shares the existing registry; it does not create new authority.
+    let grants = state.effect_grants.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::import_asset_file(&service, &grants, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "File import task failed. Check the original import result before importing again."
+            .to_string()
+    })?
+}
+
+#[tauri::command]
+async fn import_voice_file(
+    state: State<'_, AppState>,
+    request: file_import::FileImportDispatchRequest,
+) -> Result<file_import::FileImportReceipt, String> {
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::import_voice_file(&service, &grants, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "Voice import task failed. Check the original import result before importing again."
+            .to_string()
+    })?
+}
+
+#[tauri::command]
+async fn recover_file_import(
+    state: State<'_, AppState>,
+    request: file_import::FileImportRecoveryRequest,
+) -> Result<Option<file_import::FileImportReceipt>, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::recover_file_import(&service, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "Import recovery read failed. The retained request is still available.".to_string()
+    })?
 }
 
 #[tauri::command]
@@ -2339,50 +2240,6 @@ async fn apply_change(
     .map_err(|_| "Motionwright project mutation task failed".to_string())?
 }
 
-fn absolute_asset_path(value: &str) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute asset file path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Asset file paths must be absolute.".into());
-    }
-    Ok(path)
-}
-
-fn infer_media_type(path: &std::path::Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
-        "ogg" | "oga" => "audio/ogg",
-        "m4a" | "aac" => "audio/mp4",
-        "aif" | "aiff" => "audio/aiff",
-        "caf" => "audio/x-caf",
-        "mp4" => "video/mp4",
-        "mov" => "video/quicktime",
-        "webm" => "video/webm",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "glb" => "model/gltf-binary",
-        "gltf" => "model/gltf+json",
-        "json" => "application/json",
-        "srt" => "application/x-subrip",
-        "vtt" => "text/vtt",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    }
-}
-
 fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -2500,6 +2357,8 @@ fn main() {
             verify_local_media_integrity,
             review_native_av_master,
             preview_native_frame,
+            prepare_file_import,
+            recover_file_import,
             import_asset_file,
             import_voice_file,
             waveform_page,

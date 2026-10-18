@@ -6,6 +6,7 @@ import { fixtureBootstrap } from "../src/fixture";
 import { seedSyntheticProjectSelection } from "./support/selectedSyntheticProject";
 import { applyChange as applySyntheticCanvasChange } from "../src/api";
 import type { Change, Project } from "../src/types";
+import type { FileImportDispatchRequest, FileImportIntent, FileImportReceipt, PreparedFileImport } from "../src/fileImport";
 import { ScopedChangeService } from "./support/scopedChangeService";
 
 // Reused from PR196 (0d90c0eba9ae646118954f79a29f15b290c21c14), composed with
@@ -15,21 +16,36 @@ for (const kind of ["asset", "voice"] as const) {
   test(`pending ${kind} import shares the ordinary edit latch and publishes its revision`, async ({ page }) => {
     const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
     await seedSyntheticProjectSelection(page, initial.project.id);
-  await page.addInitScript(boot => {
+    await page.addInitScript(boot => {
       let project = structuredClone(boot.project);
-      let resolveImport: ((value: typeof project) => void) | null = null;
+      let prepared: PreparedFileImport | null = null;
+      let pendingImport: FileImportDispatchRequest | null = null;
+      let resolveImport: ((value: FileImportReceipt) => void) | null = null;
+      // Canonical UUID shape is necessary for the new client contract. This
+      // token and every reply here remain explicitly synthetic UI-only data.
+      const syntheticToken = "01900000-0000-7000-8000-0000000000f1";
       const state = {
+        evidenceScope: "synthetic_ui_coordination_only_no_service_or_native_authority",
         calls: [] as string[], revisions: [] as number[],
         complete: () => {
+          if (!pendingImport || !resolveImport) throw new Error("No synthetic import is pending");
           project = { ...project, revision: project.revision + 1, title: "Synthetic import completed" };
-          resolveImport?.(structuredClone(project));
+          resolveImport({ schema: "motionwright.file-import-receipt/1",
+            request_id: pendingImport.request_id, intent: structuredClone(pendingImport.intent),
+            project: structuredClone(project), replayed: false });
+          pendingImport = null;
         },
+      };
+      type SyntheticRequest = {
+        project_id?: string | null; generation?: string; revision?: number;
+        kind?: "asset" | "voice"; path?: string; name?: string | null;
+        media_type?: string | null; label?: string | null;
+        request_id?: string; effect_grant?: string; effect?: string; subject?: string;
+        intent?: FileImportIntent; change?: { type: string; title?: string };
       };
       const host = window as unknown as {
         __MUTATION_FIXTURE__: typeof state;
-        __TAURI_INTERNALS__: { invoke: (command: string, args?: { request?: {
-          revision?: number; change?: { type: string; title?: string };
-        } }) => Promise<unknown> };
+        __TAURI_INTERNALS__: { invoke: (command: string, args?: { request?: SyntheticRequest }) => Promise<unknown> };
       };
       host.__MUTATION_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
@@ -40,8 +56,42 @@ for (const kind of ["asset", "voice"] as const) {
           if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
           return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
         }
-        if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
+        if (command === "open_project") {
+          if (args?.request?.project_id !== project.id) throw new Error("Wrong synthetic current Project");
+          return structuredClone(project);
+        }
+        if (command === "prepare_file_import") {
+          const request = args?.request;
+          if (!request || request.project_id !== project.id || request.generation !== project.generation
+            || request.revision !== project.revision) throw new Error("Wrong synthetic import preparation scope");
+          const path = request.path?.trim();
+          if (!((request.kind === "asset" && path === "/synthetic-fixture/asset.png")
+            || (request.kind === "voice" && path === "/synthetic-fixture/voice.wav"))) {
+            throw new Error("This synthetic fixture only prepares its two named test files");
+          }
+          const intent: FileImportIntent = request.kind === "asset"
+            ? { kind: "asset", name: request.name?.trim() || "asset.png", media_type: request.media_type?.trim() || "image/png" }
+            : { kind: "voice", name: request.name?.trim() || "voice.wav", media_type: request.media_type?.trim() || "audio/wav",
+              label: request.label?.trim() || "voice" };
+          prepared = { schema: "motionwright.file-import-preparation/1", project_id: project.id,
+            generation: project.generation, revision: project.revision, path: path!, intent };
+          return structuredClone(prepared);
+        }
+        if (command === "issue_effect_grant") return { token: syntheticToken,
+          effect: args?.request?.effect, project_id: project.id, generation: project.generation,
+          revision: project.revision, one_time: true, expires_in_seconds: 45 };
         if (command === "import_asset_file" || command === "import_voice_file") {
+          const request = args?.request;
+          if (!prepared || !request || request.project_id !== prepared.project_id
+            || request.generation !== prepared.generation || request.revision !== prepared.revision
+            || request.path !== prepared.path || request.effect_grant !== syntheticToken
+            || !request.request_id || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(request.request_id)
+            || request.request_id === "00000000-0000-0000-0000-000000000000"
+            || JSON.stringify(request.intent) !== JSON.stringify(prepared.intent)
+            || command !== `import_${prepared.intent.kind}_file`) {
+            throw new Error("Synthetic dispatch differs from its prepared request");
+          }
+          pendingImport = structuredClone(request as FileImportDispatchRequest);
           return new Promise(resolve => { resolveImport = resolve; });
         }
         if (command === "apply_change") {
@@ -83,6 +133,9 @@ for (const kind of ["asset", "voice"] as const) {
     }).__MUTATION_FIXTURE__.complete());
     await expect(page.locator(".command-bar .revision-chip")).toHaveText("r13");
     await expect(page.locator(".brand-copy")).toContainText("Synthetic import completed");
+    expect(await page.evaluate(() => (window as unknown as {
+      __MUTATION_FIXTURE__: { calls: string[] };
+    }).__MUTATION_FIXTURE__.calls.filter(command => command === "open_project"))).toEqual(["open_project"]);
     await expect(page.locator(".saving-state")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Project title", exact: true })).toHaveValue("Do not race an import");
     await expect(page.getByRole("region", { name: "Project title conflict", exact: true })).toBeVisible();
@@ -772,6 +825,7 @@ test.describe("real service imports and portable restore", () => {
   interface InvokeRequest extends Record<string, unknown> {
     project_id?: string; generation?: string; revision?: number;
     effect_grant?: string; path?: string; change?: Change;
+    request_id?: string; intent?: FileImportIntent;
   }
 
   function requests(service: ScopedChangeService, command: string): InvokeRequest[] {
@@ -799,13 +853,26 @@ test.describe("real service imports and portable restore", () => {
       armed = false;
       matched = true;
       try {
-        let outcome: { project: Project } | { error: unknown };
-        try { outcome = { project: await original<Project>(command, args) }; }
+        let outcome: { project: Project; reply: Project | FileImportReceipt } | { error: unknown };
+        try {
+          const reply = await original<Project | FileImportReceipt>(command, args);
+          if (command === "import_asset_file" || command === "import_voice_file") {
+            const receipt = reply as FileImportReceipt;
+            const request = args.request as FileImportDispatchRequest;
+            expect(receipt).toMatchObject({ schema: "motionwright.file-import-receipt/1",
+              request_id: request.request_id, intent: request.intent, replayed: false });
+            expect(receipt.project).toMatchObject({ id: request.project_id,
+              generation: request.generation, revision: request.revision + 1 });
+            outcome = { project: receipt.project, reply };
+          } else outcome = { project: reply as Project, reply };
+        }
         catch (error) { outcome = { error }; }
         observed.resolve(outcome);
         await release.promise;
         if ("error" in outcome) throw outcome.error;
-        return outcome.project as T;
+        // Publish the original wire result unchanged. Import callers consume a
+        // receipt, while the existing portable restore still consumes Project.
+        return outcome.reply as T;
       } finally { finished.resolve(); }
     };
     return {
@@ -923,7 +990,8 @@ test.describe("real service imports and portable restore", () => {
         } else {
           await button(page, "Audio").click();
           const corruptPath = testInfo.outputPath("corrupt-synthetic.wav");
-          await writeFile(corruptPath, Buffer.from("Explicit synthetic corrupt WAV: not decodable audio."));
+          const corruptBytes = Buffer.from("Explicit synthetic corrupt WAV: not decodable audio.");
+          await writeFile(corruptPath, corruptBytes);
           const historyBefore = await service.history(initial.id);
           await field(page, "Voice file absolute path").fill(corruptPath);
           await field(page, "Voice take label").fill("Synthetic PCM measurement fixture");
@@ -933,9 +1001,25 @@ test.describe("real service imports and portable restore", () => {
           await expect(field(page, "Voice take label")).toHaveValue("Synthetic PCM measurement fixture");
           expect(await service.project(initial.id)).toEqual(initial);
           expect(await service.history(initial.id)).toEqual(historyBefore);
-          // The service may retain ingested corrupt bytes as an unreferenced CAS
-          // blob. No measured track, asset reference or journal event is admitted.
+          await expect(readFile(join(service.directory, "blobs", "sha256",
+            hash(corruptBytes).slice(0, 2), hash(corruptBytes)))).rejects.toThrow("ENOENT");
           observations.corruptVoiceRejectedWithoutDocumentChange = true;
+          // An uncertain import retains its original request. A read-only None
+          // never authorizes another import; remove this local copy explicitly.
+          const importsBeforeRecovery = requests(service, "import_voice_file").length;
+          const grantsBeforeRecovery = requests(service, "issue_effect_grant").length;
+          await button(page, "Check original import").click();
+          await expect(page.locator(".file-import-notice")).toContainText(
+            "The original import was not found. This check did not send an import.");
+          expect(requests(service, "import_voice_file")).toHaveLength(importsBeforeRecovery);
+          expect(requests(service, "issue_effect_grant")).toHaveLength(grantsBeforeRecovery);
+          expect(requests(service, "recover_file_import")).toHaveLength(1);
+          expect(await service.project(initial.id)).toEqual(initial);
+          expect(await service.history(initial.id)).toEqual(historyBefore);
+          await button(page, "Remove copy…").click();
+          await expect(button(page, "Remove local recovery copy")).toBeFocused();
+          await button(page, "Remove local recovery copy").click();
+          await expect(page.locator(".file-import-notice")).toContainText("The local recovery copy was removed.");
           await field(page, "Voice file absolute path").fill(sourcePath);
         }
         held = holdRealReply(service, `import_${kind}_file`);
@@ -1027,8 +1111,13 @@ test.describe("real service imports and portable restore", () => {
       const source = testInfo.outputPath("scope-source.svg");
       const otherPath = testInfo.outputPath("other-scope-source.svg");
       await writeFile(source, svgBytes); await writeFile(otherPath, svgBytes);
+      const prepared = await service.invoke<PreparedFileImport>("prepare_file_import", { request: {
+        ...stamp(initial), kind: "asset", path: source, name: null, media_type: null, label: null,
+      } });
+      expect(prepared).toMatchObject({ schema: "motionwright.file-import-preparation/1",
+        ...stamp(initial), path: source, intent: { kind: "asset", name: "scope-source.svg", media_type: "image/svg+xml" } });
       const importRequest = (project: Project, token: string, path = source) => ({ request: {
-        ...stamp(project), effect_grant: token, path, name: null, media_type: null,
+        ...stamp(project), request_id: randomUUID(), effect_grant: token, path, intent: prepared.intent,
       } });
       await expect(service.invoke("import_asset_file", importRequest(initial, randomUUID()))).rejects.toThrow("Effect grant");
       await expect(service.grant("import_local", { ...initial, generation: randomUUID() }, source)).rejects.toThrow("scope is stale");
@@ -1044,7 +1133,7 @@ test.describe("real service imports and portable restore", () => {
       const generationBound = await service.grant("import_local", initial, source);
       await expect(service.invoke("import_asset_file", importRequest(
         { ...initial, generation: randomUUID() }, generationBound.token,
-      ))).rejects.toThrow("scope is stale");
+      ))).rejects.toThrow("different project generation");
       const wrongEffect = await service.grant("deliver_local", initial, source);
       await expect(service.invoke("import_asset_file", importRequest(initial, wrongEffect.token))).rejects.toThrow("Effect grant");
       const boundPath = await service.grant("import_local", initial, source);
@@ -1092,6 +1181,8 @@ test.describe("real service imports and portable restore", () => {
       donor = await source.importAsset(donor, sourceFile, "Actual portable source bytes");
       donor = await source.apply(donor, { type: "rename_project", title: "Portable source from a real service" });
       const original = (await target.fixtureBootstrap()).project;
+      const originalOracle = await target.observeStoredProject(original);
+      observations.targetOriginalOracle = originalOracle;
       const donorHistory = await source.history(donor.id, 0, 256);
       observations.source = donor; observations.targetBefore = original;
       expect(donor.id).not.toBe(original.id);
@@ -1194,6 +1285,9 @@ test.describe("real service imports and portable restore", () => {
       await expect(field(targetPage, "Project title")).toHaveValue(final.title);
       await targetPage.screenshot({ path: testInfo.outputPath("real-portable-restored-edited-reopened.png"), fullPage: true });
       expect(requests(target, "apply_change")).toHaveLength(1);
+      const unchangedOriginal = await target.observeStoredProject(original);
+      expect(unchangedOriginal.project).toEqual(originalOracle.project);
+      expect(unchangedOriginal.journal).toEqual(originalOracle.journal);
     } finally {
       try {
         await held?.dispose();

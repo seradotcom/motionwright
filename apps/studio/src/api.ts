@@ -17,6 +17,11 @@ import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry 
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
+import { openProjectFromLibrary } from "./projectLibrary";
+import {
+  importFileWithRetention, recoverFileImportWithRetention,
+  type FileImportTransport, type RetainedFileImport,
+} from "./fileImport";
 import { fixtureBootstrap } from "./fixture";
 import type {
   AssetIntegrityPage,
@@ -341,7 +346,7 @@ export type NativeDeliveryDispatchCheck = () => void;
 
 async function issueEffectGrant(
   effect: EffectKind,
-  project: Project | null,
+  project: Pick<Project, "id" | "generation" | "revision"> | null,
   subject: string,
 ): Promise<EffectGrantReceipt> {
   if (!isTauri()) {
@@ -370,50 +375,34 @@ const workflowCommand = (action: WorkflowAction): string => ({
   promote: "workflow.promote",
 })[action];
 
+const desktopFileImport: FileImportTransport = {
+  prepare: request => invoke("prepare_file_import", { request }),
+  grant: preparation => issueEffectGrant("import_local", {
+    id: preparation.project_id, generation: preparation.generation, revision: preparation.revision,
+  }, preparation.path),
+  dispatch: (kind, request) => invoke(kind === "voice" ? "import_voice_file" : "import_asset_file", { request }),
+  recover: request => invoke("recover_file_import", { request }),
+  current: projectId => openProjectFromLibrary(projectId),
+};
+
 export async function importAssetFile(
-  project: Project,
-  path: string,
-  name?: string,
-  mediaType?: string,
-): Promise<Project> {
-  if (!isTauri()) {
-    throw new Error("Local asset import requires the Motionwright desktop runtime.");
-  }
-  const grant = await issueEffectGrant("import_local", project, path);
-  return invoke<Project>("import_asset_file", {
-    request: {
-      project_id: project.id,
-      generation: project.generation,
-      revision: project.revision,
-      effect_grant: grant.token,
-      path,
-      name: name ?? null,
-      media_type: mediaType ?? null,
-    },
-  });
+  project: Project, path: string, name?: string, mediaType?: string,
+): Promise<{ project: Project; retained: RetainedFileImport }> {
+  if (!isTauri()) throw new Error("Local asset import requires the Motionwright desktop runtime.");
+  return importFileWithRetention(project, { kind: "asset", path, name, media_type: mediaType }, desktopFileImport);
 }
 
 export async function importVoiceFile(
-  project: Project,
-  path: string,
-  label?: string,
-): Promise<Project> {
-  if (!isTauri()) {
-    throw new Error("Measured voice import requires the Motionwright desktop runtime.");
-  }
-  const grant = await issueEffectGrant("import_local", project, path);
-  return invoke<Project>("import_voice_file", {
-    request: {
-      project_id: project.id,
-      generation: project.generation,
-      revision: project.revision,
-      effect_grant: grant.token,
-      path,
-      name: null,
-      media_type: null,
-      label: label ?? null,
-    },
-  });
+  project: Project, path: string, label?: string,
+): Promise<{ project: Project; retained: RetainedFileImport }> {
+  if (!isTauri()) throw new Error("Measured voice import requires the Motionwright desktop runtime.");
+  return importFileWithRetention(project, { kind: "voice", path, label }, desktopFileImport);
+}
+
+/** Reads the original durable receipt; it never obtains or retries an import grant. */
+export async function recoverOriginalFileImport(project: Project, retained: RetainedFileImport): Promise<Project | null> {
+  if (!isTauri()) throw new Error("Import recovery requires the Motionwright desktop runtime.");
+  return recoverFileImportWithRetention(project, retained, desktopFileImport);
 }
 
 export async function waveformPage(

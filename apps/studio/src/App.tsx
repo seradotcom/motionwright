@@ -44,6 +44,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
 import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
+import FileImportRecovery, { type FileImportConfirmation } from "./FileImportRecovery";
+import { removeFileImport, type RetainedFileImport } from "./fileImport";
 import {
   forgetProjectSelection, listProjectLibrary, openProjectFromLibrary,
   readProjectSelection, rememberOpenedProject, type ProjectSelectionRead,
@@ -57,6 +59,7 @@ import {
   importAssetFile,
   importProjectBundle,
   importVoiceFile,
+  recoverOriginalFileImport,
   inspectProjectBundle,
 } from "./api";
 import AudioWorkspace from "./AudioWorkspace";
@@ -1501,8 +1504,10 @@ function Timeline({
   } | null>(null);
   const duration = projectTimelineDuration(project);
   const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
-  const measuredVoice = project.audio.voice_tracks;
-  const measuredAssetIds = new Set(measuredVoice.map((track) => track.asset_id));
+  // The Audio ledger retains every take. The VO lane represents the active
+  // take used by narration and native mix intent, not overlapping alternatives.
+  const measuredVoice = project.audio.voice_tracks.filter((track) => track.id === project.audio.active_voice_track_id);
+  const measuredAssetIds = new Set(project.audio.voice_tracks.map((track) => track.asset_id));
   const pendingAudio = project.assets.filter(
     (asset) => asset.media_type.startsWith("audio/") && !measuredAssetIds.has(asset.id),
   );
@@ -1654,13 +1659,19 @@ function Timeline({
                 <small>{track.sample_rate_hz} Hz · {track.channels} ch · measured duration</small>
               </div>
             ))}
-            {measuredVoice.length === 0 && pendingAudio.length > 0 && (
+            {measuredVoice.length === 0 && project.audio.voice_tracks.length > 0 && (
+              <div className="audio-pending" aria-label="No active voice take">
+                <span>No active voice take</span>
+                <small>choose a measured take in Audio</small>
+              </div>
+            )}
+            {project.audio.voice_tracks.length === 0 && pendingAudio.length > 0 && (
               <div className="audio-pending" aria-label="Audio source awaiting measurement">
                 <span>{pendingAudio[0].name}</span>
                 <small>source attached · duration unmeasured</small>
               </div>
             )}
-            {measuredVoice.length === 0 && pendingAudio.length === 0 && (
+            {project.audio.voice_tracks.length === 0 && pendingAudio.length === 0 && (
               <div className="audio-pending empty" aria-label="No measured voice track">
                 <span>No measured voice</span>
                 <small>timeline duration is not inferred from text</small>
@@ -1812,10 +1823,12 @@ export default function App() {
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileImportConfirmation, setFileImportConfirmation] = useState<FileImportConfirmation | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const workspaceNavRef = useRef<HTMLElement>(null);
   const bootRef = useRef<Bootstrap | null>(boot);
   const mutationGate = useRef(new ProjectMutationGate());
   const currentProjectState = useCallback((): DeliveryProjectState => ({
@@ -2121,6 +2134,9 @@ export default function App() {
         return;
       }
       if (event.code === "Space") {
+        // Native activation of the focused control owns Space. The transport
+        // shortcut applies when focus is on the editorial surface itself.
+        if (target?.closest("button, a[href], summary, [role='button'], [role='checkbox'], [role='switch'], [role='tab'], [role='menuitem']")) return;
         event.preventDefault();
         setPlaying((current) => !current);
       } else if (event.key === "ArrowLeft") {
@@ -2176,13 +2192,50 @@ export default function App() {
     }
   }, [commitRequired]);
 
+  // Only call after the existing coordinator admitted and published the current
+  // canonical Project. A local cleanup failure cannot undo that saved outcome.
+  const cleanConfirmedFileImport = useCallback((retained: RetainedFileImport) => {
+    try {
+      removeFileImport(retained.copy.preparation.project_id, retained.key, retained.raw);
+      setFileImportConfirmation(null);
+    } catch (reason) {
+      setFileImportConfirmation({ retained, cleanupWarning: reason instanceof Error ? reason.message : String(reason) });
+    }
+  }, []);
+
+  const ingestFile = useCallback(async (
+    operation: (source: Project) => Promise<{ project: Project; retained: RetainedFileImport }>,
+  ) => {
+    let completed: RetainedFileImport | undefined;
+    await transactProject(async source => {
+      const result = await operation(source);
+      completed = result.retained;
+      return result.project;
+    });
+    // Keep the request if either receipt reconciliation or publication failed.
+    // Cleanup cannot erase a different copy installed while the IPC was pending.
+    if (completed) cleanConfirmedFileImport(completed);
+  }, [transactProject, cleanConfirmedFileImport]);
+
   const ingestAsset = useCallback(async (path: string) => {
-    await transactProject(source => importAssetFile(source, path));
-  }, [transactProject]);
+    await ingestFile(source => importAssetFile(source, path));
+  }, [ingestFile]);
 
   const ingestVoice = useCallback(async (path: string, label?: string) => {
-    await transactProject(source => importVoiceFile(source, path, label));
-  }, [transactProject]);
+    await ingestFile(source => importVoiceFile(source, path, label));
+  }, [ingestFile]);
+
+  const recoverFileImport = useCallback(async (retained: RetainedFileImport): Promise<boolean> => {
+    let found = false;
+    await transactProject(async source => {
+      const current = await recoverOriginalFileImport(source, retained);
+      if (current === null) return source;
+      found = true;
+      return current;
+    });
+    if (found) cleanConfirmedFileImport(retained);
+    return found;
+  }, [transactProject, cleanConfirmedFileImport]);
 
   const importPortableBundle = useCallback(async (path: string): Promise<Project> => {
     const source = boot?.project;
@@ -2432,7 +2485,14 @@ export default function App() {
         <button type="button" className="button compact" onClick={forgetRememberedSelection}>Forget remembered selection</button>
       </div>}
 
-      <nav className="workspace-bar" aria-label="Workspaces">
+      {desktopBridge && <FileImportRecovery key={JSON.stringify([project.id, project.generation])}
+        project={project} busy={busy} confirmation={fileImportConfirmation} onRecover={recoverFileImport}
+        onClearConfirmation={() => setFileImportConfirmation(null)} onDismiss={() => {
+          setFileImportConfirmation(null);
+          workspaceNavRef.current?.querySelector<HTMLButtonElement>('button[aria-current="page"]')?.focus();
+        }} />}
+
+      <nav ref={workspaceNavRef} className="workspace-bar" aria-label="Workspaces">
         {workspaces.map(({ name, icon: Icon }) => (
           <button
             type="button"

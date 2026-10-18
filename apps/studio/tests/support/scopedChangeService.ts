@@ -13,6 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
+import type { FileImportInput, FileImportReceipt, PreparedFileImport } from "../../src/fileImport";
 import type {
   StudioBootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
   PortableBundlePlan, Project, ProjectEvent, WaveformPage,
@@ -464,19 +465,37 @@ export class ScopedChangeService {
   }
 
   async importAsset(project: Project, path: string, name?: string, mediaType?: string): Promise<Project> {
-    const grant = await this.grant("import_local", project, path);
-    return this.invoke<Project>("import_asset_file", { request: {
-      project_id: project.id, generation: project.generation, revision: project.revision,
-      effect_grant: grant.token, path, name: name ?? null, media_type: mediaType ?? null,
-    } });
+    return this.importFile(project, { kind: "asset", path, name: name ?? null,
+      media_type: mediaType ?? null, label: null });
   }
 
   async importVoice(project: Project, path: string, label?: string): Promise<Project> {
-    const grant = await this.grant("import_local", project, path);
-    return this.invoke<Project>("import_voice_file", { request: {
-      project_id: project.id, generation: project.generation, revision: project.revision,
-      effect_grant: grant.token, path, name: null, media_type: null, label: label ?? null,
+    return this.importFile(project, { kind: "voice", path, name: null,
+      media_type: null, label: label ?? null });
+  }
+
+  /** Fixture arrangement crosses the actual preparation, grant and receipt APIs. */
+  private async importFile(project: Project, input: FileImportInput): Promise<Project> {
+    const scope = { project_id: project.id, generation: project.generation, revision: project.revision };
+    const prepared = await this.invoke<PreparedFileImport>("prepare_file_import", { request: { ...scope, ...input } });
+    if (prepared.schema !== "motionwright.file-import-preparation/1" || prepared.project_id !== project.id
+      || prepared.generation !== project.generation || prepared.revision !== project.revision
+      || prepared.intent.kind !== input.kind || prepared.path !== input.path.trim()) {
+      throw new Error("The real service import preparation differs from its fixture request");
+    }
+    const requestId = randomUUID();
+    const grant = await this.grant("import_local", project, prepared.path);
+    const receipt = await this.invoke<FileImportReceipt>(`import_${input.kind}_file`, { request: {
+      ...scope, request_id: requestId, effect_grant: grant.token,
+      path: prepared.path, intent: prepared.intent,
     } });
+    if (receipt.schema !== "motionwright.file-import-receipt/1" || receipt.request_id !== requestId
+      || !isDeepStrictEqual(receipt.intent, prepared.intent) || typeof receipt.replayed !== "boolean"
+      || receipt.project.id !== project.id || receipt.project.generation !== project.generation
+      || receipt.project.revision !== project.revision + 1) {
+      throw new Error("The real service import receipt differs from the original fixture request");
+    }
+    return receipt.project;
   }
 
   waveform(projectId: string, trackId: string, pageIndex = 0, pageSize = 192): Promise<WaveformPage> {
