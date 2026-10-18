@@ -219,7 +219,35 @@ impl RuntimeConnectionRegistry {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
                 Err("Saved Semwright reference is not a regular file".into())
             }
-            Ok(_) => {
+            Ok(metadata) => {
+                // A regular pathname alone is not proof of ownership.
+                // Never delete forged, malformed, stale-format or otherwise
+                // unbounded records: they may contain unrelated user bytes.
+                if metadata.len() == 0 || metadata.len() > MAX_CONFIG_BYTES {
+                    return Err("Saved Semwright reference is invalid".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if metadata.permissions().mode() & 0o077 != 0 {
+                        return Err(
+                            "Saved Semwright connection reference has unsafe permissions".into(),
+                        );
+                    }
+                }
+                let bytes = fs::read(&destination)
+                    .map_err(|_| "Saved Semwright reference cannot be inspected")?;
+                if bytes.is_empty() || bytes.len() as u64 > MAX_CONFIG_BYTES {
+                    return Err("Saved Semwright reference is invalid".into());
+                }
+                let selected: SavedConnectionReference = serde_json::from_slice(&bytes)
+                    .map_err(|_| "Saved Semwright reference is malformed")?;
+                if selected.schema_version != REGISTRY_SCHEMA
+                    || selected.project_id != project_id
+                    || !selected.connection_file.is_absolute()
+                {
+                    return Err("Saved Semwright reference has incorrect scope".into());
+                }
                 fs::remove_file(&destination)
                     .map_err(|_| "Saved Semwright reference could not be cleared")?;
                 Ok(true)
