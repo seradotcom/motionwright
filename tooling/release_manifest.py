@@ -16,6 +16,7 @@ import re
 import stat
 import sys
 import tomllib
+import uuid
 
 from v01_release_readiness import (
     ReadinessError, _git_read, verify_local_checkout,
@@ -183,7 +184,13 @@ def build_manifest(root: Path, expected_sha: str) -> dict:
 
 
 def write_new_manifest(root: Path, output: Path, manifest: dict) -> None:
-    """Exclusive creation; never follow output path redirects or overwrite."""
+    """Publish synced, closed manifest bytes with an exclusive same-directory link.
+
+    Known failures before publication leave no new final path. Other failures
+    during or after a link attempt report manifest_output_commit_uncertain;
+    callers must preserve the final path and must not retry automatically.
+    A preexisting target is a known collision and is never replaced.
+    """
     target = output if output.is_absolute() else root / output
     _require(".." not in target.parts, "manifest_output_invalid")
     parent = target.parent
@@ -196,14 +203,130 @@ def write_new_manifest(root: Path, output: Path, manifest: dict) -> None:
                      and not part.is_symlink(), "manifest_output_link_refused")
         _require(not target.is_symlink(), "manifest_output_exists")
         content = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
-        with os.fdopen(os.open(target, flags, 0o600), "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
+        stage_name = f".motionwright-manifest.{uuid.uuid4().hex}.stage"
+        stage_path = parent / stage_name
     except OSError as exc:
         raise ManifestError("manifest_output_refused") from exc
+
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    directory_fd: int | None = None
+    raw_fd: int | None = None
+    staged_identity: os.stat_result | None = None
+    publication_attempted = False
+    failure: Exception | None = None
+
+    def same_stage(info: os.stat_result) -> bool:
+        return (staged_identity is not None and staged_identity.st_ino != 0
+                and info.st_ino != 0 and stat.S_ISREG(info.st_mode)
+                and info.st_dev == staged_identity.st_dev
+                and info.st_ino == staged_identity.st_ino)
+
+    try:
+        inspected_parent = parent.lstat()
+        _require(stat.S_ISDIR(inspected_parent.st_mode)
+                 and not _path_has_reparse(parent, inspected_parent)
+                 and not parent.is_symlink(), "manifest_output_refused")
+        if os.name == "posix":
+            directory_fd = os.open(
+                parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            opened_parent = os.fstat(directory_fd)
+            _require(stat.S_ISDIR(opened_parent.st_mode)
+                     and opened_parent.st_dev == inspected_parent.st_dev
+                     and opened_parent.st_ino == inspected_parent.st_ino,
+                     "manifest_output_refused")
+            raw_fd = os.open(stage_name, flags, 0o600, dir_fd=directory_fd)
+        else:
+            raw_fd = os.open(stage_path, flags, 0o600)
+        staged_identity = os.fstat(raw_fd)
+        _require(stat.S_ISREG(staged_identity.st_mode) and staged_identity.st_ino != 0,
+                 "manifest_output_refused")
+        # Retain raw_fd until fdopen succeeds; close either owner once.
+        stream = os.fdopen(raw_fd, "wb")
+        raw_fd = None
+        try:
+            _require(stream.write(content) == len(content), "manifest_output_refused")
+            stream.flush()
+            os.fsync(stream.fileno())
+            complete = os.fstat(stream.fileno())
+            _require(same_stage(complete) and complete.st_size == len(content),
+                     "manifest_output_refused")
+        finally:
+            # A close failure is still before publication. Never link an open
+            # stream, nor retry a close that may already have closed its fd.
+            stream.close()
+        ready = (os.stat(stage_name, dir_fd=directory_fd, follow_symlinks=False)
+                 if directory_fd is not None else stage_path.lstat())
+        _require(same_stage(ready) and ready.st_size == len(content)
+                 and not _path_has_reparse(stage_path, ready),
+                 "manifest_output_refused")
+
+        # Any error from an attempted link can follow a committed publication.
+        # EEXIST is the sole known collision; never retry via another primitive.
+        publication_attempted = True
+        try:
+            if directory_fd is not None:
+                os.link(stage_name, target.name, src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd, follow_symlinks=False)
+            else:
+                os.link(stage_path, target)
+        except FileExistsError:
+            publication_attempted = False
+            raise
+        committed = (os.stat(target.name, dir_fd=directory_fd, follow_symlinks=False)
+                     if directory_fd is not None else target.lstat())
+        _require(same_stage(committed) and committed.st_size == len(content)
+                 and not _path_has_reparse(target, committed),
+                 "manifest_output_commit_uncertain")
+        for part in (parent, *parent.parents):
+            info = part.lstat()
+            _require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                     and not _path_has_reparse(part, info)
+                     and not part.is_symlink(), "manifest_output_commit_uncertain")
+        observed_parent = parent.lstat()
+        _require(observed_parent.st_dev == inspected_parent.st_dev
+                 and observed_parent.st_ino == inspected_parent.st_ino,
+                 "manifest_output_commit_uncertain")
+    except Exception as exc:
+        failure = exc
+    finally:
+        if raw_fd is not None:
+            try:
+                os.close(raw_fd)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+        if staged_identity is not None:
+            try:
+                current = (os.stat(stage_name, dir_fd=directory_fd, follow_symlinks=False)
+                           if directory_fd is not None else stage_path.lstat())
+                _require(same_stage(current), "manifest_output_refused")
+                # Only this invocation's inode, one unlink attempt, never target.
+                if directory_fd is not None:
+                    os.unlink(stage_name, dir_fd=directory_fd)
+                else:
+                    os.unlink(stage_path)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+        if directory_fd is not None:
+            try:
+                if publication_attempted and failure is None:
+                    os.fsync(directory_fd)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            finally:
+                try:
+                    os.close(directory_fd)
+                except Exception as exc:
+                    if failure is None:
+                        failure = exc
+    if failure is not None:
+        raise ManifestError(
+            "manifest_output_commit_uncertain" if publication_attempted
+            else "manifest_output_refused"
+        ) from failure
 
 
 def _discard_new_output_on_source_change(target: Path, manifest: dict) -> None:
