@@ -731,7 +731,7 @@ test("Film and PCM guards use saved options and expose unsupported combinations 
   await page.screenshot({ path: info.outputPath("saved-mix-policy-and-unsupported-cues.png"), fullPage: true });
 }));
 
-test("portable export and verified import preserve both recipes and CAS while isolating the new generation's drafts", async ({ page, context }, info) => scenario(info, async proof => {
+test("portable export and verified import preserve both recipes and CAS while isolating the new generation's drafts", async ({ page, browser }, info) => scenario(info, async proof => {
   const source = await proof.create("source-service", true);
   const initial = await setup(proof, source, true);
   const { a, b, music, sfx } = initial;
@@ -756,7 +756,10 @@ test("portable export and verified import preserve both recipes and CAS while is
     expect(digest(bytes)).toBe(blob.sha256); expect(bytes.length).toBe(blob.size_bytes);
   }
   await mix(page, a); await field(page, "SFX gain dB").fill("-13"); // Old generation's unsaved input.
-  const target = await proof.create("target-service", true), targetPage = await context.newPage();
+  const target = await proof.create("target-service", true);
+  // Source and destination stores require independent remembered project selections.
+  const targetContext = await browser.newContext({ baseURL: info.project.use.baseURL });
+  const targetPage = await targetContext.newPage();
   const targetOriginal = (await target.fixtureBootstrap()).project;
   expect(targetOriginal.id).not.toBe(donor.id);
   await proof.attach(target, targetPage); await button(targetPage, "Deliver").click();
@@ -788,4 +791,5 @@ test("portable export and verified import preserve both recipes and CAS while is
   expect(await target.project(targetOriginal.id)).toEqual(targetOriginal);
   proof.observations.portable = { donor, imported, sourceDraft: "-13", targetCanonicalGain: -3,
     sourceOriginalsRemoved: true, bundleBlobs: manifest.blobs };
+  await targetContext.close();
 }));

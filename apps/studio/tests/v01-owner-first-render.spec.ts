@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -56,7 +56,14 @@ test("v0.1 first owner render requires exact Film and rechecked CLI without faki
           return structuredClone(initial.project);
         }
 
-      if (command === "bootstrap") return structuredClone(initial);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if (command === "production_runtime_status") {
         const request = args?.request as {
           project_id: string; expected_generation: string; expected_revision: number;

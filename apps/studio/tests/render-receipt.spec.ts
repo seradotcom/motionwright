@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -100,7 +100,12 @@ test("synthetic native receipt remains scene/revision scoped across Deliver and 
           };
         }
 
-        if (cmd === "bootstrap") return { ...initialBoot, project: structuredClone(savedProject) };
+        if (cmd === "bootstrap") {
+          const syntheticResponse = { ...initialBoot, project: structuredClone(savedProject) };
+          const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+          if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
+          return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        }
         if (cmd === "issue_effect_grant") return { token: "synthetic-grant" };
         if (cmd === "render_motion_canvas") return structuredClone(initialReceipt);
         if (cmd === "apply_change") {
@@ -148,7 +153,7 @@ test("synthetic native receipt remains scene/revision scoped across Deliver and 
   await expect(page.getByLabel("Native render evidence")).toContainText("NATIVE · PASS");
 
   await page.getByRole("button", { name: "Brief", exact: true }).click();
-  await page.getByLabel("Project title").fill("Post-render revision");
+  await page.locator("#project-title-rich").fill("Post-render revision");
   await page.getByRole("button", { name: "Save title" }).click();
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
   await expect(preview).toContainText("STALE receipt r" + (boot.project.revision + 1));

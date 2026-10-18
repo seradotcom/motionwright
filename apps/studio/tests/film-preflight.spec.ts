@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -59,7 +59,11 @@ test("native semantic Film preflight is read-only and cannot be mistaken for rea
           return structuredClone(initial.project);
         }
 
-        if (command === "bootstrap") return structuredClone(initial);
+        if (command === "bootstrap") {
+          const requested = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (requested !== initial.project.id) throw new Error("Synthetic bootstrap requires an explicitly selected matching project.");
+          return { ...structuredClone(initial), project_selection: { status: "selected", project_id: initial.project.id } };
+        }
         if (command === "motion_canvas_preflight") {
           const request = args?.request as {
             project_id: string; generation: string; revision: number;
@@ -139,7 +143,11 @@ test("unsupported Film projection prevents native dispatch for unchanged inputs"
           return structuredClone(initial.project);
         }
 
-        if (command === "bootstrap") return structuredClone(initial);
+        if (command === "bootstrap") {
+          const requested = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (requested !== initial.project.id) throw new Error("Synthetic bootstrap requires an explicitly selected matching project.");
+          return { ...structuredClone(initial), project_selection: { status: "selected", project_id: initial.project.id } };
+        }
         if (command === "motion_canvas_preflight") {
           const request = args?.request as {
             project_id: string; generation: string; revision: number; deliverable_id: string;

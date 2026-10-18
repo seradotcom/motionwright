@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -105,7 +105,14 @@ test("Deliver checks multi-segment source readiness with only an owner preview t
           };
         }
 
-        if (command === "bootstrap") return { ...initial, project: structuredClone(initial.project) };
+        if (command === "bootstrap") {
+          const syntheticResponse = { ...initial, project: structuredClone(initial.project) };
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "issue_effect_grant") return { token: "synthetic-grant" };
         if (command === "render_motion_canvas") return structuredClone(evidence);
         if (command === "preflight_multi_segment_mlt_readiness") {

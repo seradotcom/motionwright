@@ -10,7 +10,8 @@ test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
   "Build studio_review_session and set MOTIONWRIGHT_SERVICE_TEST_BIN; these tests have no simulated service fallback.");
 
 const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
-const input = (page: Page, name: string) => page.getByLabel(name, { exact: true });
+const input = (page: Page, name: string) => name === "Project title"
+  ? page.locator("#project-title-rich") : page.getByLabel(name, { exact: true });
 const briefFields = ["Project title", "Production objective", "Audience", "Constraints", "Exclusions"] as const;
 
 async function openBrief(page: Page) {

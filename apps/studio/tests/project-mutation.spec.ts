@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import { seedSyntheticProjectSelection } from "./support/selectedSyntheticProject";
 import { applyChange as applySyntheticCanvasChange } from "../src/api";
 import type { Change, Project } from "../src/types";
 import { ScopedChangeService } from "./support/scopedChangeService";
@@ -13,7 +14,8 @@ import { ScopedChangeService } from "./support/scopedChangeService";
 for (const kind of ["asset", "voice"] as const) {
   test(`pending ${kind} import shares the ordinary edit latch and publishes its revision`, async ({ page }) => {
     const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
-    await page.addInitScript(boot => {
+    await seedSyntheticProjectSelection(page, initial.project.id);
+  await page.addInitScript(boot => {
       let project = structuredClone(boot.project);
       let resolveImport: ((value: typeof project) => void) | null = null;
       const state = {
@@ -32,7 +34,12 @@ for (const kind of ["asset", "voice"] as const) {
       host.__MUTATION_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         state.calls.push(command);
-        if (command === "bootstrap") return structuredClone(boot);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(boot);
+          const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
+          return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        }
         if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
         if (command === "import_asset_file" || command === "import_voice_file") {
           return new Promise(resolve => { resolveImport = resolve; });
@@ -94,6 +101,7 @@ for (const kind of ["asset", "voice"] as const) {
 
 test("a pending portable restore cannot race source edits or publish into another revision", async ({ page }) => {
   const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await seedSyntheticProjectSelection(page, initial.project.id);
   await page.addInitScript(boot => {
     let current = structuredClone(boot.project);
     let resolveRestore: ((project: typeof current) => void) | null = null;
@@ -115,7 +123,12 @@ test("a pending portable restore cannot race source edits or publish into anothe
     host.__RESTORE_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       state.calls.push(command);
-      if (command === "bootstrap") return structuredClone(boot);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(boot);
+        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if (command === "inspect_project_bundle") return {
         project_id: "01900000-0000-7000-8000-000000000021",
         title: "Portable restored project", source_generation: "old-import-generation",
@@ -176,7 +189,8 @@ test("a pending portable restore cannot race source edits or publish into anothe
 for (const action of ["New profile", "Derive selected"] as const) {
   test(`${action}: failed native CAS does not select an unsaved delivery profile`, async ({ page }) => {
     const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
-    await page.addInitScript(boot => {
+    await seedSyntheticProjectSelection(page, initial.project.id);
+  await page.addInitScript(boot => {
       let project = structuredClone(boot.project);
       const host = window as unknown as {
         __PROFILE_CAS_FIXTURE__: { attempts: number; revisions: number[]; successfulIds: string[] };
@@ -190,7 +204,11 @@ for (const action of ["New profile", "Derive selected"] as const) {
       const state = { attempts: 0, revisions: [] as number[], successfulIds: [] as string[] };
       host.__PROFILE_CAS_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (name, args) => {
-        if (name === "bootstrap") return structuredClone(boot);
+        if (name === "bootstrap") {
+          const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+          if (requestedId !== boot.project.id) throw new Error("Synthetic profile CAS requires selected project.");
+          return {...structuredClone(boot), project_selection:{status:"selected",project_id:boot.project.id}};
+        }
         if (name === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
         if (name === "production_runtime_status") throw new Error("Synthetic runtime not configured");
         if (name === "apply_change") {
@@ -241,6 +259,7 @@ for (const action of ["New profile", "Derive selected"] as const) {
 
 test("rejected scene creation keeps the editor's draft open until a confirmed CAS", async ({ page }) => {
   const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await seedSyntheticProjectSelection(page, initial.project.id);
   await page.addInitScript(boot => {
     let project = structuredClone(boot.project);
     const state = { requests: 0, revisions: [] as number[] };
@@ -255,7 +274,12 @@ test("rejected scene creation keeps the editor's draft open until a confirmed CA
     };
     host.__SCENE_CAS_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      if (command === "bootstrap") return structuredClone(boot);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(boot);
+        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
       if (command === "apply_change") {
         state.requests += 1;
@@ -297,6 +321,7 @@ test("rejected scene creation keeps the editor's draft open until a confirmed CA
 
 test("rejected Canvas node creation never selects an object that was not committed", async ({ page }) => {
   const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await seedSyntheticProjectSelection(page, initial.project.id);
   await page.addInitScript(boot => {
     let project = structuredClone(boot.project);
     const state = { requests: 0, revisions: [] as number[] };
@@ -309,7 +334,12 @@ test("rejected Canvas node creation never selects an object that was not committ
     };
     host.__CANVAS_CAS_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      if (command === "bootstrap") return structuredClone(boot);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(boot);
+        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
       if (command === "apply_change") {
         state.requests += 1;
@@ -358,7 +388,8 @@ for (const accepted of [true, false]) {
     const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
     const [sceneA, sceneB] = initial.project.scenes;
     expect(sceneB.nodes.length).toBeGreaterThan(0);
-    await page.addInitScript(boot => {
+    await seedSyntheticProjectSelection(page, initial.project.id);
+  await page.addInitScript(boot => {
       let project = structuredClone(boot.project);
       type Node = typeof project.scenes[number]["nodes"][number];
       type Pending = { sceneId: string; node: Node; resolve: (value: typeof project) => void; reject: (reason: Error) => void };
@@ -386,7 +417,12 @@ for (const accepted of [true, false]) {
       };
       host.__CANVAS_NAVIGATION_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(boot);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(boot);
+          const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
+          return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        }
         if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
         if (command === "apply_change") {
           const change = args?.request?.change;
@@ -461,10 +497,16 @@ test.describe("Canvas interaction during delayed creation — synthetic UI contr
       effect?: string; project_id?: string; generation?: string; revision?: number;
       subject?: string; request_id?: string; effect_grant?: string; change?: Change;
     };
+    await seedSyntheticProjectSelection(page, initial.project.id);
     await page.exposeFunction("__canvasInteractionContractInvoke", async (
       command: string, args?: { request?: Request },
     ) => {
-      if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
+      if (command === "bootstrap") {
+        const syntheticResponse = { ...initial, project: structuredClone(project) };
+        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       const request = args?.request;
       if (command !== "issue_effect_grant" && command !== "apply_change") {
         throw new Error("Unsupported synthetic Canvas contract command: " + command);
@@ -644,6 +686,7 @@ test.describe("Canvas interaction during delayed creation — synthetic UI contr
 
 test("a delayed initial bootstrap cannot roll back a project already published by a mutation", async ({ page }) => {
   const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await seedSyntheticProjectSelection(page, initial.project.id);
   await page.addInitScript(boot => {
     let project = structuredClone(boot.project);
     let releaseInitial: (() => void) | null = null;
@@ -664,8 +707,11 @@ test("a delayed initial bootstrap cannot roll back a project already published b
     host.__BOOTSTRAP_MUTATION_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       if (command === "bootstrap") {
+        const requestedId = (args?.request as {project_id?:string|null}|undefined)?.project_id;
+        if (requestedId !== project.id) throw new Error("Delayed bootstrap mock requires selected project.");
         state.bootstrapCalls++;
-        const captured = { ...boot, project: structuredClone(project) };
+        const captured = { ...boot, project: structuredClone(project),
+          project_selection: {status:"selected",project_id:project.id} };
         // The dev acceptance server renders App under StrictMode. Return the
         // second opening first, then release the old first read after a save.
         if (state.bootstrapCalls === 1) return new Promise(resolve => { releaseInitial = () => resolve(captured); });
@@ -717,7 +763,8 @@ test.describe("real service imports and portable restore", () => {
   test.describe.configure({ timeout: 60_000 });
 
   const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
-  const field = (page: Page, name: string) => page.getByRole("textbox", { name, exact: true });
+  const field = (page: Page, name: string) => name === "Project title"
+    ? page.locator("#project-title-rich") : page.getByRole("textbox", { name, exact: true });
   const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
   const stamp = (project: Project) => ({ project_id: project.id, generation: project.generation, revision: project.revision });
   const svgBytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="96" height="64"><title>Synthetic local import file</title><rect width="96" height="64" fill="#276A78"/></svg>');
@@ -1027,12 +1074,13 @@ test.describe("real service imports and portable restore", () => {
     }
   });
 
-  test("real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit", async ({ page, context }, testInfo) => {
+  test("real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit", async ({ page, browser }, testInfo) => {
     const source = await ScopedChangeService.create({
       databasePath: testInfo.outputPath("source-service", "studio.sqlite3"), desktopInvokeFixture: true,
     });
     let target: ScopedChangeService | undefined;
     let held: ReturnType<typeof holdRealReply> | undefined;
+    let isolatedTargetContext: BrowserContext | null = null;
     const observations: Record<string, unknown> = {};
     try {
       target = await ScopedChangeService.create({
@@ -1072,7 +1120,9 @@ test.describe("real service imports and portable restore", () => {
       expect(await source.project(donor.id)).toEqual(donor);
       expect(await source.history(donor.id, 0, 256)).toEqual(donorHistory);
 
-      const targetPage = await context.newPage();
+      // Different canonical stores must not share a browser localStorage selection.
+      isolatedTargetContext = await browser.newContext({ baseURL: testInfo.project.use.baseURL });
+      const targetPage = await isolatedTargetContext.newPage();
       await target.attachFixturePage(targetPage);
       await targetPage.goto("/");
       await button(targetPage, "Deliver").click();
@@ -1145,8 +1195,12 @@ test.describe("real service imports and portable restore", () => {
       await targetPage.screenshot({ path: testInfo.outputPath("real-portable-restored-edited-reopened.png"), fullPage: true });
       expect(requests(target, "apply_change")).toHaveLength(1);
     } finally {
-      await held?.dispose();
-      await finishRealEvidence(testInfo, target ? [source, target] : [source], observations);
+      try {
+        await held?.dispose();
+        await isolatedTargetContext?.close();
+      } finally {
+        await finishRealEvidence(testInfo, target ? [source, target] : [source], observations);
+      }
     }
   });
 });

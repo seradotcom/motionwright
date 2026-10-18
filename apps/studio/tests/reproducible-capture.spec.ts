@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -7,12 +7,16 @@ import { fixtureBootstrap } from "../src/fixture";
 
 const CLAIM_ID = "00000000-0000-4000-8000-0000000000e7";
 const MASK_COLOR = "#0B0B0B";
-const ORIGIN = "http://127.0.0.1:1420";
 const sha256 = (value: Uint8Array | string): string =>
   createHash("sha256").update(value).digest("hex");
 
 test("pinned first-party browser scenario yields a repeatable redacted screenshot linked to a source claim", async ({ page, context, browserName }, testInfo) => {
   test.skip(browserName !== "chromium", "capture source is pinned to a known browser provider");
+  const localURL = new URL(testInfo.project.use.baseURL ?? "");
+  if (localURL.protocol !== "http:" || localURL.hostname !== "127.0.0.1") {
+    throw new Error("Capture requires the exact configured local Studio origin, not an external URL.");
+  }
+  const ORIGIN = localURL.origin;
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
   const claim = {
@@ -43,8 +47,15 @@ test("pinned first-party browser scenario yields a repeatable redacted screensho
         invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>
       };
     }).__TAURI_INTERNALS__ = {
-      invoke: async command => {
-        if (command === "bootstrap") return structuredClone(initial);
+      invoke: async (command, args) => {
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(initial);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         throw new Error("Capture fixture cannot invoke unreviewed desktop effects: " + command);
       },
     };

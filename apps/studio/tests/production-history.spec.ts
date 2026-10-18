@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 test("history enumerates all local jobs beyond recent-window limit with no driver mutation", async ({ page }) => {
@@ -49,7 +49,14 @@ test("history enumerates all local jobs beyond recent-window limit with no drive
     };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initialBoot);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(initialBoot);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "production_jobs") return structuredClone(historical.slice(0, 1));
         if (command === "production_jobs_history") {
           const request = args?.request as {
@@ -145,7 +152,14 @@ test("independent status append invalidates history cursor and requires explicit
     app.__APPEND_STATUS__ = { changed: false, initialReads: 0 };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initialBoot);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(initialBoot);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "production_jobs") return [structuredClone(initialJob)];
         if (command === "production_jobs_history") {
           const request = args?.request as { cursor: { offset: number } | null };

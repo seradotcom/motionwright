@@ -1,4 +1,4 @@
-import {test,expect} from "@playwright/test";
+import {test,expect} from "./support/selectedSyntheticProject";
 import {fixtureBootstrap} from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -92,7 +92,14 @@ test("explicit desktop audition reads a saved recipe and leaves that project rev
           return structuredClone(boot.project);
         }
 
-      if(command==="bootstrap")return structuredClone(boot);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(boot);
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if(command==="production_runtime_status")return{
         status:"ready",reason:null,expected_version:"1.0.0",
         observed_version:"1.0.0",version_compatible:true,

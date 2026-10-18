@@ -12,7 +12,8 @@ test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
   "Build studio_review_session and set MOTIONWRIGHT_SERVICE_TEST_BIN; no simulated service is substituted.");
 
 const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
-const field = (page: Page, name: string) => page.getByLabel(name, { exact: true });
+const field = (page: Page, name: string) => name === "Project title"
+  ? page.locator("#project-title-rich") : page.getByLabel(name, { exact: true });
 // Use the accessible textbox name for Plan's wrapping labels: seeded textarea
 // content must not become part of an exact label-text selector.
 const planField = (panel: Locator, name: string | RegExp) => panel.getByRole("textbox", { name, exact: true });

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -129,7 +129,14 @@ test("Program AV monitor reads exact source token only for matching scene, profi
           };
         }
 
-        if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
+        if (command === "bootstrap") {
+          const syntheticResponse = { ...initial, project: structuredClone(project) };
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "issue_effect_grant") return { token: "synthetic-grant" };
         if (command === "render_motion_canvas") return structuredClone(visual);
         if (command === "assemble_av_master") return structuredClone(av);
@@ -204,7 +211,7 @@ test("Program AV monitor reads exact source token only for matching scene, profi
   await expect(program.getByRole("button", { name: "Review final AV" })).toBeVisible();
 
   await page.getByRole("button", { name: "Brief", exact: true }).click();
-  await page.getByLabel("Project title").fill("Changed after mastering");
+  await page.locator("#project-title-rich").fill("Changed after mastering");
   await page.getByRole("button", { name: "Save title" }).click();
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
   await expect(program).toContainText("STALE receipt");

@@ -1,4 +1,4 @@
-import { expect,test,type Page } from "@playwright/test";
+import { expect,test,type Page } from "./support/selectedSyntheticProject";
 import {fixtureBootstrap} from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -88,7 +88,12 @@ async function installSyntheticSource(page:Page,invalidHeader=false){
           reason:null,segment_count:1,total_frames:60,
           segments:[{segment_id:"synthetic-film",scene_ids:[],frame_count:60}]};
       }
-      if(name==="bootstrap")return structuredClone(initialBoot);
+      if (name === "bootstrap") {
+        const syntheticResponse = structuredClone(initialBoot);
+        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if(name==="issue_effect_grant")return {token:"synthetic-unauthenticated-grant"};
       if(name==="render_motion_canvas")return structuredClone(receipt);
       if(name==="preview_native_frame"){

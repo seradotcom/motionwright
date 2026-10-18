@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
@@ -146,7 +146,14 @@ test("desktop AV master is linked only to session-native visual evidence and a m
           };
         }
 
-        if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
+        if (command === "bootstrap") {
+          const syntheticResponse = { ...initial, project: structuredClone(project) };
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "issue_effect_grant") {
           app.__SYNTHETIC_AV__.effects++;
           return { token: "synthetic-only-effect" };
@@ -293,7 +300,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 
   await page.getByRole("button", { name: "Brief", exact: true }).click();
-  await page.getByLabel("Project title").fill("Changed after native AV master");
+  await page.locator("#project-title-rich").fill("Changed after native AV master");
   await page.getByRole("button", { name: "Save title" }).click();
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
   await expect(receipt).toContainText("STALE · HISTORICAL");
@@ -355,7 +362,12 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
           };
         }
 
-      if (cmd === "bootstrap") return structuredClone(initial);
+      if (cmd === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if (cmd === "issue_effect_grant") return { token: "synthetic-only" };
       if (cmd === "render_motion_canvas") return {
         project_resource: "project:" + initial.project.id,
