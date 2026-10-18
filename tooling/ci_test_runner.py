@@ -70,10 +70,16 @@ def parse_unittest_summary(stderr: str) -> dict:
                 raise ValueError("unrecognized unittest result field")
             seen.add(key)
             counts[key] = int(value)
-    passed = total - sum(counts.values())
     terminal_failure = any(counts[k] for k in ("failures", "errors", "unexpected successes"))
-    if passed < 0 or (state == "OK" and terminal_failure) or (state == "FAILED" and not terminal_failure):
+    if (state == "OK" and terminal_failure) or (state == "FAILED" and not terminal_failure):
         raise ValueError("inconsistent unittest result counts")
+    # FAILED counts may include several subtest outcomes for one test case.
+    # The footer preserves those counts but cannot determine successful cases.
+    passed = None
+    if state == "OK":
+        passed = total - counts["skipped"] - counts["expected failures"]
+        if passed < 0:
+            raise ValueError("inconsistent unittest result counts")
     return {"terminal_status": state, "tests_run": total, "passed": passed,
             **{key.replace(" ", "_"): value for key, value in counts.items()}}
 

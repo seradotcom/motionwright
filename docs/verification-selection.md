@@ -80,20 +80,41 @@ also expand to the full inventory.
 
 ## Executable G0 guardrails
 
-The new lane invokes `tooling/ci_test_runner.py` in both discovery and dotted
-module modes, in fresh subprocesses, with the exact expected checkout and
-`--require-complete`. It retains original stdout/stderr, exit codes, counts,
-source/tree/test/tool hashes and source postchecks.
+Two lightweight jobs invoke `tooling/ci_test_runner.py` in both discovery and
+dotted module modes, in fresh subprocesses, with the same exact event checkout
+and `--require-complete`. They retain separate original stdout/stderr, exit
+codes, counts, source/tree/test/tool hashes and source postchecks. Artifact
+names distinguish the jobs and include the checkout SHA, run ID and attempt.
 
-It exercises these existing verifier suites and the selector suite:
+For a failed unittest run, `passed` remains `null`: footer failure/error counts
+can count several subtests within one test case, so subtracting them from
+`tests_run` would invent a case-level pass count. The original footer counters
+and logs remain available, and a failed run still fails the gate.
 
-- `test_conformance_policy.py`
-- `test_acceptance_policy.py`
-- `test_acceptance_session.py`
-- `test_acceptance_evidence_identity.py`
-- `test_acceptance_cross_checkout.py`
-- `test_acceptance_manifest_reparse.py`
-- `test_ci_impact_plan.py`
+The suites have explicit platform assignments:
+
+| Suite | Required runner |
+| --- | --- |
+| `test_conformance_policy.py` | `ubuntu-24.04` |
+| `test_acceptance_policy.py` | `ubuntu-24.04` |
+| `test_acceptance_session.py` | `ubuntu-24.04` |
+| `test_acceptance_evidence_identity.py` | `ubuntu-24.04` |
+| `test_acceptance_cross_checkout.py` | `ubuntu-24.04` |
+| `test_ci_impact_plan.py` | `ubuntu-24.04` |
+| `test_acceptance_manifest_reparse.py` | `windows-2025` |
+
+The complete manifest suite runs on Windows: all 13 current tests remain
+required in each entrypoint, including the two real NTFS junction controls.
+The suite is not filtered to individual tests, and platform skips remain a
+failure under `--require-complete`. Its `TMPDIR`, `TEMP` and `TMP` point to
+`RUNNER_TEMP`, outside the source checkout, so the private-evidence fixtures
+can enforce their existing storage boundaries. Both jobs keep their reports
+outside the source checkout and upload them even after failure.
+
+The Linux job also retains the shadow plan. The final `G0 verification
+complete` job requires successful results from both jobs; a missing, failed,
+skipped or cancelled job cannot produce a complete G0 result. This aggregation
+performs no additional product tests and does not dispatch a test matrix.
 
 `conformance_policy.py` is an importable validator without a command-line
 entrypoint. Running `python tooling/conformance_policy.py` alone executes
@@ -104,7 +125,7 @@ Positive and negative fixtures exercise missing/swapped/stale source evidence,
 skipped or empty checks, source identity, immutable history and automated
 acceptance boundaries. They test validators. They do not prove physical audio,
 decoded frames, an installed application, native recovery, or human review.
-The job fails on an omitted or failed required test; it does not turn an
+Each job fails on an omitted or failed required test; it does not turn an
 environment limitation into an unqualified PASS.
 
 ## Fail-closed receipt consistency

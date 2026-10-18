@@ -83,6 +83,48 @@ class ExecutionBoundaryTests(unittest.TestCase):
         self.assertEqual([s["exit_code"] for s in report["steps"]], [1, 0])
         self.assertEqual(report["status"], "FAIL")
 
+    def test_multiple_subtest_failures_preserve_counts_without_inventing_successful_cases(self):
+        self.source("test_subtests.py", "import unittest\nclass Cases(unittest.TestCase):\n"
+                                       "    def test_subtests(self):\n"
+                                       "        for value in range(3):\n"
+                                       "            with self.subTest(value=value): self.fail('subtest failure')\n"
+                                       "    def test_positive_one(self): self.assertEqual(2+2,4)\n"
+                                       "    def test_positive_two(self): self.assertEqual(3+3,6)\n")
+        self.commit()
+        code, report = self.run_suite(complete=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(report["status"], "FAIL")
+        for step in report["steps"]:
+            self.assertEqual(step["status"], "FAIL")
+            self.assertNotEqual(step["exit_code"], 0)
+            self.assertNotIn("summary_error", step)
+            self.assertEqual(step["counts"]["terminal_status"], "FAILED")
+            self.assertEqual(step["counts"]["tests_run"], 3)
+            self.assertEqual(step["counts"]["failures"], 3)
+            self.assertEqual(step["counts"]["errors"], 0)
+            self.assertIsNone(step["counts"]["passed"])
+        retained = json.loads((self.directory / "result.json").read_text(encoding="utf-8"))
+        self.assertTrue(all(step["counts"]["passed"] is None for step in retained["steps"]))
+
+    def test_one_case_with_more_subtest_outcomes_than_tests_is_a_valid_failed_summary(self):
+        self.source("test_subtests.py", "import unittest\nclass Cases(unittest.TestCase):\n"
+                                       "    def test_subtests(self):\n"
+                                       "        for value in range(3):\n"
+                                       "            with self.subTest(value=value): self.fail('subtest failure')\n"
+                                       "        with self.subTest(error=True): raise RuntimeError('subtest error')\n")
+        self.commit()
+        code, report = self.run_suite(mode="discovery", complete=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(report["status"], "FAIL")
+        step = report["steps"][0]
+        self.assertEqual(step["status"], "FAIL")
+        self.assertNotIn("summary_error", step)
+        self.assertEqual(step["counts"]["terminal_status"], "FAILED")
+        self.assertEqual(step["counts"]["tests_run"], 1)
+        self.assertEqual(step["counts"]["failures"], 3)
+        self.assertEqual(step["counts"]["errors"], 1)
+        self.assertIsNone(step["counts"]["passed"])
+
     def test_discovery_success_does_not_hide_broken_dotted_import(self):
         self.source("fixture_helper.py", "VALUE=42\n")
         self.source("test_import.py", "import unittest\nfrom fixture_helper import VALUE\n"
@@ -275,6 +317,13 @@ class ExecutionBoundaryTests(unittest.TestCase):
 
 
 class SummaryBoundaryTests(unittest.TestCase):
+    def test_failed_footer_counts_do_not_determine_successful_test_cases(self):
+        summary = runner.parse_unittest_summary(
+            "Ran 13 tests in 0.1s\nFAILED (failures=8, errors=4, skipped=1)\n")
+        self.assertEqual(summary, {"terminal_status": "FAILED", "tests_run": 13,
+                                   "passed": None, "failures": 8, "errors": 4, "skipped": 1,
+                                   "expected_failures": 0, "unexpected_successes": 0})
+
     def test_windows_crlf_summary_is_accepted_as_a_derived_parsing_view(self):
         raw = b"Ran 1 test in 0.01s\r\n\r\nOK\r\n"
         summary = runner.parse_unittest_summary(raw.decode("utf-8"))

@@ -37,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -53,7 +54,6 @@ jobs:
             --pattern test_acceptance_session.py \
             --pattern test_acceptance_evidence_identity.py \
             --pattern test_acceptance_cross_checkout.py \
-            --pattern test_acceptance_manifest_reparse.py \
             --mode both --expected-source "$MW_SOURCE_SHA" \
             --report "$RUNNER_TEMP/verification/g0-receipt.json" \
             --require-complete
@@ -138,3 +138,72 @@ jobs:
           path: ${{ runner.temp }}/verification
           if-no-files-found: error
           retention-days: 30
+
+  windows-manifest-contracts:
+    name: Windows manifest and NTFS conformance guardrails
+    runs-on: windows-2025
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      MW_SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Exercise the complete manifest suite on real Windows in both entrypoints
+        shell: pwsh
+        env:
+          # Private-evidence fixtures must be outside every source checkout.
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $verificationReport = Join-Path $env:RUNNER_TEMP 'verification-windows/g0-receipt.json'
+          python -B -E -s tooling/ci_test_runner.py --repo . `
+            --test-directory tooling/tests `
+            --pattern test_acceptance_manifest_reparse.py `
+            --mode both --expected-source "$env:MW_SOURCE_SHA" `
+            --report "$verificationReport" --require-complete
+          if ($LASTEXITCODE -ne 0) { throw 'The complete Windows manifest conformance suite failed' }
+      - name: Preserve original Windows conformance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-windows-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verification-windows
+          if-no-files-found: error
+          retention-days: 30
+
+  g0-complete:
+    name: G0 verification complete
+    needs: [plan-and-contracts, windows-manifest-contracts]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both source-bound G0 jobs to succeed
+        shell: python
+        env:
+          G0_JOB_RESULTS: ${{ toJSON(needs) }}
+          MW_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          import json
+          import os
+
+          required = {"plan-and-contracts", "windows-manifest-contracts"}
+          observed = json.loads(os.environ["G0_JOB_RESULTS"])
+          if not isinstance(observed, dict) or set(observed) != required:
+              raise SystemExit("G0 requires exactly the Linux and Windows job results")
+          results = {
+              job: value.get("result") if isinstance(value, dict) else None
+              for job, value in observed.items()
+          }
+          if any(result != "success" for result in results.values()):
+              raise SystemExit("G0 incomplete: " + json.dumps(results, sort_keys=True))
+          print("G0 guardrails complete for source " + os.environ["MW_SOURCE_SHA"]
+                + ": Linux and Windows jobs succeeded; native product verification is not asserted")
