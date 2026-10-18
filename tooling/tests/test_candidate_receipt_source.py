@@ -204,22 +204,45 @@ class CandidateReceiptSourceTests(unittest.TestCase):
             candidate.make_receipt(self.root,self.sha,"windows","x86_64",
                                    [self.bundle,self.bundle])
 
-    def test_changed_source_after_receipt_written_does_not_leave_fake_receipt(self):
+    def test_changed_source_after_receipt_written_preserves_uncertain_output(self):
         from release_manifest import ManifestError
-        original=candidate._checkout
-        calls=0
-        def change_after_write(root,sha):
+
+        expected = candidate.make_receipt(
+            self.root, self.sha, "windows", "x86_64", [self.bundle]
+        )
+        expected_bytes = (
+            json.dumps(expected, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        original = candidate._checkout
+        calls = 0
+
+        def change_after_write(root, sha):
             nonlocal calls
-            calls+=1
-            if calls==3:
+            calls += 1
+            if calls == 3:
                 raise ManifestError("source_checkout_changed_after_write")
-            return original(root,sha)
-        with patch.object(candidate,"_checkout",side_effect=change_after_write):
-            code,output,errors=self.invoke()
-        self.assertEqual((code,output),(2,""))
-        self.assertEqual(calls,3)
-        self.assertIn("source_checkout_changed_after_write",errors)
-        self.assertFalse(self.receipt.exists())
+            return original(root, sha)
+
+        with (
+            patch.object(candidate, "_checkout",
+                         side_effect=change_after_write),
+            patch.object(candidate, "write_new_manifest",
+                         wraps=candidate.write_new_manifest) as publish,
+            patch.object(candidate, "_discard_new_output_on_source_change",
+                         wraps=candidate._discard_new_output_on_source_change) as discard,
+        ):
+            code, output, errors = self.invoke()
+
+        self.assertEqual((code, output), (2, ""))
+        self.assertEqual(calls, 3)
+        self.assertEqual(
+            errors,
+            "candidate-receipt=REFUSED "
+            "code=manifest_output_commit_uncertain\n",
+        )
+        publish.assert_called_once()
+        discard.assert_called_once()
+        self.assertEqual(self.receipt.read_bytes(), expected_bytes)
 
     def test_source_lock_pin_not_mutable_without_new_checkout(self):
         lock=self.root/"SOURCE_LOCK.json"
@@ -229,6 +252,54 @@ class CandidateReceiptSourceTests(unittest.TestCase):
         code,output,errors=self.invoke()
         self.assertEqual((code,output),(2,""))
         self.assertFalse(self.receipt.exists())
+
+    def check_failure_after_publication(self, *, replace_output):
+        real_link = os.link
+        retained = []
+        replacement = self.root.parent / "external-replacement.json"
+        if replace_output:
+            replacement.write_bytes(b"independent package receipt evidence")
+
+        def link_then_fail(*args, **kwargs):
+            real_link(*args, **kwargs)
+            if replace_output:
+                replacement.replace(self.receipt)
+            info = self.receipt.stat()
+            retained.append((
+                self.receipt.read_bytes(),
+                (info.st_dev, info.st_ino),
+            ))
+            raise OSError("private package publication diagnostic")
+
+        with (
+            patch.object(candidate, "write_new_manifest",
+                         wraps=candidate.write_new_manifest) as publish,
+            patch.object(candidate, "_discard_new_output_on_source_change",
+                         wraps=candidate._discard_new_output_on_source_change) as discard,
+            patch.object(os, "link", side_effect=link_then_fail) as link,
+        ):
+            code, output, errors = self.invoke()
+
+        self.assertEqual((code, output), (2, ""))
+        self.assertEqual(
+            errors,
+            "candidate-receipt=REFUSED "
+            "code=manifest_output_commit_uncertain\n",
+        )
+        publish.assert_called_once()
+        link.assert_called_once()
+        discard.assert_not_called()
+        self.assertEqual(len(retained), 1)
+        contents, identity = retained[0]
+        info = self.receipt.stat()
+        self.assertEqual(self.receipt.read_bytes(), contents)
+        self.assertEqual((info.st_dev, info.st_ino), identity)
+
+    def test_error_after_publication_preserves_receipt_without_retry(self):
+        self.check_failure_after_publication(replace_output=False)
+
+    def test_external_replacement_after_publication_is_untouched(self):
+        self.check_failure_after_publication(replace_output=True)
 
 
 if __name__=="__main__":
