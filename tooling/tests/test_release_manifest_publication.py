@@ -204,7 +204,7 @@ class ManifestPublicationOutcomeTests(unittest.TestCase):
                 if replace_after_cleanup_read:
                     # The real reader is closed. On the old implementation this
                     # returns the original bytes AFTER a real foreign replacement,
-                    # opening A1's exact read-equality/unlink pathname window.
+                    # opening the read-equality/unlink pathname window.
                     self.assertEqual(contents, self.expected)
                     replace_with_foreign("after cleanup read before unlink")
             return contents
