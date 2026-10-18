@@ -430,6 +430,10 @@ mwown_trim_root:
 
   ; Check existing intermediate components; final-path verification below also
   ; rejects redirection between the initial root spelling and the opened leaf.
+  ; Mode 3 validated the destination basename with the shared length scratch.
+  ; This scan must cover the complete SOURCE relative path, including its
+  ; private staging directory, regardless of the destination basename length.
+  StrLen $MWOWN_Length $MWOWN_Relative
   StrCpy $MWOWN_Index 0
   StrCpy $MWOWN_Component ""
   StrCpy $MWOWN_Prefix $MWOWN_RootFull

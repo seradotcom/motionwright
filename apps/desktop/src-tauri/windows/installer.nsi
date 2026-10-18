@@ -223,7 +223,7 @@ Var NoShortcutMode
   StrCpy $MWINST_Relative "${Relative}"
   Call MWINST_Classify
   ${If} $MWINST_Classification != "NEW"
-    ; Stage in the exact DESTINATION parent on the same volume. Extraction
+    ; Stage in the exact DESTINATION parent on the same volume. Copying
     ; may be interrupted but never writes the canonical basename.
     !insertmacro MWOWN_CHECK "" "$MWINST_PluginRoot" "mw-prepared-${Symbol}.bin" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
     ${If} $0 != ${MWOWN_MATCHED}
@@ -231,17 +231,23 @@ Var NoShortcutMode
     ${EndIf}
     ${GetParent} "$INSTDIR\${Relative}" $MWINST_Parent
     ${GetFileName} "$INSTDIR\${Relative}" $MWINST_Leaf
-    StrCpy $MWINST_StageLeaf "mw-stage-${Symbol}-${${Symbol}_SHA256}.bin"
-    !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
-    ${If} $0 = ${MWOWN_MISSING}
-      ClearErrors
-      File "/oname=$MWINST_Parent\$MWINST_StageLeaf" "${${Symbol}_SOURCE}"
-      ${If} ${Errors}
-        !insertmacro MWINST_FAIL "Destination-volume payload staging failed: ${Relative}"
-      ${EndIf}
-    ${ElseIf} $0 != ${MWOWN_MATCHED}
-      ; Do not replace/delete an old partial or modified staging file.
-      !insertmacro MWINST_FAIL "Untrusted payload staging bytes retained: ${Relative}; $MWOWN_LastReason"
+    Call MWINST_CreateStageDirectory
+    ClearErrors
+    ; File / SetOverwrite off may SKIP an occupied stage without exec_error.
+    ; Copy the already verified plugin capture and require actual native
+    ; creation success, even when another writer supplied identical bytes.
+    ; FAIL_IF_EXISTS | COPY_SYMLINK also refuses a dangling destination link.
+    StrCpy $2 "$MWINST_PluginRoot\mw-prepared-${Symbol}.bin"
+    StrCpy $3 "$MWINST_Parent\$MWINST_StageLeaf"
+    StrCpy $0 0
+    System::Call 'kernel32::CopyFileExW(w r2, w r3, p 0, p 0, p 0, i 0x801) i.r0 ?e'
+    Pop $1
+    ${If} $0 = 0
+      StrCpy $MWOWN_LastReason "payload_stage_copy_refused"
+      StrCpy $MWOWN_LastWin32Error $1
+      ; Retain this invocation's partial or occupied stage for inspection.
+      ; This result never admits predecessor withdrawal or publication.
+      !insertmacro MWINST_FAIL "Exclusive payload staging failed: ${Relative}"
     ${EndIf}
     !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
     ${If} $0 != ${MWOWN_MATCHED}
@@ -263,6 +269,7 @@ Var NoShortcutMode
       ${ElseIf} $0 != ${MWOWN_PUBLISHED}
         !insertmacro MWINST_FAIL "Verified publication rejected for ${Relative}; $MWOWN_LastReason"
       ${EndIf}
+      Call MWINST_RemoveEmptyStageDirectory
     ${EndIf}
   ${EndIf}
   !insertmacro MWINST_REQUIRE_MATCHED "${Relative}" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}"
@@ -291,6 +298,7 @@ Var MWINST_Classification
 Var MWINST_NeedFile
 Var MWINST_DiagnosticPhase
 Var MWINST_StageLeaf
+Var MWINST_StageDirectory
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -528,6 +536,83 @@ Function MWINST_CaptureFailure
   Pop $0
 FunctionEnd
 !endif
+
+Function MWINST_CreateStageDirectory
+  ; Each allocation is a new namespace below the canonical file's immediate
+  ; parent. A GUID chooses a name; only successful exclusive directory creation
+  ; admits this invocation's stage. Existing directories are never adopted.
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $0 ""
+  StrCpy $1 -1
+  System::Call 'ole32::CoCreateGuid(g .r0) i.r1'
+  ${If} $1 != 0
+    StrCpy $MWOWN_LastReason "stage_identity_unavailable"
+    StrCpy $MWOWN_LastWin32Error 0
+    !insertmacro MWINST_FAIL "A private stage identity could not be created."
+  ${EndIf}
+  StrLen $1 $0
+  StrCpy $2 $0 1
+  StrCpy $3 $0 1 -1
+  ${If} $1 != 38
+  ${OrIf} $2 != "{"
+  ${OrIf} $3 != "}"
+    StrCpy $MWOWN_LastReason "stage_identity_not_canonical"
+    StrCpy $MWOWN_LastWin32Error 0
+    !insertmacro MWINST_FAIL "The private stage identity is not canonical."
+  ${EndIf}
+  StrCpy $MWINST_StageDirectory "mw-stage-$0"
+  StrCpy $MWINST_StageLeaf "$MWINST_StageDirectory\payload.bin"
+
+  ; Validate the ordinary immediate parent and the complete relative spelling.
+  ; MISSING here is necessary but does not grant ownership of a directory that
+  ; might already exist. CreateDirectoryW below must itself succeed once.
+  !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "0000000000000000000000000000000000000000000000000000000000000000" "0" $0
+  ${If} $0 != ${MWOWN_MISSING}
+    !insertmacro MWINST_FAIL "The new private stage is not absent."
+  ${EndIf}
+  StrCpy $2 "$MWINST_Parent\$MWINST_StageDirectory"
+  System::Call 'kernel32::CreateDirectoryW(w r2, p 0) i.r0 ?e'
+  Pop $1
+  ${If} $0 = 0
+    StrCpy $MWOWN_LastReason "stage_directory_create_refused"
+    StrCpy $MWOWN_LastWin32Error $1
+    !insertmacro MWINST_FAIL "Exclusive private stage creation was refused."
+  ${EndIf}
+  ; An existing reparse point, non-directory ancestor, or unexpected child
+  ; vetoes copying. The older invocation's stages are never enumerated.
+  !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "0000000000000000000000000000000000000000000000000000000000000000" "0" $0
+  ${If} $0 != ${MWOWN_MISSING}
+    !insertmacro MWINST_FAIL "The new private stage changed before copying."
+  ${EndIf}
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function MWINST_RemoveEmptyStageDirectory
+  ; Called only after PUBLISHED and successful guard cleanup. This is one
+  ; nonrecursive removal of this invocation's newly created empty directory.
+  ; Any unexpected contents or failure retain it; no old stage is targeted.
+  Push $0
+  StrCpy $0 0
+  IfErrors 0 +2
+  StrCpy $0 1
+  ClearErrors
+  RMDir "$MWINST_Parent\$MWINST_StageDirectory"
+  ${If} ${Errors}
+    DetailPrint "The private stage directory was retained."
+  ${EndIf}
+  ${If} $0 = 1
+    SetErrors
+  ${Else}
+    ClearErrors
+  ${EndIf}
+  Pop $0
+FunctionEnd
 
 Function MWINST_LookupCurrent
   StrCpy $MWINST_CurrentFound 0
@@ -873,22 +958,21 @@ Section Install
     ; private source to a same-volume stage, preserving the old executable
     ; until that staged copy is byte-verified.
     StrCpy $MWINST_DiagnosticPhase "self-stage"
-    StrCpy $MWINST_StageLeaf "mw-uninstaller-stage-$MWINST_NewSelfSha.bin"
-    !insertmacro MWOWN_CHECK "" "$INSTDIR" "$MWINST_StageLeaf" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
-    ${If} $0 = ${MWOWN_MISSING}
-      ClearErrors
-      ; Fail if a separate writer creates the stage after the absence check.
-      ; CopyFiles may replace it; Win32 CopyFileW(...,TRUE) never does.
-      StrCpy $2 "$MWINST_PluginRoot\${MWOWN_NEW_SELF_NAME}"
-      StrCpy $3 "$INSTDIR\$MWINST_StageLeaf"
-      System::Call 'kernel32::CopyFileW(w r2, w r3, i 1) i.r0 ?e'
-      Pop $1
-      ${If} $0 = 0
-        StrCpy $MWOWN_LastWin32Error $1
-        !insertmacro MWINST_FAIL "The uninstaller staging copy was refused; previous bytes retained."
-      ${EndIf}
-    ${ElseIf} $0 != ${MWOWN_MATCHED}
-      !insertmacro MWINST_FAIL "Untrusted uninstaller staging file retained; $MWOWN_LastReason"
+    StrCpy $MWINST_Parent "$INSTDIR"
+    Call MWINST_CreateStageDirectory
+    ClearErrors
+    ; Stage the freshly generated self with the same exclusive copy contract.
+    ; COPY_SYMLINK plus FAIL_IF_EXISTS refuses an existing destination link
+    ; even when its target does not exist. This is not final publication.
+    StrCpy $2 "$MWINST_PluginRoot\${MWOWN_NEW_SELF_NAME}"
+    StrCpy $3 "$INSTDIR\$MWINST_StageLeaf"
+    StrCpy $0 0
+    System::Call 'kernel32::CopyFileExW(w r2, w r3, p 0, p 0, p 0, i 0x801) i.r0 ?e'
+    Pop $1
+    ${If} $0 = 0
+      StrCpy $MWOWN_LastReason "self_stage_copy_refused"
+      StrCpy $MWOWN_LastWin32Error $1
+      !insertmacro MWINST_FAIL "Exclusive uninstaller staging failed; previous bytes retained."
     ${EndIf}
     !insertmacro MWOWN_CHECK "" "$INSTDIR" "$MWINST_StageLeaf" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize" $0
     ${If} $0 != ${MWOWN_MATCHED}
@@ -906,6 +990,7 @@ Section Install
       ${ElseIf} $0 != ${MWOWN_PUBLISHED}
         !insertmacro MWINST_FAIL "Uninstaller held-handle publication was refused; $MWOWN_LastReason"
       ${EndIf}
+      Call MWINST_RemoveEmptyStageDirectory
     ${EndIf}
   ${EndIf}
   !insertmacro MWINST_REQUIRE_MATCHED "uninstall.exe" "$MWINST_NewSelfSha" "$MWINST_NewSelfSize"
