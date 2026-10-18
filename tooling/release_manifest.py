@@ -330,24 +330,14 @@ def write_new_manifest(root: Path, output: Path, manifest: dict) -> None:
 
 
 def _discard_new_output_on_source_change(target: Path, manifest: dict) -> None:
-    """Best-effort removal of OUR unsigned receipt if final source check fails.
+    """Keep the committed output when a later source check fails.
 
-    Only delete a regular, link-free file that still matches exactly the bytes
-    we just created. Never remove an unrelated file swapped into its pathname.
+    A path may already refer to a different file after publication. Checking
+    its metadata or contents cannot make deletion safe, so do not inspect or
+    remove it. Receipt consumers keep this call signature and must propagate
+    the uncertain outcome without retrying publication.
     """
-    expected = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    try:
-        metadata = target.lstat()
-        if (stat.S_ISREG(metadata.st_mode)
-            and not target.is_symlink()
-            and not _path_has_reparse(target, metadata)
-            and metadata.st_size == len(expected)
-            and target.read_bytes() == expected):
-            target.unlink()
-    except OSError:
-        # Failure is still reported, never mistaken for successful evidence.
-        pass
-
+    raise ManifestError("manifest_output_commit_uncertain")
 
 def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
