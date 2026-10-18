@@ -274,5 +274,110 @@ class DeliveryIntegrityTests(unittest.TestCase):
         self.assertFalse(self.output.exists(), "False manifest must be cleaned up")
 
 
+    def test_file_fsync_failure_does_not_publish_manifest(self):
+        observed = []
+
+        def fail_file_sync(descriptor):
+            info = os.fstat(descriptor)
+            observed.append({
+                "regular": stat.S_ISREG(info.st_mode),
+                "size": info.st_size,
+                "final_visible": os.path.lexists(self.output),
+            })
+            raise OSError("fixture_file_fsync_failure")
+
+        with patch.object(manifest.os, "fsync", side_effect=fail_file_sync):
+            code, stdout, stderr = self.invoke()
+
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(
+            stderr, "delivery-manifest=REFUSED code=manifest_output_refused\n"
+        )
+        self.assertEqual(len(observed), 1, "The real file-sync boundary must run")
+        self.assertTrue(observed[0]["regular"])
+        self.assertGreater(observed[0]["size"], 0, "Bytes must reach the real file")
+        self.assertFalse(
+            os.path.lexists(self.output),
+            "A known file-sync failure must leave no final manifest",
+        )
+        self.assertFalse(
+            observed[0]["final_visible"],
+            "The final name must not be visible before file synchronization",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(_git(self.root, "rev-parse", "HEAD"), self.sha)
+        self.assertEqual(
+            _git(self.root, "status", "--porcelain", "--untracked-files=no"), ""
+        )
+
+    def test_partial_write_failure_does_not_publish_manifest(self):
+        real_fdopen = manifest.os.fdopen
+        output_streams = []
+        observed = []
+        final_output = self.output
+
+        class PartialWriteThenFail:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *exception):
+                return self.stream.__exit__(*exception)
+
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+
+            def write(self, content):
+                prefix = content[:17]
+                written = self.stream.write(prefix)
+                self.stream.flush()
+                observed.append({
+                    "content_size": len(content),
+                    "written": written,
+                    "file_size": os.fstat(self.stream.fileno()).st_size,
+                    "final_visible": os.path.lexists(final_output),
+                })
+                raise OSError("fixture_partial_write_failure")
+
+        def fail_only_output_stream(descriptor, mode="r", *args, **kwargs):
+            stream = real_fdopen(descriptor, mode, *args, **kwargs)
+            if mode != "wb":
+                return stream
+            wrapped = PartialWriteThenFail(stream)
+            output_streams.append(wrapped)
+            return wrapped
+
+        with patch.object(manifest.os, "fdopen", side_effect=fail_only_output_stream):
+            code, stdout, stderr = self.invoke()
+
+        self.assertEqual(len(output_streams), 1, "Only the real output is wrapped")
+        self.assertTrue(output_streams[0].stream.closed, "Close the owned handle")
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(
+            stderr, "delivery-manifest=REFUSED code=manifest_output_refused\n"
+        )
+        self.assertEqual(len(observed), 1, "Inject exactly one failed write")
+        self.assertGreater(observed[0]["content_size"], 17)
+        self.assertEqual(observed[0]["written"], 17)
+        self.assertEqual(observed[0]["file_size"], 17)
+        self.assertFalse(
+            os.path.lexists(self.output),
+            "A known partial-write failure must leave no final manifest",
+        )
+        self.assertFalse(
+            observed[0]["final_visible"],
+            "Partial bytes must not be visible at the final name",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(_git(self.root, "rev-parse", "HEAD"), self.sha)
+        self.assertEqual(
+            _git(self.root, "status", "--porcelain", "--untracked-files=no"), ""
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()
