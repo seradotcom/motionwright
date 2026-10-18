@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +96,169 @@ class ImpactTests(unittest.TestCase):
 
     def selected(self, plan):
         return {x["workflow"] for x in plan["selected_workflows"]}
+
+    def advanced_pr_graph(self, *, remove_workflow=False):
+        """Real Git merge with a historical event base and two ordered parents."""
+        event_base = self.repo.baseline
+        self.repo.call("checkout", "-b", "feature")
+        self.repo.write("README.md", "PR-only documentation.\n")
+        head = self.repo.commit("feature from event base")
+        self.repo.call("checkout", "main")
+        self.repo.write("LICENSE", "Base-only fixture notice.\n")
+        if remove_workflow:
+            self.repo.call("rm", ".github/workflows/native-manim-e2e.yml")
+        actual_base = self.repo.commit("base advances after event snapshot")
+        self.repo.call("merge", "--no-ff", "--no-edit", "feature")
+        checkout = self.repo.call("rev-parse", "HEAD")
+        return event_base, actual_base, head, checkout
+
+    def plan_advanced_graph(self, graph, **overrides):
+        event_base, _, head, checkout = graph
+        arguments = dict(base=event_base, head=head, checkout=checkout,
+                         event="pull_request", allow_advanced_pr_base=True)
+        arguments.update(overrides)
+        return self.repo.plan(**arguments)
+
+    def test_advanced_base_is_rejected_by_default_without_opt_in(self):
+        event_base, _, head, checkout = self.advanced_pr_graph()
+        with self.assertRaisesRegex(impact.PlanError, "exact ordered base/head merge"):
+            self.repo.plan(base=event_base, head=head, checkout=checkout, event="pull_request")
+
+    def test_advanced_base_opt_in_binds_both_bases_and_expands_neutral_changes(self):
+        graph = self.advanced_pr_graph()
+        event_base, actual_base, head, checkout = graph
+        plan = self.plan_advanced_graph(graph)
+        binding = plan["source"]["pr_base_reconciliation"]
+        self.assertEqual(plan["source"]["base_sha"], event_base)
+        self.assertEqual(plan["source"]["checkout_sha"], checkout)
+        self.assertEqual(plan["source"]["checkout_parents"], [actual_base, head])
+        self.assertEqual(binding["event_base_sha"], event_base)
+        self.assertEqual(binding["actual_merge_parent_sha"], actual_base)
+        self.assertEqual(binding["actual_merge_parent_tree_sha"],
+                         self.repo.call("rev-parse", actual_base + "^{tree}"))
+        self.assertEqual(binding["actual_merge_base_sha"], event_base)
+        self.assertEqual(binding["policy"], "allow-advanced-merge-parent")
+        self.assertEqual(binding["ancestry"], "verified-ancestor")
+        self.assertTrue(binding["advanced"])
+        self.assertEqual(set(plan["changed_paths"]), {"README.md", "LICENSE"})
+        self.assertFalse(plan["unknown_paths"])
+        self.assertIn({"kind": "advanced-event-base", "before": event_base,
+                       "after": actual_base}, plan["change_ranges"])
+        self.assertIn({"kind": "actual-base-to-checkout", "before": actual_base,
+                       "after": checkout}, plan["change_ranges"])
+        self.assertIn(actual_base, {g["source_sha"] for g in plan["dependency_graphs"]})
+        self.assertEqual(plan["expansion_reasons"], ["advanced-pr-base-requires-full-shadow-inventory"])
+        self.assertEqual(self.selected(plan), set(plan["workflow_inventory_sha256"]))
+        self.assertEqual(plan["accounting"]["executions_avoided"], 0)
+
+    def test_cli_advanced_base_requires_explicit_flag(self):
+        event_base, _, head, checkout = self.advanced_pr_graph()
+        argv = [sys.executable, "-B", str(MODULE), "plan", "--repo", str(self.repo.root),
+                "--base", event_base, "--head", head, "--checkout", checkout,
+                "--event", "pull_request", "--repository", "example/fixture"]
+        strict = subprocess.run(argv, capture_output=True, check=False, timeout=30)
+        self.assertEqual(strict.returncode, 2)
+        self.assertIn(b"exact ordered base/head merge", strict.stderr)
+        allowed = subprocess.run(argv + ["--allow-advanced-pr-base"], capture_output=True,
+                                 check=False, timeout=30)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr.decode(errors="replace"))
+        self.assertTrue(json.loads(allowed.stdout)["source"]["pr_base_reconciliation"]["advanced"])
+
+    def test_opt_in_with_current_event_base_keeps_original_change_range(self):
+        graph = self.advanced_pr_graph()
+        _, actual_base, _, _ = graph
+        plan = self.plan_advanced_graph(graph, base=actual_base)
+        self.assertEqual(plan["changed_paths"], ["README.md"])
+        self.assertFalse(plan["source"]["pr_base_reconciliation"]["advanced"])
+        self.assertEqual(plan["source"]["pr_base_reconciliation"]["ancestry"], "same-commit")
+        self.assertEqual(self.selected(plan), {impact.CI, impact.PLANNER})
+
+    def test_opt_in_exact_head_is_still_labeled_as_head_only(self):
+        self.repo.call("checkout", "-b", "feature")
+        self.repo.write("README.md", "Exact head fixture.\n")
+        head = self.repo.commit("head only")
+        plan = self.repo.plan(head=head, checkout=head, event="pull_request", allow_advanced_pr_base=True)
+        self.assertEqual(plan["source"]["scope"], "source-head")
+        self.assertIsNone(plan["source"]["pr_base_reconciliation"]["actual_merge_parent_sha"])
+        self.assertFalse(plan["source"]["pr_base_reconciliation"]["advanced"])
+
+    def test_advanced_base_rejects_stale_head_parent(self):
+        graph = self.advanced_pr_graph()
+        self.repo.call("checkout", "feature")
+        self.repo.write("README.md", "Newer feature head.\n")
+        newer_head = self.repo.commit("head advances")
+        self.repo.call("checkout", "--detach", graph[3])
+        with self.assertRaisesRegex(impact.PlanError, "exact ordered base/head merge"):
+            self.plan_advanced_graph(graph, head=newer_head)
+
+    def test_advanced_base_rejects_reversed_merge_parents(self):
+        graph = self.advanced_pr_graph()
+        _, actual_base, head, checkout = graph
+        tree = self.repo.call("rev-parse", checkout + "^{tree}")
+        reversed_merge = self.repo.call("commit-tree", tree, "-p", head, "-p", actual_base,
+                                       "-m", "reversed real commit parents")
+        self.repo.call("checkout", "--detach", reversed_merge)
+        with self.assertRaisesRegex(impact.PlanError, "exact ordered base/head merge"):
+            self.plan_advanced_graph(graph, checkout=reversed_merge)
+
+    def test_advanced_base_rejects_unrelated_event_base(self):
+        graph = self.advanced_pr_graph()
+        self.repo.call("checkout", "-b", "other-base", self.repo.baseline)
+        self.repo.write("CONTRIBUTING.md", "Unrelated base movement.\n")
+        other = self.repo.commit("not an ancestor of merge first parent")
+        self.repo.call("checkout", "--detach", graph[3])
+        with self.assertRaisesRegex(impact.PlanError, "ancestor of the actual first merge parent"):
+            self.plan_advanced_graph(graph, base=other)
+
+    def test_local_graft_cannot_fake_advanced_base_ancestry(self):
+        graph = self.advanced_pr_graph()
+        self.repo.call("checkout", "-b", "grafted-base", self.repo.baseline)
+        self.repo.write("CONTRIBUTING.md", "Unrelated source in real commit graph.\n")
+        other = self.repo.commit("unrelated real base")
+        self.repo.call("checkout", "--detach", graph[3])
+        graft = self.repo.root / ".git/info/grafts"
+        graft.parent.mkdir(parents=True, exist_ok=True)
+        graft.write_text(graph[1] + " " + other + "\n", encoding="ascii")
+        with self.assertRaisesRegex(impact.PlanError, "ancestor of the actual first merge parent"):
+            self.plan_advanced_graph(graph, base=other)
+
+    def test_advanced_base_rejects_octopus_merge(self):
+        graph = self.advanced_pr_graph()
+        event_base, actual_base, head, checkout = graph
+        tree = self.repo.call("rev-parse", checkout + "^{tree}")
+        octopus = self.repo.call("commit-tree", tree, "-p", actual_base, "-p", head,
+                                "-p", event_base, "-m", "three real commit parents")
+        self.repo.call("checkout", "--detach", octopus)
+        with self.assertRaisesRegex(impact.PlanError, "exact ordered base/head merge"):
+            self.plan_advanced_graph(graph, checkout=octopus)
+
+    def test_advanced_base_still_rejects_shallow_history(self):
+        event_base, _, head, checkout = self.advanced_pr_graph()
+        shallow = self.repo.root / "shallow"
+        subprocess.check_call(["git", "clone", "--depth", "1", self.repo.root.as_uri(), str(shallow)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with self.assertRaisesRegex(impact.PlanError, "complete history"):
+            impact.build_plan(shallow, base=event_base, head=head, checkout=checkout,
+                              event="pull_request", repository="example/fixture", allow_advanced_pr_base=True)
+
+    def test_advanced_base_does_not_allow_a_different_source_checkout(self):
+        graph = self.advanced_pr_graph()
+        with self.assertRaisesRegex(impact.PlanError, "checkout SHA mismatch"):
+            self.plan_advanced_graph(graph, checkout=graph[2])
+
+    def test_advanced_base_keeps_deleted_workflow_disposition_blocking(self):
+        graph = self.advanced_pr_graph(remove_workflow=True)
+        plan = self.plan_advanced_graph(graph)
+        self.assertIn(".github/workflows/native-manim-e2e.yml", plan["changed_paths"])
+        self.assertIn("removed-workflow:.github/workflows/native-manim-e2e.yml", plan["blockers"])
+
+    def test_advanced_base_policy_is_explicitly_pr_only_and_boolean(self):
+        for event in ("push", "workflow_dispatch"):
+            with self.subTest(event=event), self.assertRaisesRegex(impact.PlanError, "only available for pull_request"):
+                self.repo.plan(event=event, allow_advanced_pr_base=True)
+        for value in (1, "true", None):
+            with self.subTest(value=value), self.assertRaisesRegex(impact.PlanError, "must be boolean"):
+                self.repo.plan(event="pull_request", allow_advanced_pr_base=value)
 
     def test_known_document_only_keeps_always_checks_and_zero_savings(self):
         self.repo.write("README.md", "Edited fixture docs.\n")

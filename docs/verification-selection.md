@@ -43,6 +43,34 @@ so earlier commits in a stacked branch are not lost when the last commit only
 changes a README. When testing the synthetic PR merge, it also includes the
 base-to-merge delta and requires the exact ordered parents `[base, head]`.
 
+The CLI keeps this strict rule by default. A PR event can identify an earlier
+base while its event checkout is a synthetic merge onto a later base. The
+explicit `--allow-advanced-pr-base` option handles that case only for PRs:
+
+- The checked-out source must still equal the supplied exact event checkout.
+- A merge must have exactly two parents, read from the commit object. Its
+  second parent must be the supplied exact PR head, in that order.
+- If its first parent differs from the event base, the event base must be a
+  verified ancestor of that first parent. Both histories must be complete and
+  have an unambiguous merge base with the PR head.
+- The original `base_sha` remains the event value. The
+  `source.pr_base_reconciliation` record retains both base SHAs and trees,
+  the ancestry result and the actual base/head merge base. `change_ranges`
+  includes event-base-to-actual-base, the complete PR history and
+  actual-base-to-checkout changes. Cargo graphs include those source trees.
+- An advanced base always expands to the full observed workflow inventory in
+  shadow mode, even when the changed paths would otherwise select only G0.
+  Workflow removals retain their blocking dispositions.
+
+The supplied workflow enables this option explicitly for PR events. It keeps
+the event checkout and event base unchanged; no moving branch tip is
+substituted. Stale heads, reversed or extra parents, unrelated bases, shallow
+history and a different checkout remain errors. Local graft metadata and
+replace refs cannot rewrite the commit ancestry used for this reconciliation.
+An exact head-only checkout still has `source-head` scope and does not prove
+the integrated merge. Push and manual-dispatch planning reject the PR-only
+option. None of these recommendations dispatch or rerun a test matrix.
+
 The tool can also describe an exact PR head checkout. Such a plan is labeled
 `source-head`, and it does not establish that the integrated PR merge works.
 The supplied workflow checks out the event source and therefore normally records
@@ -57,7 +85,8 @@ metadata` command can fetch or execute code.
 
 The plan includes base/head/checkout SHAs, tree identities, PR merge base,
 checkout parents, manifest hashes, workflow definition hashes, changed paths,
-selection reasons, the actual selector hash and a canonical plan digest.
+selection reasons, explicit change ranges, PR base reconciliation, the actual
+selector hash and a canonical plan digest.
 Missing or malformed Cargo information expands selection. Unsafe paths,
 shallow history, invalid revisions, a dirty checkout or an unrelated merge
 checkout reject planning. Removed workflows carry unresolved dispositions;

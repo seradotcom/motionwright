@@ -117,7 +117,8 @@ def commit_sha(value: Any, *, zero: bool = False) -> str:
 def git(repo: Path, *args: str) -> bytes:
     # No shells, revision expressions from users, replace refs, external diff,
     # text conversion, hooks, checkout, or dependency resolution are involved.
-    env = dict(os.environ, GIT_NO_LAZY_FETCH="1")
+    # Ancestry must come from commit objects, not local graft metadata.
+    env = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_GRAFT_FILE=os.devnull)
     result = subprocess.run(
         ["git", "--no-replace-objects", "-C", str(repo), *args],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -129,6 +130,23 @@ def git(repo: Path, *args: str) -> bytes:
 
 def git_text(repo: Path, *args: str) -> str:
     return git(repo, *args).decode("utf-8", "strict").strip()
+
+
+def commit_parents(repo: Path, sha: str) -> list[str]:
+    headers = git(repo, "cat-file", "commit", commit_sha(sha)).split(b"\n\n", 1)[0]
+    return [commit_sha(line.removeprefix(b"parent ").decode("ascii", "strict"))
+            for line in headers.splitlines() if line.startswith(b"parent ")]
+
+
+def is_ancestor(repo: Path, before: str, after: str) -> bool:
+    result = subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(repo), "merge-base", "--is-ancestor",
+         commit_sha(before), commit_sha(after)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30,
+        env=dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_GRAFT_FILE=os.devnull),
+    )
+    require(result.returncode in (0, 1), "cannot establish base ancestry")
+    return result.returncode == 0
 
 
 class Tree:
@@ -291,11 +309,15 @@ def affected_packages(paths: set[str], graphs: list[dict[str, Any]]) -> list[str
 
 
 def build_plan(repo: Path, *, base: str, head: str, checkout: str,
-               event: str, repository: str, candidate: bool = False) -> dict[str, Any]:
+               event: str, repository: str, candidate: bool = False,
+               allow_advanced_pr_base: bool = False) -> dict[str, Any]:
     commit_sha(base, zero=True)
     commit_sha(head)
     commit_sha(checkout)
     require(event in ("pull_request", "push", "workflow_dispatch"), "unsupported event")
+    require(type(allow_advanced_pr_base) is bool, "advanced PR base policy must be boolean")
+    require(not allow_advanced_pr_base or event == "pull_request",
+            "advanced PR base reconciliation is only available for pull_request")
     require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "invalid repository")
     require(git_text(repo, "rev-parse", "--is-shallow-repository") == "false",
             "complete history is required; fetch depth must be zero")
@@ -304,34 +326,64 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
             "tracked working tree changes or untracked/ignored files prevent exact-source planning")
     trees = {s: Tree(repo, s) for s in {head, checkout} | ({base} if base != ZERO else set())}
     current = trees[checkout]
-    parents = git_text(repo, "show", "-s", "--format=%P", checkout).split()
+    parents = commit_parents(repo, checkout)
     merge_base = None
+    pr_base_reconciliation = None
     force_full: list[str] = []
     changes = []
+    change_ranges = []
     if event == "pull_request":
         require(base != ZERO, "PR base commit is required")
         bases = git_text(repo, "merge-base", "--all", base, head).split()
         require(len(bases) == 1, "PR requires one complete, unambiguous merge base")
         merge_base = bases[0]
         trees.setdefault(merge_base, Tree(repo, merge_base))
-        require(checkout == head or (len(parents) == 2 and parents == [base, head]),
+        exact_merge = len(parents) == 2 and parents == [base, head]
+        advanced_merge = (allow_advanced_pr_base and len(parents) == 2
+                          and parents[1] == head and parents[0] != head)
+        require(checkout == head or exact_merge or advanced_merge,
                 "PR checkout must be exact head or exact ordered base/head merge")
-        changes = changed_paths(repo, merge_base, head)
+        actual_base = parents[0] if checkout != head else None
+        advanced = actual_base is not None and actual_base != base
+        actual_merge_base = merge_base if actual_base == base else None
+        if advanced:
+            require(allow_advanced_pr_base, "advanced PR base requires explicit opt-in")
+            trees.setdefault(actual_base, Tree(repo, actual_base))
+            require(is_ancestor(repo, base, actual_base),
+                    "PR event base must be an ancestor of the actual first merge parent")
+            actual_bases = git_text(repo, "merge-base", "--all", actual_base, head).split()
+            require(len(actual_bases) == 1, "actual PR base requires one unambiguous merge base")
+            actual_merge_base = actual_bases[0]
+            trees.setdefault(actual_merge_base, Tree(repo, actual_merge_base))
+            # Include the advanced base even if merge resolution later reverts
+            # a path. This is additive source impact, never another execution.
+            changes += changed_paths(repo, base, actual_base)
+            change_ranges.append({"kind": "advanced-event-base", "before": base,
+                                  "after": actual_base})
+            force_full.append("advanced-pr-base-requires-full-shadow-inventory")
+        pr_base_reconciliation = {
+            "policy": "allow-advanced-merge-parent" if allow_advanced_pr_base else "strict",
+            "event_base_sha": base, "event_base_tree_sha": trees[base].tree_sha,
+            "actual_merge_parent_sha": actual_base,
+            "actual_merge_parent_tree_sha": trees[actual_base].tree_sha if actual_base else None,
+            "actual_merge_base_sha": actual_merge_base,
+            "advanced": advanced,
+            "ancestry": "verified-ancestor" if advanced else ("same-commit" if actual_base else "not-a-merge"),
+        }
+        changes += changed_paths(repo, merge_base, head)
+        change_ranges.append({"kind": "complete-pr-history", "before": merge_base, "after": head})
         if checkout != head:
-            changes += changed_paths(repo, base, checkout)
+            changes += changed_paths(repo, actual_base, checkout)
+            change_ranges.append({"kind": "actual-base-to-checkout", "before": actual_base,
+                                  "after": checkout})
     else:
         require(checkout == head, "non-PR checkout must equal head")
         if base == ZERO:
             force_full.append("no-previous-commit")
         else:
             changes = changed_paths(repo, base, head)
-            ancestor = subprocess.run(
-                ["git", "--no-replace-objects", "-C", str(repo), "merge-base", "--is-ancestor", base, head],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30,
-                env=dict(os.environ, GIT_NO_LAZY_FETCH="1"),
-            ).returncode
-            require(ancestor in (0, 1), "cannot establish base ancestry")
-            if ancestor == 1:
+            change_ranges.append({"kind": "base-to-head", "before": base, "after": head})
+            if not is_ancestor(repo, base, head):
                 force_full.append("base-is-not-head-ancestor")
     paths = {p for change in changes for p in change["paths"]}
     graphs = [cargo_graph(trees[s]) for s in sorted(trees)]
@@ -407,9 +459,11 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
             "head_sha": head, "head_tree_sha": trees[head].tree_sha,
             "checkout_sha": checkout, "tree_sha": current.tree_sha,
             "checkout_parents": parents, "merge_base_sha": merge_base,
+            "pr_base_reconciliation": pr_base_reconciliation,
             "scope": "pr-merge" if event == "pull_request" and checkout != head else "source-head",
         },
         "candidate": candidate,
+        "change_ranges": change_ranges,
         "selector": {
             "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "risk_map_sha256": digest({
@@ -569,6 +623,9 @@ def main() -> int:
         p.add_argument("--" + name, required=True)
     p.add_argument("--event", choices=("pull_request", "push", "workflow_dispatch"), required=True)
     p.add_argument("--candidate", action="store_true")
+    p.add_argument("--allow-advanced-pr-base", action="store_true",
+                   help="PR only: accept an exact two-parent merge whose first parent descends from "
+                        "the event base; record both bases and expand the full shadow inventory")
     p.add_argument("--output", type=Path)
     a = sub.add_parser("aggregate")
     a.add_argument("--plan", type=Path, required=True)
@@ -579,7 +636,8 @@ def main() -> int:
     try:
         if args.command == "plan":
             result = build_plan(args.repo, base=args.base, head=args.head, checkout=args.checkout,
-                                event=args.event, repository=args.repository, candidate=args.candidate)
+                                event=args.event, repository=args.repository, candidate=args.candidate,
+                                allow_advanced_pr_base=args.allow_advanced_pr_base)
         else:
             result = aggregate(read_json(args.plan), read_json(args.expected), read_json(args.observed))
         rendered = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"

@@ -95,6 +95,10 @@ jobs:
           ]
           if candidate:
               command.append("--candidate")
+          if kind == "pull_request":
+              # Preserve the event base; reconcile only a proven descendant
+              # first parent of this exact GitHub event checkout.
+              command.append("--allow-advanced-pr-base")
           result = subprocess.run(command, capture_output=True, check=False)
           (destination / "plan-stdout.log").write_bytes(result.stdout)
           (destination / "plan-stderr.log").write_bytes(result.stderr)
@@ -128,6 +132,15 @@ jobs:
               "This run tests planning and evidence guardrails; it does not verify native output "
               "or establish release readiness.\n"
           )
+          reconciled = plan["source"].get("pr_base_reconciliation")
+          if reconciled and reconciled["advanced"]:
+              summary += (
+                  "\nThe PR event base remains recorded as "
+                  f"`{reconciled['event_base_sha']}`; the exact merge first parent is "
+                  f"`{reconciled['actual_merge_parent_sha']}`. "
+                  "Their ancestry was verified and the full observed workflow inventory "
+                  "was included in this shadow recommendation.\n"
+              )
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
               output.write(summary)
       - name: Preserve original planning and guardrail evidence
