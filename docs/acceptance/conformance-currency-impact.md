@@ -1,24 +1,62 @@
-# Conformance source-currency analysis
+# Conformance evidence source-currency impact
 
-This read-only tool compares evidence and assessment records with exact committed Git source inputs. It helps distinguish historical observations from current-source verification.
+The source-currency checker compares canonical Motionwright requirements and
+their attached technical evidence with an exact Git commit. It is **read-only**:
+it cannot edit requirements, award PASS, assert human approval or authorize
+publication.
 
-Run the following commands from the repository root:
+It examines **272 requirements**, **124 acceptance cases**, **1,652 canonical
+criterion hashes** and **506 normative links**. Source and test definitions
+are compared with committed Git source/test text under the recorded
+`git-text-lf` digest convention and with the recorded source lock. A matching
+historical result is not proof of a new execution on a later checkout.
 
-    python -B tooling/conformance_currency_impact.py --target HEAD
-    python -B tooling/conformance_currency_impact.py --target HEAD --strict
-    python -B tooling/conformance_currency_impact.py --target HEAD --json path/to/ignored/receipt.json
+## Commands
 
-Use an exact 40-character lowercase commit SHA instead of HEAD when checking an immutable revision. An optional --portfolio argument can validate a private, ignored owner catalog against original clause hashes. Never commit the private catalog or its contents.
+From the repository root:
 
-## Understanding the results
+```sh
+python -B tooling/conformance_currency_impact.py --target HEAD
+python -B tooling/conformance_currency_impact.py --target HEAD --json source-impact.json
+python -B tooling/conformance_currency_impact.py --target HEAD --strict
+```
 
-- **Current source candidate:** source revision, source lock and committed product/oracle inputs match. This does not establish product acceptance.
-- **Historical source, same inputs:** referenced blobs appear unchanged, but the actual execution occurred on another revision.
-- **Historical changed or unknown inputs:** source files changed or lack trustworthy identity.
-- **PASS requiring reassessment:** an earlier technically sufficient field cannot be promoted to a new revision without fresh evidence.
+Use a full lowercase 40-character commit SHA instead of `HEAD` to inspect an
+immutable snapshot. The report destination is caller-selected; do not
+unintentionally commit generated evidence.
 
-The --strict mode exits with code 2 when the assessed source revision or lock differs from the target, or if currently recorded PASS criteria need reassessment. It does not alter evidence, demote ledger entries, invoke providers or modify source code. Store diagnostic receipts in a gitignored location.
+The `--strict` command exits **2** if the declared assessment revision or
+source lock is different, or if any formerly passing criterion lacks a
+sufficient current-source execution and review. That outcome is deliberate:
+a structurally consistent ledger can still contain outdated evidence. Do not
+silence strict errors by targeting an older checkout.
 
-## Verification boundaries
+## Reading results
 
-The original requirement identifiers and clause hashes remain normative. Evidence snapshots, input digests, test run identities and independent sufficiency reviews must be attached to the revision actually tested. Preserve historical evidence append-only. Whole-product approval requires installed-service, native-media, rights and any applicable human evaluations. A source-currency check by itself never establishes release readiness.
+- **Current execution candidate:** its recorded source, test definitions and
+  source lock match the target. A separate sufficient review is still required.
+- **Historical, same input bytes:** source/test blobs match, but the test
+  originally ran at another revision. It remains historical.
+- **Historical, changed or unknown:** any source or test differs, disappears
+  or resolves to a symlink. Current-source evidence is needed.
+- **Sufficient current criterion:** the existing PASS has an exact-source
+  complete execution and a separate matching sufficiency review.
+- **PASS requiring reassessment:** the existing PASS lacks one or more of
+  those bindings. This is a review blocker, not proof that product behavior
+  has regressed.
+
+The JSON output includes changed-file hotspots, canonical affected criteria,
+their linked acceptance scenarios, and separate implementation, integration,
+technical and contract acceptance states. It does not infer internal teams,
+ownership assignments or human signatories.
+
+## Recording new evidence
+
+Review the changed source and oracle first. Collect the smallest meaningful
+new test selection on the exact checkout. Preserve old successful and failed
+receipts as history. Capture source hashes, original runs, artifacts and the
+criterion's explicit obligations before writing a new sufficiency review.
+
+Installed workflows, native media, source rights, accessibility and any
+required human evaluation remain separate acceptance obligations. A successful
+source-currency check is **not** a product release authorization.

@@ -25,8 +25,8 @@ class CurrencyImpactTests(unittest.TestCase):
         self.addCleanup(self.holder.cleanup)
         self.root = Path(self.holder.name)
         self.run_git("init", "-q")
-        self.run_git("config", "user.email", "a5@example.invalid")
-        self.run_git("config", "user.name", "Motionwright synthetic fixture")
+        self.run_git("config", "user.email", "fixture@example.invalid")
+        self.run_git("config", "user.name", "Synthetic source fixture")
         (self.root / "SOURCE_LOCK.json").write_text('{"source":"locked"}\n', encoding="utf-8")
         (self.root / "product.py").write_text("source_value = 1\n", encoding="utf-8")
         (self.root / "oracle.py").write_text("assert source_value == 1\n", encoding="utf-8")
@@ -184,13 +184,23 @@ class CurrencyImpactTests(unittest.TestCase):
         absent["evidence_ids"] = []
         self.assertEqual(self.current(field=absent)[0], "not_evidenced")
 
-    def test_optional_owner_map_never_promotes_or_fabricates_identity(self):
-        rows = {"ACC-001": {}, "CR-FOUND-01": {}}
-        self.assertEqual(impact.original_owner_map(None, {}, rows), {})
-        bad = self.root / "wrong-portfolio.json"
-        bad.write_text(json.dumps({"requirements": [], "cases": []}), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "396"):
-            impact.original_owner_map(bad, {}, rows)
+    def test_public_interface_does_not_disclose_assignment_records(self):
+        self.assertFalse(hasattr(impact, "original_owner_map"))
+        report = impact.inspect(ROOT, "HEAD")
+        self.assertNotIn("owner_criterion_counts", report)
+        for row in report["row_statuses"]:
+            self.assertNotIn("owner", row)
+        for followup in report["source_reassessment_followups"]:
+            self.assertNotIn("owner", followup)
+        self.assertEqual(report["schema"], "motionwright.source-currency-impact/1")
+
+    def test_nonpublic_assignment_flag_is_rejected(self):
+        process = subprocess.run([sys.executable, "-B",
+                                  str(ROOT / "tooling/conformance_currency_impact.py"),
+                                  "--target", "HEAD", "--portfolio", "hidden.json"],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=40)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("unrecognized arguments", process.stderr)
 
     def test_full_repository_inventory_is_not_release_acceptance(self):
         # This one integration test deliberately reads every canonical public row.
