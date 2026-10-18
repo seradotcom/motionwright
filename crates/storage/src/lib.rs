@@ -83,7 +83,6 @@ pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_BLOBS: usize = 4096;
 const MAX_BUNDLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
-const MAX_SECRET_SCAN_BYTES: u64 = 8 * 1024 * 1024;
 
 // One finite byte-pattern policy is shared by metadata and streamed members.
 // This recognizes the existing credential shapes; it is not a proof that
@@ -202,52 +201,95 @@ impl CredentialScan {
     }
 }
 
-fn ensure_backup_secret_free(backup: &ProjectBackup) -> Result<()> {
+fn ensure_backup_secret_free(backup: &ProjectBackup, max_bytes: Option<u64>) -> Result<()> {
     let encoded = serde_json::to_vec(backup)?;
-    if encoded.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+    if let Some(limit) = max_bytes
+        && encoded.len() as u64 > limit
+    {
         return Err(StorageError::BlobTooLarge {
             size: encoded.len() as u64,
-            limit: MAX_BUNDLE_MANIFEST_BYTES,
+            limit,
         });
     }
     ensure_secret_free_bytes(&encoded, "portable project metadata")
 }
 
-fn media_type_requires_secret_scan(media_type: &str) -> bool {
-    let media_type = media_type.to_ascii_lowercase();
-    media_type.starts_with("text/")
-        || [
-            "json",
-            "javascript",
-            "typescript",
-            "python",
-            "rust",
-            "xml",
-            "svg",
-            "yaml",
-            "toml",
-            "shell",
-        ]
-        .iter()
-        .any(|needle| media_type.contains(needle))
-}
-
-fn project_blob_requires_secret_scan(project: &Project, digest: &str) -> bool {
-    project.assets.iter().any(|asset| {
-        asset.content_sha256.as_deref() == Some(digest)
-            && media_type_requires_secret_scan(&asset.media_type)
+// Inspect every member independently of caller-provided MIME. Hashing and
+// credential checks consume the same bounded bytes, including growth after stat.
+fn transfer_portable_bytes(
+    input: impl Read,
+    mut output: impl Write,
+    limit: u64,
+    context: &str,
+) -> Result<BlobDescriptor> {
+    let mut input = input.take(limit.saturating_add(1));
+    let mut hasher = Sha256::new();
+    let mut size_bytes = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    let mut credentials = CredentialScan::default();
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size_bytes = size_bytes.checked_add(read as u64).ok_or_else(|| {
+            StorageError::InvalidBackup("portable source byte count overflowed".into())
+        })?;
+        if size_bytes > limit {
+            return Err(StorageError::BlobTooLarge {
+                size: size_bytes,
+                limit,
+            });
+        }
+        credentials.check(&buffer[..read], context)?;
+        output.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(BlobDescriptor {
+        sha256: hex::encode(hasher.finalize()),
+        size_bytes,
     })
 }
 
-fn ensure_secret_free_file(path: &Path, context: &str) -> Result<()> {
+fn checked_portable_source(path: &Path, context: &str, limit: u64) -> Result<File> {
     let size = ensure_regular_file(path, context)?.len();
-    if size > MAX_SECRET_SCAN_BYTES {
-        return Err(StorageError::BlobTooLarge {
-            size,
-            limit: MAX_SECRET_SCAN_BYTES,
-        });
+    if size > limit {
+        return Err(StorageError::BlobTooLarge { size, limit });
     }
-    ensure_secret_free_bytes(&fs::read(path)?, context)
+    Ok(File::open(path)?)
+}
+
+fn inspect_portable_file(path: &Path, context: &str, limit: u64) -> Result<BlobDescriptor> {
+    let input = checked_portable_source(path, context, limit)?;
+    transfer_portable_bytes(input, std::io::sink(), limit, context)
+}
+
+fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDescriptor> {
+    let input = checked_portable_source(source, "copied portable source", limit)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options.open(target)?;
+    let descriptor = transfer_portable_bytes(input, &mut output, limit, "copied portable asset")?;
+    output.flush()?;
+    output.sync_all()?;
+    Ok(descriptor)
+}
+
+// Cleanup owns only the fresh directory created for this export attempt.
+// Failure to remove it is best effort; existing destinations are never adopted.
+struct BundleExportStage(Option<PathBuf>);
+
+impl Drop for BundleExportStage {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -593,7 +635,7 @@ impl Store {
             return Err(StorageError::DestinationExists);
         }
         let backup = self.export_project(id)?;
-        ensure_backup_secret_free(&backup)?;
+        ensure_backup_secret_free(&backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
         let mut digests = BTreeSet::new();
         for asset in &backup.project.assets {
             let digest = asset.content_sha256.as_deref().ok_or_else(|| {
@@ -603,13 +645,21 @@ impl Store {
             digests.insert(digest.to_owned());
         }
 
+        if digests.len() > MAX_BUNDLE_BLOBS {
+            return Err(StorageError::InvalidBackup(
+                "portable bundle contains too many blobs".into(),
+            ));
+        }
         let mut blobs = Vec::with_capacity(digests.len());
+        let mut total_blob_bytes = 0_u64;
         for digest in digests {
             let source = self.checked_existing_blob_path(&digest)?;
-            if project_blob_requires_secret_scan(&backup.project, &digest) {
-                ensure_secret_free_file(&source, "portable text-like asset")?;
-            }
-            let descriptor = hash_file(&source)?;
+            let descriptor = inspect_portable_file(
+                &source,
+                "portable asset",
+                MAX_BUNDLE_TOTAL_BYTES - total_blob_bytes,
+            )?;
+            total_blob_bytes += descriptor.size_bytes;
             if descriptor.sha256 != digest {
                 return Err(StorageError::InvalidBackup(
                     "stored blob digest differs from its content-addressed path".into(),
@@ -629,10 +679,20 @@ impl Store {
             blobs,
         };
 
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+        if manifest_bytes.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+            return Err(StorageError::BlobTooLarge {
+                size: manifest_bytes.len() as u64,
+                limit: MAX_BUNDLE_MANIFEST_BYTES,
+            });
+        }
+        ensure_secret_free_bytes(&manifest_bytes, "portable bundle metadata")?;
+
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
         let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
         fs::create_dir(&staging)?;
+        let mut owned_stage = BundleExportStage(Some(staging.clone()));
 
         for blob in &manifest.blobs {
             let source = self.checked_existing_blob_path(&blob.sha256)?;
@@ -640,7 +700,7 @@ impl Store {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::copy(&source, &target)?;
+            copy_portable_file(&source, &target, blob.size_bytes)?;
             let copied = hash_file(&target)?;
             if copied.sha256 != blob.sha256 || copied.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
@@ -649,7 +709,6 @@ impl Store {
             }
         }
 
-        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         let manifest_path = staging.join("manifest.json");
         let mut manifest_file = OpenOptions::new()
             .write(true)
@@ -659,6 +718,7 @@ impl Store {
         manifest_file.flush()?;
         manifest_file.sync_all()?;
         fs::rename(&staging, destination)?;
+        owned_stage.0 = None;
         Ok(manifest)
     }
 
@@ -700,7 +760,8 @@ impl Store {
                 "portable bundle contains too many blobs".into(),
             ));
         }
-        ensure_backup_secret_free(&manifest.backup)?;
+        ensure_backup_secret_free(&manifest.backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
+        ensure_secret_free_bytes(&serde_json::to_vec(manifest)?, "portable bundle metadata")?;
         let project_plan = self.inspect_import(&manifest.backup)?;
         let mut expected = BTreeSet::new();
         for asset in &manifest.backup.project.assets {
@@ -737,10 +798,7 @@ impl Store {
                     limit: MAX_BUNDLE_TOTAL_BYTES,
                 });
             }
-            if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                ensure_secret_free_file(&path, "portable text-like asset")?;
-            }
-            let descriptor = hash_file(&path)?;
+            let descriptor = inspect_portable_file(&path, "portable asset", blob.size_bytes)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
@@ -982,6 +1040,7 @@ impl Store {
             events,
             payload_sha256,
         };
+        ensure_backup_secret_free(&backup, None)?;
         tx.commit()?;
         Ok(backup)
     }
@@ -1382,7 +1441,7 @@ fn validate_backup(backup: &ProjectBackup) -> Result<()> {
             ));
         }
     }
-    Ok(())
+    ensure_backup_secret_free(backup, None)
 }
 
 fn validate_digest(digest: &str) -> Result<()> {
@@ -1548,7 +1607,18 @@ fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
             limit: MAX_BUNDLE_MANIFEST_BYTES,
         });
     }
-    let bytes = fs::read(path)?;
+    // Bound the actual read as well as the initial metadata observation.
+    let mut bytes = Vec::with_capacity(size as usize);
+    File::open(path)?
+        .take(MAX_BUNDLE_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+        return Err(StorageError::BlobTooLarge {
+            size: bytes.len() as u64,
+            limit: MAX_BUNDLE_MANIFEST_BYTES,
+        });
+    }
+    ensure_secret_free_bytes(&bytes, "portable bundle metadata")?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 
