@@ -752,9 +752,20 @@ export default function DeliveryProfiles({
 
   const exportCaptions = () => {
     if (!draft || profileDraftBlocked || !sidecarPath.trim()) return;
+    const source = { project, profileId: draft.id, profileName: draft.name };
     void run("caption", async () => {
-      const result = await exportCaptionSidecar(project, draft.id, sidecarPath.trim());
-      setMessage("Caption sidecar written · " + result.cue_count + " cues · " + result.path);
+      const result = await exportCaptionSidecar(source.project, source.profileId, sidecarPath.trim());
+      if (!liveFilm.current.mounted) return;
+      const current = liveNative.current;
+      const previousSelection = current.project.id !== source.project.id
+        || current.project.generation !== source.project.generation
+        || current.project.active_branch !== source.project.active_branch
+        || current.project.revision !== source.project.revision
+        || current.profileId !== source.profileId;
+      setMessage("Caption sidecar written" + (previousSelection ? " for a previous selection" : "")
+        + " · " + source.project.title + " / " + source.profileName + " (" + source.profileId + ")"
+        + " · r" + (result.revision ?? source.project.revision) + " · " + result.cue_count + " cues · " + result.path
+        + (result.source_current === false ? ". The source changed or could not be rechecked; the written file keeps its original revision." : ""));
     });
   };
 

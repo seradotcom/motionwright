@@ -23,6 +23,9 @@ mod effect_grants;
 #[allow(dead_code)] // The exact desktop read/creation module, without Tauri transport.
 mod project_library;
 
+#[path = "../../../apps/desktop/src-tauri/src/caption_export.rs"]
+mod caption_export;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, HeroConfig, NodeStyle,
@@ -410,6 +413,11 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "export_caption_sidecar" => encoded(caption_export::export_caption_sidecar(
+                &self.service,
+                &self.grants,
+                request(args)?,
+            )?),
             "bootstrap" => {
                 let selection_request = match args.get("request") {
                     None | Some(Value::Null) => project_library::BootstrapRequest::default(),

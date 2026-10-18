@@ -88,7 +88,11 @@ export interface DeliverableProfile {
   color_space: OutputColorSpace; container: OutputContainer;
   adaptation_notes: string[];
 }
-export interface CaptionExportResult { path: string; cue_count: number; }
+export interface CaptionExportResult {
+  path: string; cue_count: number;
+  project_id?: string; generation?: string; revision?: string; profile_id?: string;
+  sidecar_sha256?: string; source_current?: boolean;
+}
 export interface OtioExportResult { path: string; scene_count: number; loss_report: string[]; }
 export interface Branch {
   id: string; name: string; parent_branch: string | null;

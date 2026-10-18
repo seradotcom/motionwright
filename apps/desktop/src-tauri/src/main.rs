@@ -1,5 +1,6 @@
 mod av_delivery;
 mod av_master;
+mod caption_export;
 mod effect_grants;
 mod generation_journal;
 mod media_integrity;
@@ -17,11 +18,11 @@ use media_integrity::{
 mod native_preview;
 
 use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
+use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
-    AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
-    otio_interchange,
+    AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp, otio_interchange,
 };
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -437,22 +438,6 @@ struct ExportBundleRequest {
     revision: u64,
     path: String,
     effect_grant: Uuid,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExportCaptionRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    profile_id: Uuid,
-    path: String,
-    effect_grant: Uuid,
-}
-
-#[derive(Debug, Serialize)]
-struct CaptionExportResponse {
-    path: String,
-    cue_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2196,50 +2181,7 @@ fn export_caption_sidecar(
     state: State<'_, AppState>,
     request: ExportCaptionRequest,
 ) -> Result<CaptionExportResponse, String> {
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::DeliverLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let sidecar = caption_sidecar(&project, request.profile_id).map_err(sanitized)?;
-    let destination = absolute_caption_path(&request.path, sidecar.format)?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| "Caption export destination has no parent directory.".to_string())?;
-    if !parent.is_dir() {
-        return Err("Caption export directory must already exist.".into());
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "Caption export destination already exists; Motionwright will not overwrite it."
-                    .to_string()
-            } else {
-                "Motionwright could not create the caption sidecar.".to_string()
-            }
-        })?;
-    file.write_all(sidecar.body.as_bytes())
-        .map_err(|_| "Motionwright could not write the caption sidecar.".to_string())?;
-    file.sync_all()
-        .map_err(|_| "Motionwright could not finalize the caption sidecar.".to_string())?;
-    Ok(CaptionExportResponse {
-        path: destination.display().to_string(),
-        cue_count: sidecar.cue_count,
-    })
+    caption_export::export_caption_sidecar(&state.service, &state.effect_grants, request)
 }
 
 #[tauri::command]
@@ -2439,32 +2381,6 @@ fn infer_media_type(path: &std::path::Path) -> &'static str {
         "txt" => "text/plain",
         _ => "application/octet-stream",
     }
-}
-
-fn absolute_caption_path(value: &str, format: CaptionFormat) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute caption sidecar path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Caption sidecar paths must be absolute.".into());
-    }
-    let expected = match format {
-        CaptionFormat::WebVtt => "vtt",
-        CaptionFormat::SubRip => "srt",
-    };
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if extension != expected {
-        return Err(format!(
-            "Caption sidecar must use the .{expected} extension."
-        ));
-    }
-    Ok(path)
 }
 
 fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
