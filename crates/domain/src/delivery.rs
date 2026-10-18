@@ -442,7 +442,17 @@ pub fn transcript_for_profile(
             .then(left.id.cmp(&right.id))
     });
 
-    if profile.included_scene_ids.is_empty() {
+    // A complete explicit selection keeps the original clock. With captions
+    // disabled, retain cross-scene voice windows exactly instead of applying
+    // the scene-local reflow needed by a partial or captioned cut.
+    let unchanged_full_cut = !profile.captions
+        && !profile.burn_in_captions
+        && profile
+            .included_scene_ids
+            .iter()
+            .copied()
+            .eq(project.scenes.iter().map(|scene| scene.id));
+    if profile.included_scene_ids.is_empty() || unchanged_full_cut {
         return Ok(segments);
     }
 
@@ -1338,6 +1348,261 @@ mod tests {
                 .deliverables
                 .iter()
                 .any(|profile| profile.id == parent_id)
+        );
+    }
+
+    fn full_cut_fixture() -> Project {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        for name in ["Opening", "Evidence"] {
+            project
+                .apply_change(&crate::Change::AddScene {
+                    name: name.into(),
+                    objective: "Preserve the complete authored sequence.".into(),
+                    duration_seconds: 2,
+                })
+                .unwrap();
+        }
+        let source = project.audio.transcript[0].clone();
+        project.audio.transcript = [
+            (1, 47_999, "Opening phrase"),
+            (95_999, 96_001, "Unbroken phrase across the scene boundary"),
+            (144_001, 191_999, "Closing phrase"),
+        ]
+        .into_iter()
+        .map(|(start, end, text)| TranscriptSegment {
+            id: Uuid::now_v7(),
+            start: RationalTime::new(start, 48_000).unwrap(),
+            end: RationalTime::new(end, 48_000).unwrap(),
+            text: text.into(),
+            ..source.clone()
+        })
+        .collect();
+        project.audio.active_voice_track_id = Some(source.voice_track_id);
+        project.deliverables[0].voice_track_id = Some(source.voice_track_id);
+        project.deliverables[0].captions = false;
+        project.deliverables[0].burn_in_captions = false;
+        project.validate().unwrap();
+        project
+    }
+
+    fn assert_same_consumed_inputs(
+        left: &VariantDependencyFingerprint,
+        right: &VariantDependencyFingerprint,
+    ) {
+        assert_eq!(left.frame_inputs_sha256, right.frame_inputs_sha256);
+        assert_eq!(left.caption_inputs_sha256, right.caption_inputs_sha256);
+        assert_eq!(left.audio_inputs_sha256, right.audio_inputs_sha256);
+        assert_eq!(left.master_inputs_sha256, right.master_inputs_sha256);
+    }
+
+    #[test]
+    fn full_non_caption_cut_preserves_transcript_and_consumed_fingerprints() {
+        let mut project = full_cut_fixture();
+        let profile_id = project.deliverables[0].id;
+        let scene_ids = project
+            .scenes
+            .iter()
+            .map(|scene| scene.id)
+            .collect::<Vec<_>>();
+        let original_transcript = project.audio.transcript.clone();
+        let before = variant_dependency_fingerprint(&project, profile_id).unwrap();
+        assert_eq!(original_transcript.len(), 3);
+        assert_eq!(
+            original_transcript[1].start,
+            RationalTime::new(95_999, 48_000).unwrap()
+        );
+        assert_eq!(
+            original_transcript[1].end,
+            RationalTime::new(96_001, 48_000).unwrap()
+        );
+
+        for explicit in [true, false, true, false] {
+            let mut profile = project.deliverables[0].clone();
+            profile.included_scene_ids = if explicit { scene_ids.clone() } else { vec![] };
+            project
+                .apply_change(&crate::Change::UpsertDeliverable { profile })
+                .unwrap();
+            assert_eq!(
+                project.deliverables[0].included_scene_ids.is_empty(),
+                !explicit
+            );
+            let preserved_bytes = serde_json::to_vec(&project).unwrap();
+            let after = variant_dependency_fingerprint(&project, profile_id).unwrap();
+            assert_same_consumed_inputs(&before, &after);
+            if explicit {
+                assert_ne!(before.profile_sha256, after.profile_sha256);
+            } else {
+                assert_eq!(before.profile_sha256, after.profile_sha256);
+            }
+            assert_eq!(serde_json::to_vec(&project).unwrap(), preserved_bytes);
+            project = serde_json::from_slice(&preserved_bytes).unwrap();
+            project.validate().unwrap();
+            assert_eq!(
+                transcript_for_profile(&project, &project.deliverables[0]).unwrap(),
+                original_transcript
+            );
+            assert_eq!(project.audio.transcript, original_transcript);
+        }
+    }
+
+    #[test]
+    fn full_non_caption_cut_preserves_original_mix_sample_windows() {
+        let mut project = full_cut_fixture();
+        let profile_id = project.deliverables[0].id;
+        project
+            .apply_change(&crate::Change::SetDeliveryRecipe {
+                deliverable_profile_id: profile_id,
+                recipe: Some(crate::DeliveryRecipe {
+                    original_mix: Some(crate::OriginalMixRecipe {
+                        music_asset_id: None,
+                        sfx_asset_id: None,
+                        sfx_gain_db: -12.0,
+                        duck_attenuation_db: 8.0,
+                        duck_attack_samples: 960,
+                        duck_release_samples: 4_800,
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .unwrap();
+        let original_transcript = project.audio.transcript.clone();
+        let implicit = variant_dependency_fingerprint(&project, profile_id).unwrap();
+        let mut profile = project.deliverables[0].clone();
+        profile.included_scene_ids = project.scenes.iter().map(|scene| scene.id).collect();
+        project
+            .apply_change(&crate::Change::UpsertDeliverable { profile })
+            .unwrap();
+        let explicit = variant_dependency_fingerprint(&project, profile_id).unwrap();
+        assert_same_consumed_inputs(&implicit, &explicit);
+        assert_eq!(project.audio.transcript, original_transcript);
+
+        let mut segment = project.audio.transcript[1].clone();
+        segment.end = segment
+            .end
+            .checked_add(RationalTime::new(1, 48_000).unwrap())
+            .unwrap();
+        project
+            .apply_change(&crate::Change::UpsertTranscriptSegment { segment })
+            .unwrap();
+        let retimed = variant_dependency_fingerprint(&project, profile_id).unwrap();
+        assert_eq!(explicit.frame_inputs_sha256, retimed.frame_inputs_sha256);
+        assert_ne!(
+            explicit.caption_inputs_sha256,
+            retimed.caption_inputs_sha256
+        );
+        assert_ne!(explicit.audio_inputs_sha256, retimed.audio_inputs_sha256);
+        assert_ne!(explicit.master_inputs_sha256, retimed.master_inputs_sha256);
+        let mut profile = project.deliverables[0].clone();
+        profile.included_scene_ids.clear();
+        project
+            .apply_change(&crate::Change::UpsertDeliverable { profile })
+            .unwrap();
+        assert_same_consumed_inputs(
+            &retimed,
+            &variant_dependency_fingerprint(&project, profile_id).unwrap(),
+        );
+        assert_eq!(
+            project.audio.transcript[1].start,
+            original_transcript[1].start
+        );
+        assert_eq!(
+            project.audio.transcript[1].end,
+            RationalTime::new(48_001, 24_000).unwrap()
+        );
+    }
+
+    #[test]
+    fn full_non_caption_cut_does_not_relax_partial_order_or_caption_guards() {
+        let project = full_cut_fixture();
+        let profile_id = project.deliverables[0].id;
+        for scene in &project.scenes {
+            let mut partial = project.clone();
+            partial.deliverables[0].included_scene_ids = vec![scene.id];
+            let before = serde_json::to_vec(&partial).unwrap();
+            assert!(
+                variant_dependency_fingerprint(&partial, profile_id)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("caption segment crosses a selected scene boundary")
+            );
+            assert_eq!(serde_json::to_vec(&partial).unwrap(), before);
+        }
+        for (captions, burn_in) in [(true, false), (false, true), (true, true)] {
+            let mut captioned = project.clone();
+            let profile = &mut captioned.deliverables[0];
+            profile.included_scene_ids = project.scenes.iter().map(|scene| scene.id).collect();
+            profile.captions = captions;
+            profile.burn_in_captions = burn_in;
+            assert!(
+                variant_dependency_fingerprint(&captioned, profile_id)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("caption segment crosses a selected scene boundary")
+            );
+        }
+        let mut reordered = project.clone();
+        reordered.deliverables[0].included_scene_ids =
+            project.scenes.iter().rev().map(|scene| scene.id).collect();
+        let before = serde_json::to_vec(&reordered).unwrap();
+        assert!(
+            variant_dependency_fingerprint(&reordered, profile_id)
+                .unwrap_err()
+                .to_string()
+                .contains("must preserve approved project scene order")
+        );
+        assert_eq!(serde_json::to_vec(&reordered).unwrap(), before);
+    }
+
+    #[test]
+    fn full_non_caption_cut_still_requires_unambiguous_known_alignment() {
+        let mut project = full_cut_fixture();
+        project.deliverables[0].included_scene_ids =
+            project.scenes.iter().map(|scene| scene.id).collect();
+        let profile = project.deliverables[0].clone();
+        let mut unknown = project.clone();
+        unknown.audio.transcript[1].alignment = AlignmentEvidence::Unknown;
+        assert!(
+            transcript_for_profile(&unknown, &profile)
+                .unwrap_err()
+                .to_string()
+                .contains("known transcript timing evidence")
+        );
+        let mut empty = project.clone();
+        empty.audio.transcript.clear();
+        assert!(
+            transcript_for_profile(&empty, &profile)
+                .unwrap_err()
+                .to_string()
+                .contains("requires transcript segments")
+        );
+        let mut untranscribed = profile.clone();
+        untranscribed.voice_track_id = Some(Uuid::now_v7());
+        assert!(
+            transcript_for_profile(&project, &untranscribed)
+                .unwrap_err()
+                .to_string()
+                .contains("voice track has no transcript timing evidence")
+        );
+        let mut other_track = project.audio.voice_tracks[0].clone();
+        other_track.id = Uuid::now_v7();
+        other_track.label = "Alternative voice".into();
+        let mut other_segment = project.audio.transcript[0].clone();
+        other_segment.id = Uuid::now_v7();
+        other_segment.voice_track_id = other_track.id;
+        project.audio.voice_tracks.push(other_track);
+        project.audio.transcript.push(other_segment);
+        project.validate().unwrap();
+        let mut ambiguous = profile.clone();
+        ambiguous.voice_track_id = None;
+        assert!(
+            transcript_for_profile(&project, &ambiguous)
+                .unwrap_err()
+                .to_string()
+                .contains("caption export is ambiguous")
+        );
+        assert_eq!(
+            transcript_for_profile(&project, &profile).unwrap(),
+            project.audio.transcript[..3]
         );
     }
 }
