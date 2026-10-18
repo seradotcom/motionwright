@@ -1,7 +1,7 @@
 use motionwright_storage::ProductionReceipt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +78,8 @@ enum RenderCommand {
 fn classify(command: &str) -> Option<(&'static str, RenderCommand)> {
     let provider = if command.starts_with("driver.motion-canvas.render.") {
         "driver:motion-canvas"
+    } else if command.starts_with("driver.manim-community.render.") {
+        "driver:manim-community"
     } else if command.starts_with("driver.mlt-video.render.") {
         "driver:mlt-video"
     } else {
@@ -202,6 +204,7 @@ fn apply_observed_state(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn derive_production_jobs(
     receipts: &[ProductionReceipt],
     current_generation: Uuid,
@@ -227,27 +230,54 @@ pub(crate) fn derive_production_jobs_all(
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    // Only an acknowledged native render.start receipt can establish the
-    // existence/identity of a started Motion Canvas job. A partial receipt
-    // window or orphan result is still observable, never proof of success.
-    let acknowledged_motion_starts: BTreeSet<(String, Uuid, u64)> = ordered
-        .iter()
-        .filter(|receipt| {
-            receipt.stage == "completed" && receipt.command == "driver.motion-canvas.render.start"
-        })
-        .filter_map(|receipt| {
-            let ref_id = completed_wrapper(receipt)
-                .map(driver_data)
-                .and_then(|data| data.get("job_ref"))
-                .and_then(Value::as_str)?;
-            if ref_id.is_empty() {
-                return None;
-            }
-            Some((ref_id.to_owned(), receipt.generation, receipt.revision))
-        })
-        .collect();
+    // The original acknowledged start is an authority boundary. Each
+    // provider/stamp/reference gets one original; a second start makes that
+    // lineage ambiguous. Old 256-row UI windows are not authority.
+    type JobScope = (String, String, Uuid, u64);
+    let mut acknowledged_starts: BTreeMap<JobScope, Vec<Option<u64>>> = BTreeMap::new();
+    for receipt in &ordered {
+        let Some((provider, RenderCommand::Start)) = classify(&receipt.command) else {
+            continue;
+        };
+        if receipt.stage != "completed"
+            || !matches!(provider, "driver:motion-canvas" | "driver:manim-community")
+        {
+            continue;
+        }
+        let Some(wrapper) = completed_wrapper(receipt) else {
+            continue;
+        };
+        let Some(job_ref) = driver_data(wrapper)
+            .get("job_ref")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        // A real Manim admission carries the SDK provenance on its original
+        // start. Missing/foreign generation may be observed but grants no
+        // completed lineage. Legacy Motion Canvas records remain compatible.
+        if provider == "driver:manim-community"
+            && (wrapper
+                .pointer("/execution/provenance/provider")
+                .and_then(Value::as_str)
+                != Some(provider)
+                || provider_generation(wrapper).is_none())
+        {
+            continue;
+        }
+        acknowledged_starts
+            .entry((
+                provider.to_owned(),
+                job_ref.to_owned(),
+                receipt.generation,
+                receipt.revision,
+            ))
+            .or_default()
+            .push(provider_generation(wrapper));
+    }
 
-    let mut jobs: BTreeMap<String, ProductionJobProjection> = BTreeMap::new();
+    let mut jobs: BTreeMap<(String, Uuid, u64, String), ProductionJobProjection> = BTreeMap::new();
     for receipt in &ordered {
         let Some((provider, kind)) = classify(&receipt.command) else {
             continue;
@@ -261,35 +291,51 @@ pub(crate) fn derive_production_jobs_all(
 
         let wrapper = completed_wrapper(receipt);
         let data = wrapper.map(driver_data);
-        // render.status/result are reads of an acknowledged job, not a new
-        // source of render authority. The current Motionwright receipt carries
-        // the request's job_ref independently of the returned native JobView.
-        // A foreign/missing response must not make the *original* job appear
-        // succeeded (or advertise its unverified artifact) in Studio/SDK.
-        let orphan_motion_observation = provider == "driver:motion-canvas"
-            && !matches!(kind, RenderCommand::Start)
-            && !acknowledged_motion_starts.contains(&(
-                job_ref.clone(),
-                receipt.generation,
-                receipt.revision,
-            ));
-        let unbound_motion_observation = provider == "driver:motion-canvas"
-            && receipt.stage == "completed"
-            && matches!(kind, RenderCommand::Status | RenderCommand::Result)
+        // Observation never admits a new job or transfers its native result
+        // to a different provider, generation, revision, or original start.
+        let guarded_provider =
+            matches!(provider, "driver:motion-canvas" | "driver:manim-community");
+        let original = acknowledged_starts.get(&(
+            provider.to_owned(),
+            job_ref.clone(),
+            receipt.generation,
+            receipt.revision,
+        ));
+        let ambiguous_original = original.is_none_or(|roots| roots.len() != 1);
+        let foreign_returned_job = receipt.stage == "completed"
+            && matches!(
+                kind,
+                RenderCommand::Status | RenderCommand::Cancel | RenderCommand::Result
+            )
             && !matches!(
                 (
                     receipt.payload.get("job_ref").and_then(Value::as_str),
                     data.and_then(|view| view.get("job_ref")).and_then(Value::as_str)
                 ),
-                (Some(expected), Some(observed)) if expected == observed
+                (Some(requested), Some(returned)) if requested == returned && requested == job_ref
             );
-        let unbound_motion_observation = unbound_motion_observation || orphan_motion_observation;
-        let cancellation_requested = !unbound_motion_observation
+        let foreign_provider = receipt.stage == "completed"
+            && provider == "driver:manim-community"
+            && wrapper
+                .and_then(|value| value.pointer("/execution/provenance/provider"))
+                .and_then(Value::as_str)
+                != Some(provider);
+        let provider_generation_drift = receipt.stage == "completed"
+            && original
+                .and_then(|roots| roots.first())
+                .and_then(|generation| *generation)
+                .is_some_and(|expected| wrapper.and_then(provider_generation) != Some(expected));
+        let unbound_observation = guarded_provider
+            && (ambiguous_original
+                || foreign_returned_job
+                || foreign_provider
+                || provider_generation_drift);
+        let cancellation_requested = !unbound_observation
             && data
                 .and_then(|value| value.get("cancellation_requested"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-        let observed_state = if unbound_motion_observation {
+        let observed_state = if unbound_observation {
             Some(ProductionJobState::OutcomeUnknown)
         } else {
             data.and_then(state_from_data).or_else(|| {
@@ -301,30 +347,37 @@ pub(crate) fn derive_production_jobs_all(
             })
         };
 
-        let entry = jobs.entry(job_ref.clone()).or_insert_with(|| {
-            let initial_state = observed_state.unwrap_or(ProductionJobState::OutcomeUnknown);
-            ProductionJobProjection {
-                job_ref: job_ref.clone(),
-                provider: provider.to_owned(),
-                root_request_id: receipt.request_id.clone(),
-                generation: receipt.generation,
-                revision: receipt.revision,
-                state: initial_state,
-                cancellation_requested,
-                applicability: ProductionJobApplicability::Current,
-                last_command: receipt.command.clone(),
-                created_at: receipt.created_at.clone(),
-                last_observed_at: receipt.created_at.clone(),
-                local_observations: 0,
-                provider_generation: None,
-                progress: None,
-                artifact_available: false,
-                result_available: false,
-                last_observation: ProductionObservationState::Observed,
-            }
-        });
+        let entry = jobs
+            .entry((
+                provider.to_owned(),
+                receipt.generation,
+                receipt.revision,
+                job_ref.clone(),
+            ))
+            .or_insert_with(|| {
+                let initial_state = observed_state.unwrap_or(ProductionJobState::OutcomeUnknown);
+                ProductionJobProjection {
+                    job_ref: job_ref.clone(),
+                    provider: provider.to_owned(),
+                    root_request_id: receipt.request_id.clone(),
+                    generation: receipt.generation,
+                    revision: receipt.revision,
+                    state: initial_state,
+                    cancellation_requested,
+                    applicability: ProductionJobApplicability::Current,
+                    last_command: receipt.command.clone(),
+                    created_at: receipt.created_at.clone(),
+                    last_observed_at: receipt.created_at.clone(),
+                    local_observations: 0,
+                    provider_generation: None,
+                    progress: None,
+                    artifact_available: false,
+                    result_available: false,
+                    last_observation: ProductionObservationState::Observed,
+                }
+            });
 
-        if matches!(kind, RenderCommand::Start) {
+        if matches!(kind, RenderCommand::Start) && entry.local_observations == 0 {
             entry.root_request_id = receipt.request_id.clone();
             entry.generation = receipt.generation;
             entry.revision = receipt.revision;
@@ -333,7 +386,7 @@ pub(crate) fn derive_production_jobs_all(
         entry.last_command = receipt.command.clone();
         entry.last_observed_at = receipt.created_at.clone();
         entry.local_observations = entry.local_observations.saturating_add(1);
-        if unbound_motion_observation {
+        if unbound_observation {
             entry.last_observation = ProductionObservationState::OutcomeUnknown;
             if !entry.state.definitive_terminal() {
                 entry.state = ProductionJobState::OutcomeUnknown;
