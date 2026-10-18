@@ -429,12 +429,15 @@ def write_new_receipt(destination: Path, report: dict) -> None:
                         src_dir_fd=directory_fd,
                         dst_dir_fd=directory_fd,
                         follow_symlinks=False)
-                committed = os.stat(destination.name,
-                                    dir_fd=directory_fd, follow_symlinks=False)
             else:
                 os.link(stage_path, destination)
-                committed = destination.lstat()
+            # Successful linking is the publication boundary. All subsequent
+            # observation and cleanup failures retain the uncertain commit.
             published = True
+            committed = (
+                os.stat(destination.name, dir_fd=directory_fd, follow_symlinks=False)
+                if directory_fd is not None else destination.lstat()
+            )
             require(
                 stat.S_ISREG(committed.st_mode)
                 and committed.st_dev == staged_identity.st_dev
@@ -538,9 +541,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.output is not None:
         try:
             write_new_receipt(args.output, receipt)
-        except AuditError:
+        except AuditError as exc:
+            failure_code = (
+                "receipt_commit_uncertain"
+                if exc.code == "receipt_commit_uncertain"
+                else "receipt_write_refused"
+            )
             print(json.dumps({"schema": REPORT_SCHEMA, "status": "BLOCKED",
-                              "failure_code": "receipt_write_refused"}),
+                              "failure_code": failure_code}),
                   file=sys.stdout)
             return 3
     else:
