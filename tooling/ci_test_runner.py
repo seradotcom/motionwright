@@ -48,6 +48,8 @@ def source_state(root: Path, expected: str | None) -> dict:
 
 
 def parse_unittest_summary(stderr: str) -> dict:
+    # Normalize only this derived parsing view; retained stream bytes are untouched.
+    stderr = stderr.replace("\r\n", "\n").replace("\r", "\n")
     runs = re.findall(r"(?m)^Ran (\d+) tests? in [^\r\n]+$", stderr)
     endings = re.findall(r"(?m)^(OK|FAILED)(?: \(([^\r\n]*)\))?$", stderr)
     if len(runs) != 1:
@@ -122,7 +124,9 @@ def run_suite(root: Path, directory: str, patterns: list[str], mode: str,
         modules = [".".join(p.relative_to(root).with_suffix("").parts) for p in files]
         if any(not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", m) for m in modules):
             raise ValueError("test source has no valid dotted module name")
-        steps.append(("dotted", [sys.executable, "-B", "-E", "-s", "-m", "unittest", *modules, "-v"]))
+        for module in modules:
+            steps.append(("dotted:" + module,
+                          [sys.executable, "-B", "-E", "-s", "-m", "unittest", module, "-v"]))
     if not steps or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("an entry point and positive timeout are required")
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +135,7 @@ def run_suite(root: Path, directory: str, patterns: list[str], mode: str,
                "runner_sha256": sha256(Path(__file__).resolve()),
                "python_executable_sha256": sha256(Path(sys.executable)),
                "python_environment": "-B -E -s: no bytecode writes, inherited Python overrides or user site",
+               "log_representation": "Original stdout/stderr bytes; decoding and newline normalization only for summary parsing",
                "test_definition_sha256": definitions,
                "platform": platform.platform(), "python": sys.version,
                "source_locks": {p: sha256(root / p) for p in
@@ -154,22 +159,20 @@ def run_suite(root: Path, directory: str, patterns: list[str], mode: str,
         start = time.monotonic()
         try:
             process = subprocess.run(command, cwd=root, env=env, capture_output=True,
-                                     timeout=timeout, text=True, encoding="utf-8", errors="replace")
+                                     timeout=timeout)
             stdout, stderr, code = process.stdout, process.stderr, process.returncode
         except subprocess.TimeoutExpired as exc:
-            def decoded(value):
-                return value.decode("utf-8", "replace") if isinstance(value, bytes) else value or ""
-            stdout, stderr, code = decoded(exc.stdout), decoded(exc.stderr), 124
+            stdout, stderr, code = exc.stdout or b"", exc.stderr or b"", 124
             uncertain = True
         entry.update(exit_code=code, duration_seconds=round(time.monotonic() - start, 6))
-        for stream, text in (("stdout", stdout), ("stderr", stderr)):
+        for stream, data in (("stdout", stdout), ("stderr", stderr)):
             log = report.with_name(report.stem + f"-{index:02d}-{stream}.log")
-            with log.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(text)
+            with log.open("xb") as handle:
+                handle.write(data)
             entry[stream] = {"file": log.name, "sha256": sha256(log)}
         summary = None
         try:
-            summary = parse_unittest_summary(stderr)
+            summary = parse_unittest_summary(stderr.decode("utf-8", "replace"))
             entry["counts"] = summary
         except ValueError as exc:
             entry["summary_error"] = str(exc)

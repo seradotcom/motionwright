@@ -54,7 +54,7 @@ env:
   MW_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
 concurrency:
-  group: first-use-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+  group: first-use-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}-${{ inputs.verification_scope || 'all' }}
   cancel-in-progress: true
 
 jobs:
