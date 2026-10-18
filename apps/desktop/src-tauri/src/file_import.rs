@@ -3,7 +3,7 @@
 //! Preparation is metadata-only. Dispatch retains the caller's persisted request
 //! identity and uses the existing one-time local import grant. Recovery reads a
 //! historical receipt; callers must fetch the current Project separately.
-use crate::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
+use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{Project, RevisionStamp};
 use motionwright_service::{FileImportIntent, StudioService, VoiceImportMetadata};
 use serde::{Deserialize, Serialize};
