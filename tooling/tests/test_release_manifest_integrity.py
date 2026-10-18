@@ -255,23 +255,87 @@ class DeliveryIntegrityTests(unittest.TestCase):
         self.assertFalse(doc["delivery_boundary"]["automatic_publish"])
 
     def test_script_cannot_claim_success_if_checkout_changes_after_build(self):
-        from unittest.mock import patch
-        original = manifest._checkout
-        calls = 0
+        document = manifest.build_manifest(self.root, self.sha)
+        expected = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        real_checkout = manifest._checkout
+        real_writer = manifest.write_new_manifest
+        real_link = manifest.os.link
+        real_unlink = manifest.os.unlink
+        real_remove = manifest.os.remove
+        license_path = self.root / "LICENSE"
+        changed_license = license_path.read_bytes() + b"fixture tracked change after publication\n"
+        checkout_calls = []
+        checkout_failures = []
+        link_calls = []
+        committed = []
+        removed_final = []
+        observed_before_source_change = []
+
+        def is_final(path, directory_fd):
+            if isinstance(path, int):
+                return False
+            value = os.fsdecode(os.fspath(path))
+            if directory_fd is None and value == str(self.output):
+                return True
+            return bool(committed and directory_fd == committed[0][1]
+                        and value == os.fsdecode(os.fspath(committed[0][0])))
+
+        def link_once(source, target, *args, **kwargs):
+            link_calls.append((source, target))
+            if len(link_calls) != 1:
+                raise AssertionError("Manifest publication must not retry os.link")
+            result = real_link(source, target, *args, **kwargs)
+            committed.append((target, kwargs.get("dst_dir_fd")))
+            return result
 
         def changed_after_output(root, sha):
-            nonlocal calls
-            calls += 1
-            if calls == 3:
-                raise manifest.ManifestError("source_checkout_changed_after_write")
-            return original(root, sha)
+            checkout_calls.append((root, sha))
+            if len(checkout_calls) == 3:
+                observed_before_source_change.append(self.output.read_bytes())
+                license_path.write_bytes(changed_license)
+            try:
+                return real_checkout(root, sha)
+            except manifest.ManifestError as exc:
+                checkout_failures.append((len(checkout_calls), exc.code))
+                raise
 
-        with patch.object(manifest, "_checkout", side_effect=changed_after_output):
+        def track_unlink(path, *args, **kwargs):
+            if is_final(path, kwargs.get("dir_fd")):
+                removed_final.append("unlink")
+            return real_unlink(path, *args, **kwargs)
+
+        def track_remove(path, *args, **kwargs):
+            if is_final(path, kwargs.get("dir_fd")):
+                removed_final.append("remove")
+            return real_remove(path, *args, **kwargs)
+
+        with contextlib.ExitStack() as patches:
+            writer = patches.enter_context(
+                patch.object(manifest, "write_new_manifest", wraps=real_writer)
+            )
+            patches.enter_context(
+                patch.object(manifest, "_checkout", side_effect=changed_after_output)
+            )
+            patches.enter_context(patch.object(manifest.os, "link", side_effect=link_once))
+            patches.enter_context(patch.object(manifest.os, "unlink", side_effect=track_unlink))
+            patches.enter_context(patch.object(manifest.os, "remove", side_effect=track_remove))
             code, stdout, stderr = self.invoke()
+
+        self.assertEqual(len(checkout_calls), 3)
+        self.assertEqual(checkout_failures, [(3, "source_metadata_dirty")])
+        self.assertEqual(observed_before_source_change, [expected])
+        self.assertEqual(license_path.read_bytes(), changed_license)
+        self.assertEqual(writer.call_count, 1, "Do not retry a published manifest")
+        self.assertEqual((len(link_calls), len(committed)), (1, 1))
+        self.assertEqual(
+            removed_final, [], "A failed post-publication checkout must not unlink the final path"
+        )
         self.assertEqual((code, stdout), (2, ""))
-        self.assertIn("source_checkout_changed_after_write", stderr)
-        self.assertEqual(calls, 3)
-        self.assertFalse(self.output.exists(), "False manifest must be cleaned up")
+        self.assertEqual(
+            stderr, "delivery-manifest=REFUSED code=manifest_output_commit_uncertain\n"
+        )
+        self.assertEqual(self.output.read_bytes(), expected)
+        self.assertEqual(list(self.output_dir.iterdir()), [self.output])
 
 
     def test_file_fsync_failure_does_not_publish_manifest(self):
