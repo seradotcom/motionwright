@@ -3,7 +3,7 @@
   "conformance_schema_version": 1,
   "current_assessment_source": {
     "digest_kind": "git-text-lf",
-    "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+    "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
     "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
   },
   "evidence_rule": "Use exact-SHA CI artifacts for test outcomes. Code status does not synthesize PASS, human reviews or a release claim.",
@@ -98,6 +98,22 @@
           },
           "superseded_at_utc": "2026-10-18T04:52:39.166156+00:00",
           "technical_status": "partial"
+        },
+        {
+          "prior_criterion_statuses": {
+            "MW05-E00-01#/negative_case": "pass"
+          },
+          "prior_current_record_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "prior_status": "partial",
+          "reason": "Current main263 requires its own exact source-bound admission; main901 assertions remain unchanged as historical evidence.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T06:28:39.156163+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -113,7 +129,7 @@
       "source_record_sha256": "1c8058f5346a996c1eaea9ab94244b290fe40bf1274e536832234373975a4baf",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "No installed or native source media admission from these selected CI tests",
           "status": "source_bound_selected_original_CI_logs"
         },
@@ -149,14 +165,15 @@
           },
           {
             "evidence_ids": [
-              "a5-source-identity-main-901"
+              "a5-source-identity-main-b0c4"
             ],
             "id": "MW05-E00-01#/negative_case",
             "missing_assertions": [],
             "scope_notes": [
               "Exact current-main fixture rejects renaming/source identity forgery; no positive release claim.",
               "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
-              "Current 901 CI five synthetic original negative tests admitted; all other acceptance remains open."
+              "Current 901 CI five synthetic original negative tests admitted; all other acceptance remains open.",
+              "New main263 exact CI asserts only the bounded source/profile facet; no full product or scenario acceptance."
             ],
             "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d",
             "status": "pass"
@@ -172,12 +189,13 @@
         },
         "evidence_currency": {
           "current_record_ids": [
-            "a5-source-identity-main-901"
+            "a5-source-identity-main-b0c4"
           ],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [
             "a5-ledger-id-negatives-main-ce22",
-            "a5-source-identity-main-5ed"
+            "a5-source-identity-main-5ed",
+            "a5-source-identity-main-901"
           ],
           "history_is_not_new_execution": true
         },
@@ -192,24 +210,24 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "exact_901_technical_CI_selected_assertions_without_complete_product_acceptance"
+          "scope": "current_263_selected_source_and_SQLite_CI_observations_only"
         },
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
           "evidence_ids": [
-            "a5-source-identity-main-901"
+            "a5-source-identity-main-b0c4"
           ],
           "execution_kinds": [
             "synthetic"
@@ -306,6 +324,25 @@
           },
           "superseded_at_utc": "2026-10-18T04:52:39.166156+00:00",
           "technical_status": "stale"
+        },
+        {
+          "prior_criterion_statuses": {
+            "MW05-E00-02#/acceptance": "partial",
+            "MW05-E00-02#/negative_case": "pass",
+            "MW05-E00-02#/requirement": "partial"
+          },
+          "prior_current_record_ids": [
+            "a5-invalid-backup-main-901",
+            "a5-legacy-mw-backup-main-901"
+          ],
+          "prior_status": "partial",
+          "reason": "Current main263 requires its own exact source-bound admission; main901 assertions remain unchanged as historical evidence.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T06:28:39.156163+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -323,7 +360,7 @@
       "source_record_sha256": "a585cb82072358f300d0568199a8e3fd352b676ed4c238164a25a51d6b59ff63",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "Temporary source/destination SQLite, historical JSON fixture and original asset test; neither installed nor external predecessor application receiver.",
           "retained": "Hashed execution excerpts, source structure and the public synthetic seed fixture where referenced.",
           "status": "selected_test_artifact_source_scoped_sqlite"
@@ -340,7 +377,7 @@
         "criteria": [
           {
             "evidence_ids": [
-              "a5-legacy-mw-backup-main-901",
+              "a5-legacy-mw-backup-main-b0c4",
               "backup-compatibility-main-ce22"
             ],
             "id": "MW05-E00-02#/requirement",
@@ -350,14 +387,15 @@
             "scope_notes": [
               "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
               "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
-              "Exact main Motionwright legacy portable bundle and reopened temporary SQLite only; no external predecessor application original media."
+              "Exact main Motionwright legacy portable bundle and reopened temporary SQLite only; no external predecessor application original media.",
+              "New main263 exact CI asserts only the bounded source/profile facet; no full product or scenario acceptance."
             ],
             "source_clause_sha256": "181636472f3a9890640fbf6f7265997edf938b1f233c1cf3289be4e37f25c198",
             "status": "partial"
           },
           {
             "evidence_ids": [
-              "a5-legacy-mw-backup-main-901",
+              "a5-legacy-mw-backup-main-b0c4",
               "backup-compatibility-main-ce22",
               "restored-authority-main-ce22"
             ],
@@ -368,21 +406,23 @@
             "scope_notes": [
               "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
               "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
-              "Exact main Motionwright legacy portable bundle and reopened temporary SQLite only; no external predecessor application original media."
+              "Exact main Motionwright legacy portable bundle and reopened temporary SQLite only; no external predecessor application original media.",
+              "New main263 exact CI asserts only the bounded source/profile facet; no full product or scenario acceptance."
             ],
             "source_clause_sha256": "c1d62e9cc763203d22338b73d6cb480a9314907a3ee868f95ae3176b11578497",
             "status": "partial"
           },
           {
             "evidence_ids": [
-              "a5-invalid-backup-main-901"
+              "a5-invalid-backup-main-b0c4"
             ],
             "id": "MW05-E00-02#/negative_case",
             "missing_assertions": [],
             "scope_notes": [
               "Complete canonical field supported by its current execution/source evidence and separately bound sufficiency review.",
               "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
-              "Exact main integrated SQLite import rejection and unchanged-project/reopen independently reviewed."
+              "Exact main integrated SQLite import rejection and unchanged-project/reopen independently reviewed.",
+              "New main263 exact CI asserts only the bounded source/profile facet; no full product or scenario acceptance."
             ],
             "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2",
             "status": "pass"
@@ -400,11 +440,13 @@
         },
         "evidence_currency": {
           "current_record_ids": [
-            "a5-invalid-backup-main-901",
-            "a5-legacy-mw-backup-main-901"
+            "a5-invalid-backup-main-b0c4",
+            "a5-legacy-mw-backup-main-b0c4"
           ],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [
+            "a5-invalid-backup-main-901",
+            "a5-legacy-mw-backup-main-901",
             "backup-compatibility-main-ce22",
             "restored-authority-main-ce22"
           ],
@@ -427,25 +469,25 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "selected_901_actual_legacy_Sqlite_with_negative_import_refusal"
+          "scope": "current_263_selected_source_and_SQLite_CI_observations_only"
         },
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
           "evidence_ids": [
-            "a5-invalid-backup-main-901",
-            "a5-legacy-mw-backup-main-901",
+            "a5-invalid-backup-main-b0c4",
+            "a5-legacy-mw-backup-main-b0c4",
             "backup-compatibility-main-ce22",
             "restored-authority-main-ce22"
           ],
@@ -509,7 +551,7 @@
       "source_record_sha256": "acecb8312cad99a01c7d1c26a898c4a5097a1211b41436afebf3a89884dd277b",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -565,7 +607,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -592,7 +634,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -604,7 +646,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -709,6 +751,22 @@
           },
           "superseded_at_utc": "2026-10-18T04:52:39.166156+00:00",
           "technical_status": "partial"
+        },
+        {
+          "prior_criterion_statuses": {
+            "MW05-E00-04#/negative_case": "pass"
+          },
+          "prior_current_record_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "prior_status": "partial",
+          "reason": "Current main263 requires its own exact source-bound admission; main901 assertions remain unchanged as historical evidence.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T06:28:39.156163+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -723,7 +781,7 @@
       "source_record_sha256": "f9f4d4970525abd41489876cefff57fa9c9ae35e7c091572e6b6d291d4688fa5",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "No installed or native source media admission from these selected CI tests",
           "status": "source_bound_selected_original_CI_logs"
         },
@@ -759,14 +817,15 @@
           },
           {
             "evidence_ids": [
-              "a5-source-identity-main-901"
+              "a5-source-identity-main-b0c4"
             ],
             "id": "MW05-E00-04#/negative_case",
             "missing_assertions": [],
             "scope_notes": [
               "Exact current-main fixture rejects renaming/source identity forgery; no positive release claim.",
               "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS.",
-              "Current 901 CI five synthetic original negative tests admitted; all other acceptance remains open."
+              "Current 901 CI five synthetic original negative tests admitted; all other acceptance remains open.",
+              "New main263 exact CI asserts only the bounded source/profile facet; no full product or scenario acceptance."
             ],
             "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
             "status": "pass"
@@ -782,12 +841,13 @@
         },
         "evidence_currency": {
           "current_record_ids": [
-            "a5-source-identity-main-901"
+            "a5-source-identity-main-b0c4"
           ],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [
             "a5-ledger-id-negatives-main-ce22",
             "a5-source-identity-main-5ed",
+            "a5-source-identity-main-901",
             "intake-source-main-ce22"
           ],
           "history_is_not_new_execution": true
@@ -802,24 +862,24 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "exact_901_technical_CI_selected_assertions_without_complete_product_acceptance"
+          "scope": "current_263_selected_source_and_SQLite_CI_observations_only"
         },
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
           "evidence_ids": [
-            "a5-source-identity-main-901"
+            "a5-source-identity-main-b0c4"
           ],
           "execution_kinds": [
             "synthetic"
@@ -887,7 +947,7 @@
       "source_record_sha256": "acdbb8c3459f6e58df0bc274682c082df62d439e9586b5621ecc31c45b1f7a3e",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -943,7 +1003,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -976,7 +1036,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -988,7 +1048,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1045,7 +1105,7 @@
       "source_record_sha256": "f01c032a0dc37eec7626a226672f05d38225cb2c8dc678bf0b0fc9c7ff20ebcf",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1101,7 +1161,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1122,7 +1182,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1134,7 +1194,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1187,7 +1247,7 @@
       "source_record_sha256": "3748555f3862a469850b39ace27e1594c67be3dd9b0960f03e4f5ad9c7862aa2",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1243,7 +1303,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1260,7 +1320,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1272,7 +1332,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1322,7 +1382,7 @@
       "source_record_sha256": "11edfe1b35e3b4ceefc829f7137e28b97b232fe7117b0e5ff7e57a90acef87d3",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1378,7 +1438,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1392,7 +1452,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1404,7 +1464,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1455,7 +1515,7 @@
       "source_record_sha256": "b435c147a549e0a08c11500b07e423c7e805ab8a76da7adfa785e369e119d69c",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1511,7 +1571,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1526,7 +1586,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1538,7 +1598,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1588,7 +1648,7 @@
       "source_record_sha256": "be5166129f1009a85964e1b961c0d5721386c1da21754ba0bed5ae5ed825870f",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1644,7 +1704,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1658,7 +1718,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1670,7 +1730,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1721,7 +1781,7 @@
       "source_record_sha256": "2894fda6670ee4044999e6391d666c89e2b6ad4e2a4555a59e764d592b1f5c06",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1777,7 +1837,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1792,7 +1852,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1804,7 +1864,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1855,7 +1915,7 @@
       "source_record_sha256": "4af80cde2bc35153d5e9ab06ea7c23a22e0c0cdbf1bb4c331b23651af9f3d0a1",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1911,7 +1971,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -1926,7 +1986,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -1938,7 +1998,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -1992,7 +2052,7 @@
       "source_record_sha256": "5d1ba3552c7a4afa04819dab2ca590c5dc6a9d597ce69ffcf48a29d40f6c9b20",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2048,7 +2108,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2066,7 +2126,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2078,7 +2138,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2139,7 +2199,7 @@
       "source_record_sha256": "3209a735128e9581abfc09c4882f4cb04e68c4f06f7bab279110b05c9c9964f7",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2195,7 +2255,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2220,7 +2280,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2232,7 +2292,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2294,7 +2354,7 @@
       "source_record_sha256": "f58a147d1d707c082fafab435b8c6f59b360c4d86c1068987914df0080befaeb",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2350,7 +2410,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2376,7 +2436,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2388,7 +2448,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2441,7 +2501,7 @@
       "source_record_sha256": "f451d3862d1b3f8d410e31ab08c92eba24a87cd12869fb4b4a54e6acee8652e3",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2497,7 +2557,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2514,7 +2574,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2526,7 +2586,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2573,7 +2633,7 @@
       "source_record_sha256": "24158bc5e8cd4e75690eaacbde164db34f64dd975e8e8cf68199274ac490b640",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2631,7 +2691,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2642,7 +2702,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -2654,7 +2714,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2713,7 +2773,7 @@
       "source_record_sha256": "4d52809642eff5eaa9aacc7eba27a4dc29da0b6de45ec22daf99546962522cff",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2769,7 +2829,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2792,7 +2852,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2804,7 +2864,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2858,7 +2918,7 @@
       "source_record_sha256": "1f2f8af23c986ee105d4b1dda79b5b9835e1c78768cf030eec85d00857eaa97a",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -2916,7 +2976,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -2934,7 +2994,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -2946,7 +3006,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -2996,7 +3056,7 @@
       "source_record_sha256": "8abf470572aa069fa45854ab04763d9940fc3fedf6ad70e72823df4a39cbd998",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3052,7 +3112,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3066,7 +3126,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3078,7 +3138,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3133,7 +3193,7 @@
       "source_record_sha256": "879472ae7cb5520851bfaf07394a555bd29e6272eeed53ba30b816bb6dcd513b",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3189,7 +3249,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3208,7 +3268,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3220,7 +3280,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3273,7 +3333,7 @@
       "source_record_sha256": "43a8997fcbe3e20c508ffb300a304a5a1e07ce89933d91e7a3c6a6bf1b8b5b16",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3329,7 +3389,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3346,7 +3406,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3358,7 +3418,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3433,7 +3493,7 @@
       "source_record_sha256": "62ffa1c1398e249cceced2cc10dcf32a9557735390ef38b5fa3f1e66a7e2b8d2",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3489,7 +3549,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3528,7 +3588,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3540,7 +3600,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3603,7 +3663,7 @@
       "source_record_sha256": "7241898576c3e61ce2d7e3ba7d01bdc8a56f5c16b05699003b616b5fccbe42cd",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3659,7 +3719,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3686,7 +3746,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3698,7 +3758,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3752,7 +3812,7 @@
       "source_record_sha256": "0b9333af413e0af128c2a1275a7876ee53420a1723b0dacd4b45b23afb6c6060",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3808,7 +3868,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3826,7 +3886,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3838,7 +3898,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -3896,7 +3956,7 @@
       "source_record_sha256": "e58be42a072ef394c120a48fd3b263dde4c50198c3e965fb98589694fa075d5f",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3952,7 +4012,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -3974,7 +4034,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -3986,7 +4046,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4058,7 +4118,7 @@
       "source_record_sha256": "f72ce938464800fa990da328a652c0a8df7206c54d40975ac5ee810177fbe5e5",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -4114,7 +4174,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4150,7 +4210,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4162,7 +4222,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4230,7 +4290,7 @@
       "source_record_sha256": "0a634b5817182c3fc7017e5582bd08c6bd2a5621bc08dc6972bebab4505aa3ec",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -4286,7 +4346,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4318,7 +4378,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4330,7 +4390,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4412,7 +4472,7 @@
       "source_record_sha256": "c8bdde595da6717e2ac484c3bfcc9c219a9e5607a023f7bd21ee59c45567c50a",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -4468,7 +4528,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4514,7 +4574,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4526,7 +4586,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4602,7 +4662,7 @@
       "source_record_sha256": "880d9d55bbd4993ad83a9754316cf7eaeaba699879bfa0c6f39c3d82a5f9a8fc",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -4658,7 +4718,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4698,7 +4758,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4710,7 +4770,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4773,7 +4833,7 @@
       "source_record_sha256": "cfec6414ccf877877d8210420f8fa3a8214606fc5e7aecc6fd039462a3e6ff29",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -4829,7 +4889,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4856,7 +4916,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -4868,7 +4928,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -4915,7 +4975,7 @@
       "source_record_sha256": "53c134adecf748c19ff3631fc311ca20832eefe457dc6d725bbd0387c2ab2d54",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -4971,7 +5031,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -4982,7 +5042,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -4994,7 +5054,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5061,7 +5121,7 @@
       "source_record_sha256": "683dda87a82bedfdc7b6e7dcd30a19b695bae626c2bb2576ace863541798633b",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -5117,7 +5177,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5148,7 +5208,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5160,7 +5220,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5224,7 +5284,7 @@
       "source_record_sha256": "4145f7506e9e67d1190d740d40f539b7d900165d9fc0a9a230953b6ff51ab630",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -5280,7 +5340,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5308,7 +5368,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5320,7 +5380,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5386,7 +5446,7 @@
       "source_record_sha256": "c92e81ee6259a59d2eb7ab6887f8a878cf3dd93c0c616f4ec9421de969c4ee7c",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -5442,7 +5502,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5472,7 +5532,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5484,7 +5544,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5584,6 +5644,22 @@
           },
           "superseded_at_utc": "2026-10-18T04:52:39.166156+00:00",
           "technical_status": "stale"
+        },
+        {
+          "prior_criterion_statuses": {
+            "MW05-E08-04#/acceptance": "stale",
+            "MW05-E08-04#/negative_case": "stale",
+            "MW05-E08-04#/requirement": "stale"
+          },
+          "prior_current_record_ids": [],
+          "prior_status": "stale",
+          "reason": "Current main263 requires its own exact source-bound admission; main901 assertions remain unchanged as historical evidence.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T06:28:39.156163+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -5609,7 +5685,7 @@
       "source_record_sha256": "cdcdd6789f5e923436d222e1c26fb7cc7e2e9302b9229d2e9939c998afea3241",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "Temporary SQLite/WAV outputs are observed by assertions; final masters and installed sessions are not inferred.",
           "retained": "Hashed execution excerpts, source structure and the public synthetic seed fixture where referenced.",
           "status": "scoped_outputs_admitted"
@@ -5689,7 +5765,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [
             "delivery-recipes-main-ce22",
             "duck-envelope-main-ce22"
@@ -5718,7 +5794,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5730,7 +5806,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5787,7 +5863,7 @@
       "source_record_sha256": "a9db19373e42de56fa5c4f9ff8680f486867149bd72ae93feae664d0e8404c2a",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -5843,7 +5919,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -5858,7 +5934,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -5870,7 +5946,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -5933,7 +6009,7 @@
       "source_record_sha256": "37533ac70882abcbfddace77fa38eae3195ccb0b6a86b7920f4dc0e4a92a2a6b",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -5989,7 +6065,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6016,7 +6092,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6028,7 +6104,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6081,7 +6157,7 @@
       "source_record_sha256": "9131638ff5ca4b4db84b30cd727e4732d8c547774eaad364c3343828fa4d36e2",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -6137,7 +6213,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6154,7 +6230,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6166,7 +6242,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6213,7 +6289,7 @@
       "source_record_sha256": "b0812bc4f32d18e000f42d2a0f6c3bb74708cf9b0370a0b395f341e16f21fc28",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -6269,7 +6345,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6280,7 +6356,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "not_located"
         },
         "release_decision": "not_granted",
@@ -6292,7 +6368,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6388,6 +6464,22 @@
           },
           "superseded_at_utc": "2026-10-18T04:52:39.166156+00:00",
           "technical_status": "stale"
+        },
+        {
+          "prior_criterion_statuses": {
+            "MW05-E10-01#/acceptance": "stale",
+            "MW05-E10-01#/negative_case": "stale",
+            "MW05-E10-01#/requirement": "stale"
+          },
+          "prior_current_record_ids": [],
+          "prior_status": "stale",
+          "reason": "Current main263 requires its own exact source-bound admission; main901 assertions remain unchanged as historical evidence.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T06:28:39.156163+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -6406,7 +6498,7 @@
       "source_record_sha256": "86ec4d10f06fa00a292d566016da66c563390d2d41f9d46e1b70cdac62279db6",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "scoped_logs_retained"
         },
@@ -6483,7 +6575,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [
             "cas-replay-main-ce22"
           ],
@@ -6503,7 +6595,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6515,7 +6607,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6571,7 +6663,7 @@
       "source_record_sha256": "0013aa58c493ccf3688d5f14d534f87a2d34fd3952c7fbb0dde42debd7dbdc51",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -6627,7 +6719,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6643,7 +6735,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6655,7 +6747,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6705,7 +6797,7 @@
       "source_record_sha256": "4ea72ed0af2b247eeca96c4fd23bfb2d4d34ec610ca0f873d0f0e70eee15e765",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -6761,7 +6853,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6775,7 +6867,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6787,7 +6879,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6844,7 +6936,7 @@
       "source_record_sha256": "73973c8709dc6e08eaa4fea09a66ddf0b4da61e7c6545e9cece8382df0e29893",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -6900,7 +6992,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -6921,7 +7013,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -6933,7 +7025,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -6984,7 +7076,7 @@
       "source_record_sha256": "ec56cbe9342351e7ee9f452757728b90e7944321ddfff7474705b5acdd3655a7",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -7040,7 +7132,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7055,7 +7147,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7067,7 +7159,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7118,7 +7210,7 @@
       "source_record_sha256": "15ebdf2f64bbd00c012368d05e4342fe843d8aed607b6e16537a45cb0e46c917",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -7174,7 +7266,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7189,7 +7281,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7201,7 +7293,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7310,6 +7402,21 @@
           },
           "superseded_at_utc": "2026-10-18T04:52:39.166156+00:00",
           "technical_status": "stale"
+        },
+        {
+          "prior_criterion_statuses": {
+            "MW05-E11-03#/negative_case": "stale",
+            "MW05-E11-03#/requirement": "stale"
+          },
+          "prior_current_record_ids": [],
+          "prior_status": "stale",
+          "reason": "Current main263 requires its own exact source-bound admission; main901 assertions remain unchanged as historical evidence.",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          },
+          "superseded_at_utc": "2026-10-18T06:28:39.156163+00:00"
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -7342,7 +7449,7 @@
       "source_record_sha256": "6c6cd35a081f34bc6d5115cc9717539b90c9800d74b98d95410285742f099e58",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "External NLE receiver, edit/reimport and installed product are unverified.",
           "retained": "SHA-bound original synthetic OTIO and execution excerpts; H264 bytes retained outside Git under A5 private evidence.",
           "status": "scoped_original_media_and_OTIO_admitted"
@@ -7418,7 +7525,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [
             "otio-native-video-main-4a2",
             "otio-real-media-main-ce22"
@@ -7453,7 +7560,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7465,7 +7572,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7521,7 +7628,7 @@
       "source_record_sha256": "78ab266ada9b00b79dbe721c4f9d51de427d9578c99be6a78acfeca42ba7d28e",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -7579,7 +7686,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7594,7 +7701,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7606,7 +7713,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7668,7 +7775,7 @@
       "source_record_sha256": "9997106da2aefe2d145b33a2e39e8b5df0508cb484b02934852a7aec06979bbb",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -7724,7 +7831,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7750,7 +7857,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7762,7 +7869,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7824,7 +7931,7 @@
       "source_record_sha256": "48c93b0781b87036de3adea77683604b405eee91ea89db8659415f43b7bb4bfb",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -7880,7 +7987,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -7906,7 +8013,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -7918,7 +8025,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -7980,7 +8087,7 @@
       "source_record_sha256": "6ef6138aaeb3f6b280a29219ac4ff352781088214aa2ee8f6aeab4bf7cbcb977",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8036,7 +8143,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8062,7 +8169,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8074,7 +8181,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8135,7 +8242,7 @@
       "source_record_sha256": "8f127bbc880957c512cad71482978355acdac5bc2bad48702a74a6442d7b21fb",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8191,7 +8298,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8216,7 +8323,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8228,7 +8335,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8288,7 +8395,7 @@
       "source_record_sha256": "31fd8c330071b0c32e9de3bb3fd0d81907bc4894d86f2326be72e0a0d4f8a196",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8344,7 +8451,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8368,7 +8475,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8380,7 +8487,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8436,7 +8543,7 @@
       "source_record_sha256": "fec48366108e616c79bf27d77ede66d206a83403e80e409301fac450d6989457",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8492,7 +8599,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8512,7 +8619,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8524,7 +8631,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8576,7 +8683,7 @@
       "source_record_sha256": "454da7fdf4b23149e601b29554dd844c3c3c31effe75714609dad13cda28cf92",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8632,7 +8739,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8648,7 +8755,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8660,7 +8767,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8718,7 +8825,7 @@
       "source_record_sha256": "fb2d84a6b5fbabd721da577b3bb732b7122e637712faf955d785082d67e72316",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8774,7 +8881,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8796,7 +8903,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8808,7 +8915,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -8869,7 +8976,7 @@
       "source_record_sha256": "64e353f6644b1836b71d835cf6daebd5133b68e0d8b77a21276485ef7b242d95",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -8925,7 +9032,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -8950,7 +9057,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -8962,7 +9069,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9027,7 +9134,7 @@
       "source_record_sha256": "c2e9708d98f646867a1983acc01cc7287725a0bdb3747ebcda8cb35c7d32e125",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9083,7 +9190,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9112,7 +9219,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9124,7 +9231,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9207,7 +9314,7 @@
       "source_record_sha256": "9fd83413a30a6271fffc3f7003ac78719a92aff358cd7988e56aa986e417804a",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9263,7 +9370,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9310,7 +9417,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9322,7 +9429,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9380,7 +9487,7 @@
       "source_record_sha256": "00e0e6bc76216223690cd01e854435765fd240d9f4f7836cde623db58e43e533",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9438,7 +9545,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9460,7 +9567,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9472,7 +9579,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9523,7 +9630,7 @@
       "source_record_sha256": "46ae9fdecd760abb9ac021fd74d87e4215e96f41f48d1043f0f21041d28c36fe",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9579,7 +9686,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9594,7 +9701,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9606,7 +9713,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9663,7 +9770,7 @@
       "source_record_sha256": "3cd09f3b9162d92f654bd6ea13ae6945d4eb33dce49432a1f8e0d9d85fa0f2af",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9719,7 +9826,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9740,7 +9847,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9752,7 +9859,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9802,7 +9909,7 @@
       "source_record_sha256": "0c8b823c6f31fa7b51de1be9fa777b743197f6c695fd6ecaa802d2e733d98db1",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9860,7 +9967,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -9874,7 +9981,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -9886,7 +9993,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -9940,7 +10047,7 @@
       "source_record_sha256": "2ba30f97bf89024d8edb2734ad11ce3c6984fdf643ace815034eea5577b6fef4",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Historical CE22/main5ed artifacts are preserved and cannot stand in for exact main901 CI. Source-bound current evidence is admitted only for enumerated fields.",
+          "currency_note": "Main901 evidence is historical; only mapped current main263 CI records are current, all creative/native release gates remain open.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -9996,7 +10103,7 @@
         },
         "evidence_currency": {
           "current_record_ids": [],
-          "current_source": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "current_source": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
         },
@@ -10014,7 +10121,7 @@
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
-          "source_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "source_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "status": "main"
         },
         "release_decision": "not_granted",
@@ -10026,7 +10133,7 @@
         "schema_version": 1,
         "source": {
           "digest_kind": "git-text-lf",
-          "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+          "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
@@ -10049,8 +10156,8 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "0ea56c00f3e673bfa1c9f6d62371b7a4a53823ca843fc63983111c873043ac36"
+    "sha256": "512eb990348cf0a30e8c540c136256a19a3b566d8a477da94090c70271ea35cb"
   },
-  "upstream_integrated_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+  "upstream_integrated_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
   "v05_release_ready": false
 }
