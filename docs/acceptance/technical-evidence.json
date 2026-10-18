@@ -39,6 +39,30 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
+    },
+    {
+      "preserved_prior_records": 41,
+      "preserved_prior_sufficiency_reviews": 20,
+      "prior_index_sha256": "736c5304d83f8e507c1b2b71c8d3b63badd142d63bee7fa46ea4c51f1574a76b",
+      "reason": "Main advanced to identical source tree via PR279 merge commit. Old 5ed CI and A5 reviews remain immutable, with eight new exact main901 sufficiency decisions tied to original new main CI.",
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "superseded_at_utc": "2026-10-18T04:52:18.174885+00:00"
+    },
+    {
+      "historical_records_preserved": 47,
+      "historical_reviews_preserved": 28,
+      "prior_index_sha256": "0ea56c00f3e673bfa1c9f6d62371b7a4a53823ca843fc63983111c873043ac36",
+      "reason": "Main263 includes camera profile/MLT guard changes. Old main901 tests remain historical; six current records and eight sufficient subcriteria are re-assessed from actual integrated main263 CI.",
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_advanced_at_utc": "2026-10-18T06:28:39.156163+00:00"
     }
   ],
   "catalog_counts": {
@@ -5643,11 +5667,17 @@
     "5ed-durable-sqlite-service": {
       "kind": "integration"
     },
+    "901-durable-sqlite-service": {
+      "kind": "integration"
+    },
     "a5-source-and-history-fixtures": {
       "kind": "synthetic"
     },
     "acceptance-intake-fixture": {
       "kind": "synthetic"
+    },
+    "b0c4-durable-sqlite-service": {
+      "kind": "integration"
     },
     "domain-delivery-recipe": {
       "kind": "unit"
@@ -14263,12 +14293,868 @@
           "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
         }
       ]
+    },
+    {
+      "artifact_scope": "Original 901 CI log selected test lines and SHA; no raw logs or private catalogue text in Git.",
+      "artifacts": [
+        {
+          "member": "main-901-direct-negative.json",
+          "member_sha256": "8f277a149d43dfab3ad262485251ff9897b843b38148b5bc11ac30b4f17b4dee",
+          "path": "docs/acceptance/evidence/conformance-observations-main-901-a5.zip",
+          "sha256": "7e48b16665f3052c2b225b05ace27c8a6bfab29087df25964fcefe01ca039aac"
+        }
+      ],
+      "assertions": [
+        "Original ID cannot be silently reused after a rename or duplicated expansion; current checked-in test rejects this.",
+        "Forged, mismatched and synthetic source SHA cannot inherit a technical acceptance decision from an earlier checkout.",
+        "A clean matching source retains NOT_RUN for all unexecuted scenarios; the source-policy job executed five exact negative cases."
+      ],
+      "complete_criterion_ids": [
+        "MW05-E00-01#/negative_case",
+        "A05-E00-01#/negative_scenario",
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "criterion_ids": [
+        "MW05-E00-01#/negative_case",
+        "A05-E00-01#/negative_scenario",
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "tooling/tests/test_acceptance_session.py",
+          "sha256": "1be352e72fd2219a5449b8e3e01e795ca09f2951635ca8cb4a6980490dd7ce10"
+        },
+        {
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117586430034,
+        "kind": "synthetic",
+        "passed": 5,
+        "profile": "a5-source-and-history-fixtures",
+        "run_id": 39097349061,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39097349061/job/117586430034"
+      },
+      "id": "a5-source-identity-main-901",
+      "limitations": [
+        "Original first-party synthetic intake fixtures only; does not authenticate human reviews or evaluate creative quality.",
+        "Identity guards are only the negative canonical criteria of E00-01 and E00-04; all positive/import/rights/acceptance obligations remain open."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "tooling/acceptance_policy.py",
+          "sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e"
+        },
+        {
+          "path": "tooling/acceptance_session.py",
+          "sha256": "94c3d737f65fce00bc3afb20d469b6f614df216d74cb0ebecb4b70ccf0a19ba0"
+        },
+        {
+          "path": "tooling/creative_status_policy.py",
+          "sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Seven exact integrated 901 CI service tests and raw original job-log digest; no original media.",
+      "artifacts": [
+        {
+          "member": "main-901-service-jobs.json",
+          "member_sha256": "bbc81289467d6c139d9ed25e8b654632e616845ce09dd6aad04d99c404bcf9fb",
+          "path": "docs/acceptance/evidence/conformance-observations-main-901-a5.zip",
+          "sha256": "7e48b16665f3052c2b225b05ace27c8a6bfab29087df25964fcefe01ca039aac"
+        }
+      ],
+      "assertions": [
+        "Temporary SQLite service can persist start/status/result original Manim identities and recover them after service reopen.",
+        "The reconstructed start survives over 256 historical receipts, remains bounded by a stable watermark and does not add a new receipt for projection.",
+        "Same reference from two native providers does not merge; foreign result reference or wrong generation never fabricates successful terminal status."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "ACC-035#/when",
+        "ACC-036#/then",
+        "CR-JOBS-01#/statement",
+        "CR-JOBS-02#/statement",
+        "CR-JOBS-03#/statement",
+        "CR-JOBS-06#/acceptance_criterion",
+        "CR-JOBS-06#/statement"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/service/tests/production_jobs_identity.rs",
+          "sha256": "f932be32ac7dc7ea4308d880a4d064fd2c283f391c50fdc77cfa2c7a0628b7bd"
+        },
+        {
+          "path": "crates/service/tests/production_jobs_recent_window.rs",
+          "sha256": "880fe568b29bdd3d34fe5edfbaa026e0b82f6e4746d902569bb381ad859ae4f5"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117587260530,
+        "kind": "integration",
+        "passed": 7,
+        "profile": "901-durable-sqlite-service",
+        "run_id": 39097349061,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39097349061/job/117587260530"
+      },
+      "id": "a5-durable-jobs-main-901",
+      "limitations": [
+        "The provider messages in tests are synthetic persisted receipts; no real Host mutation or finished AV render is established.",
+        "No full cancellation, expiry, actor/scope/hash/horizon idempotency, revocation, backpressure across actual stream gaps or active browser session is tested.",
+        "Original ACC-035 and ACC-036 are not complete, and no independent creative/human or installed approval is asserted."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/service/src/jobs.rs",
+          "sha256": "87ca9848fac63292febb5b852f3b164d22867ff4a5ba6ef3a57d236ee13815e3"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "a904a5f2715e8c732a6818c7a302ce2a855ec62fd30440442b82c3aacd5b51dd"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Deterministic current Git source inspection and actual test file assertions only.",
+      "artifacts": [
+        {
+          "member": "main-901-sqlite-CAS-source.json",
+          "member_sha256": "8b59a092c63d78ad38a3bdf78e0526ac14badffe9c578a569a50989892aa6fad",
+          "path": "docs/acceptance/evidence/conformance-observations-main-901-a5.zip",
+          "sha256": "7e48b16665f3052c2b225b05ace27c8a6bfab29087df25964fcefe01ca039aac"
+        }
+      ],
+      "assertions": [
+        "Within one SQLite immediate transaction the project document is read, resource/generation/revision checked, and guarded SQL project update performed before event and idempotent receipt insertion and commit.",
+        "Independent A5 source-order probe inspected ten ordered boundaries plus final commit and eight race-test source assertions on exact DF main."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-03#/statement"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement"
+      ],
+      "definitions": [
+        {
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 19,
+        "profile": "sqlite-cas-source-structure",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "a5-sqlite-CAS-structure-main-901",
+      "limitations": [
+        "Text/source-order inspection is not an instrumented crash model; separate real concurrent SQLite CI execution supports observed behavior.",
+        "No other project/journal/backup or product release criterion is declared satisfied."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Raw exact original 901 CI job log digest and selected test assertions.",
+      "artifacts": [
+        {
+          "member": "main-901-sqlite-two-clients.json",
+          "member_sha256": "43022bae288886acf2457bbf4a4e1c4d7c93575e1dd52874c26aa48647ae0efb",
+          "path": "docs/acceptance/evidence/conformance-observations-main-901-a5.zip",
+          "sha256": "7e48b16665f3052c2b225b05ace27c8a6bfab29087df25964fcefe01ca039aac"
+        }
+      ],
+      "assertions": [
+        "Exact 901 rust-core CI passed a real two-connection SQLite race, one winner/one Conflict and one new revision/event; a second two-client reservation test confirmed one logical winner.",
+        "Tests use an owned temporary DB and separate service clients under barrier; old job-idempotency outcomes do not stand in for the current actual run."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement",
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558"
+        },
+        {
+          "path": "crates/service/tests/paid_generation_persistence.rs",
+          "sha256": "716e033c465cdf4cfc810004f29bc26440ae0915dcd6db8eb865dd63caf48083"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117587260530,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "sqlite-service-reopen",
+        "run_id": 39097349061,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39097349061/job/117587260530"
+      },
+      "id": "a5-sqlite-CAS-two-clients-main-901",
+      "limitations": [
+        "Runs exercise exact in-process SQLite service test fixtures, not installed UI operation or human observation.",
+        "No acceptance scenarios are automatically completed."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "a904a5f2715e8c732a6818c7a302ce2a855ec62fd30440442b82c3aacd5b51dd"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Exact current main Rust storage integration tests exercising real temporary SQLite, using first-party historical fixture.",
+      "artifacts": [
+        {
+          "member": "main-901-rejected-imports.json",
+          "member_sha256": "e702d703fb550d6a25d9356c96b326c00204ac1c7e31f04ee74739a6aec57132",
+          "path": "docs/acceptance/evidence/conformance-observations-main-901-a5.zip",
+          "sha256": "7e48b16665f3052c2b225b05ace27c8a6bfab29087df25964fcefe01ca039aac"
+        }
+      ],
+      "assertions": [
+        "Unsupported and tampered original backup payloads are refused in inspect and import paths without changing the preexisting project.",
+        "Unknown nested manifest fields and altered content-addressed original bytes are rejected before ingest; the original SQLite destination, event export and project remain intact after reopening."
+      ],
+      "complete_criterion_ids": [
+        "A05-E00-02#/negative_scenario",
+        "MW05-E00-02#/negative_case"
+      ],
+      "criterion_ids": [
+        "A05-E00-02#/negative_scenario",
+        "MW05-E00-02#/negative_case"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/storage/tests/delivery_recipe_compatibility.rs",
+          "sha256": "1aa0a71170ddf3bcab9374039d0ab237d0f455684df714c7bbdb98a68d32cdeb"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.json",
+          "sha256": "1f959cbe8cf5f5ee7dbed8c2596087ea710f6e064be0e35b47dbdcc5343b0a57"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.provenance.json",
+          "sha256": "158df757173b0f36225dbb8572ec4ca62ca2b19362331efcfe91537ea6e0f494"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117587260530,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "sqlite-bundle-import-reopen",
+        "run_id": 39097349061,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39097349061/job/117587260530"
+      },
+      "id": "a5-invalid-backup-main-901",
+      "limitations": [
+        "Actual original external predecessor application positive sample not exercised.",
+        "No installed Studio UI journey or human rights review inferred."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/file_import.rs",
+          "sha256": "142019195fc369c7ca46c49f6dc5370a8a0f86ffa74a21989b7138908631fa8c"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "One exact-source original main Rust storage test with a real portable bundle and two independent temporary databases.",
+      "artifacts": [
+        {
+          "member": "main-901-historical-motionwright-transfer.json",
+          "member_sha256": "1172e115b9b4cf92bc81a2f89c48957de4134b9baf1c3c1ea8e63318044a89af",
+          "path": "docs/acceptance/evidence/conformance-observations-main-901-a5.zip",
+          "sha256": "7e48b16665f3052c2b225b05ace27c8a6bfab29087df25964fcefe01ca039aac"
+        }
+      ],
+      "assertions": [
+        "A source pre-recipe project backup with one content-addressed original asset and four events moves to a second SQLite/CAS destination.",
+        "Reopen verifies hashed original bytes, versioned metadata, project generation rotation and journal against the original historical fixture."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "A05-E00-02#/scenario",
+        "MW05-E00-02#/acceptance",
+        "MW05-E00-02#/requirement"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/storage/tests/delivery_recipe_compatibility.rs",
+          "sha256": "1aa0a71170ddf3bcab9374039d0ab237d0f455684df714c7bbdb98a68d32cdeb"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.json",
+          "sha256": "1f959cbe8cf5f5ee7dbed8c2596087ea710f6e064be0e35b47dbdcc5343b0a57"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.provenance.json",
+          "sha256": "158df757173b0f36225dbb8572ec4ca62ca2b19362331efcfe91537ea6e0f494"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117587260530,
+        "kind": "integration",
+        "passed": 1,
+        "profile": "sqlite-bundle-import-reopen",
+        "run_id": 39097349061,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39097349061/job/117587260530"
+      },
+      "id": "a5-legacy-mw-backup-main-901",
+      "limitations": [
+        "This is a Motionwright backup fixture; real external predecessor application origin and declared losses have not been exercised.",
+        "No deployed application or external-rights acceptance inferred."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/file_import.rs",
+          "sha256": "142019195fc369c7ca46c49f6dc5370a8a0f86ffa74a21989b7138908631fa8c"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original 901 CI log selected test lines and SHA; no raw logs or private catalogue text in Git.",
+      "artifacts": [
+        {
+          "member": "main-b0c4-direct-negative.json",
+          "member_sha256": "01789a2f77309089a4e1e38371f234e3d8465c0833b9fc9cde0dd1c07749a5c7",
+          "path": "docs/acceptance/evidence/conformance-observations-main-b0c4-a5.zip",
+          "sha256": "6e57c3df26ef201442cdab238ca5c201031dd8f5556eda17cfeb4e842d55f34f"
+        }
+      ],
+      "assertions": [
+        "Original ID cannot be silently reused after a rename or duplicated expansion; current checked-in test rejects this.",
+        "Forged, mismatched and synthetic source SHA cannot inherit a technical acceptance decision from an earlier checkout.",
+        "A clean matching source retains NOT_RUN for all unexecuted scenarios; the source-policy job executed five exact negative cases."
+      ],
+      "complete_criterion_ids": [
+        "MW05-E00-01#/negative_case",
+        "A05-E00-01#/negative_scenario",
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "criterion_ids": [
+        "MW05-E00-01#/negative_case",
+        "A05-E00-01#/negative_scenario",
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "tooling/tests/test_acceptance_session.py",
+          "sha256": "1be352e72fd2219a5449b8e3e01e795ca09f2951635ca8cb4a6980490dd7ce10"
+        },
+        {
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117604465201,
+        "kind": "synthetic",
+        "passed": 5,
+        "profile": "a5-source-and-history-fixtures",
+        "run_id": 39103521278,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39103521278/job/117604465201"
+      },
+      "id": "a5-source-identity-main-b0c4",
+      "limitations": [
+        "Original first-party synthetic intake fixtures only; does not authenticate human reviews or evaluate creative quality.",
+        "Identity guards are only the negative canonical criteria of E00-01 and E00-04; all positive/import/rights/acceptance obligations remain open."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "tooling/acceptance_policy.py",
+          "sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e"
+        },
+        {
+          "path": "tooling/acceptance_session.py",
+          "sha256": "94c3d737f65fce00bc3afb20d469b6f614df216d74cb0ebecb4b70ccf0a19ba0"
+        },
+        {
+          "path": "tooling/creative_status_policy.py",
+          "sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Seven exact integrated 901 CI service tests and raw original job-log digest; no original media.",
+      "artifacts": [
+        {
+          "member": "main-b0c4-service-jobs.json",
+          "member_sha256": "bfb16ee2c99b4d3c92a392a2c764dc8891afa010167db6716e6a65d7339e8a7b",
+          "path": "docs/acceptance/evidence/conformance-observations-main-b0c4-a5.zip",
+          "sha256": "6e57c3df26ef201442cdab238ca5c201031dd8f5556eda17cfeb4e842d55f34f"
+        }
+      ],
+      "assertions": [
+        "Temporary SQLite service can persist start/status/result original Manim identities and recover them after service reopen.",
+        "The reconstructed start survives over 256 historical receipts, remains bounded by a stable watermark and does not add a new receipt for projection.",
+        "Same reference from two native providers does not merge; foreign result reference or wrong generation never fabricates successful terminal status."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "ACC-035#/when",
+        "ACC-036#/then",
+        "CR-JOBS-01#/statement",
+        "CR-JOBS-02#/statement",
+        "CR-JOBS-03#/statement",
+        "CR-JOBS-06#/acceptance_criterion",
+        "CR-JOBS-06#/statement"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/service/tests/production_jobs_identity.rs",
+          "sha256": "f932be32ac7dc7ea4308d880a4d064fd2c283f391c50fdc77cfa2c7a0628b7bd"
+        },
+        {
+          "path": "crates/service/tests/production_jobs_recent_window.rs",
+          "sha256": "880fe568b29bdd3d34fe5edfbaa026e0b82f6e4746d902569bb381ad859ae4f5"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117604546918,
+        "kind": "integration",
+        "passed": 7,
+        "profile": "b0c4-durable-sqlite-service",
+        "run_id": 39103521278,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39103521278/job/117604546918"
+      },
+      "id": "a5-durable-jobs-main-b0c4",
+      "limitations": [
+        "The provider messages in tests are synthetic persisted receipts; no real Host mutation or finished AV render is established.",
+        "No full cancellation, expiry, actor/scope/hash/horizon idempotency, revocation, backpressure across actual stream gaps or active browser session is tested.",
+        "Original ACC-035 and ACC-036 are not complete, and no independent creative/human or installed approval is asserted."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/service/src/jobs.rs",
+          "sha256": "87ca9848fac63292febb5b852f3b164d22867ff4a5ba6ef3a57d236ee13815e3"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "a904a5f2715e8c732a6818c7a302ce2a855ec62fd30440442b82c3aacd5b51dd"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Deterministic current Git source inspection and actual test file assertions only.",
+      "artifacts": [
+        {
+          "member": "main-b0c4-sqlite-CAS-source.json",
+          "member_sha256": "1ba35f34b8fe52f6b9546c09f415cf8eb6300bb4393f7a34cb594824b5f387f7",
+          "path": "docs/acceptance/evidence/conformance-observations-main-b0c4-a5.zip",
+          "sha256": "6e57c3df26ef201442cdab238ca5c201031dd8f5556eda17cfeb4e842d55f34f"
+        }
+      ],
+      "assertions": [
+        "Within one SQLite immediate transaction the project document is read, resource/generation/revision checked, and guarded SQL project update performed before event and idempotent receipt insertion and commit.",
+        "Independent A5 source-order probe inspected ten ordered boundaries plus final commit and eight race-test source assertions on exact DF main."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-03#/statement"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement"
+      ],
+      "definitions": [
+        {
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 19,
+        "profile": "sqlite-cas-source-structure",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "a5-sqlite-CAS-structure-main-b0c4",
+      "limitations": [
+        "Text/source-order inspection is not an instrumented crash model; separate real concurrent SQLite CI execution supports observed behavior.",
+        "No other project/journal/backup or product release criterion is declared satisfied."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Raw exact original 901 CI job log digest and selected test assertions.",
+      "artifacts": [
+        {
+          "member": "main-b0c4-sqlite-two-clients.json",
+          "member_sha256": "369932eadf38c9729fdefd600013a9a79c423b73183879ef3764d138b488a9ea",
+          "path": "docs/acceptance/evidence/conformance-observations-main-b0c4-a5.zip",
+          "sha256": "6e57c3df26ef201442cdab238ca5c201031dd8f5556eda17cfeb4e842d55f34f"
+        }
+      ],
+      "assertions": [
+        "Exact 901 rust-core CI passed a real two-connection SQLite race, one winner/one Conflict and one new revision/event; a second two-client reservation test confirmed one logical winner.",
+        "Tests use an owned temporary DB and separate service clients under barrier; old job-idempotency outcomes do not stand in for the current actual run."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement",
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558"
+        },
+        {
+          "path": "crates/service/tests/paid_generation_persistence.rs",
+          "sha256": "716e033c465cdf4cfc810004f29bc26440ae0915dcd6db8eb865dd63caf48083"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117604546918,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "sqlite-service-reopen",
+        "run_id": 39103521278,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39103521278/job/117604546918"
+      },
+      "id": "a5-sqlite-CAS-two-clients-main-b0c4",
+      "limitations": [
+        "Runs exercise exact in-process SQLite service test fixtures, not installed UI operation or human observation.",
+        "No acceptance scenarios are automatically completed."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "a904a5f2715e8c732a6818c7a302ce2a855ec62fd30440442b82c3aacd5b51dd"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Exact current main Rust storage integration tests exercising real temporary SQLite, using first-party historical fixture.",
+      "artifacts": [
+        {
+          "member": "main-b0c4-rejected-imports.json",
+          "member_sha256": "46d140e6fe936774df21c6b50816a0e1dc4a54a01596d774b8c16b2ff102716a",
+          "path": "docs/acceptance/evidence/conformance-observations-main-b0c4-a5.zip",
+          "sha256": "6e57c3df26ef201442cdab238ca5c201031dd8f5556eda17cfeb4e842d55f34f"
+        }
+      ],
+      "assertions": [
+        "Unsupported and tampered original backup payloads are refused in inspect and import paths without changing the preexisting project.",
+        "Unknown nested manifest fields and altered content-addressed original bytes are rejected before ingest; the original SQLite destination, event export and project remain intact after reopening."
+      ],
+      "complete_criterion_ids": [
+        "A05-E00-02#/negative_scenario",
+        "MW05-E00-02#/negative_case"
+      ],
+      "criterion_ids": [
+        "A05-E00-02#/negative_scenario",
+        "MW05-E00-02#/negative_case"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/storage/tests/delivery_recipe_compatibility.rs",
+          "sha256": "1aa0a71170ddf3bcab9374039d0ab237d0f455684df714c7bbdb98a68d32cdeb"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.json",
+          "sha256": "1f959cbe8cf5f5ee7dbed8c2596087ea710f6e064be0e35b47dbdcc5343b0a57"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.provenance.json",
+          "sha256": "158df757173b0f36225dbb8572ec4ca62ca2b19362331efcfe91537ea6e0f494"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117604546918,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "sqlite-bundle-import-reopen",
+        "run_id": 39103521278,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39103521278/job/117604546918"
+      },
+      "id": "a5-invalid-backup-main-b0c4",
+      "limitations": [
+        "Actual original external predecessor application positive sample not exercised.",
+        "No installed Studio UI journey or human rights review inferred."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/file_import.rs",
+          "sha256": "142019195fc369c7ca46c49f6dc5370a8a0f86ffa74a21989b7138908631fa8c"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "One exact-source original main Rust storage test with a real portable bundle and two independent temporary databases.",
+      "artifacts": [
+        {
+          "member": "main-b0c4-historical-motionwright-transfer.json",
+          "member_sha256": "71affacd1d5e62b75088a94fe693b99e2da5b465cda102521e1c8e3cd556c345",
+          "path": "docs/acceptance/evidence/conformance-observations-main-b0c4-a5.zip",
+          "sha256": "6e57c3df26ef201442cdab238ca5c201031dd8f5556eda17cfeb4e842d55f34f"
+        }
+      ],
+      "assertions": [
+        "A source pre-recipe project backup with one content-addressed original asset and four events moves to a second SQLite/CAS destination.",
+        "Reopen verifies hashed original bytes, versioned metadata, project generation rotation and journal against the original historical fixture."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "A05-E00-02#/scenario",
+        "MW05-E00-02#/acceptance",
+        "MW05-E00-02#/requirement"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "crates/storage/tests/delivery_recipe_compatibility.rs",
+          "sha256": "1aa0a71170ddf3bcab9374039d0ab237d0f455684df714c7bbdb98a68d32cdeb"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.json",
+          "sha256": "1f959cbe8cf5f5ee7dbed8c2596087ea710f6e064be0e35b47dbdcc5343b0a57"
+        },
+        {
+          "path": "crates/storage/tests/fixtures/pre_delivery_recipe_backup.provenance.json",
+          "sha256": "158df757173b0f36225dbb8572ec4ca62ca2b19362331efcfe91537ea6e0f494"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117604546918,
+        "kind": "integration",
+        "passed": 1,
+        "profile": "sqlite-bundle-import-reopen",
+        "run_id": 39103521278,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39103521278/job/117604546918"
+      },
+      "id": "a5-legacy-mw-backup-main-b0c4",
+      "limitations": [
+        "This is a Motionwright backup fixture; real external predecessor application origin and declared losses have not been exercised.",
+        "No deployed application or external-rights acceptance inferred."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/file_import.rs",
+          "sha256": "142019195fc369c7ca46c49f6dc5370a8a0f86ffa74a21989b7138908631fa8c"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "42350012481c04c822693f0cf2768ba70682636effa4d90d1363b726798ac979"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
   "source": {
     "digest_kind": "git-text-lf",
-    "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
+    "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
     "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
   },
   "source_reference_observations": {
@@ -17877,6 +18763,664 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "d3504b01e31212f08d5c455f1d4b5bc12efd8c28c2bca0512d0e88ac8519027a"
+    },
+    {
+      "criterion_id": "MW05-E00-01#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-901": "f7621c3ebfd46e3578f24eae38b6800afac5281471854cc3cb139b3c92b71e7c"
+      },
+      "id": "technical-mw05-e00-01-negative_case-901",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Observed current-main rename/duplicate requirement regression asserts stable prior identities.",
+          "evidence_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "id": "original_id_survives_rename",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "2c0ac9d7feb50de7f0fc45ac385166a111cfe1a5a88a597116feb11695977e15",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d"
+    },
+    {
+      "criterion_id": "A05-E00-01#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-901": "f7621c3ebfd46e3578f24eae38b6800afac5281471854cc3cb139b3c92b71e7c"
+      },
+      "id": "technical-a05-e00-01-negative_scenario-901",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Observed current-main rename/duplicate requirement regression asserts stable prior identities.",
+          "evidence_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "id": "original_id_survives_rename",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "2c0ac9d7feb50de7f0fc45ac385166a111cfe1a5a88a597116feb11695977e15",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d"
+    },
+    {
+      "criterion_id": "MW05-E00-04#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-901": "f7621c3ebfd46e3578f24eae38b6800afac5281471854cc3cb139b3c92b71e7c"
+      },
+      "id": "technical-mw05-e00-04-negative_case-901",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Exact-source mismatch and forged-source intake are rejected.",
+          "evidence_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "A clean matching source retains NOT_RUN until execution occurs.",
+          "evidence_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "A05-E00-04#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-901": "f7621c3ebfd46e3578f24eae38b6800afac5281471854cc3cb139b3c92b71e7c"
+      },
+      "id": "technical-a05-e00-04-negative_scenario-901",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Exact-source mismatch and forged-source intake are rejected.",
+          "evidence_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "A clean matching source retains NOT_RUN until execution occurs.",
+          "evidence_ids": [
+            "a5-source-identity-main-901"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "CR-PROJECT-03#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-sqlite-CAS-structure-main-901": "1edba561869d6202f3279dcadf576cace32f422b763bf8d3d9835b67073376e0",
+        "a5-sqlite-CAS-two-clients-main-901": "b38b6983aa4078f567ac200b4ae4555e1fa23a6b0a84620f789e941beca8238d"
+      },
+      "id": "technical-cr-project-03-statement-901",
+      "limitations": [
+        "This proves the two CR-PROJECT-03 objective subcriteria on exact current main; other persistence, backup and UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "The immediate SQLite transaction contains read, revision compare, guarded update, event and receipt before final commit.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-structure-main-901"
+          ],
+          "id": "transaction-scope",
+          "status": "pass"
+        },
+        {
+          "basis": "Exact 901 CI rust-core executes two-client incompatible mutation race against real SQLite.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-two-clients-main-901"
+          ],
+          "id": "current-execution",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "c188645373c8b6df5a62e62205a499f8fee7a3baf8d3b6060600b7085d852886",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2e2995a92e4fac8a045f0684e476e7a502f3520c2ad725543f1866413a514b74"
+    },
+    {
+      "criterion_id": "CR-PROJECT-03#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-sqlite-CAS-two-clients-main-901": "b38b6983aa4078f567ac200b4ae4555e1fa23a6b0a84620f789e941beca8238d"
+      },
+      "id": "technical-cr-project-03-acceptance_criterion-901",
+      "limitations": [
+        "This proves the two CR-PROJECT-03 objective subcriteria on exact current main; other persistence, backup and UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Two real separate StudioService connections submit incompatible revisions behind one concurrency barrier.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-two-clients-main-901"
+          ],
+          "id": "incompatible-concurrent-clients",
+          "status": "pass"
+        },
+        {
+          "basis": "Actual test checks exactly one winner, one Conflict, one journal event and one new revision.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-two-clients-main-901"
+          ],
+          "id": "single-winner-conflict",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "8229bcb03cabec66ccc969a70b07ae5ff5d793a1e5a1df4b5f6aad021aafa03a",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "d3504b01e31212f08d5c455f1d4b5bc12efd8c28c2bca0512d0e88ac8519027a"
+    },
+    {
+      "criterion_id": "A05-E00-02#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-invalid-backup-main-901": "66e055e44446a446af942efd217bbf1125f0789c13152eb5140bb6526c3d9a04"
+      },
+      "id": "technical-a05-e00-02-negative_scenario-901-import",
+      "limitations": [
+        "Only the corrupt-input negative original subcriterion is admitted. All other required positive import, rights and integrated UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original invalid version/hash, nested manifest field and altered source bytes all fail closed in inspect/import on exact current main.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-901"
+          ],
+          "id": "corrupt-input-rejection",
+          "status": "pass"
+        },
+        {
+          "basis": "The same selected tests compare the existing project/exported digest after every refusal and again on SQLite reopen; no incoming project appears.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-901"
+          ],
+          "id": "open-project-preserved",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "e9f881ccf9a1d68b8b2121d59d961803c6a3c94431226c7c66cd0f7c592d80f0",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2"
+    },
+    {
+      "criterion_id": "MW05-E00-02#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-invalid-backup-main-901": "66e055e44446a446af942efd217bbf1125f0789c13152eb5140bb6526c3d9a04"
+      },
+      "id": "technical-mw05-e00-02-negative_case-901-import",
+      "limitations": [
+        "Only the corrupt-input negative original subcriterion is admitted. All other required positive import, rights and integrated UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original invalid version/hash, nested manifest field and altered source bytes all fail closed in inspect/import on exact current main.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-901"
+          ],
+          "id": "corrupt-input-rejection",
+          "status": "pass"
+        },
+        {
+          "basis": "The same selected tests compare the existing project/exported digest after every refusal and again on SQLite reopen; no incoming project appears.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-901"
+          ],
+          "id": "open-project-preserved",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "e9f881ccf9a1d68b8b2121d59d961803c6a3c94431226c7c66cd0f7c592d80f0",
+      "reviewed_at_utc": "2026-10-18T04:52:18.174885+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Exact original integrated main901 CI39097349061 and independent A5 source/assertion inspection; no human identity claimed"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "90153fa270ba7228e071a94fdac83577c7e55fce",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2"
+    },
+    {
+      "criterion_id": "MW05-E00-01#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-b0c4": "a512bb8557255886aadb51a5ba9e11a323ab02848736d28c1d9a5c4a33d6606e"
+      },
+      "id": "technical-mw05-e00-01-negative_case-b0c4",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Observed current-main rename/duplicate requirement regression asserts stable prior identities.",
+          "evidence_ids": [
+            "a5-source-identity-main-b0c4"
+          ],
+          "id": "original_id_survives_rename",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "2c0ac9d7feb50de7f0fc45ac385166a111cfe1a5a88a597116feb11695977e15",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d"
+    },
+    {
+      "criterion_id": "A05-E00-01#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-b0c4": "a512bb8557255886aadb51a5ba9e11a323ab02848736d28c1d9a5c4a33d6606e"
+      },
+      "id": "technical-a05-e00-01-negative_scenario-b0c4",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Observed current-main rename/duplicate requirement regression asserts stable prior identities.",
+          "evidence_ids": [
+            "a5-source-identity-main-b0c4"
+          ],
+          "id": "original_id_survives_rename",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "2c0ac9d7feb50de7f0fc45ac385166a111cfe1a5a88a597116feb11695977e15",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d"
+    },
+    {
+      "criterion_id": "MW05-E00-04#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-b0c4": "a512bb8557255886aadb51a5ba9e11a323ab02848736d28c1d9a5c4a33d6606e"
+      },
+      "id": "technical-mw05-e00-04-negative_case-b0c4",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Exact-source mismatch and forged-source intake are rejected.",
+          "evidence_ids": [
+            "a5-source-identity-main-b0c4"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "A clean matching source retains NOT_RUN until execution occurs.",
+          "evidence_ids": [
+            "a5-source-identity-main-b0c4"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "A05-E00-04#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-source-identity-main-b0c4": "a512bb8557255886aadb51a5ba9e11a323ab02848736d28c1d9a5c4a33d6606e"
+      },
+      "id": "technical-a05-e00-04-negative_scenario-b0c4",
+      "limitations": [
+        "Sufficiency is limited to this negative original subcriterion; the parent requirement/scenario and human/installed/creative acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Exact-source mismatch and forged-source intake are rejected.",
+          "evidence_ids": [
+            "a5-source-identity-main-b0c4"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "A clean matching source retains NOT_RUN until execution occurs.",
+          "evidence_ids": [
+            "a5-source-identity-main-b0c4"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "CR-PROJECT-03#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-sqlite-CAS-structure-main-b0c4": "68b1024f99f681a6f576c12697d8ac9467f4fede3c0a675020bb711d688846cb",
+        "a5-sqlite-CAS-two-clients-main-b0c4": "b02370a8a19402cd765fb0650bec39d845d9625e11fec4f989b4e0ec77d7ba10"
+      },
+      "id": "technical-cr-project-03-statement-b0c4",
+      "limitations": [
+        "This proves the two CR-PROJECT-03 objective subcriteria on exact current main; other persistence, backup and UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "The immediate SQLite transaction contains read, revision compare, guarded update, event and receipt before final commit.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-structure-main-b0c4"
+          ],
+          "id": "transaction-scope",
+          "status": "pass"
+        },
+        {
+          "basis": "Exact 901 CI rust-core executes two-client incompatible mutation race against real SQLite.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-two-clients-main-b0c4"
+          ],
+          "id": "current-execution",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "c188645373c8b6df5a62e62205a499f8fee7a3baf8d3b6060600b7085d852886",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2e2995a92e4fac8a045f0684e476e7a502f3520c2ad725543f1866413a514b74"
+    },
+    {
+      "criterion_id": "CR-PROJECT-03#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-sqlite-CAS-two-clients-main-b0c4": "b02370a8a19402cd765fb0650bec39d845d9625e11fec4f989b4e0ec77d7ba10"
+      },
+      "id": "technical-cr-project-03-acceptance_criterion-b0c4",
+      "limitations": [
+        "This proves the two CR-PROJECT-03 objective subcriteria on exact current main; other persistence, backup and UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Two real separate StudioService connections submit incompatible revisions behind one concurrency barrier.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-two-clients-main-b0c4"
+          ],
+          "id": "incompatible-concurrent-clients",
+          "status": "pass"
+        },
+        {
+          "basis": "Actual test checks exactly one winner, one Conflict, one journal event and one new revision.",
+          "evidence_ids": [
+            "a5-sqlite-CAS-two-clients-main-b0c4"
+          ],
+          "id": "single-winner-conflict",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "8229bcb03cabec66ccc969a70b07ae5ff5d793a1e5a1df4b5f6aad021aafa03a",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "d3504b01e31212f08d5c455f1d4b5bc12efd8c28c2bca0512d0e88ac8519027a"
+    },
+    {
+      "criterion_id": "A05-E00-02#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-invalid-backup-main-b0c4": "5bfeff660d803ee54ef3f631290bdb794d64b72dfdf5d592a4f2e0a3ea998c35"
+      },
+      "id": "technical-a05-e00-02-negative_scenario-b0c4-import",
+      "limitations": [
+        "Only the corrupt-input negative original subcriterion is admitted. All other required positive import, rights and integrated UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original invalid version/hash, nested manifest field and altered source bytes all fail closed in inspect/import on exact current main.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-b0c4"
+          ],
+          "id": "corrupt-input-rejection",
+          "status": "pass"
+        },
+        {
+          "basis": "The same selected tests compare the existing project/exported digest after every refusal and again on SQLite reopen; no incoming project appears.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-b0c4"
+          ],
+          "id": "open-project-preserved",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "e9f881ccf9a1d68b8b2121d59d961803c6a3c94431226c7c66cd0f7c592d80f0",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2"
+    },
+    {
+      "criterion_id": "MW05-E00-02#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-invalid-backup-main-b0c4": "5bfeff660d803ee54ef3f631290bdb794d64b72dfdf5d592a4f2e0a3ea998c35"
+      },
+      "id": "technical-mw05-e00-02-negative_case-b0c4-import",
+      "limitations": [
+        "Only the corrupt-input negative original subcriterion is admitted. All other required positive import, rights and integrated UI acceptance remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original invalid version/hash, nested manifest field and altered source bytes all fail closed in inspect/import on exact current main.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-b0c4"
+          ],
+          "id": "corrupt-input-rejection",
+          "status": "pass"
+        },
+        {
+          "basis": "The same selected tests compare the existing project/exported digest after every refusal and again on SQLite reopen; no incoming project appears.",
+          "evidence_ids": [
+            "a5-invalid-backup-main-b0c4"
+          ],
+          "id": "open-project-preserved",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "e9f881ccf9a1d68b8b2121d59d961803c6a3c94431226c7c66cd0f7c592d80f0",
+      "reviewed_at_utc": "2026-10-18T06:28:39.156163+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "Original exact integrated main263 CI39103521278 plus preserved source structure, evaluated automatically by A5"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "b0c4d41cbb25d6882723e1229d4c42e0378a455e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2"
     }
   ],
   "verification_profiles": {
