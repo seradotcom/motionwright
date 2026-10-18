@@ -112,17 +112,78 @@ def safe_path(value: str, *, kind: str, code: str) -> Path:
     return path
 
 
-def read_json(path: Path, *, code: str, limit: int = MAX_JSON) -> dict:
+def _same_opened_file(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare actual file identities, never content-equivalent pathnames."""
+    return (
+        left.st_ino != 0
+        and left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and stat.S_ISREG(left.st_mode)
+        and stat.S_ISREG(right.st_mode)
+    )
+
+
+def _check_opened_path(path: Path, opened: os.stat_result, code: str) -> None:
+    """Recheck all path components and the inode while its fd remains open.
+
+    This is a bounded single-inspection guarantee, NOT a durable OS lease on
+    an external caller that opens the path later. Never infer Broker authority.
+    """
     safe_path(str(path), kind="regular", code=code)
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        handle = os.open(path, flags)
-        with os.fdopen(handle, "rb") as source:
-            metadata = os.fstat(source.fileno())
-            require(stat.S_ISREG(metadata.st_mode) and 0 < metadata.st_size <= limit, code)
-            contents = source.read(limit + 1)
+        observed = path.lstat()
     except OSError as exc:
         raise AuditError(code) from exc
+    require(_same_opened_file(opened, observed), code)
+
+
+def open_checked_regular(path: Path, *, code: str,
+                         changed_code: str | None = None):
+    """Open the same ordinary file that the preflight actually validated.
+
+    A hardlink/rename substitution after safe_path but before os.open could
+    otherwise supply identical-looking JSON or executable bytes from another
+    inode. The fd and pathname identities must agree before any use.
+    """
+    path = safe_path(str(path), kind="regular", code=code)
+    identity_code = changed_code or code
+    try:
+        preopen = path.lstat()
+        require(stat.S_ISREG(preopen.st_mode), code)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        handle = os.open(path, flags)
+    except OSError as exc:
+        raise AuditError(code) from exc
+    try:
+        source = os.fdopen(handle, "rb")
+    except (OSError, ValueError) as exc:
+        os.close(handle)
+        raise AuditError(code) from exc
+    try:
+        opened = os.fstat(source.fileno())
+        require(_same_opened_file(preopen, opened), identity_code)
+        _check_opened_path(path, opened, identity_code)
+        if os.name == "posix":
+            require(opened.st_mode & 0o022 == 0, "unsafe_file_permissions")
+        return source
+    except BaseException:
+        source.close()
+        raise
+
+
+def read_json(path: Path, *, code: str, limit: int = MAX_JSON) -> dict:
+    with open_checked_regular(path, code=code) as source:
+        before = os.fstat(source.fileno())
+        require(0 < before.st_size <= limit, code)
+        contents = source.read(limit + 1)
+        after = os.fstat(source.fileno())
+        require(
+            _same_opened_file(before, after)
+            and before.st_size == after.st_size
+            and before.st_mtime_ns == after.st_mtime_ns,
+            code,
+        )
+        _check_opened_path(path, after, code)
     require(0 < len(contents) <= limit, code)
     try:
         result = json.loads(contents, object_pairs_hook=strict_object)
@@ -135,25 +196,25 @@ def read_json(path: Path, *, code: str, limit: int = MAX_JSON) -> dict:
 
 
 def hash_file(path: Path) -> str:
-    safe_path(str(path), kind="regular", code="executable_invalid")
     digest = hashlib.sha256()
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        handle = os.open(path, flags)
-        with os.fdopen(handle, "rb") as source:
-            before = os.fstat(source.fileno())
-            require(stat.S_ISREG(before.st_mode)
-                    and 0 < before.st_size <= MAX_EXECUTABLE, "executable_invalid")
-            consumed = 0
-            for block in iter(lambda: source.read(128 * 1024), b""):
-                consumed += len(block)
-                require(consumed <= MAX_EXECUTABLE, "executable_invalid")
-                digest.update(block)
-            after = os.fstat(source.fileno())
-            require(before.st_size == consumed == after.st_size
-                    and before.st_mtime_ns == after.st_mtime_ns, "executable_changed")
-    except OSError as exc:
-        raise AuditError("executable_invalid") from exc
+    with open_checked_regular(path, code="executable_invalid",
+                              changed_code="executable_changed") as source:
+        before = os.fstat(source.fileno())
+        require(stat.S_ISREG(before.st_mode)
+                and 0 < before.st_size <= MAX_EXECUTABLE, "executable_invalid")
+        consumed = 0
+        for block in iter(lambda: source.read(128 * 1024), b""):
+            consumed += len(block)
+            require(consumed <= MAX_EXECUTABLE, "executable_invalid")
+            digest.update(block)
+        after = os.fstat(source.fileno())
+        require(
+            _same_opened_file(before, after)
+            and before.st_size == consumed == after.st_size
+            and before.st_mtime_ns == after.st_mtime_ns,
+            "executable_changed",
+        )
+        _check_opened_path(path, after, "executable_changed")
     return digest.hexdigest()
 
 
@@ -260,14 +321,18 @@ def inspect_connection(
 
     cli = safe_path(connection["executable"], kind="regular",
                     code="executable_invalid")
-    session = safe_path(connection["session_file"], kind="regular",
-                        code="session_invalid")
+    session = Path(connection["session_file"])
     safe_path(connection["socket"], kind="any", code="socket_unavailable")
     safe_path(connection["output_root"], kind="directory",
               code="output_root_invalid")
-    require(0 < session.stat().st_size <= MAX_JSON, "session_invalid")
-    if os.name == "posix":
-        require(session.stat().st_mode & 0o077 == 0, "session_not_private")
+    # A session token is never read or exported. Its size, owner-only mode,
+    # pathname and inode must all agree on the SAME held file descriptor.
+    with open_checked_regular(session, code="session_invalid") as session_file:
+        session_info = os.fstat(session_file.fileno())
+        require(0 < session_info.st_size <= MAX_JSON, "session_invalid")
+        if os.name == "posix":
+            require(session_info.st_mode & 0o077 == 0, "session_not_private")
+        _check_opened_path(session, session_info, "session_invalid")
     actual_sha = hash_file(cli)
     require(actual_sha == claimed_sha, "executable_digest_mismatch")
 
