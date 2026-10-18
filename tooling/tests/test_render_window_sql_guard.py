@@ -14,10 +14,23 @@ SOURCE = pathlib.Path(__file__).resolve().parents[2] / "crates/storage/src/lib.r
 
 def storage_migration_sql() -> str:
     text = SOURCE.read_text(encoding="utf-8")
-    marker = 'conn.execute_batch(\n            r#"'
-    begin = text.index(marker) + len(marker)
+    # The schema DDL is now wrapped in a SQLite BEGIN IMMEDIATE transaction.
+    # Accept only the two reviewed callers; never infer a schema from some
+    # other execute_batch or an arbitrary SQL string in this source.
+    markers = [
+        marker for caller in ("schema_tx", "conn")
+        if (marker := f'{caller}.execute_batch(\n            r#"') in text
+    ]
+    if len(markers) != 1:
+        raise AssertionError("expected exactly one authoritative schema DDL batch")
+    begin = text.index(markers[0]) + len(markers[0])
     end = text.index('"#,\n        )?;', begin)
-    return text[begin:end]
+    sql = text[begin:end]
+    if "CREATE TABLE IF NOT EXISTS projects(" not in sql:
+        raise AssertionError("schema DDL missing projects table")
+    if "CREATE TRIGGER IF NOT EXISTS render_window_cache_invalidate_revision" not in sql:
+        raise AssertionError("schema DDL missing cache invalidation trigger")
+    return sql
 
 
 class RenderWindowSQLiteGuardTests(unittest.TestCase):
