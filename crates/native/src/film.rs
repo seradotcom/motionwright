@@ -2825,16 +2825,18 @@ mod tests {
         let segments = build_motion_canvas_segments(&project, vertical_id, &options).unwrap();
         let root_id = subject_id(text_node, None);
         let subjects = &segments[0].film.sequences[0].beats[0].shots[0].subjects;
-        let root = subjects
+        let subject = subjects
             .iter()
             .find(|subject| subject.id == root_id)
             .unwrap();
-        assert!(matches!(&root.content, SubjectContent::Group));
-        let subject = subjects
-            .iter()
-            .find(|subject| subject.id == format!("{root_id}-line-0"))
-            .unwrap();
-        assert_eq!(subject.parent.as_deref(), Some(root_id.as_str()));
+        // One authored line remains one native text subject; only saved hard
+        // breaks create editable line leaves.
+        assert_eq!(subject.parent, None);
+        assert!(
+            !subjects
+                .iter()
+                .any(|item| item.id.starts_with(&format!("{root_id}-line-")))
+        );
         match &subject.content {
             SubjectContent::Text { runs, language, .. } => {
                 assert_eq!(runs[0].text, "Movimiento editable");

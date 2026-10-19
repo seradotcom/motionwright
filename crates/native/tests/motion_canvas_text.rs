@@ -78,7 +78,7 @@ fn projected_shot(project: &Project, profile_id: Uuid, options: &FilmBuildOption
     segments[0].film.sequences[0].beats[0].shots[0].clone()
 }
 
-fn line<'a>(shot: &'a Shot, index: usize) -> &'a semwright_motion_authoring::Subject {
+fn line(shot: &Shot, index: usize) -> &semwright_motion_authoring::Subject {
     shot.subjects
         .iter()
         .find(|item| item.id.ends_with(&format!("-line-{index}")))
