@@ -1,0 +1,353 @@
+name: Browser evidence contracts (manual scope)
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact commit of this local caller and callee
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# A requested browser command keeps its own run. Cancellation still leaves
+# the original intent/outcome authoritative; this workflow never retries it.
+concurrency:
+  group: browser-evidence-execution-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # ci_browser_evidence.py binds this job identifier in its original context.
+  browser-acceptance:
+    name: Original Chromium command and evidence custody
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Bind the manual scope and both original workflow definitions
+        id: scope
+        working-directory: ${{ runner.temp }}
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          python3 -I -B -S - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import sys
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def read(path, limit=2 * 1024 * 1024):
+              path = Path(path).absolute()
+              for part in (path, *path.parents):
+                  info = part.lstat()
+                  require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400,
+                          'Linked source or evidence path')
+              before = path.stat()
+              require(stat.S_ISREG(before.st_mode) and 0 <= before.st_size <= limit, 'Unbounded source input')
+              with path.open('rb') as stream:
+                  opened = os.fstat(stream.fileno())
+                  raw = stream.read(before.st_size + 1)
+                  closed = os.fstat(stream.fileno())
+              after = path.stat()
+              signature = lambda v: (v.st_dev, v.st_ino, v.st_size, v.st_mtime_ns)
+              require(signature(before) == signature(opened) == signature(closed) == signature(after)
+                      and len(raw) == before.st_size, 'Source changed while read')
+              return raw
+
+          keys = ('GITHUB_REPOSITORY', 'GITHUB_EVENT_NAME', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID',
+                  'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW_SHA', 'GITHUB_WORKFLOW_REF', 'GITHUB_JOB')
+          context = {key: os.environ.get(key, '') for key in keys}
+          sha = context['GITHUB_SHA']
+          require(context['GITHUB_REPOSITORY'] == 'seradotcom/motionwright', 'Unexpected repository')
+          require(context['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and context['GITHUB_JOB'] == 'browser-acceptance',
+                  'Only the explicit browser evidence job is supported')
+          require(re.fullmatch(r'[0-9a-f]{40}', sha) and os.environ['SOURCE_SHA'] == sha
+                  and context['GITHUB_WORKFLOW_SHA'] == sha, 'Source and verifier must be this exact commit')
+          require(context['GITHUB_RUN_ID'].isdecimal() and int(context['GITHUB_RUN_ID']) > 0
+                  and context['GITHUB_RUN_ATTEMPT'] == '1', 'A repeated attempt requires a separately reviewed operation')
+          caller = '.github/workflows/verification-plan.yml'
+          callee = '.github/workflows/browser-evidence-contracts.yml'
+          require(context['GITHUB_REF'].startswith(('refs/heads/', 'refs/tags/'))
+                  and context['GITHUB_WORKFLOW_REF'] == context['GITHUB_REPOSITORY'] + '/' + caller + '@' + context['GITHUB_REF'],
+                  'Unexpected caller workflow reference')
+          require(not os.environ.get('MOTIONWRIGHT_SERVICE_TEST_BIN'), 'This scope does not request a service runner')
+          repo = Path(os.environ['GITHUB_WORKSPACE']).absolute()
+          temporary = Path(os.environ['RUNNER_TEMP']).absolute()
+          require(repo not in (temporary, *temporary.parents), 'Evidence must be outside the checkout')
+          environment = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+          environment.update(GIT_NO_REPLACE_OBJECTS='1', GIT_GRAFT_FILE=os.devnull, GIT_NO_LAZY_FETCH='1',
+                             GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_OPTIONAL_LOCKS='0')
+
+          def git(*args):
+              result = subprocess.run(['git', '--no-replace-objects', '-c', 'core.fsmonitor=false', '-C', str(repo), *args],
+                                      env=environment, capture_output=True, timeout=45)
+              require(result.returncode == 0, 'Original Git source read failed')
+              return result.stdout
+
+          require(git('rev-parse', 'HEAD').decode().strip() == sha, 'Checkout SHA differs')
+          require(not git('status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'),
+                  'Preflight requires a clean checkout including ignored files')
+          commit = git('cat-file', 'commit', sha)
+          require(hashlib.sha1(b'commit ' + str(len(commit)).encode() + b'\0' + commit).hexdigest() == sha,
+                  'Raw commit identity differs')
+          headers = commit.split(b'\n\n', 1)[0].splitlines()
+          trees = [line[5:].decode() for line in headers if line.startswith(b'tree ')]
+          require(len(trees) == 1 and re.fullmatch(r'[0-9a-f]{40}', trees[0]), 'Missing raw source tree')
+          paths = (caller, callee, '.github/workflows/ci.yml', 'tooling/ci_browser_evidence.py',
+                   'tooling/ci_job_plan.py', 'tooling/ci_test_runner.py', 'tooling/tests/test_ci_browser_evidence.py',
+                   'Cargo.lock', 'apps/studio/package.json', 'apps/studio/package-lock.json', 'apps/studio/playwright.config.ts')
+          blobs, identities = {}, {}
+          for name in paths:
+              listing = git('ls-tree', '-z', sha, '--', name).split(b'\0')
+              require(len(listing) == 2 and not listing[1], 'Missing source blob')
+              metadata, observed_name = listing[0].split(b'\t', 1)
+              mode, kind, oid = metadata.decode().split()
+              require(mode in ('100644', '100755') and kind == 'blob' and observed_name.decode() == name,
+                      'Source is not a regular tracked blob')
+              raw = git('cat-file', 'blob', oid)
+              require(hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == oid,
+                      'Raw Git blob digest differs')
+              require(read(repo / name) == raw, 'Worktree source bytes differ from Git')
+              blobs[name] = raw
+              identities[name] = {'git_blob': oid, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+          output = temporary / 'motionwright-ci' / (context['GITHUB_RUN_ID'] + '-' + context['GITHUB_RUN_ATTEMPT']) / 'manual-browser-scope'
+          for part in output.parents:
+              if part.exists() or part.is_symlink():
+                  info = part.lstat()
+                  require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode), 'Linked output ancestor')
+          output.mkdir(parents=True, exist_ok=False)
+
+          def write(name, raw):
+              with (output / name).open('xb') as stream:
+                  require(stream.write(raw) == len(raw), 'Short evidence write')
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              require(read(output / name) == raw, 'Evidence write readback differs')
+
+          plan = {'schema': 'motionwright.manual-browser-evidence-scope/1', 'execution_context': context,
+                  'source_sha': sha, 'source_tree': trees[0], 'source_files': identities,
+                  'source_commit_sha256': hashlib.sha256(commit).hexdigest(),
+                  'command_profile': 'ordinary npm run test:e2e -- --reporter=dot,json',
+                  'ci_plan_id_meaning': 'Opaque hash of this manual scope; not a ci_job_plan full-CI selection',
+                  'observer_workflow_sha256_meaning': 'Original .github/workflows/ci.yml; caller and callee are bound separately here',
+                  'requested_service_runner': False, 'ordinary_ci_aggregate_admitted': False,
+                  'test_case_results_admitted': False, 'same_run_reuse_eligible': False,
+                  'full_ci_verdict': False, 'g3_release_verdict': False, 'formal_acceptance': False,
+                  'executions_avoided': 0, 'minutes_saved': 0}
+          raw = (json.dumps(plan, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+          plan_id = hashlib.sha256(raw).hexdigest()
+          write('scope.json', raw)
+          write('source-commit.raw', commit)
+          for name, original in ((caller, 'caller.yml'), (callee, 'callee.yml'), ('.github/workflows/ci.yml', 'ordinary-ci.yml')):
+              write(original, blobs[name])
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as stream:
+              stream.write('plan_id=' + plan_id + '\n')
+          print(json.dumps({'scope_id': plan_id, 'source_sha': sha, 'source_tree': trees[0], 'product_tests_executed_by_preflight': False}))
+          PY
+      - name: Preserve browser custody failures, original exits and UNKNOWN without replay
+        id: browser_custody_guards
+        working-directory: .
+        env:
+          MW_CI_BROWSER_TEST_TMP: ${{ runner.temp }}
+        run: >-
+          python3 -I -B tooling/ci_test_runner.py
+          --repo "$GITHUB_WORKSPACE"
+          --pattern test_ci_browser_evidence.py --mode both --require-complete
+          --expected-source "$GITHUB_SHA"
+          --report "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/browser-custody-guards/result.json"
+      - name: Retain the browser custody guard originals
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() && (steps.browser_custody_guards.outcome == 'success' || steps.browser_custody_guards.outcome == 'failure' || steps.browser_custody_guards.outcome == 'cancelled') }}
+        with:
+          name: ci-browser-custody-guards-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: |
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-custody-guards/result.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-custody-guards/result-*-stdout.log
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-custody-guards/result-*-stderr.log
+          if-no-files-found: error
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - id: dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck and production build
+        id: build
+        run: npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: studio-dist
+          path: apps/studio/dist
+          if-no-files-found: error
+      - id: chromium
+        run: npx playwright install --with-deps chromium
+      - name: Browser acceptance
+        id: browser
+        working-directory: .
+        env:
+          CI_PLAN_ID: ${{ steps.scope.outputs.plan_id }}
+        run: >-
+          python3 -I -B tooling/ci_browser_evidence.py
+          --repo "$GITHUB_WORKSPACE" --plan-id "$CI_PLAN_ID"
+          --output "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/browser-original"
+      - name: Retain the original browser command, streams and JSON
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() && (steps.browser.outcome == 'success' || steps.browser.outcome == 'failure' || steps.browser.outcome == 'cancelled') }}
+        with:
+          name: ci-browser-original-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: |
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/intent.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/process-started.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/process-outcome.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/stdout.log
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/stderr.log
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/playwright-report.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/receipt.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: browser-acceptance-evidence
+          path: |
+            apps/studio/test-results
+            apps/studio/playwright-report
+          if-no-files-found: ignore
+      - name: Bind job result to original source, scope and execution
+        id: source
+        if: always()
+        working-directory: .
+        env:
+          CI_PLAN_ID: ${{ steps.scope.outputs.plan_id }}
+        run: >-
+          python3 -I -B tooling/ci_job_plan.py observe
+          --repo "$GITHUB_WORKSPACE" --plan-id "$CI_PLAN_ID"
+          --github-output "$GITHUB_OUTPUT"
+      - name: Record scope outcome without admitting test cases or omissions
+        if: always()
+        working-directory: ${{ runner.temp }}
+        env:
+          CI_PLAN_ID: ${{ steps.scope.outputs.plan_id }}
+          OBSERVED_JOB_STATUS: ${{ job.status }}
+          OBSERVED_STEPS: ${{ toJSON(steps) }}
+        shell: bash
+        run: |
+          python3 -I -B -S - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def load(path):
+              path = Path(path).absolute()
+              for part in (path, *path.parents):
+                  info = part.lstat()
+                  require(not stat.S_ISLNK(info.st_mode), 'Linked retained evidence')
+              before = path.stat()
+              require(stat.S_ISREG(before.st_mode) and before.st_size <= 4 * 1024 * 1024, 'Unbounded retained receipt')
+              with path.open('rb') as stream:
+                  opened = os.fstat(stream.fileno())
+                  raw = stream.read(before.st_size + 1)
+                  closed = os.fstat(stream.fileno())
+              signature = lambda v: (v.st_dev, v.st_ino, v.st_size, v.st_mtime_ns)
+              require(signature(before) == signature(opened) == signature(closed) == signature(path.stat())
+                      and len(raw) == before.st_size, 'Retained evidence changed')
+              def pairs(items):
+                  result = {}
+                  for key, value in items:
+                      require(key not in result, 'Duplicate retained JSON field')
+                      result[key] = value
+                  return result
+              value = json.loads(raw, object_pairs_hook=pairs,
+                                 parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Nonfinite JSON')))
+              require(isinstance(value, dict), 'Retained receipt must be an object')
+              return value, {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+          keys = ('GITHUB_REPOSITORY', 'GITHUB_EVENT_NAME', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID',
+                  'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW_SHA', 'GITHUB_WORKFLOW_REF', 'GITHUB_JOB')
+          context = {key: os.environ.get(key, '') for key in keys}
+          root = Path(os.environ['RUNNER_TEMP']) / 'motionwright-ci' / (context['GITHUB_RUN_ID'] + '-' + context['GITHUB_RUN_ATTEMPT'])
+          output = root / 'manual-browser-scope'
+          steps = json.loads(os.environ['OBSERVED_STEPS'])
+          record = {'schema': 'motionwright.manual-browser-evidence-outcome/1', 'execution_context': context,
+                    'scope_id': os.environ.get('CI_PLAN_ID'), 'observed_job_status': os.environ['OBSERVED_JOB_STATUS'],
+                    'step_outcomes': {key: value.get('outcome') for key, value in steps.items()},
+                    'state': 'NOT_ADMITTED', 'original_exit_code': None, 'stats_as_reported': None,
+                    'test_case_results_admitted': False, 'same_run_reuse_eligible': False,
+                    'ordinary_ci_aggregate_admitted': False, 'full_ci_verdict': False, 'g3_release_verdict': False,
+                    'formal_acceptance': False, 'executions_avoided': 0, 'minutes_saved': 0}
+          try:
+              scope, identity = load(output / 'scope.json')
+              record['scope_receipt'] = identity
+              require(identity['sha256'] == record['scope_id'] and scope['execution_context'] == context,
+                      'Manual scope or execution identity differs')
+              receipt, receipt_identity = load(root / 'browser-original/receipt.json')
+              record['browser_receipt'] = receipt_identity
+              require(receipt['schema'] == 'motionwright.ci-browser-original-evidence/1'
+                      and receipt['execution_context'] == context and receipt['plan_id'] == record['scope_id'],
+                      'Original browser receipt belongs to another scope or execution')
+              record['original_exit_code'] = receipt['original_exit_code']
+              record['original_custody_state'] = receipt['state']
+              record['stats_as_reported'] = (receipt.get('report') or {}).get('stats_as_reported')
+              require(record['observed_job_status'] == 'success' and all(steps.get(key, {}).get('outcome') == 'success'
+                      for key in ('scope', 'browser_custody_guards', 'dependencies', 'build', 'chromium', 'browser', 'source')),
+                      'Required step did not finish successfully')
+              require(type(receipt['original_exit_code']) is int and receipt['original_exit_code'] == 0
+                      and receipt['state'] == 'ORIGINAL_COMMAND_COMPLETED' and receipt['source_and_inputs_unchanged'] is True
+                      and receipt['source_before'] == receipt['source_after'] and receipt['custody_errors'] == []
+                      and receipt['report']['state'] == 'ORIGINAL_JSON_RETAINED', 'Original command or custody is incomplete')
+              require(receipt['test_case_results_admitted'] is False and receipt['same_run_reuse_eligible'] is False
+                      and receipt['formal_acceptance'] is False, 'Custody cannot promote semantic acceptance')
+              record['state'] = 'ORIGINAL_COMMAND_AND_CUSTODY_COMPLETED; TEST_CASES_NOT_ADMITTED'
+          except (OSError, ValueError, KeyError, TypeError) as error:
+              record['error'] = type(error).__name__ + ': ' + str(error)
+          for part in (output, *output.parents):
+              if part.exists() or part.is_symlink():
+                  info = part.lstat()
+                  require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode), 'Linked outcome directory')
+          output.mkdir(parents=True, exist_ok=True)
+          raw = (json.dumps(record, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+          with (output / 'outcome.json').open('xb') as stream:
+              require(stream.write(raw) == len(raw), 'Short outcome write')
+              stream.flush()
+              os.fsync(stream.fileno())
+          print(json.dumps(record, sort_keys=True, allow_nan=False))
+          raise SystemExit(0 if record['state'].startswith('ORIGINAL_COMMAND_AND_CUSTODY_COMPLETED;') else 2)
+          PY
+      - name: Retain the manual scope and its original workflow definitions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: manual-browser-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: |
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/manual-browser-scope/scope.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/manual-browser-scope/source-commit.raw
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/manual-browser-scope/caller.yml
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/manual-browser-scope/callee.yml
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/manual-browser-scope/ordinary-ci.yml
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/manual-browser-scope/outcome.json
+          if-no-files-found: error
