@@ -14,7 +14,7 @@ SOURCE = pathlib.Path(__file__).resolve().parents[2] / "crates/storage/src/lib.r
 
 def storage_migration_sql() -> str:
     text = SOURCE.read_text(encoding="utf-8")
-    marker = 'conn.execute_batch(\n            r#"'
+    marker = 'schema_tx.execute_batch(\n            r#"'
     begin = text.index(marker) + len(marker)
     end = text.index('"#,\n        )?;', begin)
     return text[begin:end]
