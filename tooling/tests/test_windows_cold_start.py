@@ -24,7 +24,7 @@ assert spec and spec.loader
 windows = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(windows)
 
-TITLE = "Untitled Motion Project"
+TITLE = "motionwright ci first use"
 
 
 def project_db(target: Path, *, title: str = TITLE, duplicate: bool = False,
@@ -123,6 +123,38 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         receipt.write_text(json.dumps(record))
         with self.assertRaisesRegex(windows.ColdStartError, "human approval"):
             windows.check_installed_candidate(receipt, exe, sha)
+
+    def test_first_ui_action_requires_actual_empty_sqlite_and_never_seeds(self):
+        database = self.root / "first-use.sqlite3"
+        project_db(database)
+        self.assertFalse(windows._empty_library_ready(database))
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("PRAGMA user_version=2")
+            connection.execute("DELETE FROM projects")
+        original = database.read_bytes()
+        self.assertTrue(windows._empty_library_ready(database))
+        self.assertEqual(database.read_bytes(), original)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("PRAGMA user_version=99")
+        self.assertFalse(windows._empty_library_ready(database))
+
+    def test_accessible_native_action_must_be_one_confirmed_invocation(self):
+        from unittest.mock import Mock
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(
+            windows.subprocess, "run",
+            return_value=Mock(returncode=0, stdout="VISIBLE_PROJECT_CREATE_ACTIVATED\n"),
+        ) as call:
+            windows._create_first_project_in_native_window(12345)
+        self.assertEqual(call.call_count, 1)
+        args = call.call_args.args[0]
+        self.assertEqual(args[-2:], ["-ProjectTitle", windows.EXPECTED_FIRST_UI_TITLE])
+        self.assertTrue(args[0].endswith("powershell.exe"))
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(
+            windows.subprocess, "run",
+            return_value=Mock(returncode=1, stdout=""),
+        ):
+            with self.assertRaisesRegex(windows.ColdStartError, "not confirmed"):
+                windows._create_first_project_in_native_window(12345)
 
     def test_single_real_sqlite_project_is_read_only_and_stable(self):
         path = self.root / "roaming" / "com.seradotcom.motionwright" / "motionwright.sqlite3"

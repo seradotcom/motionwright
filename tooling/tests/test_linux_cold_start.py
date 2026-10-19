@@ -25,7 +25,7 @@ sys.modules[SPEC.name] = probe
 SPEC.loader.exec_module(probe)
 
 
-def seeded_store(root: Path, *, name: str = "Untitled Motion Project") -> Path:
+def seeded_store(root: Path, *, name: str = "motionwright ci first use") -> Path:
     data = root / "data" / "com.seradotcom.motionwright"
     data.mkdir(parents=True, exist_ok=True)
     database = data / "motionwright.sqlite3"
@@ -71,10 +71,20 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
         snapshot = probe.read_snapshot(self.scratch / "data")
         self.assertEqual(snapshot.schema_version, 2)
         self.assertEqual(snapshot.revision, 0)
-        self.assertEqual(snapshot.title, "Untitled Motion Project")
+        self.assertEqual(snapshot.title, "motionwright ci first use")
         self.assertEqual(len(snapshot.document_sha256), 64)
         self.assertEqual(db.read_bytes(), before, "read-only inspector must not rewrite SQLite")
         self.assertEqual(probe.attest_persistence(snapshot, snapshot)["status"], "PASS")
+
+    def test_empty_installed_store_is_ready_for_one_real_ui_action(self):
+        self.scratch.mkdir()
+        self.assertFalse(probe._empty_library_ready(self.scratch))
+        database = seeded_store(self.scratch)
+        self.assertFalse(probe._empty_library_ready(self.scratch))
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+        self.assertTrue(probe._empty_library_ready(self.scratch))
+        self.assertFalse(probe._bootstrap_committed(self.scratch))
 
     def test_readiness_requires_complete_committed_project_after_x11_window(self):
         self.scratch.mkdir()
@@ -87,11 +97,14 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
 
     def test_second_launch_on_identical_persisted_project_is_accepted(self):
         calls = []
-        def fake_native_gui(app_run, scratch, *, seconds, ready_check):
+        def fake_native_gui(app_run, scratch, *, seconds, ready_check, window_interaction=None):
             calls.append((app_run, scratch, seconds))
             scratch.mkdir(exist_ok=True)
             if len(calls) == 1:
+                self.assertIsNotNone(window_interaction)
                 seeded_store(scratch)
+            else:
+                self.assertIsNone(window_interaction)
             self.assertTrue(ready_check(scratch), "window alone is not persistence proof")
             return {
                 "status": "WINDOW_OBSERVED",
@@ -116,7 +129,7 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
     def test_relaunch_with_replaced_domain_project_cannot_claim_persistence(self):
         snapshot = probe.ProjectSnapshot(
             id=str(uuid.uuid4()), generation=str(uuid.uuid4()),
-            revision=0, title="Untitled Motion Project",
+            revision=0, title="motionwright ci first use",
             document_sha256="a" * 64, schema_version=2, event_count=0,
         )
         for update in [
@@ -156,7 +169,7 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
             conn.execute(
                 "UPDATE projects SET document_json=?",
                 (json.dumps({"id": "foreign", "generation": "foreign",
-                             "title": "Untitled Motion Project", "revision": 0}),),
+                             "title": "motionwright ci first use", "revision": 0}),),
             )
         with self.assertRaisesRegex(probe.ColdStartError, "disagree"):
             probe.read_snapshot(self.scratch / "data")
