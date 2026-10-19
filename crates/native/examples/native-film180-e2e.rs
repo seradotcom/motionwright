@@ -532,14 +532,24 @@ async fn render_original(database: &Path, connection: &Path, evidence: &Path) ->
         // A later revision is not evidence that the first physical render
         // succeeded. The prior, separately authorized native result and
         // native verification must have durable original receipts.
-        for suffix in ["motion:0:render-result", "motion:0:verify"] {
+        for (suffix, command) in [
+            (
+                "motion:0:render-result",
+                "driver.motion-canvas.render.result",
+            ),
+            ("motion:0:verify", "driver.motion-canvas.composition.verify"),
+        ] {
             let prior = format!("{NATIVE_REQUEST}:{suffix}");
-            if service
+            let receipt = service
                 .latest_production_receipt(original.id, &prior)?
-                .is_none()
+                .ok_or("original terminal native receipt is absent")?;
+            if receipt.stage != "completed"
+                || receipt.command != command
+                || receipt.generation != original.generation
+                || receipt.revision >= original.revision
             {
                 return Err(
-                    "edited native Film180 cannot precede the original terminal result".into(),
+                    "edited native Film180 cannot precede the original verified result".into(),
                 );
             }
         }
@@ -688,16 +698,30 @@ fn edit_saved_project(
     {
         return Err("original native render receipt is not bound to this saved source".into());
     }
-    let applied = format!("{NATIVE_REQUEST}:motion:0:apply");
-    let started = format!("{NATIVE_REQUEST}:motion:0:render-start");
-    if service
-        .latest_production_receipt(original.id, &applied)?
-        .is_none()
-        || service
-            .latest_production_receipt(original.id, &started)?
-            .is_none()
-    {
-        return Err("original native apply/render-start custody is absent".into());
+    // A completed start alone is not a terminal result. Require the
+    // original result and native verification under the same revision.
+    for (suffix, command) in [
+        ("motion:0:apply", "driver.motion-canvas.composition.apply"),
+        ("motion:0:render-start", "driver.motion-canvas.render.start"),
+        (
+            "motion:0:render-result",
+            "driver.motion-canvas.render.result",
+        ),
+        ("motion:0:verify", "driver.motion-canvas.composition.verify"),
+    ] {
+        let id = format!("{NATIVE_REQUEST}:{suffix}");
+        let receipt = service
+            .latest_production_receipt(original.id, &id)?
+            .ok_or("original native effect receipts are incomplete")?;
+        if receipt.stage != "completed"
+            || receipt.command != command
+            || receipt.generation != original.generation
+            || receipt.revision != original.revision
+        {
+            return Err(
+                "original native receipt has wrong command, revision or terminal status".into(),
+            );
+        }
     }
     let second = &original.scenes[1];
     let [node] = second.nodes.as_slice() else {
