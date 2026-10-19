@@ -25,6 +25,15 @@ on:
       - "docs/audio.md"
       - ".github/workflows/performance-acceptance.yml"
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Run all performance jobs, or only the one original UI selection case
+        type: choice
+        required: false
+        default: all
+        options:
+          - all
+          - ui
   schedule:
     - cron: "41 5 * * 2"
 
@@ -37,6 +46,7 @@ env:
 
 jobs:
   revision-ten:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'ui') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +68,7 @@ jobs:
           git rev-parse HEAD > verification/performance/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/performance/checkout-tree.txt
           status=0
-          cargo build -p motionwright-service --example acceptance_bench --release \
+          cargo build --locked -p motionwright-service --example acceptance_bench --release \
             > verification/performance/build.stdout.log 2> verification/performance/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/performance/build-exit-code.txt
           cat verification/performance/build.stdout.log
@@ -204,6 +214,7 @@ jobs:
           if-no-files-found: error
 
   waveform-lazy:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'ui') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -221,7 +232,7 @@ jobs:
           git rev-parse HEAD > verification/waveform/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/waveform/checkout-tree.txt
           status=0
-          cargo build -p motionwright-service --example waveform_bench --release \
+          cargo build --locked -p motionwright-service --example waveform_bench --release \
             > verification/waveform/build.stdout.log 2> verification/waveform/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/waveform/build-exit-code.txt
           cat verification/waveform/build.stdout.log
@@ -280,6 +291,7 @@ jobs:
           if-no-files-found: error
 
   responsiveness-service:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'ui') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -297,7 +309,7 @@ jobs:
           git rev-parse HEAD > verification/responsiveness/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/responsiveness/checkout-tree.txt
           status=0
-          cargo build -p motionwright-service --example responsiveness_bench --release \
+          cargo build --locked -p motionwright-service --example responsiveness_bench --release \
             > verification/responsiveness/build.stdout.log 2> verification/responsiveness/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/responsiveness/build-exit-code.txt
           cat verification/responsiveness/build.stdout.log
@@ -408,24 +420,263 @@ jobs:
 
   ui-selection:
     runs-on: ubuntu-24.04
+    # Explicit UI observations are not cancelled by later requests or retried.
+    concurrency:
+      group: performance-ui-${{ github.run_id }}
+      cancel-in-progress: false
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
     defaults:
       run:
         working-directory: apps/studio
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Check Actions syntax and contexts with pinned actionlint
+        id: actions_schema
+        if: ${{ !cancelled() }}
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          python3 -I -B -S - <<'PY'
+          import hashlib
+          import io
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import tarfile
+          import urllib.request
+
+          VERSION = '1.7.12'
+          URL = 'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz'
+          ARCHIVE_SHA256 = '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def read(path, limit=16 * 1024 * 1024):
+              path = Path(path).absolute()
+              for component in (path, *path.parents):
+                  info = component.lstat()
+                  require(not stat.S_ISLNK(info.st_mode), 'Linked source or tool evidence')
+              before = path.stat()
+              require(stat.S_ISREG(before.st_mode) and 0 <= before.st_size <= limit, 'Unbounded input')
+              with path.open('rb') as stream:
+                  opened = os.fstat(stream.fileno())
+                  raw = stream.read(before.st_size + 1)
+                  closed = os.fstat(stream.fileno())
+              signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+              require(signature(before) == signature(opened) == signature(closed) == signature(path.stat())
+                      and len(raw) == before.st_size, 'Input changed while read')
+              return raw
+
+          def identity(raw):
+              return {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+          context = {name: os.environ.get(name, '') for name in ('GITHUB_SHA', 'GITHUB_WORKFLOW_SHA', 'GITHUB_WORKFLOW_REF',
+                     'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB')}
+          require(all(context.values()), 'Incomplete workflow execution identity')
+          require(re.fullmatch(r'[0-9a-f]{40}', context['GITHUB_SHA']) and re.fullmatch(r'[0-9a-f]{40}', context['GITHUB_WORKFLOW_SHA']),
+                  'Missing exact source and verifier identity')
+          require(all(context[name].isdecimal() and int(context[name]) > 0 for name in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'))
+                  and re.fullmatch(r'[A-Za-z0-9_-]+', context['GITHUB_JOB']), 'Invalid run or job identity')
+          repo = Path(os.environ['GITHUB_WORKSPACE']).absolute()
+          output = Path(os.environ['RUNNER_TEMP']).absolute() / 'motionwright-actionlint' / (
+              context['GITHUB_RUN_ID'] + '-' + context['GITHUB_RUN_ATTEMPT'] + '-' + context['GITHUB_JOB'])
+          require(repo not in (output, *output.parents), 'Tool output must be outside checkout')
+          for part in output.parents:
+              if part.exists() or part.is_symlink():
+                  require(part.is_dir() and not part.is_symlink(), 'Linked output ancestor')
+          output.mkdir(parents=True, exist_ok=False)
+
+          def write(name, raw):
+              with (output / name).open('xb') as stream:
+                  require(stream.write(raw) == len(raw), 'Short retained write')
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              require(read(output / name) == raw, 'Retained write readback differs')
+
+          def save(name, value):
+              write(name, (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + '\n').encode())
+
+          environment = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+          environment.update(GIT_NO_REPLACE_OBJECTS='1', GIT_GRAFT_FILE=os.devnull, GIT_NO_LAZY_FETCH='1',
+                             GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_OPTIONAL_LOCKS='0')
+
+          def git(*args):
+              process = subprocess.run(['git', '--no-replace-objects', '-c', 'core.fsmonitor=false', '-C', str(repo), *args],
+                                       env=environment, capture_output=True, timeout=45)
+              require(process.returncode == 0, 'Original Git source read failed')
+              return process.stdout
+
+          result = {'schema': 'motionwright.actionlint-g0-result/1', 'execution_context': context,
+                    'tool_version': VERSION, 'archive_url': URL, 'expected_archive_sha256': ARCHIVE_SHA256,
+                    'original_exit_code': None, 'state': 'NOT_ADMITTED', 'test_case_results_admitted': False,
+                    'product_or_native_execution': False, 'formal_acceptance': False}
+          try:
+              sha = context['GITHUB_SHA']
+              require(git('rev-parse', 'HEAD').decode().strip() == sha, 'Checkout SHA differs')
+              require(not git('status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'), 'Source checkout is not clean')
+              commit = git('cat-file', 'commit', sha)
+              require(hashlib.sha1(b'commit ' + str(len(commit)).encode() + b'\0' + commit).hexdigest() == sha, 'Raw commit differs')
+              result['source_commit'] = identity(commit)
+              trees = [line[5:].decode() for line in commit.split(b'\n\n', 1)[0].splitlines() if line.startswith(b'tree ')]
+              require(len(trees) == 1 and re.fullmatch(r'[0-9a-f]{40}', trees[0]), 'Missing original tree')
+              result['source_tree'] = trees[0]
+              inputs = {}
+              for row in git('ls-tree', '-rz', sha, '--', '.github/workflows').split(b'\0'):
+                  if not row:
+                      continue
+                  metadata, name = row.split(b'\t', 1)
+                  name = name.decode('utf-8')
+                  if not name.endswith(('.yml', '.yaml')):
+                      continue
+                  mode, kind, oid = metadata.decode().split()
+                  require(name.count('/') == 2 and mode in ('100644', '100755') and kind == 'blob', 'Nonregular workflow input')
+                  raw = read(repo / name)
+                  require(hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == oid, 'Raw workflow blob differs')
+                  inputs[name] = {'git_blob': oid, **identity(raw)}
+              require(inputs, 'No original workflows selected')
+              save('inputs.json', {'execution_context': context, 'source_tree': trees[0], 'workflows': inputs})
+              with urllib.request.urlopen(URL, timeout=30) as response:
+                  archive = response.read(8 * 1024 * 1024 + 1)
+              require(len(archive) == 2353908 and hashlib.sha256(archive).hexdigest() == ARCHIVE_SHA256, 'Actionlint archive identity differs')
+              result['archive'] = identity(archive)
+              with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:
+                  members = [item for item in bundle.getmembers() if item.name == 'actionlint']
+                  require(len(members) == 1 and members[0].isfile() and 0 < members[0].size <= 16 * 1024 * 1024,
+                          'Missing bounded actionlint executable')
+                  with bundle.extractfile(members[0]) as stream:
+                      executable = stream.read(members[0].size + 1)
+                  require(len(executable) == members[0].size, 'Truncated actionlint executable')
+              write('actionlint', executable)
+              binary = output / 'actionlint'
+              binary.chmod(0o700)
+              result['executable'] = identity(executable)
+              version = subprocess.run([str(binary), '-version'], env=environment, capture_output=True, timeout=15)
+              write('version.stdout.log', version.stdout)
+              write('version.stderr.log', version.stderr)
+              result['version_exit_code'] = version.returncode
+              require(version.returncode == 0 and version.stdout.splitlines()[0] == VERSION.encode(), 'Actionlint version differs')
+              # Empty explicit configuration prevents hidden per-path ignores.
+              # Shell/Python checks retain their existing gates and budgets.
+              write('no-ignores.yml', b'{}\n')
+              result['configuration'] = identity(b'{}\n')
+              command = [str(binary), '-oneline', '-shellcheck=', '-pyflakes=', '-config-file', str(output / 'no-ignores.yml'), *sorted(inputs)]
+              save('intent.json', {'execution_context': context, 'source_tree': trees[0], 'command': command,
+                                  'input_count': len(inputs), 'state': 'NOT_COMPLETED', 'retry_attempted': False})
+              with (output / 'stdout.log').open('xb') as stdout, (output / 'stderr.log').open('xb') as stderr:
+                  process = subprocess.run(command, cwd=repo, env=environment, stdout=stdout, stderr=stderr, timeout=120)
+                  result['original_exit_code'] = process.returncode
+              result['stdout'] = identity(read(output / 'stdout.log'))
+              result['stderr'] = identity(read(output / 'stderr.log'))
+              require(git('rev-parse', 'HEAD').decode().strip() == sha
+                      and not git('status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'), 'Source changed during syntax validation')
+              require(all(identity(read(repo / name)) == {key: value for key, value in data.items() if key != 'git_blob'}
+                          for name, data in inputs.items()), 'Workflow input changed during syntax validation')
+              require(identity(read(binary)) == result['executable'], 'Actionlint executable changed')
+              require(read(output / 'no-ignores.yml') == b'{}\n', 'Actionlint configuration changed')
+              result['input_count'] = len(inputs)
+              result['state'] = 'ACTIONS_SYNTAX_AND_CONTEXTS_VALID' if process.returncode == 0 else 'ACTIONLINT_FAILED'
+          except subprocess.TimeoutExpired as error:
+              result['state'] = 'READ_ONLY_TOOL_UNKNOWN'
+              result['error'] = type(error).__name__
+          except (OSError, ValueError, KeyError, TypeError, IndexError, tarfile.TarError, subprocess.SubprocessError) as error:
+              result['error'] = type(error).__name__ + ': ' + str(error)
+          save('result.json', result)
+          print(json.dumps(result, sort_keys=True, allow_nan=False))
+          code = result['original_exit_code']
+          raise SystemExit(code if type(code) is int and code > 0 else 128 - code if type(code) is int and code < 0 else
+                           0 if result['state'] == 'ACTIONS_SYNTAX_AND_CONTEXTS_VALID' else 2)
+          PY
+      - name: Source and acceptance policy before UI dependencies
+        working-directory: .
+        run: |
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/acceptance_policy.py
+      - name: Reject stale, omitted or fabricated UI observations and conformance evidence
+        id: ui_evidence_guards
+        working-directory: .
+        run: >-
+          python3 -I -B tooling/ci_test_runner.py
+          --repo "$GITHUB_WORKSPACE" --mode both --require-complete
+          --pattern test_ui_performance_evidence.py
+          --pattern test_acceptance_policy.py
+          --pattern test_conformance_policy.py
+          --expected-source "$GITHUB_SHA"
+          --report "$RUNNER_TEMP/ui-performance-g0/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB/result.json"
+      - name: Retain the original UI evidence guard results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() && (steps.ui_evidence_guards.outcome == 'success' || steps.ui_evidence_guards.outcome == 'failure' || steps.ui_evidence_guards.outcome == 'cancelled') }}
+        with:
+          name: ui-performance-g0-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ runner.temp }}/ui-performance-g0/${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          if-no-files-found: error
+      - name: Retain Actions syntax inputs and original result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() && (steps.actions_schema.outcome == 'success' || steps.actions_schema.outcome == 'failure' || steps.actions_schema.outcome == 'cancelled') }}
+        with:
+          name: ui-performance-actionlint-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ runner.temp }}/motionwright-actionlint/${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          if-no-files-found: error
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
+      - name: Retain one explicit UI performance command
+        id: ui_command
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'ui' }}
+        working-directory: ${{ runner.temp }}
+        env:
+          MW_UI_PERFORMANCE_SCOPE: ${{ inputs.scope }}
+        run: >-
+          python3 -I -B -S "$GITHUB_WORKSPACE/tooling/ui_performance_evidence.py" capture
+          --repo "$GITHUB_WORKSPACE"
+          --output "$RUNNER_TEMP/ui-performance-original/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+      - name: Admit only the original single-case UI measurement without omissions
+        id: ui_admission
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'ui' && (steps.ui_command.outcome == 'success' || steps.ui_command.outcome == 'failure' || steps.ui_command.outcome == 'cancelled') }}
+        working-directory: ${{ runner.temp }}
+        env:
+          MW_UI_PERFORMANCE_SCOPE: ${{ inputs.scope }}
+          MW_UI_COMMAND_STATUS: ${{ steps.ui_command.outcome }}
+          MW_UI_JOB_STATUS: ${{ job.status }}
+        run: >-
+          python3 -I -B -S "$GITHUB_WORKSPACE/tooling/ui_performance_evidence.py" verify
+          --repo "$GITHUB_WORKSPACE"
+          --output "$RUNNER_TEMP/ui-performance-original/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+          --command-step-status "$MW_UI_COMMAND_STATUS" --job-status "$MW_UI_JOB_STATUS"
+      - name: Retain original UI command, samples, attachment and failure outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'ui' && (steps.ui_command.outcome == 'success' || steps.ui_command.outcome == 'failure' || steps.ui_command.outcome == 'cancelled') }}
+        with:
+          name: ui-performance-original-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ui-performance-original/${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          if-no-files-found: error
+          include-hidden-files: true
       - name: Measure selection to inspector paint
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'ui') }}
         env:
           MOTIONWRIGHT_PERF_ACCEPTANCE: "1"
           MOTIONWRIGHT_UI_PERF_REPORT: "../../verification/responsiveness/ui-selection.json"
         run: npx playwright test tests/performance.spec.ts
       - name: Validate UI responsiveness evidence
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'ui') }}
         run: |
           cd ../..
           python3 - <<'PY'
@@ -445,7 +696,7 @@ jobs:
           )
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.scope == 'ui') }}
         with:
           name: responsiveness-ui-evidence
           path: |
