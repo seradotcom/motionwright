@@ -124,11 +124,31 @@ impl Store {
         // Capture and validate every member before publishing even the first
         // member. A path can change after the earlier inspection.
         let staged = self.capture_bundle_blobs(source, manifest)?;
+        // Reject pre-existing destination collisions across the entire
+        // captured set BEFORE publishing its first content-addressed member.
+        // Never delete a foreign or pre-existing blob on failure.
+        self.preflight_bundle_blob_destinations(&staged)?;
         for captured in &staged {
             self.publish_file_import(captured)?;
         }
         drop(staged);
         self.import_project(&manifest.backup)
+    }
+
+    fn preflight_bundle_blob_destinations(&self, staged: &[StagedFileImport]) -> Result<()> {
+        for captured in staged {
+            let expected = captured.descriptor();
+            match self.checked_existing_blob_path(&expected.sha256) {
+                Ok(path) => {
+                    if hash_portable_file(&path, expected.size_bytes)? != *expected {
+                        return Err(StorageError::InvalidBlobDigest);
+                    }
+                }
+                Err(StorageError::BlobMissing { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     fn capture_bundle_blobs(
