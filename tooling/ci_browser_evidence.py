@@ -29,6 +29,7 @@ RUNTIME_INPUTS = ("apps/studio/node_modules/@playwright/test/package.json",
                   "apps/studio/node_modules/playwright/lib/reporters/json.js")
 CONTEXT_KEYS = ("GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
                 "GITHUB_JOB", "GITHUB_WORKFLOW_SHA", "GITHUB_WORKFLOW_REF")
+MAX_HASH_BYTES = 256 * 1024 * 1024
 
 
 def now():
@@ -40,7 +41,8 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def file_record(path):
+def file_record(path, *, max_bytes=MAX_HASH_BYTES):
+    require(type(max_bytes) is int and 0 <= max_bytes <= MAX_HASH_BYTES, "Invalid evidence hashing budget")
     path = Path(path).absolute()
     for component in (path, *path.parents):
         info = component.lstat()
@@ -48,14 +50,22 @@ def file_record(path):
                 and not getattr(info, "st_file_attributes", 0) & 0x400, "Linked evidence input")
     initial = path.stat()
     require(stat.S_ISREG(initial.st_mode), "Evidence input is not a regular file")
+    require(0 <= initial.st_size <= max_bytes, "Evidence input exceeds hashing budget")
     sha = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
         require((initial.st_dev, initial.st_ino) == (opened.st_dev, opened.st_ino), "Input identity changed")
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
+        # A process with UNKNOWN outcome may still append to its streams. Never
+        # follow EOF indefinitely or allocate the full budget for a small input.
+        while size <= initial.st_size:
+            requested = min(1024 * 1024, initial.st_size + 1 - size)
+            block = stream.read(requested)
             sha.update(block)
             size += len(block)
+            require(size <= initial.st_size, "Evidence grew during hashing")
+            if len(block) < requested:
+                break
         final = os.fstat(stream.fileno())
     after = path.stat()
     signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
@@ -119,7 +129,9 @@ def retained_report(observer, path):
     if identity["bytes"] > 64 * 1024 * 1024:
         return {"state": "ORIGINAL_JSON_NOT_PARSED", **identity,
                 "error": "Report exceeds parsing budget; original retained", "test_case_results_admitted": False}
-    raw = path.read_bytes()
+    with path.open("rb") as stream:
+        raw = stream.read(identity["bytes"] + 1)
+    require(len(raw) == identity["bytes"], "Report changed after hashing")
     require(hashlib.sha256(raw).hexdigest() == identity["sha256"], "Report changed after hashing")
     try:
         value = observer.strict_json(raw)

@@ -206,5 +206,202 @@ class BrowserOriginalCustodyTests(unittest.TestCase):
             self.assertEqual(f.marker.read_text(), "call\n")
 
 
+class BoundedEvidenceHashTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="ci-browser-bounded-", dir=os.environ.get("MW_CI_BROWSER_TEST_TMP"))
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    @contextmanager
+    def measured_reads(self, target, mutation=None):
+        """Wrap real file reads; mutations are finite, synchronous fixture writes."""
+        real_open = Path.open
+        target = target.absolute()
+        reads = []
+        open_count = 0
+        case = self
+
+        class MeasuredStream:
+            def __init__(self, stream, open_index):
+                self.stream = stream
+                self.open_index = open_index
+                self.read_index = 0
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, requested):
+                case.assertIs(type(requested), int)
+                case.assertGreaterEqual(requested, 0)
+                self.read_index += 1
+                event = {"open_index": self.open_index, "read_index": self.read_index, "requested": requested}
+                reads.append(event)
+                if mutation is not None:
+                    mutation(event, real_open)
+                raw = self.stream.read(requested)
+                event["returned"] = len(raw)
+                return raw
+
+        def open_measured(path, mode="r", *args, **kwargs):
+            nonlocal open_count
+            stream = real_open(path, mode, *args, **kwargs)
+            if Path(path).absolute() == target and mode == "rb":
+                open_count += 1
+                return MeasuredStream(stream, open_count)
+            return stream
+
+        with patch.object(Path, "open", new=open_measured):
+            yield reads
+
+    def test_stable_binary_and_empty_inputs_keep_exact_hashes_with_bounded_reads(self):
+        self.assertEqual(CI.MAX_HASH_BYTES, 256 * 1024 * 1024)
+        for raw in (b"", b"original\r\n\xff\x00" * 1024):
+            with self.subTest(size=len(raw)):
+                target = self.root / "original.bin"
+                target.write_bytes(raw)
+                with self.measured_reads(target) as reads:
+                    record = CI.file_record(target, max_bytes=len(raw))
+                self.assertEqual(record, {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+                self.assertEqual(sum(item["requested"] for item in reads), len(raw) + 1)
+                self.assertEqual(sum(item["returned"] for item in reads), len(raw))
+                self.assertEqual(target.read_bytes(), raw)
+
+    def test_over_budget_and_invalid_budgets_are_rejected_before_open(self):
+        target = self.root / "original.bin"
+        raw = b"retained original" * 512
+        target.write_bytes(raw)
+        with patch.object(Path, "open", side_effect=AssertionError("Rejected input must not be opened")) as opened:
+            with self.assertRaisesRegex(ValueError, "exceeds hashing budget"):
+                CI.file_record(target, max_bytes=len(raw) - 1)
+            for invalid in (True, -1, CI.MAX_HASH_BYTES + 1):
+                with self.subTest(budget=invalid), self.assertRaisesRegex(ValueError, "Invalid evidence hashing budget"):
+                    CI.file_record(target, max_bytes=invalid)
+            opened.assert_not_called()
+        self.assertEqual(target.read_bytes(), raw)
+
+    def test_growth_is_rejected_after_at_most_initial_size_plus_one_bytes(self):
+        target = self.root / "stdout.log"
+        raw = b"x" * (1024 * 1024 + 37)
+        appended = b"finite fixture append\r\n\xff" * 128
+        target.write_bytes(raw)
+
+        def grow(event, real_open):
+            if event["read_index"] == 1:
+                with real_open(target, "ab") as stream:
+                    stream.write(appended)
+
+        with self.measured_reads(target, grow) as reads:
+            with self.assertRaisesRegex(ValueError, "grew during hashing"):
+                CI.file_record(target)
+        self.assertEqual(sum(item["requested"] for item in reads), len(raw) + 1)
+        self.assertEqual(sum(item["returned"] for item in reads), len(raw) + 1)
+        self.assertTrue(all(0 < item["requested"] <= 1024 * 1024 for item in reads))
+        self.assertEqual(target.read_bytes(), raw + appended)
+
+    def test_truncation_is_rejected_without_restoring_or_rewriting_original(self):
+        target = self.root / "stdout.log"
+        raw = b"original bytes\r\n\x00\xff" * 256
+        target.write_bytes(raw)
+
+        def truncate(event, real_open):
+            if event["read_index"] == 1:
+                with real_open(target, "r+b") as stream:
+                    stream.truncate(17)
+
+        with self.measured_reads(target, truncate) as reads:
+            with self.assertRaisesRegex(ValueError, "Evidence changed during hashing"):
+                CI.file_record(target)
+        self.assertEqual(sum(item["requested"] for item in reads), len(raw) + 1)
+        self.assertEqual(sum(item["returned"] for item in reads), 17)
+        self.assertEqual(target.read_bytes(), raw[:17])
+
+    def test_same_size_mutation_retains_the_existing_signature_rejection(self):
+        target = self.root / "original.bin"
+        raw = b"original bytes\r\n\x00\xff" * 256
+        changed = b"z" + raw[1:]
+        target.write_bytes(raw)
+        before = target.stat()
+
+        def mutate(event, real_open):
+            if event["read_index"] == 1:
+                with real_open(target, "r+b") as stream:
+                    stream.write(changed)
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+        with self.measured_reads(target, mutate):
+            with self.assertRaisesRegex(ValueError, "Evidence changed during hashing"):
+                CI.file_record(target)
+        self.assertEqual(target.read_bytes(), changed)
+
+    def test_changed_path_descriptor_identity_is_rejected_before_reading(self):
+        target, replacement = self.root / "original.bin", self.root / "replacement.bin"
+        target.write_bytes(b"original")
+        replacement.write_bytes(b"replaced")
+        real_open = Path.open
+        reads = []
+
+        class NoReadStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, requested):
+                reads.append(requested)
+                raise AssertionError("A different descriptor must be rejected before reading")
+
+        def redirected(path, mode="r", *args, **kwargs):
+            if Path(path).absolute() == target.absolute() and mode == "rb":
+                return NoReadStream(real_open(replacement, mode, *args, **kwargs))
+            return real_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, "open", new=redirected):
+            with self.assertRaisesRegex(ValueError, "Input identity changed"):
+                CI.file_record(target)
+        self.assertEqual(reads, [])
+        self.assertEqual(target.read_bytes(), b"original")
+        self.assertEqual(replacement.read_bytes(), b"replaced")
+
+    def test_report_reread_is_bounded_to_the_previously_verified_size(self):
+        target = self.root / "playwright-report.json"
+        raw = json.dumps(REPORT).encode()
+        appended = b" " * (len(raw) * 32)
+        target.write_bytes(raw)
+        observer = type("SyntheticReportParser", (), {"strict_json": staticmethod(json.loads)})
+        stable = CI.retained_report(observer, target)
+        self.assertEqual(stable["state"], "ORIGINAL_JSON_RETAINED")
+        self.assertEqual(stable["stats_as_reported"], REPORT["stats"])
+        self.assertFalse(stable["test_case_results_admitted"])
+
+        def grow_report(event, real_open):
+            if event["open_index"] == 2 and event["read_index"] == 1:
+                with real_open(target, "ab") as stream:
+                    stream.write(appended)
+
+        with self.measured_reads(target, grow_report) as reads:
+            with self.assertRaisesRegex(ValueError, "Report changed after hashing"):
+                CI.retained_report(observer, target)
+        reread = [item for item in reads if item["open_index"] == 2]
+        self.assertEqual(len(reread), 1)
+        self.assertEqual(reread[0]["requested"], len(raw) + 1)
+        self.assertEqual(reread[0]["returned"], len(raw) + 1)
+        self.assertEqual(target.read_bytes(), raw + appended)
+
+
 if __name__ == "__main__":
     unittest.main()
