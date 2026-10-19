@@ -260,7 +260,12 @@ def _send_native_x11_create() -> None:
             key(name, True)
             key(name, False)
             time.sleep(0.035)
+        # The dialog focuses its h2. First Shift+Tab wraps to the footer
+        # Close button; the second reaches the labeled Project title input
+        # because the Create button is disabled before a title is entered.
+        # A single Shift+Tab would type into the footer and never create.
         key("Shift_L", True)
+        stroke("Tab")
         stroke("Tab")
         key("Shift_L", False)
         for char in EXPECTED_INITIAL_TITLE:

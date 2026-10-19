@@ -185,15 +185,17 @@ def _create_first_project_in_native_window(hwnd: int) -> None:
         safe_stderr = getattr(result, "stderr", "")
         if not isinstance(safe_stderr, str):
             safe_stderr = ""
-        stages = (
-            ("Original installed window is unavailable", "WINDOW_UIA_UNAVAILABLE"),
-            ("Original accessible Project library form not observed", "FORM_NOT_OBSERVED"),
-            ("The real Create project action never became enabled", "CREATE_DISABLED"),
-            ("Original create button lacks an accessible Invoke action", "INVOKE_NOT_SUPPORTED"),
-            ("Unexpected original first-use title", "SOURCE_TITLE_MISMATCH"),
+        # Only the script's own closed taxonomy is admitted, never arbitrary
+        # PowerShell error details, host paths, titles, or project data.
+        allowed = {
+            "PRECHECK", "UIA_LOAD", "WINDOW_LOOKUP", "ELEMENT_QUERY",
+            "FORM_FIND", "INPUT_FOCUS", "TYPE_TITLE", "BUTTON_ENABLE",
+            "INVOKE_LOOKUP", "INVOKE_UNKNOWN",
+        }
+        markers = re.findall(
+            r"(?m)^MOTIONWRIGHT_UI_STAGE:([A-Z_]+)\s*$", safe_stderr,
         )
-        stage = next((code for marker, code in stages if marker in safe_stderr),
-                     "ACTION_CONFIRMATION_UNAVAILABLE")
+        stage = markers[0] if len(markers) == 1 and markers[0] in allowed else "ACTION_CONFIRMATION_UNAVAILABLE"
         raise ColdStartError(
             "Native accessible project-creation action was not confirmed: " + stage
         )

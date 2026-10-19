@@ -174,11 +174,11 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(
             windows.subprocess, "run",
             return_value=Mock(
-                returncode=1, stdout="",
-                stderr="File path private-must-not-leak. Original accessible Project library form not observed",
+                returncode=75, stdout="",
+                stderr="MOTIONWRIGHT_UI_STAGE:FORM_FIND\nprivate-must-not-leak",
             ),
         ):
-            with self.assertRaisesRegex(windows.ColdStartError, "FORM_NOT_OBSERVED") as ctx:
+            with self.assertRaisesRegex(windows.ColdStartError, "FORM_FIND") as ctx:
                 windows._create_first_project_in_native_window(12345)
         self.assertNotIn("private-must-not-leak", str(ctx.exception))
 
