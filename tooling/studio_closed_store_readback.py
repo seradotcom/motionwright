@@ -13,6 +13,7 @@ if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site):
     raise SystemExit("Run this verifier with Python -B -I -S")
 
 import argparse
+from contextlib import closing
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -1097,7 +1098,7 @@ def compare_responses(raw, checks, layout, expected, original_index=None):
 
 def empty_counts(database):
     # This is called only on an extracted work copy, never on a captured original.
-    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
         return {name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
                 for name in ("projects", "events")}
 

@@ -1,5 +1,6 @@
 """Reader contract tests with synthetic metadata; no Motionwright runner is used."""
 
+from contextlib import closing
 import copy
 from decimal import Decimal
 import importlib.util
@@ -79,9 +80,10 @@ class FixtureCase(unittest.TestCase):
         store.mkdir(parents=True)
         database = store / "studio.sqlite3"
         if empty:
-            with sqlite3.connect(database) as connection:
-                connection.execute("CREATE TABLE projects(id TEXT)")
-                connection.execute("CREATE TABLE events(revision INTEGER)")
+            with closing(sqlite3.connect(database)) as connection:
+                with connection:
+                    connection.execute("CREATE TABLE projects(id TEXT)")
+                    connection.execute("CREATE TABLE events(revision INTEGER)")
         else:
             database.write_bytes(b"synthetic unopened metadata fixture; not a product database")
         (store / "empty-directory").mkdir()
@@ -162,6 +164,73 @@ class FixtureCase(unittest.TestCase):
                 "new_process_reopen_of_unmodified_complete_store", "project": value, "history": history(value), "cas": []}},
             "transcript": "DO-NOT-COPY-TRANSIENT-GRANT"})
         self.healthy()
+
+
+class SQLiteLifecycleTests(FixtureCase):
+    def test_empty_capture_closes_connection_after_success_and_sql_error(self):
+        real_connect = sqlite3.connect
+        for outcome in ("success", "sql-error"):
+            with self.subTest(outcome=outcome):
+                connections = []
+
+                def tracked_connect(*args, **kwargs):
+                    connection = real_connect(*args, **kwargs)
+                    connections.append(connection)
+                    if outcome == "sql-error":
+                        connection.execute("CREATE TABLE projects(id TEXT)")
+                        connection.commit()
+                    return connection
+
+                try:
+                    with mock.patch.object(sqlite3, "connect", side_effect=tracked_connect) as connect:
+                        if outcome == "sql-error":
+                            with self.assertRaises(sqlite3.OperationalError):
+                                self.capture("empty-" + outcome, empty=True)
+                        else:
+                            self.capture("empty-" + outcome, empty=True)
+                        self.assertEqual(connect.call_count, 1)
+                    self.assertEqual(len(connections), 1)
+                    # Strong references prevent garbage collection from satisfying this check.
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        connections[0].execute("SELECT 1")
+                finally:
+                    # A failed assertion must remain visible while cleanup releases real handles.
+                    for connection in connections:
+                        connection.close()
+
+    def test_empty_counts_closes_connection_after_success_and_sql_error(self):
+        real_connect = sqlite3.connect
+        for outcome in ("success", "sql-error"):
+            with self.subTest(outcome=outcome):
+                database = self.root / ("counts-" + outcome + ".sqlite3")
+                with closing(real_connect(database)) as connection:
+                    with connection:
+                        connection.execute("CREATE TABLE projects(id TEXT)")
+                        connection.executemany("INSERT INTO projects VALUES (?)", [("one",), ("two",)])
+                        if outcome == "success":
+                            connection.execute("CREATE TABLE events(revision INTEGER)")
+                            connection.executemany("INSERT INTO events VALUES (?)", [(1,), (2,), (3,)])
+                connections = []
+
+                def tracked_connect(*args, **kwargs):
+                    connection = real_connect(*args, **kwargs)
+                    connections.append(connection)
+                    return connection
+
+                try:
+                    with mock.patch.object(reader.sqlite3, "connect", side_effect=tracked_connect) as connect:
+                        if outcome == "sql-error":
+                            with self.assertRaises(sqlite3.OperationalError):
+                                reader.empty_counts(database)
+                        else:
+                            self.assertEqual(reader.empty_counts(database), {"projects": 2, "events": 3})
+                        self.assertEqual(connect.call_count, 1)
+                    self.assertEqual(len(connections), 1)
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        connections[0].execute("SELECT 1")
+                finally:
+                    for connection in connections:
+                        connection.close()
 
 
 class JsonAndIdentityTests(FixtureCase):
