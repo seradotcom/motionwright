@@ -198,14 +198,14 @@ jobs:
           assert value["executed_source_sha"] == os.environ["MW_SOURCE_SHA"]
           assert value["status"] == "PASS" and type(value["exit_code"]) is int and value["exit_code"] == 0
           assert value["require_complete"] is True and len(value["steps"]) == 2
-          assert value["test_definition_sha256"] == {"tooling/tests/test_native_manim_camera_pixels.py": "541da5525837fec38943629d4dd11b27f6abd0c11b8284ecf8a8fe5ccb505639"}
+          assert value["test_definition_sha256"] == {"tooling/tests/test_native_manim_camera_pixels.py": "0e4a8f9ad489ea9049d98a0669a491f4a80df1480fcc3612e753d16c3e43dd74"}
           assert {r["entry_point"] for r in value["steps"]} == {
               "discovery:test_native_manim_camera_pixels.py", "dotted:tooling.tests.test_native_manim_camera_pixels"}
           for row in value["steps"]:
               assert row["status"] == "PASS" and type(row["exit_code"]) is int and row["exit_code"] == 0
               assert row["counts"]["terminal_status"] == "OK"
-              assert type(row["counts"]["tests_run"]) is int and row["counts"]["tests_run"] == 11
-              assert row["counts"]["passed"] == 11
+              assert type(row["counts"]["tests_run"]) is int and row["counts"]["tests_run"] == 14
+              assert row["counts"]["passed"] == 14
               assert all(type(row["counts"][k]) is int and row["counts"][k] == 0 for k in
                          ("errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
               for key in ("stdout", "stderr"):
