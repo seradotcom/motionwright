@@ -4,13 +4,15 @@ import type { CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Proj
 // service remain authoritative; recovery never executes a stored command.
 export const CANVAS_TRANSFORM_FIELDS = ["x", "y", "width", "height", "rotation_deg", "opacity"] as const;
 export const CANVAS_STYLE_FIELDS = ["fill", "stroke", "stroke_width", "font_family", "font_size", "font_weight", "line_height", "blend_mode"] as const;
-export const CANVAS_DRAFT_FIELDS = ["text", ...CANVAS_TRANSFORM_FIELDS, ...CANVAS_STYLE_FIELDS] as const;
+export const CANVAS_HIERARCHY_FIELDS = ["parent_id", "z_index"] as const;
+export const CANVAS_DRAFT_FIELDS = ["text", ...CANVAS_TRANSFORM_FIELDS, ...CANVAS_STYLE_FIELDS, ...CANVAS_HIERARCHY_FIELDS] as const;
 export type CanvasDraftField = typeof CANVAS_DRAFT_FIELDS[number];
-export type CanvasDraftGroup = "text" | "transform" | "style";
+export type CanvasDraftGroup = "text" | "transform" | "style" | "hierarchy";
 export const CANVAS_FIELD_LABELS: Record<CanvasDraftField, string> = {
   text: "Text", x: "X", y: "Y", width: "W", height: "H", rotation_deg: "Rotation", opacity: "Opacity",
   fill: "Fill", stroke: "Stroke", stroke_width: "Stroke width", font_family: "Font family",
   font_size: "Font size", font_weight: "Font weight", line_height: "Line height", blend_mode: "Blend mode",
+  parent_id: "Parent", z_index: "Z order",
 };
 export interface CanvasFieldDraft {
   raw: string; base: string; baseRevision: number; sequence: number; intent?: true;
@@ -22,7 +24,7 @@ export interface CanvasSubmission {
   fields: Partial<Record<CanvasDraftField, { raw: string; sequence: number; value: string }>>;
 }
 export interface CanvasWorkspaceDraft {
-  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2"; scope: string; sceneId: string; nodeId: string;
+  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2" | "motionwright.canvas-draft/3"; scope: string; sceneId: string; nodeId: string;
   baseContext: CanvasDraftContext;
   fields: Record<CanvasDraftField, CanvasFieldDraft>; awaiting: CanvasSubmission | null;
 }
@@ -31,7 +33,7 @@ const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const canvasDraftScope = (project: Project, sceneId: string, nodeId: string) =>
   JSON.stringify([project.id, project.generation, project.active_branch, sceneId, nodeId]);
 export const canvasGroupFields = (group: CanvasDraftGroup): readonly CanvasDraftField[] =>
-  group === "text" ? ["text"] : group === "style" ? CANVAS_STYLE_FIELDS : CANVAS_TRANSFORM_FIELDS;
+  group === "text" ? ["text"] : group === "style" ? CANVAS_STYLE_FIELDS : group === "hierarchy" ? CANVAS_HIERARCHY_FIELDS : CANVAS_TRANSFORM_FIELDS;
 export const canvasFieldHasInput = (field: CanvasFieldDraft) => field.intent === true || field.raw !== field.base;
 export const canvasDraftHasWork = (draft: CanvasWorkspaceDraft) => draft.awaiting !== null
   || CANVAS_DRAFT_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
@@ -49,6 +51,9 @@ export function canvasFieldIssue(field: CanvasDraftField, raw: string): string |
     ? "Canvas text must fit within 100,000 UTF-8 bytes." : null;
   if (isStyleString(field)) return new TextEncoder().encode(raw.trim()).length > 512
     ? "Canvas style values must fit within 512 UTF-8 bytes." : null;
+  if (field === "parent_id") return new TextEncoder().encode(raw).length > 256 ? "Select a valid Canvas parent." : null;
+  if (field === "z_index" && (!/^[+-]?\d+$/.test(raw.trim()) || !Number.isSafeInteger(Number(raw))
+    || Number(raw) < -2147483648 || Number(raw) > 2147483647)) return "Use a signed 32-bit whole Z order.";
   if (field === "blend_mode") return ["normal", "multiply", "screen", "add"].includes(raw)
     ? null : "Choose an admitted blend mode.";
   if ((optionalNumericStyle as readonly string[]).includes(field) && raw.trim() === "") return null;
@@ -65,14 +70,14 @@ export function canvasFieldIssue(field: CanvasDraftField, raw: string): string |
   } catch { return "Enter a finite decimal number."; }
 }
 function proposed(field: CanvasDraftField, raw: string): string {
-  if (field === "text" || field === "blend_mode") return raw;
+  if (field === "text" || field === "blend_mode" || field === "parent_id") return raw;
   if (isStyleString(field)) return raw.trim();
   if ((optionalNumericStyle as readonly string[]).includes(field) && raw.trim() === "") return "";
   return canvasFieldIssue(field, raw) ? "invalid:" + raw : String(canvasNumber(raw));
 }
 const canonical = (node: CanvasNode, field: CanvasDraftField): string =>
   field === "text" ? node.text ?? "" : isStyleField(field)
-    ? String(node.style[field] ?? "") : String(node[field]);
+    ? String(node.style[field] ?? "") : field === "parent_id" ? node.parent_id ?? "" : String(node[field]);
 const styleFromSubmission = (node: CanvasNode, values: CanvasSubmission["fields"]): NodeStyle => {
   const style = { ...node.style };
   for (const field of CANVAS_STYLE_FIELDS) {
@@ -94,7 +99,7 @@ export function canvasDraftNode(draft: CanvasWorkspaceDraft, project: Project): 
   return node;
 }
 export function createCanvasDraft(project: Project, sceneId: string, nodeId: string): CanvasWorkspaceDraft {
-  const draft: CanvasWorkspaceDraft = { schema: "motionwright.canvas-draft/2", scope: canvasDraftScope(project, sceneId, nodeId),
+  const draft: CanvasWorkspaceDraft = { schema: "motionwright.canvas-draft/3", scope: canvasDraftScope(project, sceneId, nodeId),
     sceneId, nodeId, baseContext: { kind: "", parent_id: null, coordinate_space: "project_pixels" }, fields: {} as CanvasWorkspaceDraft["fields"], awaiting: null };
   const node = canvasDraftNode(draft, project);
   draft.baseContext = nodeContext(node);
@@ -121,7 +126,7 @@ export function canvasDraftConflicts(draft: CanvasWorkspaceDraft, project: Proje
  * reparenting or changing an object's kind. */
 export function canvasContextConflicts(draft: CanvasWorkspaceDraft, project: Project): CanvasDraftGroup[] {
   const current = nodeContext(canvasDraftNode(draft, project));
-  return (["text", "transform", "style"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
+  return (["text", "transform", "style", "hierarchy"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
 }
 export function reviewCanvasContext(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
   return reconcileCanvasDraft({ ...draft, baseContext: nodeContext(canvasDraftNode(draft, project)) }, project);
@@ -130,7 +135,11 @@ export function canvasSubmissionMatches(project: Project, draft: CanvasWorkspace
   if (draft.scope !== attempt.scope || project.revision !== attempt.revision + 1) return false;
   let node: CanvasNode;
   try { node = canvasDraftNode(draft, project); } catch { return false; }
-  return contextMatches(attempt.context, nodeContext(node), attempt.group)
+  // Reparent is the only group allowed to change parent context; the exact
+  // committed parent and Z values are still checked below.
+  return (attempt.group === "hierarchy"
+    ? attempt.context.kind === node.kind && attempt.context.coordinate_space === node.coordinate_space
+    : contextMatches(attempt.context, nodeContext(node), attempt.group))
     && canvasGroupFields(attempt.group).every(field => canonical(node, field) === attempt.fields[field]?.value);
 }
 export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
@@ -141,7 +150,13 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
     const value = canonical(node, field);
     fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
   }
+  if (draft.schema !== "motionwright.canvas-draft/3") for (const field of CANVAS_HIERARCHY_FIELDS) {
+    const value = canonical(node, field);
+    fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
+  }
   let awaiting = draft.awaiting;
+  const ownHierarchyAcknowledged = Boolean(awaiting && awaiting.group === "hierarchy"
+    && canvasSubmissionMatches(project, draft, awaiting));
   if (awaiting && canvasSubmissionMatches(project, draft, awaiting)) {
     for (const field of canvasGroupFields(awaiting.group)) {
       const input = fields[field], sent = awaiting.fields[field]!, base = canonical(node, field);
@@ -160,17 +175,21 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
   for (const field of CANVAS_DRAFT_FIELDS) {
     const input = fields[field], current = canonical(node, field), dirty = canvasFieldHasInput(input);
     if (dirty && input.baseRevision > project.revision) continue;
-    if (dirty && !contextMatches(draft.baseContext, nodeContext(node), field === "text" ? "text" : isStyleField(field) ? "style" : "transform")) continue;
+    if (dirty && !contextMatches(draft.baseContext, nodeContext(node), field === "text" ? "text" : isStyleField(field) ? "style" : (CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field) ? "hierarchy" : "transform")) continue;
     if (!dirty || current === input.base || current === proposed(field, input.raw)) fields[field] = {
       ...input, raw: dirty ? input.raw : current, base: current, baseRevision: project.revision,
     };
   }
-  const next: CanvasWorkspaceDraft = { ...draft, schema: "motionwright.canvas-draft/2", fields, awaiting }, currentContext = nodeContext(node);
-  const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform"), styleInput = groupHasInput(next, "style");
+  const next: CanvasWorkspaceDraft = { ...draft, schema: "motionwright.canvas-draft/3", fields, awaiting }, currentContext = nodeContext(node);
+  const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform"), styleInput = groupHasInput(next, "style"), hierarchyInput = groupHasInput(next, "hierarchy");
   next.baseContext = {
-    kind: textInput || transformInput || styleInput ? draft.baseContext.kind : currentContext.kind,
-    parent_id: transformInput || styleInput ? draft.baseContext.parent_id : currentContext.parent_id,
-    coordinate_space: transformInput || styleInput ? draft.baseContext.coordinate_space : currentContext.coordinate_space,
+    kind: textInput || transformInput || styleInput || hierarchyInput ? draft.baseContext.kind : currentContext.kind,
+    // A matching hierarchy ACK intentionally changes parent. A later Z edit
+    // must be rebased onto that acknowledged parent without erasing its raw
+    // intent. Independently authored transform/style still require review.
+    parent_id: transformInput || styleInput || (hierarchyInput && !ownHierarchyAcknowledged)
+      ? draft.baseContext.parent_id : currentContext.parent_id,
+    coordinate_space: transformInput || styleInput || hierarchyInput ? draft.baseContext.coordinate_space : currentContext.coordinate_space,
   };
   return next;
 }
@@ -200,14 +219,34 @@ export function canvasGroupIssue(draft: CanvasWorkspaceDraft, project: Project, 
   const changed = fields.filter(field => canvasFieldHasInput(draft.fields[field])
     && proposed(field, draft.fields[field].raw) !== canonical(node, field));
   if (changed.length === 0) return "These values already match the saved object.";
-  if (project.locks.some(lock => lock.resource === "scene:" + draft.sceneId && lock.kind === (group === "text" ? "content" : group === "style" ? "style" : "position"))
-    || changed.some(field => node.property_locks.includes(group === "style" ? "style" : transformLock(field)))) {
+  if (group === "hierarchy" && changed.includes("parent_id")) {
+    const proposedParent = draft.fields.parent_id.raw;
+    const scene = project.scenes.find(item => item.id === draft.sceneId);
+    if (proposedParent && (proposedParent === node.id || !scene?.nodes.some(item => item.id === proposedParent))) {
+      return "Select another object in the same saved scene as parent.";
+    }
+    let cursor = scene?.nodes.find(item => item.id === proposedParent);
+    const seen = new Set<string>();
+    while (cursor) {
+      if (cursor.id === node.id) return "Cannot move this object under its descendant.";
+      if (seen.has(cursor.id)) return "The parent hierarchy is cyclic; review the saved scene.";
+      seen.add(cursor.id);
+      cursor = scene?.nodes.find(item => item.id === cursor?.parent_id);
+    }
+  }
+  const sceneLock = group === "hierarchy"
+    ? project.locks.some(lock => lock.resource === "scene:" + draft.sceneId && (lock.kind === "content" || lock.kind === "position"))
+    : project.locks.some(lock => lock.resource === "scene:" + draft.sceneId
+      && lock.kind === (group === "text" ? "content" : group === "style" ? "style" : "position"));
+  // Rust ReparentCanvasNode protects both fields as one coupled command.
+  if (sceneLock || (group === "hierarchy" && (node.property_locks.includes("parent") || node.property_locks.includes("order")))
+    || (group !== "hierarchy" && changed.some(field => node.property_locks.includes(group === "style" ? "style" : transformLock(field))))) {
     return "A saved lock protects these Canvas fields. Your draft is kept.";
   }
   return null;
 }
 export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Project, group: CanvasDraftGroup, id: string): {
-  draft: CanvasWorkspaceDraft; submission: CanvasSubmission; change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" }>;
+  draft: CanvasWorkspaceDraft; submission: CanvasSubmission; change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" | "reparent_canvas_node" }>;
 } {
   const current = reconcileCanvasDraft(draft, project), issue = canvasGroupIssue(current, project, group);
   if (issue) throw new Error(issue);
@@ -218,14 +257,17 @@ export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Pr
     submission.fields[field] = { raw: input.raw, sequence: input.sequence, value };
     if (value !== canonical(node, field)) fields[field] = { ...input, intent: true };
   }
-  const change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" }> =
+  const change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" | "reparent_canvas_node" }> =
     group === "text"
       ? { type: "update_canvas_text", scene_id: current.sceneId, node_id: current.nodeId, text: submission.fields.text!.value || null }
       : group === "style"
         ? { type: "update_canvas_style", scene_id: current.sceneId, node_id: current.nodeId,
             style: styleFromSubmission(node, submission.fields) }
-        : { type: "transform_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
-            transform: Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, Number(submission.fields[field]!.value)])) as unknown as CanvasTransform };
+        : group === "hierarchy"
+          ? { type: "reparent_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
+              parent_id: submission.fields.parent_id!.value || null, z_index: Number(submission.fields.z_index!.value) }
+          : { type: "transform_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
+              transform: Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, Number(submission.fields[field]!.value)])) as unknown as CanvasTransform };
   return { draft: { ...current, fields, awaiting: submission }, submission, change };
 }
 
@@ -285,11 +327,12 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
   let draft: CanvasWorkspaceDraft | null = null;
   if (value.draft !== null) {
     const saved = value.draft;
-    if (!record(saved) || (saved.schema !== "motionwright.canvas-draft/1" && saved.schema !== "motionwright.canvas-draft/2") || saved.scope !== scope
+    if (!record(saved) || (saved.schema !== "motionwright.canvas-draft/1" && saved.schema !== "motionwright.canvas-draft/2" && saved.schema !== "motionwright.canvas-draft/3") || saved.scope !== scope
       || saved.sceneId !== scopeParts[3] || saved.nodeId !== scopeParts[4] || !record(saved.fields)) throw new Error("The Canvas draft has an invalid object scope.");
     const fields = {} as CanvasWorkspaceDraft["fields"];
     for (const field of CANVAS_DRAFT_FIELDS) {
-      if (saved.schema === "motionwright.canvas-draft/1" && isStyleField(field)) continue;
+      if ((saved.schema === "motionwright.canvas-draft/1" && isStyleField(field))
+        || (saved.schema !== "motionwright.canvas-draft/3" && (CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field))) continue;
       const input = saved.fields[field];
       if (!record(input) || typeof input.raw !== "string" || typeof input.base !== "string" || !safeInteger(input.baseRevision)
         || !safeInteger(input.sequence) || (input.intent !== undefined && input.intent !== true)
@@ -301,7 +344,7 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
     if (saved.awaiting !== null) {
       const sent = saved.awaiting;
       if (!record(sent) || typeof sent.id !== "string" || !sent.id || sent.id.length > 128 || sent.scope !== scope
-        || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform" && sent.group !== "style") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
+        || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform" && sent.group !== "style" && sent.group !== "hierarchy") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
       awaiting = { id: sent.id, scope, revision: sent.revision, group: sent.group, context: cleanContext(sent.context), fields: {} };
       for (const field of canvasGroupFields(sent.group)) {
         const input = sent.fields[field];
