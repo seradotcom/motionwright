@@ -182,6 +182,16 @@ export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Pr
   return { draft: { ...current, fields, awaiting: submission }, submission, change };
 }
 
+/** Confirm both directions of the browser-session pointer. A localStorage
+ * recovery record without its writer pointer is recoverable only by explicit
+ * selection after reload; it must not authorize a mutation automatically. */
+export function writeCanvasSessionPointer(
+  storage: Pick<Storage, "getItem" | "setItem">, key: string, writerId: string,
+): void {
+  storage.setItem(key, writerId);
+  if (storage.getItem(key) !== writerId) throw new Error("Canvas recovery writer pointer was not confirmed.");
+}
+
 export const CANVAS_DRAFT_PREFIX = "motionwright.canvas-draft.v1:";
 // A node may contain 100,000 UTF-8 bytes of valid text. Recovery also carries its
 // base and an in-flight snapshot, so a small audio-sized copy would block edits

@@ -372,3 +372,20 @@ describe("Canvas recovery writes are atomic", () => {
     expect(storage.data).toEqual(before);
   });
 });
+
+describe("Canvas session recovery pointer admission", () => {
+  it("confirms the chosen writer or fails closed on silent and thrown writes", async () => {
+    const { writeCanvasSessionPointer } = await import("./canvasWorkspaceDraft");
+    const entries = new Map<string, string>();
+    const read = (key: string) => entries.get(key) ?? null;
+    const working = { getItem: read, setItem: (key: string, value: string) => { entries.set(key, value); } };
+    writeCanvasSessionPointer(working, "canvas-session", "window-1");
+    expect(read("canvas-session")).toBe("window-1");
+    expect(() => writeCanvasSessionPointer({ getItem: read, setItem: () => {} }, "canvas-session", "window-2"))
+      .toThrow(/not confirmed/);
+    expect(read("canvas-session")).toBe("window-1");
+    expect(() => writeCanvasSessionPointer({ getItem: read, setItem: () => { throw new Error("session denied"); } },
+      "canvas-session", "window-2")).toThrow(/session denied/);
+    expect(read("canvas-session")).toBe("window-1");
+  });
+});
