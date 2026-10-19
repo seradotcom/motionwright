@@ -1,0 +1,249 @@
+name: MLT audio observer source checks
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/mlt-audio-diagnostic.yml'
+      - 'tooling/mlt-audio-diagnostic/**'
+permissions:
+  contents: read
+concurrency:
+  group: mlt-audio-observer-source-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  observer-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare isolated source verification
+        run: |
+          set -euo pipefail
+          work="$GITHUB_WORKSPACE/verification/mlt-audio-observer-source/$GITHUB_SHA"
+          mkdir -p "$work"/{source,build,constructors,public,tmp}
+          control="$RUNNER_TEMP/mw-mlt-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$control"
+          export MW_DIAG_SOURCE="$control/source"
+          export MW_DIAG_CHECK="$control/check-source.py"
+          echo "MW_DIAG_WORK=$work" >> "$GITHUB_ENV"
+          echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
+          echo "MW_DIAG_SOURCE=$MW_DIAG_SOURCE" >> "$GITHUB_ENV"
+          echo "MW_DIAG_CHECK=$MW_DIAG_CHECK" >> "$GITHUB_ENV"
+          cat > "$MW_DIAG_CHECK" <<'PY'
+          import hashlib,json,os,pathlib,re,shutil,stat,subprocess,sys
+
+          def require(ok,message):
+              if not ok: raise SystemExit(message)
+
+          repo=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          export=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          expected=os.environ["GITHUB_SHA"]
+          require(re.fullmatch(r"[0-9a-f]{40}",expected),"invalid source SHA")
+          require(export.is_absolute() and not export.resolve().is_relative_to(repo),"export must be outside checkout")
+          env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+          env.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,
+                     GIT_CONFIG_GLOBAL=os.devnull,GIT_GRAFT_FILE=os.devnull,
+                     GIT_NO_LAZY_FETCH="1",GIT_OPTIONAL_LOCKS="0",GIT_TERMINAL_PROMPT="0")
+          git_exe=shutil.which("git")
+          require(git_exe is not None,"git unavailable")
+          def git(*args):
+              return subprocess.check_output([git_exe,"--no-replace-objects","-C",str(repo),
+                                              "-c","core.fsmonitor=false",*args],env=env)
+
+          folder="tooling/mlt-audio-diagnostic"
+          names={"audio_tap.h","instrument_consumer.py","verify_trace.py",
+                 "test_verify_trace.py","test_audio_tap.c","README.md"}
+          require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,"wrong worktree")
+          require(git("rev-parse","HEAD").decode().strip()==expected,"HEAD differs from requested SHA")
+          require(not git("status","--porcelain=v1","--untracked-files=all","--",folder),"diagnostic sources changed or untracked")
+          require(not git("ls-files","--others","--ignored","--exclude-standard","-z","--",folder),"ignored diagnostic sources")
+          for p in (repo/"tooling",repo/folder):
+              require(p.is_dir() and not p.is_symlink(),"source directory is not regular")
+          require({p.name for p in (repo/folder).iterdir()}==names,"diagnostic source set is not closed")
+          originals={}
+          oids={}
+          for entry in git("ls-tree","-rz","--full-tree",expected,"--",folder).split(b"\0"):
+              if not entry: continue
+              metadata,raw_path=entry.split(b"\t",1)
+              mode,kind,oid=metadata.split()
+              path=raw_path.decode("utf-8")
+              require(mode in (b"100644",b"100755") and kind==b"blob","nonregular source blob")
+              require(path in {folder+"/"+name for name in names},"unexpected source path")
+              data=git("cat-file","blob",oid.decode("ascii"))
+              p=repo/path
+              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,"worktree bytes differ from Git blob")
+              originals[path]=data
+              oids[path]=oid.decode("ascii")
+          require(set(originals)=={folder+"/"+name for name in names},"missing source blob")
+          require(len(sys.argv)==2 and sys.argv[1] in ("export","verify"),"expected export or verify")
+          if sys.argv[1]=="export":
+              export.mkdir(exist_ok=False)
+              for path,data in originals.items():
+                  with (export/pathlib.Path(path).name).open("xb") as handle: handle.write(data)
+          require(export.is_dir() and not export.is_symlink(),"export directory is not regular")
+          require({p.name for p in export.iterdir()}==names,"export source set changed")
+          for path,data in originals.items():
+              p=export/pathlib.Path(path).name
+              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,"export bytes changed")
+          print(json.dumps({"schema":"motionwright.mlt-observer-source-inputs/1",
+                            "source_sha":expected,"tree":git("rev-parse",expected+"^{tree}").decode().strip(),
+                            "sources":{path:hashlib.sha256(data).hexdigest() for path,data in sorted(originals.items())},
+                            "source_blob_oids":dict(sorted(oids.items()))},sort_keys=True,indent=2))
+          PY
+          python3 -B -I -S "$MW_DIAG_CHECK" export > "$work/public/source-inputs.json"
+      - name: Install compiler and FFmpeg 6.1 development libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential cmake pkg-config curl \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libavdevice-dev libswscale-dev libswresample-dev
+          dpkg-query -W -f='${Package} ${Version}\n' \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libavdevice-dev libswscale-dev libswresample-dev \
+            > "$MW_DIAG_WORK/public/dependency-versions.txt"
+          version="$(dpkg-query -W -f='${Version}' libavcodec-dev)"
+          [[ "$version" == 7:6.1.* ]]
+          pkg-config --modversion libavcodec libavutil > "$MW_DIAG_WORK/public/library-api-versions.txt"
+          cc --version > "$MW_DIAG_WORK/public/compiler-version.txt"
+      - name: Retrieve exact upstream MLT consumer source
+        run: |
+          set -euo pipefail
+          cd "$MW_DIAG_WORK/source"
+          curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+            https://archive.ubuntu.com/ubuntu/pool/universe/m/mlt/mlt_7.22.0.orig.tar.gz \
+            -o mlt.orig.tar.gz
+          echo '7cf4d9573a061d76902c6e12a2f09f5f461e7c697635233df82a63a3fe4d6da6  mlt.orig.tar.gz' | sha256sum --check
+          tar -xzf mlt.orig.tar.gz
+          source_root="$MW_DIAG_WORK/source/mlt-7.22.0"
+          echo "MW_MLT_SOURCE=$source_root" >> "$GITHUB_ENV"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $source_root/src/modules/avformat/consumer_avformat.c" | sha256sum --check
+      - name: Compile and execute sanitized buffer constructors
+        run: |
+          set -euo pipefail
+          source="$MW_DIAG_SOURCE"
+          cc -std=c11 -D_POSIX_C_SOURCE=200809L -O1 -g \
+            -Wall -Wextra -Wpedantic \
+            -Werror=implicit-function-declaration \
+            -Werror=incompatible-pointer-types -Werror=return-type \
+            -Werror=deprecated-declarations \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -fno-omit-frame-pointer -I"$source" \
+            "$source/test_audio_tap.c" \
+            $(pkg-config --cflags --libs libavcodec libavutil) \
+            -o "$MW_DIAG_WORK/build/test_audio_tap"
+          ldd "$MW_DIAG_WORK/build/test_audio_tap" > "$MW_DIAG_WORK/public/constructor-loaded-libraries.txt"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            "$MW_DIAG_WORK/build/test_audio_tap" "$MW_DIAG_WORK/constructors" \
+            > "$MW_DIAG_WORK/public/constructor.stdout.log" \
+            2> "$MW_DIAG_WORK/public/constructor.stderr.log"
+      - name: Independently decode constructor traces
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          MOTIONWRIGHT_TAP_CONSTRUCTOR_DIR="$MW_DIAG_WORK/constructors" \
+            python3 -B -I -S - > "$MW_DIAG_WORK/public/python.stdout.log" \
+            2> "$MW_DIAG_WORK/public/python.stderr.log" <<'PY'
+          import importlib.util,os,pathlib,sys,unittest
+          source=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          def load(name):
+              spec=importlib.util.spec_from_file_location(name,source/(name+".py"))
+              if spec is None or spec.loader is None: raise SystemExit("missing exact reader module")
+              module=importlib.util.module_from_spec(spec)
+              sys.modules[name]=module
+              spec.loader.exec_module(module)
+              return module
+          load("verify_trace")
+          tests=load("test_verify_trace")
+          suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
+          if suite.countTestCases()!=32: raise SystemExit("expected exactly 32 contract tests")
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun!=32 or not result.wasSuccessful() or result.skipped
+                  or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit(1)
+          PY
+          python3 -B -I -S - <<'PY'
+          import os,pathlib,re
+          text=(pathlib.Path(os.environ["MW_DIAG_WORK"])/"public/python.stderr.log").read_text()
+          assert re.search(r"Ran 32 tests in ",text),text
+          assert re.search(r"\nOK\s*$",text),text
+          assert "skipped=" not in text
+          PY
+      - name: Generate instrumented consumer and compile the real module
+        run: |
+          set -euo pipefail
+          python3 -B -I -S "$MW_DIAG_SOURCE/instrument_consumer.py" \
+            --consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
+            --output-dir "$MW_DIAG_WORK/build/instrumented-source" \
+            > "$MW_DIAG_WORK/public/instrumenter.stdout.log"
+          cp "$MW_DIAG_WORK/build/instrumented-source/consumer_avformat.c" \
+            "$MW_DIAG_WORK/build/instrumented-source/audio_tap.h" \
+            "$MW_MLT_SOURCE/src/modules/avformat/"
+          python3 -B -I -S - <<'PY'
+          import os,pathlib,re,subprocess
+          source=pathlib.Path(os.environ["MW_MLT_SOURCE"])
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          modules=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
+          assert "MOD_AVFORMAT" in modules
+          args=["cmake","-S",str(source),"-B",str(work/"build/mlt"),
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo","-DBUILD_TESTING=OFF",
+                "-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF"]
+          args += ["-D"+name+"="+("ON" if name=="MOD_AVFORMAT" else "OFF") for name in modules]
+          with (work/"public/cmake-configure.log").open("wb") as log:
+              subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,check=True)
+          PY
+          cmake --build "$MW_DIAG_WORK/build/mlt" --target mltavformat --parallel 2 \
+            > "$MW_DIAG_WORK/public/consumer-module-build.log" 2>&1
+          cp "$MW_DIAG_WORK/build/instrumented-source/instrumented-source.json" \
+            "$MW_DIAG_WORK/public/instrumented-source.json"
+      - name: Bind completed source evidence
+        run: |
+          set -euo pipefail
+          python3 -B -I -S "$MW_DIAG_CHECK" verify > "$MW_DIAG_WORK/source-inputs-after.json"
+          cmp "$MW_DIAG_WORK/public/source-inputs.json" "$MW_DIAG_WORK/source-inputs-after.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          public=work/"public"
+          def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+          inputs=json.loads((public/"source-inputs.json").read_text())
+          files=inputs["sources"]
+          source_identity=json.loads((public/"instrumented-source.json").read_text())
+          assert source_identity["input_consumer_sha256"]=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          assert source_identity["output_consumer_sha256"]=="9190366bf2cddfd8214497fa9ec42fa2ef55dfbed5f8248c69b7aaae7854cabb"
+          evidence={p.name:sha(p) for p in public.iterdir() if p.is_file()}
+          module=list((work/"build/mlt").rglob("libmltavformat.so"))
+          assert len(module)==1
+          consumer_object=list((work/"build/mlt").rglob("consumer_avformat.c.o"))
+          assert len(consumer_object)==1
+          result={"schema":"motionwright.mlt-audio-observer-source-check/1",
+                  "source_sha":os.environ["GITHUB_SHA"],
+                  "tree":inputs["tree"],
+                  "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                  "sources":files,"evidence":evidence,"module_sha256":sha(module[0]),
+                  "consumer_object_sha256":sha(consumer_object[0]),
+                  "python_contract_tests":32,"python_skipped":0,
+                  "constructor_C_sanitizers":"PASS","consumer_sanitizers":"NOT_RUN",
+                  "physical_runtime":"NOT_RUN",
+                  "actual_instrumented_module_compile":"PASS",
+                  "original_distro_runtime_reproduced":False,
+                  "provider_admission":"NOT_ESTABLISHED","native_render":"NOT_RUN",
+                  "production_master_acceptance":False,"release_authorized":False}
+          (public/"receipt.json").write_text(json.dumps(result,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: mlt-audio-observer-source-${{ github.sha }}
+          path: verification/mlt-audio-observer-source/${{ github.sha }}/public
+          if-no-files-found: error
+          retention-days: 14
