@@ -1,6 +1,6 @@
 //! Durable file-import receipt inspection and validated CAS capture.
 use super::{
-    ApplyOutcome, Change, OptionalExtension, Project, Result, RevisionStamp, StorageError, Store,
+    ApplyOutcome, Change, OptionalExtension, Result, RevisionStamp, StorageError, Store,
     TransactionBehavior, params, request_digest, validate_digest,
 };
 use motionwright_domain::DomainError;
@@ -123,19 +123,13 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let current_json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                params![id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let current: Project = serde_json::from_str(&current_json)
-            .map_err(|_| invalid_receipt("invalid current project JSON"))?;
-        current
-            .validate()
-            .map_err(|_| invalid_receipt("invalid current project document"))?;
+        let current = super::load_project_from_row(&tx, id).map_err(|error| match error {
+            StorageError::Serde(_) => invalid_receipt("invalid current project JSON"),
+            StorageError::Domain(_) => {
+                invalid_receipt("invalid current project document or authority columns")
+            }
+            other => other,
+        })?;
         if current.id != id
             || current.resource_key() != expected.resource
             || current.generation != expected.generation
@@ -210,7 +204,6 @@ impl Store {
 
 use super::{
     BlobDescriptor, create_checked_blob_directory, ensure_regular_directory, ensure_regular_file,
-    hash_file,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -244,10 +237,27 @@ impl Drop for StagedFileImport {
 impl Store {
     /// Capture the source once without a SQLite writer transaction.
     pub fn stage_file_import(&self, source: &Path) -> Result<StagedFileImport> {
+        self.stage_file_import_with_limit(source, u64::MAX)
+    }
+
+    /// Capture at most the admitted byte budget into one private staging file.
+    /// Reading one extra byte detects growth after the metadata check; excess
+    /// bytes are rejected before they can be written to that capture.
+    pub fn stage_file_import_with_limit(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
         ensure_regular_directory(&self.blob_root, "blob root")?;
+        let size = ensure_regular_file(source, "import source")?.len();
+        if size > max_bytes {
+            return Err(StorageError::BlobTooLarge {
+                size,
+                limit: max_bytes,
+            });
+        }
         let staging_root = self.blob_root.join(".staging");
         create_checked_blob_directory(&staging_root)?;
-        ensure_regular_file(source, "import source")?;
         let input = File::open(source)?;
         let path = staging_root.join(format!("{}.part", Uuid::now_v7().simple()));
         let mut options = OpenOptions::new();
@@ -269,9 +279,10 @@ impl Store {
         };
         {
             // Handles close before the outer guard cleans up on any error.
-            let mut input = input;
+            let mut input = input.take(max_bytes.saturating_add(1));
             let mut output = output;
             let mut hasher = Sha256::new();
+            let mut credentials = super::CredentialScan::default();
             let mut buffer = [0_u8; 128 * 1024];
             let mut size_bytes = 0_u64;
             loop {
@@ -279,9 +290,23 @@ impl Store {
                 if count == 0 {
                     break;
                 }
+                let next_size =
+                    size_bytes
+                        .checked_add(count as u64)
+                        .ok_or(StorageError::BlobTooLarge {
+                            size: u64::MAX,
+                            limit: max_bytes,
+                        })?;
+                if next_size > max_bytes {
+                    return Err(StorageError::BlobTooLarge {
+                        size: next_size,
+                        limit: max_bytes,
+                    });
+                }
+                credentials.check(&buffer[..count], "file import source")?;
                 output.write_all(&buffer[..count])?;
                 hasher.update(&buffer[..count]);
-                size_bytes = size_bytes.saturating_add(count as u64);
+                size_bytes = next_size;
             }
             output.flush()?;
             output.sync_all()?;
@@ -308,7 +333,8 @@ impl Store {
                 "staged import is outside the blob staging directory".into(),
             ));
         }
-        let captured = hash_file(&staged.path)?;
+        let captured =
+            super::portability::hash_portable_file(&staged.path, staged.descriptor.size_bytes)?;
         if captured != staged.descriptor {
             return Err(StorageError::InvalidBlobDigest);
         }
@@ -329,7 +355,7 @@ impl Store {
         };
         if verify_existing {
             let existing = self.checked_existing_blob_path(&captured.sha256)?;
-            if hash_file(&existing)? != captured {
+            if super::portability::hash_portable_file(&existing, captured.size_bytes)? != captured {
                 return Err(StorageError::InvalidBlobDigest);
             }
         }
@@ -570,6 +596,7 @@ mod tests {
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    use crate::hash_file;
     #[test]
     fn staged_import_rejects_changed_capture_without_publishing_or_leaking_stage() {
         let temp = tempfile::tempdir().unwrap();

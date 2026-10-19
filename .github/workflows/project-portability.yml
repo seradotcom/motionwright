@@ -48,9 +48,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Storage and service tests
-        run: cargo test -p motionwright-storage -p motionwright-service --all-targets
+        run: cargo test --locked -p motionwright-storage -p motionwright-service --all-targets
       - name: Storage and service clippy
-        run: cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
 
   file-import-platforms:
     name: File import authority and CAS (${{ matrix.os }})
@@ -124,6 +124,73 @@ jobs:
                   "file_import::staging_tests::dropping_duplicate_stages_and_rejecting_stale_import_preserve_blob",
               }),
           ]
+          cases.extend([
+              ('service-file-secrets', ['-p', 'motionwright-service', '--test', 'file_import_secret_boundaries'], {
+                  'store_and_service_raw_ingestion_reject_late_credentials_and_preserve_existing_files',
+                  'unbounded_staging_rejects_patterns_split_across_capture_reads',
+                  'canonical_asset_import_rejects_bytes_before_project_journal_or_receipt_changes',
+                  'canonical_voice_import_rejects_credential_shaped_pcm_before_commit',
+                  'derived_cache_input_cannot_bypass_new_blob_admission_policy',
+                  'known_legacy_import_keeps_source_binding_and_source_free_receipt_recovery',
+                  'ordinary_inputs_preserve_original_bytes_measurement_and_reopened_state',
+                  'bounded_and_unbounded_staging_reject_patterns_split_across_capture_reads',
+              }),
+              ('service-main-portable-secrets', ['-p', 'motionwright-service', '--test', 'main_portable_secret_boundaries'], {
+                  'json_backup_export_rejects_credentials_in_current_metadata_and_retained_journal',
+                  'json_backup_import_rejects_sensitive_metadata_before_any_project_write',
+                  'portable_text_credential_rejection_does_not_depend_on_declared_mime',
+                  'bundle_inspection_and_import_scan_actual_members_before_cas_publication',
+                  'credential_patterns_cross_portable_read_boundaries_without_mime_trust',
+                  'ordinary_text_media_and_large_opaque_bytes_roundtrip_without_rewriting',
+                  'safe_json_backup_roundtrip_preserves_digest_history_and_editability',
+                  'safe_json_backups_larger_than_bundle_budget_restore_and_reexport',
+                  'bundle_metadata_keeps_its_existing_budget_on_export_inspect_and_import',
+                  'complete_bundle_metadata_is_rejected_before_project_or_blob_publication',
+                  'ordinary_text_larger_than_eight_mib_roundtrips_with_unchanged_bytes',
+                  'credentials_after_eight_mib_of_opaque_legacy_media_refuse_export',
+              }),
+              ('service-portable-secrets', ['-p', 'motionwright-service', '--test', 'portable_secret_boundaries'], {
+                  'json_backup_export_rejects_credentials_in_current_metadata_and_retained_journal',
+                  'json_backup_import_rejects_sensitive_metadata_before_any_project_write',
+                  'portable_text_credential_rejection_does_not_depend_on_declared_mime',
+                  'bundle_inspection_and_import_scan_actual_members_before_cas_publication',
+                  'credential_patterns_cross_portable_read_boundaries_without_mime_trust',
+                  'ordinary_text_media_and_large_opaque_bytes_roundtrip_without_rewriting',
+                  'safe_json_backup_roundtrip_preserves_digest_history_and_editability',
+                  'safe_json_backups_larger_than_bundle_budget_restore_and_reexport',
+                  'bundle_metadata_keeps_its_existing_budget_on_export_inspect_and_import',
+              }),
+              ('service-portability-authority', ['-p', 'motionwright-service', '--test', 'project_portability_authority'], {
+                  'export_rejects_peer_revision_committed_after_precheck',
+                  'bundle_export_rejects_stale_snapshot_before_creating_destination',
+                  'import_rejects_complete_valid_bundle_replaced_after_inspection',
+                  'service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_receipts',
+                  'service_export_preconditions_reject_foreign_scope_before_missing_source_io',
+                  'service_exact_inspection_rejects_even_semantically_equal_manifest_reencoding',
+                  'service_rejects_changed_blob_with_unchanged_manifest_and_publishes_no_member',
+              }),
+              ('storage-row-authority', ['-p', 'motionwright-storage', '--test', 'project_row_authority'], {
+                  'ordinary_project_commits_replay_and_reopen_keep_their_own_identity',
+                  'a_valid_document_in_the_wrong_row_cannot_redirect_a_commit',
+                  'full_project_loads_reject_individually_corrupted_authority_columns',
+                  'full_project_lists_reject_individually_corrupted_authority_columns',
+                  'new_commits_reject_individually_corrupted_columns_without_effects',
+                  'corrupt_current_row_is_rejected_before_receipt_replay',
+                  'corrupt_row_rejection_precedes_missing_cas_source_access',
+                  'cross_project_rejection_preserves_both_receipt_and_cache_streams',
+                  'production_append_rejects_corrupt_rows_before_recording_observations',
+                  'recovery_claim_rejects_corrupt_rows_before_allocating_an_attempt',
+                  'file_import_absence_does_not_bypass_current_row_validation',
+                  'historical_import_survives_later_edits_and_source_deletion_but_not_row_corruption',
+                  'historical_production_observation_and_exact_recovery_claim_keep_distinct_rules',
+                  'exact_title_and_column_only_summary_contract_remain_compatible',
+              }),
+              ('storage-schema-atomicity', ['-p', 'motionwright-storage', '--test', 'schema_migration_atomicity'], {
+                  'failed_schema_upgrade_never_publishes_partial_new_tables_or_version',
+                  'valid_fresh_open_and_reopen_keep_exact_schema_and_no_extra_objects',
+                  'too_new_version_fails_without_rewriting_original_schema',
+              }),
+          ])
           for suite, selector, expected in cases:
               command = ["cargo", "test", "--locked", *selector, "--", "--test-threads=1"]
               result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

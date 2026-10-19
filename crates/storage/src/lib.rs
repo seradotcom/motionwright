@@ -17,6 +17,7 @@ mod derived_cache;
 mod file_import;
 mod identity_evidence;
 mod integrity;
+mod portability;
 mod production;
 mod project_creation;
 mod render_window_cache;
@@ -25,6 +26,7 @@ pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
+pub use portability::{BundleFingerprint, InspectedProjectBundle};
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
 pub use render_window_cache::{
@@ -83,7 +85,43 @@ pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_BLOBS: usize = 4096;
 const MAX_BUNDLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
-const MAX_SECRET_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+
+// One finite byte-pattern policy is shared by metadata and streamed members.
+// This recognizes the existing credential shapes; it is not a proof that
+// arbitrary, encoded or encrypted credentials are absent.
+const PRIVATE_KEY_MARKER: &[u8] = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
+const CREDENTIAL_PREFIXES: [(&[u8], usize); 10] = [
+    (b"ghp_", 20),
+    (b"gho_", 20),
+    (b"ghu_", 20),
+    (b"ghs_", 20),
+    (b"xoxb-", 20),
+    (b"xoxa-", 20),
+    (b"xoxp-", 20),
+    (b"xoxr-", 20),
+    (b"xoxs-", 20),
+    (b"sk-", 24),
+];
+const ACCESS_KEY_WIDTH: usize = 20;
+
+const fn credential_pattern_width() -> usize {
+    let mut width = PRIVATE_KEY_MARKER.len();
+    let mut index = 0;
+    while index < CREDENTIAL_PREFIXES.len() {
+        let (prefix, suffix) = CREDENTIAL_PREFIXES[index];
+        let candidate = prefix.len() + suffix;
+        if candidate > width {
+            width = candidate;
+        }
+        index += 1;
+    }
+    if ACCESS_KEY_WIDTH > width {
+        width = ACCESS_KEY_WIDTH;
+    }
+    width
+}
+
+const CREDENTIAL_SCAN_OVERLAP: usize = credential_pattern_width() - 1;
 
 fn secret_token_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
@@ -97,37 +135,25 @@ fn has_prefixed_secret(bytes: &[u8], prefix: &[u8], min_suffix: usize) -> bool {
             if window != prefix {
                 return false;
             }
-            bytes[index + prefix.len()..]
-                .iter()
-                .take_while(|byte| secret_token_char(**byte))
-                .count()
-                >= min_suffix
+            let suffix = &bytes[index + prefix.len()..];
+            suffix.len() >= min_suffix
+                && suffix[..min_suffix].iter().copied().all(secret_token_char)
         })
 }
 
 fn contains_credential_like_material(bytes: &[u8]) -> bool {
-    let private_key = concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes();
     if bytes
-        .windows(private_key.len())
-        .any(|window| window == private_key)
+        .windows(PRIVATE_KEY_MARKER.len())
+        .any(|window| window == PRIVATE_KEY_MARKER)
     {
         return true;
     }
-
-    for prefix in [b"ghp_".as_slice(), b"gho_", b"ghu_", b"ghs_"] {
-        if has_prefixed_secret(bytes, prefix, 20) {
+    for (prefix, min_suffix) in CREDENTIAL_PREFIXES {
+        if has_prefixed_secret(bytes, prefix, min_suffix) {
             return true;
         }
     }
-    for prefix in [b"xoxb-".as_slice(), b"xoxa-", b"xoxp-", b"xoxr-", b"xoxs-"] {
-        if has_prefixed_secret(bytes, prefix, 20) {
-            return true;
-        }
-    }
-    if has_prefixed_secret(bytes, b"sk-", 24) {
-        return true;
-    }
-    bytes.windows(20).any(|window| {
+    bytes.windows(ACCESS_KEY_WIDTH).any(|window| {
         window.starts_with(b"AKIA")
             && window[4..]
                 .iter()
@@ -138,58 +164,59 @@ fn contains_credential_like_material(bytes: &[u8]) -> bool {
 fn ensure_secret_free_bytes(bytes: &[u8], context: &str) -> Result<()> {
     if contains_credential_like_material(bytes) {
         return Err(StorageError::InvalidBackup(format!(
-            "{context} contains credential-like material and cannot enter a portable bundle"
+            "{context} contains credential-like material and cannot enter project storage or export"
         )));
     }
     Ok(())
 }
 
-fn ensure_backup_secret_free(backup: &ProjectBackup) -> Result<()> {
+/// Detect the same finite byte patterns across arbitrary short reads.
+/// Only a bounded suffix survives a call. No media decoder, MIME assertion,
+/// text rewriting or complete-member allocation participates in the check.
+#[derive(Default)]
+struct CredentialScan {
+    tail: [u8; CREDENTIAL_SCAN_OVERLAP],
+    tail_len: usize,
+}
+
+impl CredentialScan {
+    fn check(&mut self, bytes: &[u8], context: &str) -> Result<()> {
+        let head_len = bytes.len().min(CREDENTIAL_SCAN_OVERLAP);
+        let mut crossing = [0_u8; CREDENTIAL_SCAN_OVERLAP * 2];
+        crossing[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        crossing[self.tail_len..self.tail_len + head_len].copy_from_slice(&bytes[..head_len]);
+        ensure_secret_free_bytes(&crossing[..self.tail_len + head_len], context)?;
+        ensure_secret_free_bytes(bytes, context)?;
+
+        if bytes.len() >= CREDENTIAL_SCAN_OVERLAP {
+            self.tail
+                .copy_from_slice(&bytes[bytes.len() - CREDENTIAL_SCAN_OVERLAP..]);
+            self.tail_len = CREDENTIAL_SCAN_OVERLAP;
+        } else {
+            let keep = self.tail_len.min(CREDENTIAL_SCAN_OVERLAP - bytes.len());
+            self.tail
+                .copy_within(self.tail_len - keep..self.tail_len, 0);
+            self.tail[keep..keep + bytes.len()].copy_from_slice(bytes);
+            self.tail_len = keep + bytes.len();
+        }
+        Ok(())
+    }
+}
+
+// Pattern policy is shared by raw backups and bundles. Only the bundle
+// format supplies a metadata byte budget; raw JSON backups retain their
+// pre-existing size contract.
+fn ensure_backup_secret_free(backup: &ProjectBackup, max_bytes: Option<u64>) -> Result<()> {
     let encoded = serde_json::to_vec(backup)?;
-    if encoded.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+    if let Some(limit) = max_bytes
+        && encoded.len() as u64 > limit
+    {
         return Err(StorageError::BlobTooLarge {
             size: encoded.len() as u64,
-            limit: MAX_BUNDLE_MANIFEST_BYTES,
+            limit,
         });
     }
     ensure_secret_free_bytes(&encoded, "portable project metadata")
-}
-
-fn media_type_requires_secret_scan(media_type: &str) -> bool {
-    let media_type = media_type.to_ascii_lowercase();
-    media_type.starts_with("text/")
-        || [
-            "json",
-            "javascript",
-            "typescript",
-            "python",
-            "rust",
-            "xml",
-            "svg",
-            "yaml",
-            "toml",
-            "shell",
-        ]
-        .iter()
-        .any(|needle| media_type.contains(needle))
-}
-
-fn project_blob_requires_secret_scan(project: &Project, digest: &str) -> bool {
-    project.assets.iter().any(|asset| {
-        asset.content_sha256.as_deref() == Some(digest)
-            && media_type_requires_secret_scan(&asset.media_type)
-    })
-}
-
-fn ensure_secret_free_file(path: &Path, context: &str) -> Result<()> {
-    let size = ensure_regular_file(path, context)?.len();
-    if size > MAX_SECRET_SCAN_BYTES {
-        return Err(StorageError::BlobTooLarge {
-            size,
-            limit: MAX_SECRET_SCAN_BYTES,
-        });
-    }
-    ensure_secret_free_bytes(&fs::read(path)?, context)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,6 +365,56 @@ fn parse_measured_source_rows(source: &[u8]) -> Result<Vec<motionwright_domain::
     Ok(rows)
 }
 
+// A valid document is not authority to redirect the row that contains it.
+// Every full-document consumer decodes the SQL identity and JSON together.
+struct StoredProjectRow {
+    id: String,
+    generation: String,
+    revision: i64,
+    title: String,
+    document_json: String,
+}
+
+impl StoredProjectRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            generation: row.get(1)?,
+            revision: row.get(2)?,
+            title: row.get(3)?,
+            document_json: row.get(4)?,
+        })
+    }
+
+    fn into_project(self) -> Result<Project> {
+        let project: Project = serde_json::from_str(&self.document_json)?;
+        project.validate()?;
+        if project.id.to_string() != self.id
+            || project.generation.is_nil()
+            || project.generation.to_string() != self.generation
+            || i64::try_from(project.revision).ok() != Some(self.revision)
+            || project.title != self.title
+        {
+            return Err(DomainError::Invalid(
+                "stored project authority columns differ from the document".into(),
+            )
+            .into());
+        }
+        Ok(project)
+    }
+}
+
+fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
+    conn.query_row(
+        "SELECT id,generation,revision,title,document_json FROM projects WHERE id=?1",
+        [id.to_string()],
+        StoredProjectRow::read,
+    )
+    .optional()?
+    .ok_or(StorageError::NotFound)?
+    .into_project()
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -360,7 +437,7 @@ impl Store {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)?;
+        let mut conn = Connection::open(&path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         let observed_schema: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -370,12 +447,25 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        // Connection pragmas must execute outside a transaction. All
+        // schema DDL and its authoritative user_version stamp are committed
+        // together under one SQLite IMMEDIATE writer lock.
         conn.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+        )?;
+        let schema_tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // An independent opener may have advanced the schema since our
+        // fast-fail check. Revalidate AFTER acquiring the writer lock.
+        let locked_schema: u32 =
+            schema_tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if locked_schema > STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::UnsupportedSchemaVersion {
+                found: locked_schema,
+                supported: STORAGE_SCHEMA_VERSION,
+            });
+        }
+        schema_tx.execute_batch(
             r#"
-            PRAGMA foreign_keys=ON;
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
-
             CREATE TABLE IF NOT EXISTS projects(
               id TEXT PRIMARY KEY,
               generation TEXT NOT NULL,
@@ -475,9 +565,10 @@ impl Store {
               ON production_receipts(project_id, request_id, receipt_id DESC);
             "#,
         )?;
-        if observed_schema < STORAGE_SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
+        if locked_schema < STORAGE_SCHEMA_VERSION {
+            schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
+        schema_tx.commit()?;
         fs::create_dir_all(&blob_root)?;
         ensure_regular_directory(&blob_root, "content-addressed storage root")?;
         let store = Self {
@@ -500,66 +591,11 @@ impl Store {
         &self.blob_root
     }
 
+    /// Admit new bytes through the same private capture as canonical imports.
+    /// Historical blob reads and receipt recovery remain separate operations.
     pub fn ingest_blob_file(&self, source: impl AsRef<Path>) -> Result<BlobDescriptor> {
-        let source = source.as_ref();
-        ensure_regular_file(source, "blob source")?;
-        ensure_regular_directory(&self.blob_root, "content-addressed storage root")?;
-        let staging_root = self.blob_root.join(".staging");
-        create_checked_blob_directory(&staging_root)?;
-        let staging_path = staging_root.join(format!("{}.part", Uuid::now_v7()));
-
-        let mut input = File::open(source)?;
-        let mut stage_options = OpenOptions::new();
-        stage_options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            stage_options.mode(0o600);
-        }
-        let mut output = stage_options.open(&staging_path)?;
-        let mut hasher = Sha256::new();
-        let mut size_bytes = 0_u64;
-        let mut buffer = [0_u8; 128 * 1024];
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            output.write_all(&buffer[..read])?;
-            hasher.update(&buffer[..read]);
-            size_bytes = size_bytes.saturating_add(read as u64);
-        }
-        output.flush()?;
-        output.sync_all()?;
-        drop(output);
-
-        let sha256 = hex::encode(hasher.finalize());
-        let destination = self.blob_path(&sha256)?;
-        let shas = self.blob_root.join("sha256");
-        create_checked_blob_directory(&shas)?;
-        create_checked_blob_directory(&shas.join(&sha256[..2]))?;
-        match fs::symlink_metadata(&destination) {
-            Ok(_) => {
-                let existing_path = self.checked_existing_blob_path(&sha256)?;
-                let existing = hash_file(&existing_path)?;
-                if existing.sha256 != sha256 || existing.size_bytes != size_bytes {
-                    return Err(StorageError::InvalidBackup(
-                        "content-addressed blob path contains different bytes".into(),
-                    ));
-                }
-                fs::remove_file(&staging_path)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // A hard link is create-new: unlike rename, it refuses to
-                // replace a destination inserted after our preflight check.
-                // Both directories live under the same CAS root/device.
-                fs::hard_link(&staging_path, &destination)?;
-                fs::remove_file(&staging_path)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-
-        Ok(BlobDescriptor { sha256, size_bytes })
+        let staged = self.stage_file_import(source.as_ref())?;
+        self.publish_file_import(&staged)
     }
 
     pub fn verified_blob_path(&self, digest: &str) -> Result<PathBuf> {
@@ -592,73 +628,7 @@ impl Store {
             return Err(StorageError::DestinationExists);
         }
         let backup = self.export_project(id)?;
-        ensure_backup_secret_free(&backup)?;
-        let mut digests = BTreeSet::new();
-        for asset in &backup.project.assets {
-            let digest = asset.content_sha256.as_deref().ok_or_else(|| {
-                StorageError::InvalidBackup(format!("asset {} has no content digest", asset.id))
-            })?;
-            validate_digest(digest)?;
-            digests.insert(digest.to_owned());
-        }
-
-        let mut blobs = Vec::with_capacity(digests.len());
-        for digest in digests {
-            let source = self.checked_existing_blob_path(&digest)?;
-            if project_blob_requires_secret_scan(&backup.project, &digest) {
-                ensure_secret_free_file(&source, "portable text-like asset")?;
-            }
-            let descriptor = hash_file(&source)?;
-            if descriptor.sha256 != digest {
-                return Err(StorageError::InvalidBackup(
-                    "stored blob digest differs from its content-addressed path".into(),
-                ));
-            }
-            blobs.push(PortableBlob {
-                relative_path: blob_relative_path(&digest)?,
-                sha256: digest,
-                size_bytes: descriptor.size_bytes,
-            });
-        }
-
-        let manifest = ProjectBundleManifest {
-            format_version: PROJECT_BUNDLE_FORMAT_VERSION,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            backup,
-            blobs,
-        };
-
-        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-        let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
-        fs::create_dir(&staging)?;
-
-        for blob in &manifest.blobs {
-            let source = self.checked_existing_blob_path(&blob.sha256)?;
-            let target = staging.join(&blob.relative_path);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(&source, &target)?;
-            let copied = hash_file(&target)?;
-            if copied.sha256 != blob.sha256 || copied.size_bytes != blob.size_bytes {
-                return Err(StorageError::InvalidBackup(
-                    "exported blob failed readback verification".into(),
-                ));
-            }
-        }
-
-        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
-        let manifest_path = staging.join("manifest.json");
-        let mut manifest_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&manifest_path)?;
-        manifest_file.write_all(&manifest_bytes)?;
-        manifest_file.flush()?;
-        manifest_file.sync_all()?;
-        fs::rename(&staging, destination)?;
-        Ok(manifest)
+        self.export_captured_bundle(backup, destination)
     }
 
     pub fn inspect_project_bundle(&self, source: impl AsRef<Path>) -> Result<BundleImportPlan> {
@@ -667,20 +637,7 @@ impl Store {
     }
 
     pub fn import_project_bundle(&mut self, source: impl AsRef<Path>) -> Result<Project> {
-        let source = source.as_ref();
-        let manifest = load_bundle_manifest(source)?;
-        self.validate_bundle(source, &manifest)?;
-
-        for blob in &manifest.blobs {
-            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let descriptor = self.ingest_blob_file(&path)?;
-            if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
-                return Err(StorageError::InvalidBackup(
-                    "imported blob differs from bundle manifest".into(),
-                ));
-            }
-        }
-        self.import_project(&manifest.backup)
+        self.import_bundle_capture(source.as_ref(), None)
     }
 
     fn validate_bundle(
@@ -699,7 +656,8 @@ impl Store {
                 "portable bundle contains too many blobs".into(),
             ));
         }
-        ensure_backup_secret_free(&manifest.backup)?;
+        ensure_backup_secret_free(&manifest.backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
+        ensure_secret_free_bytes(&serde_json::to_vec(manifest)?, "portable bundle metadata")?;
         let project_plan = self.inspect_import(&manifest.backup)?;
         let mut expected = BTreeSet::new();
         for asset in &manifest.backup.project.assets {
@@ -736,10 +694,10 @@ impl Store {
                     limit: MAX_BUNDLE_TOTAL_BYTES,
                 });
             }
-            if project_blob_requires_secret_scan(&manifest.backup.project, &blob.sha256) {
-                ensure_secret_free_file(&path, "portable text-like asset")?;
-            }
-            let descriptor = hash_file(&path)?;
+            // MIME is caller-supplied metadata. Check the actual member bytes
+            // in the same bounded pass that establishes their digest.
+            let descriptor =
+                portability::inspect_portable_file(&path, "portable asset", blob.size_bytes)?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
@@ -799,31 +757,19 @@ impl Store {
     }
 
     pub fn load_project(&self, id: Uuid) -> Result<Project> {
-        let json: String = self
-            .conn
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
-        Ok(project)
+        load_project_from_row(&self.conn, id)
     }
 
     pub fn list_projects(&self, limit: usize) -> Result<Vec<Project>> {
         let limit = limit.clamp(1, 100);
-        let mut stmt = self
-            .conn
-            .prepare("SELECT document_json FROM projects ORDER BY updated_at DESC, id LIMIT ?1")?;
-        let rows = stmt.query_map([limit as i64], |row| row.get::<_, String>(0))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id,generation,revision,title,document_json
+             FROM projects ORDER BY updated_at DESC, id LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], StoredProjectRow::read)?;
         let mut projects = Vec::new();
         for row in rows {
-            let project: Project = serde_json::from_str(&row?)?;
-            project.validate()?;
-            projects.push(project);
+            projects.push(row?.into_project()?);
         }
         Ok(projects)
     }
@@ -926,63 +872,7 @@ impl Store {
     }
 
     pub fn export_project(&mut self, id: Uuid) -> Result<ProjectBackup> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
-
-        let events = {
-            let mut stmt = tx.prepare(
-                "SELECT revision,payload_json,created_at FROM events
-                 WHERE project_id=?1
-                 ORDER BY revision ASC",
-            )?;
-            let mapped = stmt.query_map([id.to_string()], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            let mut events = Vec::new();
-            for row in mapped {
-                let (revision, payload, created_at) = row?;
-                events.push(ProjectEvent {
-                    revision: u64::try_from(revision).map_err(|_| {
-                        StorageError::InvalidBackup("event revision is negative".into())
-                    })?,
-                    change: serde_json::from_str(&payload)?,
-                    created_at,
-                });
-            }
-            events
-        };
-
-        let payload_sha256 = backup_digest(
-            PROJECT_BACKUP_FORMAT_VERSION,
-            STORAGE_SCHEMA_VERSION,
-            &project,
-            &events,
-        )?;
-        let backup = ProjectBackup {
-            format_version: PROJECT_BACKUP_FORMAT_VERSION,
-            source_storage_schema: STORAGE_SCHEMA_VERSION,
-            exported_at: chrono::Utc::now().to_rfc3339(),
-            project,
-            events,
-            payload_sha256,
-        };
-        tx.commit()?;
-        Ok(backup)
+        self.export_project_snapshot(id, None)
     }
 
     pub fn inspect_import(&self, backup: &ProjectBackup) -> Result<ImportPlan> {
@@ -1084,16 +974,7 @@ impl Store {
 
         // Durable results retain their original revision, but cannot grant
         // access across a different resource or project generation.
-        let json: String = tx
-            .query_row(
-                "SELECT document_json FROM projects WHERE id=?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-        let mut project: Project = serde_json::from_str(&json)?;
-        project.validate()?;
+        let mut project = load_project_from_row(&tx, id)?;
 
         if expected.resource != project.resource_key() || expected.generation != project.generation
         {
@@ -1381,7 +1262,7 @@ fn validate_backup(backup: &ProjectBackup) -> Result<()> {
             ));
         }
     }
-    Ok(())
+    ensure_backup_secret_free(backup, None)
 }
 
 fn validate_digest(digest: &str) -> Result<()> {
@@ -1539,16 +1420,80 @@ fn hash_file(path: &Path) -> Result<BlobDescriptor> {
 }
 
 fn load_bundle_manifest(source: &Path) -> Result<ProjectBundleManifest> {
-    let path = bundle_member_path(source, "manifest.json", "portable bundle manifest")?;
-    let size = ensure_regular_file(&path, "portable bundle manifest")?.len();
-    if size > MAX_BUNDLE_MANIFEST_BYTES {
-        return Err(StorageError::BlobTooLarge {
-            size,
-            limit: MAX_BUNDLE_MANIFEST_BYTES,
-        });
-    }
-    let bytes = fs::read(path)?;
+    let bytes = portability::read_bundle_manifest_bytes(source)?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod credential_stream_tests {
+    use super::*;
+
+    struct ShortReads<'a> {
+        remaining: &'a [u8],
+        stride: usize,
+    }
+
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let count = output.len().min(self.stride).min(self.remaining.len());
+            output[..count].copy_from_slice(&self.remaining[..count]);
+            self.remaining = &self.remaining[count..];
+            Ok(count)
+        }
+    }
+
+    fn scan_short_reads(mut input: impl Read) -> Result<()> {
+        let mut scanner = CredentialScan::default();
+        let mut buffer = [0_u8; 128];
+        loop {
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                return Ok(());
+            }
+            scanner.check(&buffer[..count], "file admission test")?;
+        }
+    }
+
+    #[test]
+    fn credential_patterns_and_ordinary_thresholds_survive_every_short_read_width() {
+        let mut markers = CREDENTIAL_PREFIXES
+            .iter()
+            .map(|(prefix, suffix)| {
+                let mut marker = prefix.to_vec();
+                marker.extend(std::iter::repeat_n(b'A', *suffix));
+                marker
+            })
+            .collect::<Vec<_>>();
+        markers.push(PRIVATE_KEY_MARKER.to_vec());
+        markers.push([b"AKIA".as_slice(), &[b'A'; ACCESS_KEY_WIDTH - 4]].concat());
+        for marker in markers {
+            let ordinary = &marker[..marker.len() - 1];
+            assert!(contains_credential_like_material(&marker));
+            assert!(!contains_credential_like_material(ordinary));
+            for stride in 1..=credential_pattern_width() + 1 {
+                for (sample, should_reject) in [(&marker[..], true), (ordinary, false)] {
+                    let mut bytes = vec![0xff; 17];
+                    bytes.extend_from_slice(sample);
+                    bytes.extend_from_slice(&[0, 0x80]);
+                    let result = scan_short_reads(ShortReads {
+                        remaining: &bytes,
+                        stride,
+                    });
+                    if should_reject {
+                        let error = result.unwrap_err();
+                        assert!(matches!(error, StorageError::InvalidBackup(_)));
+                        assert!(
+                            !error
+                                .to_string()
+                                .contains(std::str::from_utf8(&marker).unwrap())
+                        );
+                    } else {
+                        result.unwrap();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1965,7 +1910,28 @@ mod tests {
             ),
         )
         .unwrap();
-        let descriptor = store.ingest_blob_file(&source).unwrap();
+        // Explicit legacy fixture: new admission must refuse these bytes.
+        // Seed only this fixture-owned CAS path, keeping the portable-export
+        // oracle independent of the current ingestion policy.
+        let bytes = fs::read(&source).unwrap();
+        let descriptor = BlobDescriptor {
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            size_bytes: bytes.len() as u64,
+        };
+        let leaf = store.blob_path(&descriptor.sha256).unwrap();
+        fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options.open(&leaf).unwrap();
+        output.write_all(&bytes).unwrap();
+        output.sync_all().unwrap();
+        drop(output);
+        assert_eq!(store.verify_blob(&descriptor.sha256).unwrap(), descriptor);
         let changed = store
             .apply(
                 project.id,
@@ -1982,6 +1948,13 @@ mod tests {
                 },
             )
             .unwrap();
+        let database = store.path().to_path_buf();
+        drop(store);
+        let mut store = Store::open(database).unwrap();
+        assert_eq!(
+            store.load_project(changed.project.id).unwrap(),
+            changed.project
+        );
         let bundle = temp.path().join("portable");
 
         let error = store
