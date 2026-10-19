@@ -393,16 +393,23 @@ fn historical_unbound_locales_can_be_opened_and_repaired_one_profile_at_a_time()
     // This serialized document shape was accepted by the previous domain and
     // storage APIs. Seed it through the read-compatible storage boundary, not
     // through the newly strict UpsertDeliverable mutation.
+    // An initial historical snapshot has no journal, no previous branch
+    // revisions and no inherited review/merge workspace to fabricate.
+    assert_eq!(legacy.branches.len(), 1);
+    assert!(legacy.branch_workspaces.is_empty());
+    assert!(legacy.reviews.is_empty() && legacy.merges.is_empty());
+    legacy.revision = 0;
+    legacy.branches[0].base_revision = 0;
+    legacy.branches[0].head_revision = 0;
     let first = localized_profile(&legacy, None);
     let mut second = localized_profile(&legacy, None);
     second.name = "Another historical locale".into();
     second.language = "fr-FR".into();
     legacy.deliverables.extend([first.clone(), second.clone()]);
-    // This is a pre-existing document *snapshot*, not a replay of the live
-    // source service's later events. Initial storage snapshots have revision
-    // zero and an empty journal. Preserve the portability invariant that a
-    // backup's journal must contain exactly one event per committed revision.
-    legacy.revision = 0;
+    // Never inherit events from a different project/source: this document
+    // starts as an initial, legitimate revision-zero serialized snapshot. The
+    // current storage backup requires exactly one event per later revision.
+    legacy.validate().unwrap();
     let legacy_path = f.folder.path().join("legacy.sqlite3");
     let service = StudioService::open(&legacy_path).unwrap();
     for (label, bytes) in [
