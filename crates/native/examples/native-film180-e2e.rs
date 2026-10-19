@@ -14,7 +14,10 @@ use motionwright_native::{
         FilmBuildOptions, MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY,
         SceneFilmIntent, build_motion_canvas_segments,
     },
-    production::{MotionCanvasRenderEvidence, ProductionConnection, ProductionCoordinator},
+    production::{
+        MltAudioArtifact, MltAvMasterRequest, MotionCanvasRenderEvidence, ProductionConnection,
+        ProductionCoordinator,
+    },
 };
 use motionwright_service::{StudioService, VoiceImportMetadata};
 use semwright_media_time::{Rate, ResolvedCue};
@@ -45,7 +48,8 @@ fn usage() -> ! {
         "usage: native-film180-e2e seed FRESH_DATABASE NEW_SOURCE_WAV NEW_PROJECT_JSON |\
          readback EXISTING_DATABASE NEW_OBSERVATION_JSON |\
          edit EXISTING_DATABASE ORIGINAL_NATIVE_EVIDENCE NEW_EDITED_PROJECT_JSON |\
-         render EXISTING_DATABASE OWNED_CONNECTION NEW_EVIDENCE_JSON"
+         render EXISTING_DATABASE OWNED_CONNECTION NEW_EVIDENCE_JSON |\
+         master EXISTING_DATABASE OWNED_CONNECTION NATIVE_FILM_RESULT WAV_OWNER_RELATIVE WAV_SHA256 NEW_MASTER_EVIDENCE"
     );
     std::process::exit(2);
 }
@@ -792,6 +796,228 @@ fn edit_saved_project(
     Ok(())
 }
 
+fn verify_original_audio_file_binding(relative: &str, sha256: &str) -> FixtureResult<()> {
+    let path = Path::new(relative);
+    if relative.len() < 5
+        || relative.len() > 160
+        || !relative.ends_with(".wav")
+        || path.components().count() != 1
+        || !matches!(
+            path.components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+        || !relative
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        || relative.starts_with('.')
+    {
+        return Err(
+            "native Film180 source audio must be one closed owner-output WAV component".into(),
+        );
+    }
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("native Film180 source WAV digest is not lowercase SHA256".into());
+    }
+    Ok(())
+}
+
+/// Final H264/AAC master only from the existing, original native Film output.
+/// The old MLT AAC right-channel tail defect remains RED until an independent
+/// full decoded-PCM and video-frame observer admits this newly sourced result.
+async fn master_original(
+    database: &Path,
+    connection: &Path,
+    motion_evidence: &Path,
+    wav_relative_path: &str,
+    wav_sha256: &str,
+    evidence: &Path,
+) -> FixtureResult<()> {
+    if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Err("Film180 full AV master requires an authorized disposable CI Host".into());
+    }
+    must_be_unused(evidence)?;
+    if !motion_evidence.is_absolute()
+        || !motion_evidence.is_file()
+        || motion_evidence.is_symlink()
+        || !(1..=8 * 1024 * 1024).contains(&fs::metadata(motion_evidence)?.len())
+    {
+        return Err("original Motion Canvas evidence is missing or unbounded".into());
+    }
+    verify_original_audio_file_binding(wav_relative_path, wav_sha256)?;
+    let motion: MotionCanvasRenderEvidence = serde_json::from_slice(&fs::read(motion_evidence)?)?;
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    let [project] = projects.as_slice() else {
+        return Err("AV source project missing or duplicated".into());
+    };
+    let profile = project
+        .deliverables
+        .first()
+        .ok_or("AV source has no deliverable")?;
+    let request_id = bound_stage_request(project)?;
+    let original_film_sha = verified_projection(project)?;
+    if motion.project_resource != project.resource_key()
+        || motion.generation != project.generation
+        || motion.revision != project.revision
+        || motion.deliverable_id != profile.id
+        || motion.frame_rate != Rate::new(30, 1)?
+        || motion.segments.len() != 1
+        || motion.segments[0].frame_count != FRAME_COUNT
+        || motion.segments[0].scene_ids != project.scenes.iter().map(|s| s.id).collect::<Vec<_>>()
+        || motion.segments[0]
+            .verification
+            .pointer("/report/support_level")
+            .and_then(serde_json::Value::as_str)
+            != Some("native")
+    {
+        return Err("AV master input does not bind the original native single-run source".into());
+    }
+    for (suffix, command) in [
+        (
+            "motion:0:render-result",
+            "driver.motion-canvas.render.result",
+        ),
+        ("motion:0:verify", "driver.motion-canvas.composition.verify"),
+    ] {
+        let id = format!("{request_id}:{suffix}");
+        let receipt = service
+            .latest_production_receipt(project.id, &id)?
+            .ok_or("actual original Film180 terminal native receipt is missing")?;
+        if receipt.stage != "completed"
+            || receipt.command != command
+            || receipt.generation != project.generation
+            || receipt.revision != project.revision
+        {
+            return Err("original Film180 native terminal receipt not admitted for AV".into());
+        }
+    }
+    let voice_id = profile
+        .voice_track_id
+        .ok_or("AV source has no selected measured voice")?;
+    let voice = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|v| v.id == voice_id)
+        .ok_or("AV source voice has no CAS registration")?;
+    if voice.source_sha256 != wav_sha256
+        || voice.sample_rate_hz != PCM_RATE
+        || voice.channels != 2
+        || voice.measured_duration != RationalTime::new(6, 1)?
+    {
+        return Err("AV original registered PCM digest or source sample clock differs".into());
+    }
+    let native_request = if request_id == NATIVE_REQUEST {
+        "film180-original-av-master-v1"
+    } else {
+        "film180-edited-av-master-v1"
+    };
+    for suffix in ["mlt:frames-encode", "mlt:av-mux"] {
+        let id = format!("{native_request}:{suffix}");
+        if service
+            .latest_production_receipt(project.id, &id)?
+            .is_some()
+        {
+            return Err("original MLT mux already has a durable claim; never retry an unknown native AV operation".into());
+        }
+    }
+    let connection = ProductionConnection::load(connection)?;
+    if connection.resource != project.resource_key() {
+        return Err("MLT master owner connection belongs to a different saved project".into());
+    }
+    let coordinator = ProductionCoordinator::new(service, connection)?;
+    let audio = MltAudioArtifact {
+        relative_path: wav_relative_path.into(),
+        sha256: wav_sha256.into(),
+        sample_rate: PCM_RATE,
+        channels: 2,
+    };
+    let result = coordinator
+        .assemble_mlt_av_master(
+            project.id,
+            &RevisionStamp::from(project),
+            MltAvMasterRequest {
+                request_id: native_request,
+                deliverable_id: profile.id,
+                motion: &motion,
+                audio: &audio,
+                sync: None,
+            },
+        )
+        .await;
+    let result = match result {
+        Ok(value) => value,
+        Err(error) => {
+            // The native mutator may have UNKNOWN outcome; its new durable
+            // claim remains in the existing StudioService receipt journal.
+            let diag = evidence.with_file_name("film180-original-av-error.json");
+            if must_be_unused(&diag).is_ok() {
+                let bytes = serde_json::to_vec_pretty(&json!({
+                    "schema":"motionwright.private-native-film180-av-diagnostic/1",
+                    "source_Film_sha256":original_film_sha,
+                    "source_project_id":project.id,
+                    "source_revision":project.revision,
+                    "error":{
+                        "code":format!("{:?}",error.code),
+                        "message":error.message,
+                        "outcome_known":error.outcome_known,
+                        "candidates":error.candidates
+                    },
+                    "repeat_native_mutation_authorized":false,
+                    "master_content_verified":false
+                }))?;
+                let mut file = OpenOptions::new().create_new(true).write(true).open(diag)?;
+                file.write_all(&bytes)?;
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+            }
+            return Err(
+                "native Film180 AV master failed or is uncertain: original evidence preserved"
+                    .into(),
+            );
+        }
+    };
+    if result.project_resource != project.resource_key()
+        || result.generation != project.generation
+        || result.revision != project.revision
+        || result.frame_count != FRAME_COUNT
+        || result.deliverable_id != profile.id
+        || result.frame_rate != Rate::new(30, 1)?
+    {
+        return Err("native AV result source identity or 180-frame clock changed".into());
+    }
+    let bytes = serde_json::to_vec_pretty(&result)?;
+    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        return Err("native Film180 AV receipt is empty or unbounded".into());
+    }
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(evidence)?;
+    file.write_all(&bytes)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "schema":"motionwright.native.film180.av-master/1",
+            "native_result_reported":"SUCCEEDED",
+            "source_project_id":project.id,"generation":project.generation,
+            "revision":project.revision,"canonical_Film_sha256":original_film_sha,
+            "frame_count":result.frame_count,
+            "original_source_audio_sha256":wav_sha256,
+            "master_audio_tail_sample_fidelity_verified":false,
+            "all_180_decoded_frame_pixels_verified":false,
+            "human_listening_or_visual_approval":false
+        }))?
+    );
+    Ok(())
+}
+
 fn readback_original(database: &Path, observation: &Path) -> FixtureResult<()> {
     must_be_unused(observation)?;
     let service = StudioService::open(database)?;
@@ -862,6 +1088,32 @@ async fn main() -> FixtureResult<()> {
             }
             render_original(&database, &connection, &evidence).await?;
         }
+        "master" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let film_result = path_arg(&mut args);
+            let wav_relative = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let wav_sha = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            master_original(
+                &database,
+                &connection,
+                &film_result,
+                &wav_relative,
+                &wav_sha,
+                &evidence,
+            )
+            .await?;
+        }
         _ => usage(),
     }
     Ok(())
@@ -931,6 +1183,36 @@ mod tests {
             reopened, project,
             "failed native edit must not mutate saved source"
         );
+    }
+
+    #[test]
+    fn original_av_requires_single_bounded_source_wav_and_exact_digest() {
+        let correct = "a".repeat(64);
+        assert!(verify_original_audio_file_binding("owner-voice_01.wav", &correct).is_ok());
+        for bad in [
+            "../owner-voice_01.wav",
+            "folder/owner-voice_01.wav",
+            ".original.wav",
+            "owner-voice.wav/../../fake.wav",
+            "owner-voice.wav\\evil",
+            "owner-voice.wav:ads",
+            "original.WAV",
+            "one.wav\nfoo",
+        ] {
+            assert!(
+                verify_original_audio_file_binding(bad, &correct).is_err(),
+                "{bad}"
+            );
+        }
+        for sha in [
+            "",
+            "uppercase",
+            &"A".repeat(64),
+            &"g".repeat(64),
+            &"f".repeat(63),
+        ] {
+            assert!(verify_original_audio_file_binding("owner.wav", sha).is_err());
+        }
     }
 
     #[test]
