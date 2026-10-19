@@ -17,6 +17,10 @@ on:
       - 'tooling/native_scene_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_scene_public_artifact.py'
+      # native-impact-triggers-begin
+      - 'tooling/ci_native_impact.py'
+      - 'tooling/tests/test_ci_native_impact.py'
+      # native-impact-triggers-end
       - '.github/workflows/native-manim-e2e.yml'
 
 permissions:
@@ -38,7 +42,104 @@ env:
   SEMWRIGHT_TEST_MANIM_RUNTIME: /tmp/motionwright-manim-runtime
 
 jobs:
+  # native-impact-preflight-begin
+  native-impact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      native_required: ${{ steps.impact.outputs.native_required }}
+      decision: ${{ steps.impact.outputs.decision }}
+      receipt_sha256: ${{ steps.impact.outputs.receipt_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create isolated verification directories
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/native-impact-manim/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$target"
+          mkdir -p "$target/tmp"
+          echo "MW_NATIVE_IMPACT_OUTPUT=$target/evidence" >> "$GITHUB_ENV"
+          echo "MW_NATIVE_IMPACT_TEST_TMP=$target/tmp" >> "$GITHUB_ENV"
+          echo "TMPDIR=$target/tmp" >> "$GITHUB_ENV"
+          echo "TEMP=$target/tmp" >> "$GITHUB_ENV"
+          echo "TMP=$target/tmp" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Run G0 and bind native selection to original Git inputs
+        id: impact
+        env:
+          MW_NATIVE_WORKFLOW: .github/workflows/native-manim-e2e.yml
+        run: |
+          python3 -B -I -S - <<'PY'
+          import hashlib, os, pathlib, re, shutil, stat, subprocess, sys
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          expected = os.environ["GITHUB_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", expected):
+              raise SystemExit("Invalid checkout SHA")
+          git = pathlib.Path(shutil.which("git")).resolve(strict=True)
+          if git.is_relative_to(root):
+              raise SystemExit("Git resolves into source")
+          for name in list(os.environ):
+              if name.upper().startswith("GIT_"):
+                  del os.environ[name]
+          os.environ.update(GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull,
+              GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+              GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0",
+              GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.fsmonitor",
+              GIT_CONFIG_VALUE_0="false")
+          def read_git(*args):
+              result = subprocess.run([str(git), "--no-replace-objects", *args],
+                  cwd=root, capture_output=True, timeout=30, check=True)
+              if len(result.stdout) > 2 * 1024 * 1024 or len(result.stderr) > 65536:
+                  raise SystemExit("Bootstrap Git output exceeds budget")
+              return result.stdout
+          if read_git("rev-parse", "HEAD").strip().decode() != expected:
+              raise SystemExit("Checkout differs from workflow source")
+          target = root / "tooling/ci_native_impact.py"
+          if target.is_symlink() or not target.is_file():
+              raise SystemExit("Selector is not a regular source file")
+          before = target.lstat()
+          if not stat.S_ISREG(before.st_mode):
+              raise SystemExit("Selector source mode differs")
+          with target.open("rb") as stream:
+              data = stream.read(256 * 1024 + 1)
+          after = target.stat()
+          token = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                 value.st_mtime_ns, value.st_ctime_ns)
+          if len(data) > 256 * 1024 or token(before) != token(after):
+              raise SystemExit("Selector changed or exceeds budget")
+          # Fixed-size rev-parse outputs only; the selector captures full status
+          # with bounded pipes before loading any other checkout module.
+          original_oid = read_git("rev-parse", "--verify", expected + ":tooling/ci_native_impact.py").strip().decode("ascii")
+          actual_oid = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+          if not re.fullmatch(r"[0-9a-f]{40}", original_oid) or actual_oid != original_oid:
+              raise SystemExit("Selector bytes differ from original Git source")
+          sys.argv = [str(target), "--repo", str(root), "--workflow",
+              os.environ["MW_NATIVE_WORKFLOW"], "--output",
+              os.environ["MW_NATIVE_IMPACT_OUTPUT"], "--github-output",
+              os.environ["GITHUB_OUTPUT"]]
+          # Execute the exact verified buffer without reopening the pathname.
+          scope = {"__name__": "__main__", "__file__": str(target), "__package__": None}
+          exec(compile(data, str(target), "exec"), scope)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-impact-manim-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_NATIVE_IMPACT_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 14
+  # native-impact-preflight-end
   native-manim-roundtrip:
+    # native-impact-dependency-begin
+    needs: native-impact
+    if: ${{ needs.native-impact.result == 'success' && needs.native-impact.outputs.native_required == 'true' }}
+    # native-impact-dependency-end
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -160,8 +261,7 @@ jobs:
           python3 tooling/native_manim_e2e.py \
             | tee verification/native-manim-e2e/run.log
 
-      - name: Reject unsafe public Blender and Manim scene media
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
+      # native-impact-moved-manim-0
 
       - name: Verify Manim review evidence
         run: |
