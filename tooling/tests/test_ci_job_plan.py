@@ -1,0 +1,338 @@
+"""Job applicability controls; fixtures execute Git and Python, never the product."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+TOOLING = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("ci_job_plan_under_test", TOOLING / "ci_job_plan.py")
+ci = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(ci)
+
+
+def execution(sha="a" * 40, *, event="pull_request", ref="refs/pull/7/merge"):
+    return {"GITHUB_REPOSITORY": "example/job-contract", "GITHUB_EVENT_NAME": event,
+            "GITHUB_SHA": sha, "GITHUB_REF": ref, "GITHUB_RUN_ID": "11",
+            "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_SHA": sha,
+            "GITHUB_WORKFLOW_REF": "example/job-contract/.github/workflows/ci.yml@" + ref}
+
+
+def source_observation():
+    return {"checkout_sha": "a" * 40, "tree_sha": "b" * 40, "parents": ["c" * 40, "d" * 40],
+            "workflow_sha256": "1" * 64, "planner_git_sha256": "2" * 64,
+            "planner_execution_sha256": "2" * 64, "cargo_lock_git_sha256": "3" * 64,
+            "cargo_lock_worktree_sha256": "3" * 64}
+
+
+def result_fixture(*, select_tests=True):
+    """A synthetic plan for the aggregation protocol, not an admitted exclusion."""
+    plan = {"schema": "motionwright.ci-job-plan/1", "workflow": ci.WORKFLOW,
+            "execution_context": execution(), "source": source_observation(),
+            "jobs": {job: {"selected": job in ci.ALWAYS or select_tests,
+                           "reason": "synthetic-protocol-test"} for job in ci.JOBS}}
+    plan["plan_id"] = ci.digest(ci.canonical(plan))
+    needs = {"plan": {"result": "success", "outputs": {"plan_id": plan["plan_id"]}}}
+    for job, choice in plan["jobs"].items():
+        needs[job] = {"result": "success" if choice["selected"] else "skipped",
+                      "outputs": {k: str(v) for k, v in plan["source"].items() if k != "parents"}
+                      if choice["selected"] else {}}
+        if choice["selected"]:
+            needs[job]["outputs"].update(plan_id=plan["plan_id"], run_id="11", run_attempt="1", emitter_job=job)
+    return plan, needs
+
+
+class JobOutcomes(unittest.TestCase):
+    def aggregate(self, plan, needs):
+        return ci.aggregate(plan, needs, execution(), source_observation())
+
+    def test_explicit_unselected_jobs_are_not_executions_or_test_passes(self):
+        plan, needs = result_fixture(select_tests=False)
+        result = self.aggregate(plan, needs)
+        self.assertEqual(result["status"], "JOB_SELECTION_CONSISTENT")
+        for job in ci.SELECTABLE:
+            self.assertEqual(result["jobs"][job]["job_result"], "skipped")
+            self.assertEqual(result["jobs"][job]["execution_claim"], "NOT_EXECUTED")
+        for field in ("test_case_results_admitted", "formal_acceptance", "release_verdict"):
+            self.assertIs(result[field], False)
+        needs["rust-tests"]["result"] = "success"
+        self.assertEqual(self.aggregate(plan, needs)["status"], "FAIL")
+
+    def test_selected_failure_cancel_unknown_skip_and_missing_source_never_pass(self):
+        plan, original = result_fixture()
+        self.assertEqual(self.aggregate(plan, original)["status"], "JOB_SELECTION_CONSISTENT")
+        for job in ci.JOBS:
+            for state in ("failure", "cancelled", "skipped", "UNKNOWN", None):
+                with self.subTest(job=job, state=state):
+                    needs = copy.deepcopy(original)
+                    needs[job]["result"] = state
+                    result = self.aggregate(plan, needs)
+                    self.assertEqual(result["status"], "FAIL")
+                    self.assertIn(job, result["inconsistent_jobs"])
+            with self.subTest(job=job, state="success-without-source"):
+                needs = copy.deepcopy(original)
+                needs[job]["outputs"] = {}
+                self.assertEqual(self.aggregate(plan, needs)["status"], "FAIL")
+
+    def test_other_sha_tree_run_attempt_or_workflow_is_not_transferable(self):
+        plan, needs = result_fixture()
+        for field, value in (("GITHUB_SHA", "e" * 40), ("GITHUB_RUN_ID", "12"),
+                             ("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_WORKFLOW_SHA", "f" * 40)):
+            with self.subTest(field=field):
+                observed = execution()
+                observed[field] = value
+                with self.assertRaises(ci.PlanError):
+                    ci.aggregate(plan, needs, observed, source_observation())
+        for field in ("checkout_sha", "tree_sha", "cargo_lock_git_sha256", "planner_execution_sha256"):
+            with self.subTest(field=field):
+                observed = source_observation()
+                observed[field] = "0" * len(observed[field])
+                with self.assertRaises(ci.PlanError):
+                    ci.aggregate(plan, needs, execution(), observed)
+                changed = copy.deepcopy(needs)
+                changed["rust-tests"]["outputs"][field] = observed[field]
+                self.assertEqual(self.aggregate(plan, changed)["status"], "FAIL")
+        for field, value in (("plan_id", "f" * 64), ("run_id", "10"), ("run_attempt", "0"),
+                             ("emitter_job", "studio-tests")):
+            with self.subTest(job_output=field):
+                changed = copy.deepcopy(needs)
+                changed["rust-tests"]["outputs"][field] = value
+                self.assertEqual(self.aggregate(plan, changed)["status"], "FAIL")
+
+    def test_tampered_plan_incomplete_inventory_and_deselected_g0_are_rejected(self):
+        original_plan, original_needs = result_fixture()
+        for change in ("tampered-plan", "missing-job", "extra-job", "failed-plan", "deselected-g0"):
+            with self.subTest(change=change):
+                plan, needs = copy.deepcopy(original_plan), copy.deepcopy(original_needs)
+                if change == "tampered-plan":
+                    plan["jobs"]["rust-tests"]["selected"] = False
+                elif change == "missing-job":
+                    del needs["rust-tests"]
+                elif change == "extra-job":
+                    needs["unspecified"] = {"result": "success"}
+                elif change == "failed-plan":
+                    needs["plan"]["result"] = "failure"
+                else:
+                    plan["jobs"]["source-policy"]["selected"] = False
+                    plan["plan_id"] = ci.digest(ci.canonical({k: v for k, v in plan.items() if k != "plan_id"}))
+                    needs["plan"]["outputs"]["plan_id"] = plan["plan_id"]
+                with self.assertRaises(ci.PlanError):
+                    self.aggregate(plan, needs)
+
+
+class SelectionBoundary(unittest.TestCase):
+    def test_unknown_cross_module_and_incomplete_inputs_expand_all_tests(self):
+        original = {"changed_paths": ["README.md"], "dependency_graphs": [{"issues": []}]}
+        cases = [
+            {"changed_paths": ["Cargo.lock"]},
+            {"changed_paths": ["crates/domain/Cargo.toml"]},
+            {"changed_paths": ["SOURCE_LOCK.json"]},
+            {"changed_paths": ["apps/studio/src/main.tsx"]},
+            {"changed_paths": ["crates/service/src/lib.rs"]},
+            {"changed_paths": ["unknown-input.dat"]},
+            {"unknown_paths": ["README.md"]},
+            {"dependency_graphs": [{"issues": ["unresolved-runtime-input"]}]},
+            {"dependency_graphs": []},
+            {"changed_paths": []},
+            {"candidate": True},
+            {"blockers": ["missing-disposition"]},
+            {"expansion_reasons": ["advanced-pr-base-requires-full-shadow-inventory"]},
+        ]
+        for delta in cases:
+            with self.subTest(delta=delta):
+                jobs = ci.select_jobs(dict(original, **delta), execution(), {"README.md"})
+                self.assertTrue(all(row["selected"] for row in jobs.values()))
+        for observed in (execution(event="push", ref="refs/heads/main"),
+                         execution(event="workflow_dispatch", ref="refs/heads/candidate")):
+            with self.subTest(event=observed["GITHUB_EVENT_NAME"]):
+                jobs = ci.select_jobs(original, observed, {"README.md"})
+                self.assertTrue(all(row["selected"] for row in jobs.values()))
+
+    def test_missing_runtime_consumer_audit_keeps_docs_and_all_other_paths_selected(self):
+        # This is deliberately stricter than the shadow provider's neutral names.
+        self.assertIsNone(ci.NEUTRAL_INPUT_REVIEW)
+        neutral, reason = ci.reviewed_neutral_paths(Path.cwd(), {})
+        self.assertEqual(neutral, set())
+        self.assertEqual(reason, "no-complete-neutral-input-review")
+        for path in ("README.md", "LICENSE", "CONTRIBUTING.md", "tooling/tests/test_guard.py"):
+            with self.subTest(path=path):
+                jobs = ci.select_jobs({"changed_paths": [path], "dependency_graphs": [{"issues": []}]},
+                                      execution(), neutral)
+                self.assertTrue(all(row["selected"] for row in jobs.values()))
+
+
+class GitSourceBoundary(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ci-job-plan-", dir=os.environ.get("MW_CI_JOB_TEST_TMP"))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        for name, raw in {
+            ci.SELF: (TOOLING / "ci_job_plan.py").read_bytes(),
+            ci.PROVIDER: (TOOLING / "ci_impact_plan.py").read_bytes(),
+            ci.WORKFLOW: b"name: CI\non: [push, pull_request, workflow_dispatch]\njobs:\n  guard:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n",
+            "Cargo.toml": b'[workspace]\nmembers = ["crates/domain"]\nresolver = "2"\n',
+            "Cargo.lock": b"# Synthetic tracked lock; no Cargo command is executed.\nversion = 4\n",
+            "crates/domain/Cargo.toml": b'[package]\nname = "motionwright-domain"\nversion = "0.1.0"\nedition = "2021"\n',
+            "crates/domain/src/lib.rs": b"pub fn unused_fixture() {}\n",
+            "README.md": b"Synthetic protocol fixture\n",
+            ".gitignore": b"ignored/\njson.py\n",
+        }.items():
+            target = self.repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "synthetic@example.invalid")
+        self.git("config", "user.name", "CI protocol fixture")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture base")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.seq = 0
+
+    def git(self, *args):
+        process = subprocess.run(["git", "-C", str(self.repo), *args], env=ci.git_env(),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        return process.stdout
+
+    def commit(self, relative, raw, message):
+        path = self.repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        self.git("add", relative)
+        self.git("commit", "-qm", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def invoke(self, operation="plan", *, observed=None, event=None, extra_env=None):
+        self.seq += 1
+        folder = self.root / str(self.seq)
+        folder.mkdir()
+        sha = self.git("rev-parse", "HEAD").strip()
+        observed = observed or execution(sha, event="workflow_dispatch", ref="refs/heads/main")
+        event_file = folder / "event.json"
+        event_file.write_text(json.dumps(event or {}), encoding="utf-8")
+        output, github_output = folder / "plan.json", folder / "github-output"
+        argv = [sys.executable, "-I", "-B", str(self.repo / ci.SELF), operation,
+                "--repo", str(self.repo), "--github-output", str(github_output)]
+        if operation == "plan":
+            argv += ["--event-path", str(event_file), "--output", str(output)]
+        else:
+            argv += ["--plan-id", "f" * 64]
+        env = dict(os.environ, **observed, **(extra_env or {}))
+        env["GITHUB_JOB"] = "source-policy"
+        process = subprocess.run(argv, cwd=self.repo, env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, timeout=45)
+        return process, output, github_output
+
+    def test_real_git_plan_and_job_observation_bind_raw_source_without_product_execution(self):
+        process, path, outputs = self.invoke()
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        plan = json.loads(path.read_bytes())
+        self.assertTrue(all(row["selected"] for row in plan["jobs"].values()))
+        self.assertEqual(plan["source"]["checkout_sha"], self.base)
+        self.assertEqual(plan["source"]["tree_sha"], self.git("rev-parse", "HEAD^{tree}").strip())
+        provider_hash = hashlib.sha256((TOOLING / "ci_impact_plan.py").read_bytes()).hexdigest()
+        self.assertEqual(plan["impact_provider_sha256"], provider_hash)
+        expected_review = ("no-complete-neutral-input-review" if provider_hash == ci.REVIEWED_PROVIDER_SHA256
+                           else "provider-review-required")
+        self.assertEqual(plan["neutral_review_status"], expected_review)
+        self.assertIs(plan["test_case_results_admitted"], False)
+        self.assertIn("rust_tests=true\n", outputs.read_text())
+        observed, _, observation_output = self.invoke("observe")
+        self.assertEqual(observed.returncode, 0, observed.stderr.decode())
+        self.assertIn("cargo_lock_git_sha256=", observation_output.read_text())
+
+    def test_actual_pr_merge_is_distinct_from_trigger_head_and_old_checkout_is_rejected(self):
+        self.git("checkout", "-qb", "feature")
+        head = self.commit("README.md", b"Feature README\n", "feature")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "--no-ff", "-qm", "synthetic merge", "feature")
+        merge = self.git("rev-parse", "HEAD").strip()
+        event = {"pull_request": {"base": {"sha": self.base}, "head": {"sha": head}}}
+        process, path, _ = self.invoke(observed=execution(merge), event=event)
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        plan = json.loads(path.read_bytes())
+        self.assertEqual(plan["source"]["checkout_sha"], merge)
+        self.assertEqual(plan["event_source"]["head_sha"], head)
+        self.assertEqual(plan["source"]["parents"], [self.base, head])
+        self.assertNotEqual(merge, head)
+        stale, path, _ = self.invoke(observed=execution(head), event=event)
+        self.assertEqual(stale.returncode, 2)
+        self.assertFalse(path.exists())
+
+    def test_changed_lock_ignored_input_and_import_shim_prevent_planning_without_replay(self):
+        lock = self.repo / "Cargo.lock"
+        original = lock.read_bytes()
+        lock.write_bytes(original + b"# regenerated\n")
+        changed, path, _ = self.invoke()
+        self.assertEqual(changed.returncode, 2)
+        self.assertFalse(path.exists())
+        lock.write_bytes(original)
+        ignored = self.repo / "ignored/input.txt"
+        ignored.parent.mkdir()
+        ignored.write_text("unexpected prepared input", encoding="utf-8")
+        unknown, path, _ = self.invoke()
+        self.assertEqual(unknown.returncode, 2)
+        self.assertFalse(path.exists())
+        shutil.rmtree(ignored.parent)
+        marker = self.root / "import-executed"
+        (self.repo / "json.py").write_text("from pathlib import Path\nPath(" + repr(str(marker)) + ").touch()\n")
+        shim, path, _ = self.invoke()
+        self.assertEqual(shim.returncode, 2)
+        self.assertFalse(path.exists())
+        self.assertFalse(marker.exists())
+
+    def test_changed_provider_is_not_executed_and_forces_full_scope(self):
+        marker = self.root / "provider-executed"
+        self.commit(ci.PROVIDER, ("from pathlib import Path\nPath(" + repr(str(marker)) + ").touch()\n").encode(),
+                    "unreviewed provider fixture")
+        process, path, _ = self.invoke()
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        plan = json.loads(path.read_bytes())
+        self.assertTrue(all(row["selected"] for row in plan["jobs"].values()))
+        self.assertEqual(plan["neutral_review_status"], "provider-review-required")
+        self.assertIsNone(plan["impact_plan_id"])
+        self.assertFalse(marker.exists())
+
+    def test_raw_git_replacement_and_graft_do_not_change_source_identity(self):
+        head = self.commit("README.md", b"Actual source\n", "actual")
+        actual_tree = self.git("rev-parse", "HEAD^{tree}").strip()
+        self.git("replace", head, self.base)
+        graft = self.root / "grafts"
+        graft.write_text(head + "\n", encoding="ascii")
+        process, path, _ = self.invoke(extra_env={"GIT_GRAFT_FILE": str(graft), "GIT_DIR": str(self.root / "absent")})
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        plan = json.loads(path.read_bytes())
+        self.assertEqual(plan["source"]["checkout_sha"], head)
+        self.assertEqual(plan["source"]["tree_sha"], actual_tree)
+        self.assertEqual(plan["source"]["parents"], [self.base])
+
+    def test_output_cannot_overwrite_source_or_an_existing_receipt(self):
+        source = self.repo / "README.md"
+        before = source.read_bytes()
+        with self.assertRaises(ci.PlanError):
+            ci.write_new(source, {"bad": True}, self.repo)
+        self.assertEqual(source.read_bytes(), before)
+        output = self.root / "retained.json"
+        ci.write_new(output, {"original": True}, self.repo)
+        with self.assertRaises(FileExistsError):
+            ci.write_new(output, {"replacement": True}, self.repo)
+        self.assertEqual(json.loads(output.read_bytes()), {"original": True})
+        with self.assertRaises(ci.PlanError):
+            ci.write_new(self.root / "absent/../traversal.json", {}, self.repo)
+        self.assertFalse((self.root / "absent").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
