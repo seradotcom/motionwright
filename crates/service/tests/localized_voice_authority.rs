@@ -398,6 +398,11 @@ fn historical_unbound_locales_can_be_opened_and_repaired_one_profile_at_a_time()
     second.name = "Another historical locale".into();
     second.language = "fr-FR".into();
     legacy.deliverables.extend([first.clone(), second.clone()]);
+    // This is a pre-existing document *snapshot*, not a replay of the live
+    // source service's later events. Initial storage snapshots have revision
+    // zero and an empty journal. Preserve the portability invariant that a
+    // backup's journal must contain exactly one event per committed revision.
+    legacy.revision = 0;
     let legacy_path = f.folder.path().join("legacy.sqlite3");
     let service = StudioService::open(&legacy_path).unwrap();
     for (label, bytes) in [
