@@ -1,13 +1,16 @@
-import type { CanvasNode, CanvasTransform, Change, NodeProperty, Project } from "./types";
+import type { CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project } from "./types";
 
 // These records preserve editor input. Project revisions, locks and the existing
 // service remain authoritative; recovery never executes a stored command.
 export const CANVAS_TRANSFORM_FIELDS = ["x", "y", "width", "height", "rotation_deg", "opacity"] as const;
-export const CANVAS_DRAFT_FIELDS = ["text", ...CANVAS_TRANSFORM_FIELDS] as const;
+export const CANVAS_STYLE_FIELDS = ["fill", "stroke", "stroke_width", "font_family", "font_size", "font_weight", "line_height", "blend_mode"] as const;
+export const CANVAS_DRAFT_FIELDS = ["text", ...CANVAS_TRANSFORM_FIELDS, ...CANVAS_STYLE_FIELDS] as const;
 export type CanvasDraftField = typeof CANVAS_DRAFT_FIELDS[number];
-export type CanvasDraftGroup = "text" | "transform";
+export type CanvasDraftGroup = "text" | "transform" | "style";
 export const CANVAS_FIELD_LABELS: Record<CanvasDraftField, string> = {
   text: "Text", x: "X", y: "Y", width: "W", height: "H", rotation_deg: "Rotation", opacity: "Opacity",
+  fill: "Fill", stroke: "Stroke", stroke_width: "Stroke width", font_family: "Font family",
+  font_size: "Font size", font_weight: "Font weight", line_height: "Line height", blend_mode: "Blend mode",
 };
 export interface CanvasFieldDraft {
   raw: string; base: string; baseRevision: number; sequence: number; intent?: true;
@@ -19,7 +22,7 @@ export interface CanvasSubmission {
   fields: Partial<Record<CanvasDraftField, { raw: string; sequence: number; value: string }>>;
 }
 export interface CanvasWorkspaceDraft {
-  schema: "motionwright.canvas-draft/1"; scope: string; sceneId: string; nodeId: string;
+  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2"; scope: string; sceneId: string; nodeId: string;
   baseContext: CanvasDraftContext;
   fields: Record<CanvasDraftField, CanvasFieldDraft>; awaiting: CanvasSubmission | null;
 }
@@ -28,7 +31,7 @@ const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const canvasDraftScope = (project: Project, sceneId: string, nodeId: string) =>
   JSON.stringify([project.id, project.generation, project.active_branch, sceneId, nodeId]);
 export const canvasGroupFields = (group: CanvasDraftGroup): readonly CanvasDraftField[] =>
-  group === "text" ? ["text"] : CANVAS_TRANSFORM_FIELDS;
+  group === "text" ? ["text"] : group === "style" ? CANVAS_STYLE_FIELDS : CANVAS_TRANSFORM_FIELDS;
 export const canvasFieldHasInput = (field: CanvasFieldDraft) => field.intent === true || field.raw !== field.base;
 export const canvasDraftHasWork = (draft: CanvasWorkspaceDraft) => draft.awaiting !== null
   || CANVAS_DRAFT_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
@@ -36,19 +39,50 @@ export function canvasNumber(raw: string): number {
   if (!decimal.test(raw.trim()) || !Number.isFinite(Number(raw))) throw new Error("Enter a finite decimal number.");
   return Number(raw);
 }
+const styleStringFields = ["fill", "stroke", "font_family"] as const;
+const optionalNumericStyle = ["font_size", "font_weight", "line_height"] as const;
+const isStyleField = (field: CanvasDraftField): field is typeof CANVAS_STYLE_FIELDS[number] =>
+  (CANVAS_STYLE_FIELDS as readonly string[]).includes(field);
+const isStyleString = (field: CanvasDraftField) => (styleStringFields as readonly string[]).includes(field);
 export function canvasFieldIssue(field: CanvasDraftField, raw: string): string | null {
-  if (field === "text") return new TextEncoder().encode(raw).length > 100_000 ? "Canvas text must fit within 100,000 UTF-8 bytes." : null;
+  if (field === "text") return new TextEncoder().encode(raw).length > 100_000
+    ? "Canvas text must fit within 100,000 UTF-8 bytes." : null;
+  if (isStyleString(field)) return new TextEncoder().encode(raw.trim()).length > 512
+    ? "Canvas style values must fit within 512 UTF-8 bytes." : null;
+  if (field === "blend_mode") return ["normal", "multiply", "screen", "add"].includes(raw)
+    ? null : "Choose an admitted blend mode.";
+  if ((optionalNumericStyle as readonly string[]).includes(field) && raw.trim() === "") return null;
+  if (field === "font_weight" && !/^[+-]?\d+$/.test(raw.trim())) return "Use a whole font weight.";
   try {
     const value = canvasNumber(raw);
     if ((field === "width" || field === "height") && value < 0) return "Use a size of zero or greater.";
     if (field === "opacity" && (value < 0 || value > 1)) return "Use an opacity between zero and one.";
+    if (field === "stroke_width" && (value < 0 || value > 1000)) return "Use a stroke width between zero and 1000.";
+    if (field === "font_size" && (value < 1 || value > 2048)) return "Use a font size from 1 to 2048.";
+    if (field === "font_weight" && (value < 1 || value > 1000 || !Number.isSafeInteger(value))) return "Use a whole font weight from 1 to 1000.";
+    if (field === "line_height" && (value < .1 || value > 20)) return "Use a line height between 0.1 and 20.";
     return null;
   } catch { return "Enter a finite decimal number."; }
 }
 function proposed(field: CanvasDraftField, raw: string): string {
-  return field === "text" ? raw : canvasFieldIssue(field, raw) ? "invalid:" + raw : String(canvasNumber(raw));
+  if (field === "text" || field === "blend_mode") return raw;
+  if (isStyleString(field)) return raw.trim();
+  if ((optionalNumericStyle as readonly string[]).includes(field) && raw.trim() === "") return "";
+  return canvasFieldIssue(field, raw) ? "invalid:" + raw : String(canvasNumber(raw));
 }
-const canonical = (node: CanvasNode, field: CanvasDraftField) => field === "text" ? node.text ?? "" : String(node[field]);
+const canonical = (node: CanvasNode, field: CanvasDraftField): string =>
+  field === "text" ? node.text ?? "" : isStyleField(field)
+    ? String(node.style[field] ?? "") : String(node[field]);
+const styleFromSubmission = (node: CanvasNode, values: CanvasSubmission["fields"]): NodeStyle => {
+  const style = { ...node.style };
+  for (const field of CANVAS_STYLE_FIELDS) {
+    const raw = values[field]!.value;
+    (style as unknown as Record<string, unknown>)[field] = isStyleString(field) || (optionalNumericStyle as readonly string[]).includes(field)
+      ? raw === "" ? null : isStyleString(field) ? raw : Number(raw)
+      : field === "blend_mode" ? raw : Number(raw);
+  }
+  return style;
+};
 const nodeContext = (node: CanvasNode): CanvasDraftContext => ({ kind: node.kind, parent_id: node.parent_id, coordinate_space: node.coordinate_space });
 const contextMatches = (before: CanvasDraftContext, current: CanvasDraftContext, group: CanvasDraftGroup) => before.kind === current.kind
   && (group === "text" || (before.parent_id === current.parent_id && before.coordinate_space === current.coordinate_space));
@@ -60,7 +94,7 @@ export function canvasDraftNode(draft: CanvasWorkspaceDraft, project: Project): 
   return node;
 }
 export function createCanvasDraft(project: Project, sceneId: string, nodeId: string): CanvasWorkspaceDraft {
-  const draft: CanvasWorkspaceDraft = { schema: "motionwright.canvas-draft/1", scope: canvasDraftScope(project, sceneId, nodeId),
+  const draft: CanvasWorkspaceDraft = { schema: "motionwright.canvas-draft/2", scope: canvasDraftScope(project, sceneId, nodeId),
     sceneId, nodeId, baseContext: { kind: "", parent_id: null, coordinate_space: "project_pixels" }, fields: {} as CanvasWorkspaceDraft["fields"], awaiting: null };
   const node = canvasDraftNode(draft, project);
   draft.baseContext = nodeContext(node);
@@ -87,7 +121,7 @@ export function canvasDraftConflicts(draft: CanvasWorkspaceDraft, project: Proje
  * reparenting or changing an object's kind. */
 export function canvasContextConflicts(draft: CanvasWorkspaceDraft, project: Project): CanvasDraftGroup[] {
   const current = nodeContext(canvasDraftNode(draft, project));
-  return (["text", "transform"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
+  return (["text", "transform", "style"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
 }
 export function reviewCanvasContext(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
   return reconcileCanvasDraft({ ...draft, baseContext: nodeContext(canvasDraftNode(draft, project)) }, project);
@@ -101,6 +135,12 @@ export function canvasSubmissionMatches(project: Project, draft: CanvasWorkspace
 }
 export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
   const node = canvasDraftNode(draft, project), fields = { ...draft.fields };
+  // v1 recovery never held style fields. Hydrate from the *opened* canonical
+  // object, never from the recovery copy belonging to another writer.
+  if (draft.schema === "motionwright.canvas-draft/1") for (const field of CANVAS_STYLE_FIELDS) {
+    const value = canonical(node, field);
+    fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
+  }
   let awaiting = draft.awaiting;
   if (awaiting && canvasSubmissionMatches(project, draft, awaiting)) {
     for (const field of canvasGroupFields(awaiting.group)) {
@@ -120,17 +160,17 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
   for (const field of CANVAS_DRAFT_FIELDS) {
     const input = fields[field], current = canonical(node, field), dirty = canvasFieldHasInput(input);
     if (dirty && input.baseRevision > project.revision) continue;
-    if (dirty && !contextMatches(draft.baseContext, nodeContext(node), field === "text" ? "text" : "transform")) continue;
+    if (dirty && !contextMatches(draft.baseContext, nodeContext(node), field === "text" ? "text" : isStyleField(field) ? "style" : "transform")) continue;
     if (!dirty || current === input.base || current === proposed(field, input.raw)) fields[field] = {
       ...input, raw: dirty ? input.raw : current, base: current, baseRevision: project.revision,
     };
   }
-  const next = { ...draft, fields, awaiting }, currentContext = nodeContext(node);
-  const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform");
+  const next: CanvasWorkspaceDraft = { ...draft, schema: "motionwright.canvas-draft/2", fields, awaiting }, currentContext = nodeContext(node);
+  const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform"), styleInput = groupHasInput(next, "style");
   next.baseContext = {
-    kind: textInput || transformInput ? draft.baseContext.kind : currentContext.kind,
-    parent_id: transformInput ? draft.baseContext.parent_id : currentContext.parent_id,
-    coordinate_space: transformInput ? draft.baseContext.coordinate_space : currentContext.coordinate_space,
+    kind: textInput || transformInput || styleInput ? draft.baseContext.kind : currentContext.kind,
+    parent_id: transformInput || styleInput ? draft.baseContext.parent_id : currentContext.parent_id,
+    coordinate_space: transformInput || styleInput ? draft.baseContext.coordinate_space : currentContext.coordinate_space,
   };
   return next;
 }
@@ -157,14 +197,17 @@ export function canvasGroupIssue(draft: CanvasWorkspaceDraft, project: Project, 
     const issue = canvasFieldIssue(field, draft.fields[field].raw);
     if (issue) return CANVAS_FIELD_LABELS[field] + ": " + issue;
   }
-  const changed = fields.filter(field => proposed(field, draft.fields[field].raw) !== canonical(node, field));
+  const changed = fields.filter(field => canvasFieldHasInput(draft.fields[field])
+    && proposed(field, draft.fields[field].raw) !== canonical(node, field));
   if (changed.length === 0) return "These values already match the saved object.";
-  if (project.locks.some(lock => lock.resource === "scene:" + draft.sceneId && lock.kind === (group === "text" ? "content" : "position"))
-    || changed.some(field => node.property_locks.includes(transformLock(field)))) return "A saved lock protects these Canvas fields. Your draft is kept.";
+  if (project.locks.some(lock => lock.resource === "scene:" + draft.sceneId && lock.kind === (group === "text" ? "content" : group === "style" ? "style" : "position"))
+    || changed.some(field => node.property_locks.includes(group === "style" ? "style" : transformLock(field)))) {
+    return "A saved lock protects these Canvas fields. Your draft is kept.";
+  }
   return null;
 }
 export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Project, group: CanvasDraftGroup, id: string): {
-  draft: CanvasWorkspaceDraft; submission: CanvasSubmission; change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" }>;
+  draft: CanvasWorkspaceDraft; submission: CanvasSubmission; change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" }>;
 } {
   const current = reconcileCanvasDraft(draft, project), issue = canvasGroupIssue(current, project, group);
   if (issue) throw new Error(issue);
@@ -175,10 +218,14 @@ export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Pr
     submission.fields[field] = { raw: input.raw, sequence: input.sequence, value };
     if (value !== canonical(node, field)) fields[field] = { ...input, intent: true };
   }
-  const change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" }> = group === "text"
-    ? { type: "update_canvas_text", scene_id: current.sceneId, node_id: current.nodeId, text: submission.fields.text!.value || null }
-    : { type: "transform_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
-      transform: Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, Number(submission.fields[field]!.value)])) as unknown as CanvasTransform };
+  const change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" }> =
+    group === "text"
+      ? { type: "update_canvas_text", scene_id: current.sceneId, node_id: current.nodeId, text: submission.fields.text!.value || null }
+      : group === "style"
+        ? { type: "update_canvas_style", scene_id: current.sceneId, node_id: current.nodeId,
+            style: styleFromSubmission(node, submission.fields) }
+        : { type: "transform_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
+            transform: Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, Number(submission.fields[field]!.value)])) as unknown as CanvasTransform };
   return { draft: { ...current, fields, awaiting: submission }, submission, change };
 }
 
@@ -238,10 +285,11 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
   let draft: CanvasWorkspaceDraft | null = null;
   if (value.draft !== null) {
     const saved = value.draft;
-    if (!record(saved) || saved.schema !== "motionwright.canvas-draft/1" || saved.scope !== scope
+    if (!record(saved) || (saved.schema !== "motionwright.canvas-draft/1" && saved.schema !== "motionwright.canvas-draft/2") || saved.scope !== scope
       || saved.sceneId !== scopeParts[3] || saved.nodeId !== scopeParts[4] || !record(saved.fields)) throw new Error("The Canvas draft has an invalid object scope.");
     const fields = {} as CanvasWorkspaceDraft["fields"];
     for (const field of CANVAS_DRAFT_FIELDS) {
+      if (saved.schema === "motionwright.canvas-draft/1" && isStyleField(field)) continue;
       const input = saved.fields[field];
       if (!record(input) || typeof input.raw !== "string" || typeof input.base !== "string" || !safeInteger(input.baseRevision)
         || !safeInteger(input.sequence) || (input.intent !== undefined && input.intent !== true)
@@ -253,7 +301,7 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
     if (saved.awaiting !== null) {
       const sent = saved.awaiting;
       if (!record(sent) || typeof sent.id !== "string" || !sent.id || sent.id.length > 128 || sent.scope !== scope
-        || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
+        || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform" && sent.group !== "style") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
       awaiting = { id: sent.id, scope, revision: sent.revision, group: sent.group, context: cleanContext(sent.context), fields: {} };
       for (const field of canvasGroupFields(sent.group)) {
         const input = sent.fields[field];
@@ -263,7 +311,7 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
         awaiting.fields[field] = { raw: input.raw, value: input.value, sequence: input.sequence };
       }
     }
-    draft = { schema: "motionwright.canvas-draft/1", scope, sceneId: scopeParts[3], nodeId: scopeParts[4], baseContext: cleanContext(saved.baseContext), fields, awaiting };
+    draft = { schema: saved.schema as CanvasWorkspaceDraft["schema"], scope, sceneId: scopeParts[3], nodeId: scopeParts[4], baseContext: cleanContext(saved.baseContext), fields, awaiting };
   }
   return { schema: "motionwright.canvas-recovery/1", scope, writerId, updatedAt: value.updatedAt, draft };
 }

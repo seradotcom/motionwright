@@ -1,9 +1,10 @@
 import { Link2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { CANVAS_STYLE_FIELDS, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
+import type { CanvasDraftField, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 import type {
   CanvasNode,
   Change,
-  NodeStyle,
   RelationKind,
   Scene,
 } from "./types";
@@ -23,49 +24,39 @@ const finiteOr = (value: string, fallback: number): number => {
 export default function CanvasStructureEditor({
   scene,
   node,
-  commit,
+  commit, draft, edit, saveStyle, styleIssue, pending,
 }: {
   scene: Scene;
   node: CanvasNode;
   commit: Commit;
+  draft: CanvasWorkspaceDraft;
+  edit: (field: CanvasDraftField, raw: string) => void;
+  saveStyle: () => void;
+  styleIssue: string | null;
+  pending: boolean;
 }) {
-  const [style, setStyle] = useState<NodeStyle>(() => structuredClone(node.style));
   const [parentId, setParentId] = useState(node.parent_id ?? "");
   const [zIndex, setZIndex] = useState(node.z_index);
   const [relationKind, setRelationKind] = useState<RelationKind>("align_left");
   const [relationTarget, setRelationTarget] = useState("");
 
   useEffect(() => {
-    setStyle(structuredClone(node.style));
     setParentId(node.parent_id ?? "");
     setZIndex(node.z_index);
     setRelationTarget("");
-  }, [node.id, node.parent_id, node.z_index, node.style]);
+  }, [node.id, node.parent_id, node.z_index]);
 
   const otherNodes = useMemo(
     () => scene.nodes.filter((candidate) => candidate.id !== node.id),
     [node.id, scene.nodes],
   );
-  const styleDirty = JSON.stringify(style) !== JSON.stringify(node.style);
+  const styleDirty = CANVAS_STYLE_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
   const hierarchyDirty =
     (parentId || null) !== node.parent_id || zIndex !== node.z_index;
   const styleLocked = node.property_locks.includes("style");
   const parentLocked = node.property_locks.includes("parent");
   const orderLocked = node.property_locks.includes("order");
   const positionLocked = node.property_locks.includes("position");
-
-  const commitStyle = () =>
-    commit({
-      type: "update_canvas_style",
-      scene_id: scene.id,
-      node_id: node.id,
-      style: {
-        ...style,
-        fill: nullableText(style.fill ?? ""),
-        stroke: nullableText(style.stroke ?? ""),
-        font_family: nullableText(style.font_family ?? ""),
-      },
-    });
 
   const addRelation = () => {
     if (!relationTarget || positionLocked) return;
@@ -138,146 +129,51 @@ export default function CanvasStructureEditor({
 
       <div className="canvas-editor-section">
         <span className="field-label">Object style</span>
+        <p className="semantic-footnote">Edits remain recoverable across revisions; only Commit style writes to the project.</p>
         <div className="canvas-style-grid">
-          <label>
-            <span>Fill</span>
-            <input
-              aria-label="Canvas fill"
-              value={style.fill ?? ""}
-              disabled={styleLocked}
-              placeholder="none"
-              maxLength={512}
-              onChange={(event) => setStyle({ ...style, fill: event.target.value })}
-            />
+          {(["fill", "stroke", "font_family"] as const).filter(field => field !== "font_family" || node.kind === "text").map(field => (
+            <label key={field}>
+              <span>{field === "font_family" ? "Font family" : field === "fill" ? "Fill" : "Stroke"}</span>
+              <input aria-label={"Canvas " + (field === "font_family" ? "font family" : field)}
+                value={draft.fields[field].raw} disabled={styleLocked || pending}
+                maxLength={512} aria-invalid={Boolean(canvasFieldIssue(field,draft.fields[field].raw))}
+                onChange={event => edit(field,event.target.value)}/>
+            </label>
+          ))}
+          <label><span>Stroke width</span>
+            <input aria-label="Canvas stroke width" type="text" inputMode="decimal" role="spinbutton"
+              aria-valuemin={0} aria-valuemax={1000}
+              aria-valuenow={canvasFieldIssue("stroke_width",draft.fields.stroke_width.raw) ? undefined : Number(draft.fields.stroke_width.raw)}
+              aria-invalid={Boolean(canvasFieldIssue("stroke_width",draft.fields.stroke_width.raw))}
+              value={draft.fields.stroke_width.raw} disabled={styleLocked || pending}
+              onChange={event => edit("stroke_width",event.target.value)}/>
           </label>
-          <label>
-            <span>Stroke</span>
-            <input
-              aria-label="Canvas stroke"
-              value={style.stroke ?? ""}
-              disabled={styleLocked}
-              placeholder="none"
-              maxLength={512}
-              onChange={(event) => setStyle({ ...style, stroke: event.target.value })}
-            />
-          </label>
-          <label>
-            <span>Stroke width</span>
-            <input
-              aria-label="Canvas stroke width"
-              type="number"
-              min="0"
-              max="1000"
-              step="0.5"
-              value={style.stroke_width}
-              disabled={styleLocked}
-              onChange={(event) =>
-                setStyle({
-                  ...style,
-                  stroke_width: finiteOr(event.target.value, style.stroke_width),
-                })
-              }
-            />
-          </label>
-          <label>
-            <span>Blend</span>
-            <select
-              aria-label="Canvas blend mode"
-              value={style.blend_mode}
-              disabled={styleLocked}
-              onChange={(event) =>
-                setStyle({
-                  ...style,
-                  blend_mode: event.target.value as NodeStyle["blend_mode"],
-                })
-              }
-            >
-              <option value="normal">Normal</option>
-              <option value="multiply">Multiply</option>
-              <option value="screen">Screen</option>
-              <option value="add">Add</option>
+          <label><span>Blend</span>
+            <select aria-label="Canvas blend mode" value={draft.fields.blend_mode.raw}
+              disabled={styleLocked || pending} onChange={event => edit("blend_mode",event.target.value)}>
+              <option value="normal">Normal</option><option value="multiply">Multiply</option>
+              <option value="screen">Screen</option><option value="add">Add</option>
             </select>
           </label>
         </div>
-
-        {node.kind === "text" && (
-          <div className="canvas-style-grid typography-grid">
-            <label>
-              <span>Font family</span>
-              <input
-                aria-label="Canvas font family"
-                value={style.font_family ?? ""}
-                disabled={styleLocked}
-                maxLength={512}
-                onChange={(event) =>
-                  setStyle({ ...style, font_family: event.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Size</span>
-              <input
-                aria-label="Canvas font size"
-                type="number"
-                min="1"
-                max="2048"
-                value={style.font_size ?? 16}
-                disabled={styleLocked}
-                onChange={(event) =>
-                  setStyle({
-                    ...style,
-                    font_size: finiteOr(event.target.value, style.font_size ?? 16),
-                  })
-                }
-              />
-            </label>
-            <label>
-              <span>Weight</span>
-              <input
-                aria-label="Canvas font weight"
-                type="number"
-                min="1"
-                max="1000"
-                value={style.font_weight ?? 400}
-                disabled={styleLocked}
-                onChange={(event) =>
-                  setStyle({
-                    ...style,
-                    font_weight: Math.trunc(
-                      finiteOr(event.target.value, style.font_weight ?? 400),
-                    ),
-                  })
-                }
-              />
-            </label>
-            <label>
-              <span>Line height</span>
-              <input
-                aria-label="Canvas line height"
-                type="number"
-                min="0.1"
-                max="20"
-                step="0.05"
-                value={style.line_height ?? 1}
-                disabled={styleLocked}
-                onChange={(event) =>
-                  setStyle({
-                    ...style,
-                    line_height: finiteOr(event.target.value, style.line_height ?? 1),
-                  })
-                }
-              />
-            </label>
-          </div>
-        )}
-        <button
-          type="button"
-          className="button full"
-          disabled={!styleDirty || styleLocked}
-          onClick={() => void commitStyle()}
-        >
-          Commit style
-        </button>
+        {node.kind === "text" && <div className="canvas-style-grid typography-grid">
+          {(["font_size","font_weight","line_height"] as const).map(field => {
+            const issue = canvasFieldIssue(field,draft.fields[field].raw);
+            const shown = draft.fields[field].raw;
+            const title = field === "font_size" ? "Font size" : field === "font_weight" ? "Font weight" : "Line height";
+            return <label key={field}><span>{title}</span>
+              <input aria-label={"Canvas " + title.toLowerCase()} type="text" inputMode="decimal" role="spinbutton"
+                aria-valuemin={field === "line_height" ? 0.1 : 1} aria-valuemax={field === "font_size" ? 2048 : field === "font_weight" ? 1000 : 20}
+                aria-valuenow={!shown || issue ? undefined : Number(shown)} aria-invalid={Boolean(issue)}
+                value={shown} disabled={styleLocked || pending} onChange={event => edit(field,event.target.value)}/>
+              {issue && <span className="production-error" role="status">{issue}</span>}
+            </label>;
+          })}
+        </div>}
+        <button type="button" className="button full"
+          disabled={!styleDirty || styleLocked || pending || styleIssue !== null}
+          title={styleIssue ?? undefined} onClick={() => saveStyle()}>Commit style</button>
+        {styleDirty && styleIssue && <p className="semantic-footnote" role="status">{styleIssue}</p>}
       </div>
 
       <div className="canvas-editor-section">

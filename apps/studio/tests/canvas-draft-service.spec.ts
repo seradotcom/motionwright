@@ -854,3 +854,69 @@ test("Canvas pointer readback is required before real-service commit and explici
     await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
   }
 });
+
+test("authored Canvas style persists across two real revisions and reopen without losing uncommitted typography", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+
+    await page.getByLabel("Canvas fill", { exact: true }).fill("#F7EAD7");
+    await page.getByLabel("Canvas font size", { exact: true }).fill("1e");
+    await expect(button(page, "Commit style")).toBeDisabled();
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#F7EAD7");
+    await expect(page.getByLabel("Canvas font size", { exact: true })).toHaveValue("1e");
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#F7EAD7");
+    await expect(page.getByLabel("Canvas font size", { exact: true })).toHaveValue("1e");
+    expect(applyRequests(service)).toHaveLength(0);
+    expect(await service.project(initial.id)).toEqual(initial);
+
+    await page.getByLabel("Canvas font size", { exact: true }).fill("64");
+    await button(page, "Commit style").click();
+    const first = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "saved original palette and typography");
+    const firstNode = storedNode(first, scene.id, target.id);
+    expect(firstNode.style.fill).toBe("#F7EAD7");
+    expect(firstNode.style.font_size).toBe(64);
+    expect(firstNode.style.stroke).toBe(target.style.stroke);
+    expect(firstNode.text).toBe(target.text);
+    expect(firstNode.id).toBe(target.id);
+    expect((await service.history(initial.id,initial.revision)).map(event=>event.change.type)).toEqual(["update_canvas_style"]);
+
+    await page.getByLabel("Canvas fill", { exact: true }).fill("#1A7D83");
+    await page.getByLabel("Canvas line height", { exact: true }).fill("1e");
+    await button(page, "Brief").click(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#1A7D83");
+    await expect(page.getByLabel("Canvas line height", { exact: true })).toHaveValue("1e");
+    await page.getByLabel("Canvas line height", { exact: true }).fill("1.4");
+    await button(page, "Commit style").click();
+    const final = await checkpoint(service, page, evidence, initial.id, initial.revision + 2, "second style revision");
+    expect(storedNode(final, scene.id, target.id).style).toEqual({
+      ...firstNode.style, fill: "#1A7D83", line_height: 1.4,
+    });
+    const journal = await service.history(initial.id,initial.revision);
+    expect(journal.map(event=>event.revision)).toEqual([initial.revision+1,initial.revision+2]);
+    expect(journal.map(event=>event.change.type)).toEqual(["update_canvas_style","update_canvas_style"]);
+    expect(applyRequests(service)).toHaveLength(2);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name);
+    await revision(page, final.revision);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#1A7D83");
+    await expect(page.getByLabel("Canvas font size", { exact: true })).toHaveValue("64");
+    await expect(page.getByLabel("Canvas line height", { exact: true })).toHaveValue("1.4");
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id,initial.revision)).toEqual(journal);
+    evidence.observations.push({label:"style_two_revisions_exact_sqlite_reopen",saved:final.revision,nodeId:target.id,
+      preservedText:target.text,applyCount:2});
+  } finally {
+    await retainEvidence(testInfo,[service],evidence,[()=>page.close()]);
+  }
+});
