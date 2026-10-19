@@ -1,0 +1,40 @@
+.file-import-recovery {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px 24px;
+  padding: 14px 20px;
+  border-block-end: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent, #f1bd61);
+  background: var(--surface-2);
+  color: var(--text, #eef1f6);
+  flex: 0 0 auto;
+  /* Reserve readable recovery context without hiding the editor or timeline.
+     The surrounding shell already reserves 49 + 38 + 300 + 220 pixels. */
+  max-height: clamp(100px, calc(100vh - 620px), 280px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.file-import-copy { min-width: 0; flex: 1; }
+.file-import-copy h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 7px; font-size: 13px; }
+.file-import-copy p { margin: 5px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.file-import-copy details { margin-block-start: 7px; font-size: 12px; }
+.file-import-copy summary { cursor: pointer; width: fit-content; }
+.file-import-copy dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; margin-block: 8px; }
+.file-import-copy dt { color: var(--muted); }
+.file-import-copy dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.file-import-selector { display: flex; align-items: center; gap: 8px; margin-block: 8px; font-size: 12px; }
+.file-import-selector select { max-width: min(100%, 420px); min-width: 0; }
+.file-import-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 42%; }
+.file-import-actions .button { white-space: normal; text-align: start; }
+.file-import-error { color: var(--danger, #ffaaa6); }
+.file-import-remove { margin-block-start: 10px; }
+.file-import-remove .button + .button { margin-inline-start: 8px; }
+.file-import-recovery :focus-visible { outline: 2px solid var(--accent, #f1bd61); outline-offset: 3px; }
+
+@media (max-width: 1100px) {
+  .file-import-recovery { flex-direction: column; padding: 12px 16px; }
+  .file-import-actions { max-width: none; justify-content: flex-start; }
+  .file-import-selector { align-items: flex-start; flex-direction: column; }
+}

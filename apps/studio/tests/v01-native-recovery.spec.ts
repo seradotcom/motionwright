@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 test("v0.1 owner sees explicit UNKNOWN recovery path without any automatic retry", async ({ page }) => {
@@ -31,7 +31,14 @@ test("v0.1 owner sees explicit UNKNOWN recovery path without any automatic retry
     owner.__OWNER_RECOVERY__ = { reads: 0, forbidden: [] };
     owner.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(boot);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(boot);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "production_jobs") {
           owner.__OWNER_RECOVERY__.reads++;
           const request = args?.request as {project_id: string};

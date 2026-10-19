@@ -41,7 +41,17 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
+import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
+import FileImportRecovery, { type FileImportConfirmation } from "./FileImportRecovery";
+import { removeFileImport, type RetainedFileImport } from "./fileImport";
+import {
+  forgetProjectSelection, listProjectLibrary, openProjectFromLibrary,
+  readProjectSelection, rememberOpenedProject, type ProjectSelectionRead,
+  createProjectWithRetainedIntent, discardProjectCreationCopy, readProjectCreations,
+  recoverRetainedProjectCreation, PROJECT_CREATION_PREFIX, type ProjectCreationCopy,
+} from "./projectLibrary";
 import {
   applyChange,
   bootstrap,
@@ -49,12 +59,14 @@ import {
   importAssetFile,
   importProjectBundle,
   importVoiceFile,
+  recoverOriginalFileImport,
   inspectProjectBundle,
 } from "./api";
 import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
+import type { DeliveryProjectState } from "./deliveryProfileDraft";
 import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
@@ -69,6 +81,7 @@ import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
   Beat,
   Bootstrap,
+  StudioBootstrap,
   Change,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
@@ -604,8 +617,9 @@ function DeliverView({
   project,
   commit,
   desktopMode,
-  onImported,
+  onImportBundle,
   onOpenAudio,
+  currentProjectState,
   renderEvidence,
   onRenderEvidence,
   avEvidence,
@@ -616,8 +630,9 @@ function DeliverView({
   project: Project;
   commit: (change: Change) => Promise<void>;
   desktopMode: boolean;
-  onImported: (project: Project) => void;
+  onImportBundle: (path: string) => Promise<Project>;
   onOpenAudio: () => void;
+  currentProjectState: () => DeliveryProjectState;
   renderEvidence: MotionCanvasRenderEvidence | null;
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
@@ -672,8 +687,7 @@ function DeliverView({
     setPortableStatus(null);
     setPortableError(null);
     try {
-      const imported = await importProjectBundle(importPath.trim());
-      onImported(imported);
+      const imported = await onImportBundle(importPath.trim());
       setPortableStatus(
         "Imported " + imported.title + " at revision " + imported.revision +
         " with a fresh execution generation.",
@@ -697,7 +711,7 @@ function DeliverView({
       </header>
 
       <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
-        onOpenAudio={onOpenAudio}
+        onOpenAudio={onOpenAudio} currentProjectState={currentProjectState}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
@@ -843,6 +857,7 @@ function ProjectRail({
   selectedSceneId,
   selectScene,
   commit,
+  commitRequired,
   ingestAsset,
   desktopMode,
   collapsed,
@@ -852,6 +867,7 @@ function ProjectRail({
   selectedSceneId: string | null;
   selectScene: (id: string) => void;
   commit: (change: Change) => Promise<void>;
+  commitRequired: (change: Change) => Promise<void>;
   ingestAsset: (path: string) => Promise<void>;
   desktopMode: boolean;
   collapsed: boolean;
@@ -859,6 +875,9 @@ function ProjectRail({
 }) {
   const [addingScene, setAddingScene] = useState(false);
   const [newName, setNewName] = useState("New scene");
+  const [sceneBusy, setSceneBusy] = useState(false);
+  const sceneSubmitting = useRef(false);
+  const [sceneError, setSceneError] = useState<string | null>(null);
   const [addingAsset, setAddingAsset] = useState(false);
   const [assetPath, setAssetPath] = useState("");
   const [assetBusy, setAssetBusy] = useState(false);
@@ -893,7 +912,7 @@ function ProjectRail({
       <div className="rail-section">
         <div className="rail-section-title">
           <span>Scenes</span>
-          <button type="button" className="plain-icon" aria-label="Add scene" onClick={() => setAddingScene((value) => !value)}>
+          <button type="button" className="plain-icon" aria-label="Add scene" disabled={sceneBusy} onClick={() => { setAddingScene((value) => !value); setSceneError(null); }}>
             {addingScene ? <X size={14} /> : <Plus size={14} />}
           </button>
         </div>
@@ -902,14 +921,27 @@ function ProjectRail({
             className="add-scene-form"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (!newName.trim()) return;
-              await commit({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
-              setAddingScene(false);
-              setNewName("New scene");
+              if (!newName.trim() || sceneSubmitting.current) return;
+              sceneSubmitting.current = true;
+              setSceneBusy(true);
+              setSceneError(null);
+              try {
+                await commitRequired({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
+                setAddingScene(false);
+                setNewName("New scene");
+              } catch (reason) {
+                setSceneError(reason instanceof Error ? reason.message : String(reason));
+              } finally {
+                sceneSubmitting.current = false;
+                setSceneBusy(false);
+              }
             }}
           >
-            <input value={newName} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
-            <button className="button button-primary compact" type="submit">Add</button>
+            <input value={newName} disabled={sceneBusy} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
+            <button className="button button-primary compact" type="submit" disabled={sceneBusy || !newName.trim()}>
+              {sceneBusy ? "Adding…" : "Add"}
+            </button>
+            {sceneError && <span className="asset-import-error" role="alert">{sceneError}</span>}
           </form>
         )}
         <div className="tree-list">
@@ -1472,8 +1504,10 @@ function Timeline({
   } | null>(null);
   const duration = projectTimelineDuration(project);
   const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
-  const measuredVoice = project.audio.voice_tracks;
-  const measuredAssetIds = new Set(measuredVoice.map((track) => track.asset_id));
+  // The Audio ledger retains every take. The VO lane represents the active
+  // take used by narration and native mix intent, not overlapping alternatives.
+  const measuredVoice = project.audio.voice_tracks.filter((track) => track.id === project.audio.active_voice_track_id);
+  const measuredAssetIds = new Set(project.audio.voice_tracks.map((track) => track.asset_id));
   const pendingAudio = project.assets.filter(
     (asset) => asset.media_type.startsWith("audio/") && !measuredAssetIds.has(asset.id),
   );
@@ -1625,13 +1659,19 @@ function Timeline({
                 <small>{track.sample_rate_hz} Hz · {track.channels} ch · measured duration</small>
               </div>
             ))}
-            {measuredVoice.length === 0 && pendingAudio.length > 0 && (
+            {measuredVoice.length === 0 && project.audio.voice_tracks.length > 0 && (
+              <div className="audio-pending" aria-label="No active voice take">
+                <span>No active voice take</span>
+                <small>choose a measured take in Audio</small>
+              </div>
+            )}
+            {project.audio.voice_tracks.length === 0 && pendingAudio.length > 0 && (
               <div className="audio-pending" aria-label="Audio source awaiting measurement">
                 <span>{pendingAudio[0].name}</span>
                 <small>source attached · duration unmeasured</small>
               </div>
             )}
-            {measuredVoice.length === 0 && pendingAudio.length === 0 && (
+            {project.audio.voice_tracks.length === 0 && pendingAudio.length === 0 && (
               <div className="audio-pending empty" aria-label="No measured voice track">
                 <span>No measured voice</span>
                 <small>timeline duration is not inferred from text</small>
@@ -1783,26 +1823,207 @@ export default function App() {
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileImportConfirmation, setFileImportConfirmation] = useState<FileImportConfirmation | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const workspaceNavRef = useRef<HTMLElement>(null);
+  const bootRef = useRef<Bootstrap | null>(boot);
+  const mutationGate = useRef(new ProjectMutationGate());
+  const currentProjectState = useCallback((): DeliveryProjectState => ({
+    project: bootRef.current?.project ?? null,
+    ...mutationGate.current.activity,
+  }), []);
+
+  const [bootReady, setBootReady] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
+  const [creationCopies, setCreationCopies] = useState<ProjectCreationCopy[]>([]);
+  const [creationLimited, setCreationLimited] = useState(false);
+  const [creationError, setCreationError] = useState<string | null>(null);
+  const shellSdkRef = useRef<Bootstrap["native_sdk"] | null>(null);
+  const selectionRef = useRef<ProjectSelectionRead | null>(null);
+  const desktopBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  const publishOpenedProject = useCallback((next: Project, nativeSdk: Bootstrap["native_sdk"]) => {
+    const previous = bootRef.current?.project;
+    const sameScope = previous?.id === next.id && previous.generation === next.generation;
+    const value: Bootstrap = { project: next, native_sdk: nativeSdk };
+    bootRef.current = value;
+    shellSdkRef.current = nativeSdk;
+    setBoot(value);
+    setBootReady(true);
+    setBootError(null);
+    setSelectedSceneId(selected => sameScope && selected && next.scenes.some(scene => scene.id === selected)
+      ? selected : next.scenes[0]?.id ?? null);
+    setPlayhead(at => sameScope ? Math.min(at, projectTimelineDuration(next)) : 0);
+    setPlaying(false);
+    setTimebaseProfileId(selected => sameScope && next.deliverables.some(profile => profile.id === selected)
+      ? selected : next.deliverables[0]?.id ?? null);
+    if (!sameScope) setTimecodeMode("ndf");
+    setNativeRenderReceipt(null);
+    setNativeAvReceipt(null);
+    setNativeExportReceipt(null);
+  }, []);
+
+  const rememberSelection = useCallback((opened: Project, before: ProjectSelectionRead) => {
+    // Preference failure must never turn an admitted open into a reported
+    // project failure or roll back the editor's real canonical snapshot.
+    try {
+      const result = rememberOpenedProject(opened, before);
+      selectionRef.current = result.observed;
+      setLibraryNotice(result.status === "saved" ? null
+        : `The project is open. ${result.message ?? "The startup selection could not be remembered."}`);
+    } catch (reason) {
+      setLibraryNotice(`The project is open, but its startup selection could not be remembered. ${String(reason)}`);
+    }
+  }, []);
 
   const loadProject = useCallback(async () => {
+    const openingFrom = bootRef.current;
     setBootError(null);
-    try {
-      const value = await bootstrap();
-      setBoot(value);
-      setSelectedSceneId(value.project.scenes[0]?.id ?? null);
-      setPlayhead(value.project.scenes[0] ? seconds(value.project.scenes[0].start) : 0);
-      setTimebaseProfileId(value.project.deliverables[0]?.id ?? null);
-      setTimecodeMode("ndf");
-      setNativeRenderReceipt(null);
-      setNativeAvReceipt(null);
-      setNativeExportReceipt(null);
-    } catch (reason) {
-      setBootError(reason instanceof Error ? reason.message : String(reason));
+    const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    // Preserve the existing explicitly labelled browser demo. Library commands
+    // have no demo fallback and are exposed only when the desktop bridge exists.
+    if (!desktop) {
+      try {
+        const value = await bootstrap();
+        if (bootRef.current !== openingFrom) return;
+        if (value.project) publishOpenedProject(value.project, value.native_sdk);
+      } catch (reason) {
+        if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+      }
+      return;
     }
+    const saved = readProjectSelection();
+    selectionRef.current = saved;
+    if (saved.status === "invalid" || saved.status === "unavailable") setLibraryNotice(saved.message);
+    const requestedId = openingFrom?.project.id ?? (saved.status === "remembered" ? saved.projectId : null);
+    try {
+      await mutationGate.current.read<Project, StudioBootstrap>({
+        source: openingFrom?.project ?? null,
+        current: () => bootRef.current?.project ?? null,
+        requestedProjectId: requestedId,
+        load: () => bootstrap(requestedId),
+        project: value => value.project,
+        publish: value => {
+          shellSdkRef.current = value.native_sdk;
+          setBootReady(true);
+          if (value.project) {
+            publishOpenedProject(value.project, value.native_sdk);
+          } else {
+            // A failed selected identity retains the editor and preference.
+            // Healthy projects remain reachable through an explicit library choice.
+            setBootError(value.project_selection.status === "unavailable" ? value.project_selection.message : null);
+            setLibraryOpen(true);
+          }
+        },
+        pending: setBusy,
+      });
+    } catch (reason) {
+      if (reason instanceof ProjectReadSupersededError) return;
+      if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [publishOpenedProject]);
+
+  const openLibraryProject = useCallback(async (id: string): Promise<Project> => {
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    const opened = await mutationGate.current.read<Project, Project>({
+      source: boot?.project ?? null,
+      current: () => bootRef.current?.project ?? null,
+      requestedProjectId: id,
+      load: () => openProjectFromLibrary(id),
+      project: value => value,
+      publish: value => publishOpenedProject(value, nativeSdk),
+      pending: setBusy,
+    });
+    rememberSelection(opened, saved);
+    return opened;
+  }, [boot, publishOpenedProject, rememberSelection]);
+
+  const refreshCreations = useCallback(() => {
+    try {
+      const value = readProjectCreations();
+      setCreationCopies(value.copies); setCreationLimited(value.limited); setCreationError(null);
+    } catch (reason) {
+      setCreationError("Retained creation requests could not be read. Existing projects remain available. " + String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!desktopBridge) return;
+    refreshCreations();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(PROJECT_CREATION_PREFIX)) refreshCreations();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [desktopBridge, refreshCreations]);
+
+  const finishObservedCreation = useCallback((copy: ProjectCreationCopy, warning: string | null) => {
+    // Canonical admission has already succeeded. Preference/receipt cleanup
+    // errors must not turn that successful operation into a reported failure.
+    try { if (!warning) discardProjectCreationCopy(copy); }
+    catch (reason) { warning = "The project is open; its local creation record was retained. " + String(reason); }
+    if (warning) setLibraryNotice(previous => [previous, warning].filter(Boolean).join(" "));
+  }, []);
+
+  const createLibraryProject = useCallback(async (title: string): Promise<Project> => {
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    let observed: Awaited<ReturnType<typeof createProjectWithRetainedIntent>> | undefined;
+    try {
+      const opened = await mutationGate.current.create<Project>(bootRef.current?.project ?? null,
+        () => bootRef.current?.project ?? null,
+        async () => {
+          observed = await createProjectWithRetainedIntent(title);
+          // The receipt is the original r0. Read current authority separately,
+          // including revisions authored after the creation transaction.
+          return openProjectFromLibrary(observed.outcome.project.id);
+        }, value => publishOpenedProject(value, nativeSdk), setBusy);
+      rememberSelection(opened, saved);
+      if (observed) finishObservedCreation(observed.copy, observed.warning);
+      return opened;
+    } finally { refreshCreations(); }
+  }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
+
+  const recoverLibraryCreation = useCallback(async (copy: ProjectCreationCopy): Promise<Project | null> => {
+    const source = bootRef.current?.project ?? null;
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    try {
+      const observed = await recoverRetainedProjectCreation(copy);
+      if (!observed.outcome) {
+        setLibraryNotice(observed.warning);
+        return null;
+      }
+      const opened = await mutationGate.current.read<Project, Project>({
+        source, current: () => bootRef.current?.project ?? null,
+        requestedProjectId: observed.outcome.project.id,
+        load: () => openProjectFromLibrary(observed.outcome!.project.id),
+        project: value => value, publish: value => publishOpenedProject(value, nativeSdk), pending: setBusy,
+      });
+      rememberSelection(opened, saved);
+      finishObservedCreation(observed.copy, observed.warning);
+      return opened;
+    } finally { refreshCreations(); }
+  }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
+
+  const discardLibraryCreation = useCallback((copy: ProjectCreationCopy) => {
+    try { discardProjectCreationCopy(copy); }
+    finally { refreshCreations(); }
+  }, [refreshCreations]);
+
+  const forgetRememberedSelection = useCallback(() => {
+    const before = selectionRef.current ?? readProjectSelection();
+    const result = forgetProjectSelection(before);
+    selectionRef.current = result.observed;
+    setLibraryNotice(result.status === "cleared" ? null : result.message);
   }, []);
 
   useEffect(() => {
@@ -1894,6 +2115,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (libraryOpen) return;
       if (isPaletteShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -1912,6 +2134,9 @@ export default function App() {
         return;
       }
       if (event.code === "Space") {
+        // Native activation of the focused control owns Space. The transport
+        // shortcut applies when focus is on the editorial surface itself.
+        if (target?.closest("button, a[href], summary, [role='button'], [role='checkbox'], [role='switch'], [role='tab'], [role='menuitem']")) return;
         event.preventDefault();
         setPlaying((current) => !current);
       } else if (event.key === "ArrowLeft") {
@@ -1928,62 +2153,152 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [stepFrame, paletteOpen]);
+  }, [stepFrame, paletteOpen, libraryOpen]);
+
+  const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
+    // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    return mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      operation,
+      next => {
+        const current = bootRef.current;
+        if (!current) return;
+        const updated = { ...current, project: next };
+        bootRef.current = updated;
+        setBoot(updated);
+        setSelectedSceneId(selected => selected && next.scenes.some(scene => scene.id === selected)
+          ? selected : next.scenes[0]?.id ?? null);
+      },
+      setBusy,
+    );
+  }, [boot]);
+
+  // Deliver has its own error boundary and must observe a rejected CAS before
+  // selecting newly authored profiles. Other editor controls retain their
+  // globally reported, nonthrowing commit contract.
+  const commitRequired = useCallback(async (change: Change): Promise<void> => {
+    await transactProject(source => applyChange(source, change));
+  }, [transactProject]);
 
   const commit = useCallback(async (change: Change) => {
-    if (!boot || busy) return;
-    setBusy(true);
     setError(null);
     try {
-      const next = await applyChange(boot.project, change);
-      setBoot({ ...boot, project: next });
-      if (!selectedSceneId || !next.scenes.some((scene) => scene.id === selectedSceneId)) {
-        setSelectedSceneId(next.scenes[0]?.id ?? null);
-      }
+      await commitRequired(change);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
     }
-  }, [boot, busy, selectedSceneId]);
+  }, [commitRequired]);
+
+  // Only call after the existing coordinator admitted and published the current
+  // canonical Project. A local cleanup failure cannot undo that saved outcome.
+  const cleanConfirmedFileImport = useCallback((retained: RetainedFileImport) => {
+    try {
+      removeFileImport(retained.copy.preparation.project_id, retained.key, retained.raw);
+      setFileImportConfirmation(null);
+    } catch (reason) {
+      setFileImportConfirmation({ retained, cleanupWarning: reason instanceof Error ? reason.message : String(reason) });
+    }
+  }, []);
+
+  const ingestFile = useCallback(async (
+    operation: (source: Project) => Promise<{ project: Project; retained: RetainedFileImport }>,
+  ) => {
+    let completed: RetainedFileImport | undefined;
+    await transactProject(async source => {
+      const result = await operation(source);
+      completed = result.retained;
+      return result.project;
+    });
+    // Keep the request if either receipt reconciliation or publication failed.
+    // Cleanup cannot erase a different copy installed while the IPC was pending.
+    if (completed) cleanConfirmedFileImport(completed);
+  }, [transactProject, cleanConfirmedFileImport]);
 
   const ingestAsset = useCallback(async (path: string) => {
-    if (!boot) throw new Error("Project is not ready.");
-    if (busy) throw new Error("Finish the current project change before importing an asset.");
-    const next = await importAssetFile(boot.project, path);
-    setBoot({ ...boot, project: next });
-  }, [boot, busy]);
+    await ingestFile(source => importAssetFile(source, path));
+  }, [ingestFile]);
 
   const ingestVoice = useCallback(async (path: string, label?: string) => {
-    if (!boot) throw new Error("Project is not ready.");
-    if (busy) throw new Error("Finish the current project change before importing a voice take.");
-    const next = await importVoiceFile(boot.project, path, label);
-    setBoot({ ...boot, project: next });
-  }, [boot, busy]);
+    await ingestFile(source => importVoiceFile(source, path, label));
+  }, [ingestFile]);
+
+  const recoverFileImport = useCallback(async (retained: RetainedFileImport): Promise<boolean> => {
+    let found = false;
+    await transactProject(async source => {
+      const current = await recoverOriginalFileImport(source, retained);
+      if (current === null) return source;
+      found = true;
+      return current;
+    });
+    if (found) cleanConfirmedFileImport(retained);
+    return found;
+  }, [transactProject, cleanConfirmedFileImport]);
+
+  const importPortableBundle = useCallback(async (path: string): Promise<Project> => {
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    const saved = readProjectSelection();
+    const imported = await mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      () => importProjectBundle(path),
+      imported => {
+        const current = bootRef.current;
+        if (!current) throw new Error("The current project is unavailable. Reopen to reconcile the import.");
+        const updated = { ...current, project: imported };
+        bootRef.current = updated;
+        setBoot(updated);
+        setNativeRenderReceipt(null);
+        setNativeAvReceipt(null);
+        setNativeExportReceipt(null);
+        setSelectedSceneId(imported.scenes[0]?.id ?? null);
+        setPlayhead(0);
+        setPlaying(false);
+        setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
+        setTimecodeMode("ndf");
+      },
+      setBusy,
+      "replace",
+    );
+    rememberSelection(imported, saved);
+    return imported;
+  }, [boot, rememberSelection]);
+
+  const libraryDialog = desktopBridge ? (
+    <ProjectLibraryDialog key="project-library" open={libraryOpen}
+      currentProjectId={project?.id ?? null} onClose={() => setLibraryOpen(false)}
+      onList={listProjectLibrary} onOpen={openLibraryProject}
+      onCreate={createLibraryProject} creationCopies={creationCopies}
+      creationLimited={creationLimited} creationError={creationError}
+      onRecoverCreation={recoverLibraryCreation} onDiscardCreation={discardLibraryCreation}
+      onRefreshCreations={refreshCreations}
+      notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null} />
+  ) : null;
 
   if (!project || !boot) {
     return (
-      <main className="boot-screen" aria-busy={!bootError}>
+      <main className="boot-screen" aria-busy={!bootReady && !bootError}>
         <div className="brand-mark">MW</div>
         {bootError ? (
           <section className="boot-error" role="alert" aria-label="Project open error">
-            <strong>Couldn’t open the local project</strong>
+            <strong>Couldn’t open the selected project</strong>
             <span>{bootError}</span>
-            <button type="button" className="button button-primary" onClick={() => void loadProject()}>
-              Retry opening project
-            </button>
+            <button type="button" className="button button-primary" onClick={() => void loadProject()}>Retry selected project</button>
           </section>
+        ) : bootReady ? (
+          <section className="boot-loading" role="status"><strong>Choose a project</strong><span>Your saved projects are in the local library.</span></section>
         ) : (
           <section className="boot-loading" role="status" aria-live="polite">
-            <strong>Opening Motionwright</strong>
-            <span>Loading the local project store…</span>
-            <div className="boot-skeleton" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </div>
+            <strong>Opening Motionwright</strong><span>Loading the local project store…</span>
+            <div className="boot-skeleton" aria-hidden="true"><i /><i /><i /></div>
           </section>
         )}
+        {desktopBridge && <button type="button" className="button button-primary"
+          onClick={() => setLibraryOpen(true)}>Open project library</button>}
+        {libraryDialog}
       </main>
     );
   }
@@ -2011,7 +2326,7 @@ export default function App() {
         return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
+          commitRequired={commitRequired} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([
@@ -2049,8 +2364,9 @@ export default function App() {
         return (
           <DeliverView
             project={project}
-            commit={commit}
+            commit={commitRequired}
             onOpenAudio={() => setWorkspace("Audio")}
+            currentProjectState={currentProjectState}
             desktopMode={boot.native_sdk.mode === "tauri"}
             renderEvidence={nativeRenderReceipt}
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}
@@ -2058,17 +2374,7 @@ export default function App() {
             onAvEvidence={(result) => setNativeAvReceipt(result)}
             exportEvidence={nativeExportReceipt}
             onExportEvidence={(result) => setNativeExportReceipt(result)}
-            onImported={(imported) => {
-              setNativeRenderReceipt(null);
-              setNativeAvReceipt(null);
-              setNativeExportReceipt(null);
-              setBoot({ ...boot, project: imported });
-              setSelectedSceneId(imported.scenes[0]?.id ?? null);
-              setPlayhead(0);
-              setPlaying(false);
-              setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
-              setTimecodeMode("ndf");
-            }}
+            onImportBundle={importPortableBundle}
           />
         );
     }
@@ -2146,14 +2452,16 @@ export default function App() {
           <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
         </div>
         <div className="command-actions">
+          {desktopBridge && <button type="button" className="button compact"
+            disabled={busy} onClick={() => setLibraryOpen(true)}>Open project library</button>}
           {busy && <span className="saving-state" role="status" aria-live="polite"><RefreshCw size={13} className="spin" /> Committing</span>}
           {!online && (
             <span className="offline-chip" title="Network unavailable. Local project editing remains available.">
               <WifiOff size={13} aria-hidden="true" /> OFFLINE · LOCAL
             </span>
           )}
-          <span className="sdk-chip" title={boot.native_sdk.pinned_revision}>
-            Native SDK · {boot.native_sdk.mode === "tauri" ? "connected" : "browser demo"}
+          <span className="sdk-chip" title={"Pinned Semwright Native SDK: " + boot.native_sdk.pinned_revision + ". Desktop hosting does not verify Broker or renderer readiness; check Integrations."}>
+            Native SDK · {boot.native_sdk.mode === "tauri" ? "desktop mode" : "browser demo"}
           </span>
           <button type="button" className="quick-command-trigger" aria-label="Open command palette"
             title="Search workspaces and editor actions" onClick={() => setPaletteOpen(true)}>
@@ -2171,8 +2479,20 @@ export default function App() {
       </header>
 
       {paletteOpen && <CommandPalette commands={editorCommands} onClose={() => setPaletteOpen(false)} />}
+      {libraryDialog}
+      {libraryNotice && <div className="project-format-notice" role="status">
+        <span>{libraryNotice}</span>
+        <button type="button" className="button compact" onClick={forgetRememberedSelection}>Forget remembered selection</button>
+      </div>}
 
-      <nav className="workspace-bar" aria-label="Workspaces">
+      {desktopBridge && <FileImportRecovery key={JSON.stringify([project.id, project.generation])}
+        project={project} busy={busy} confirmation={fileImportConfirmation} onRecover={recoverFileImport}
+        onClearConfirmation={() => setFileImportConfirmation(null)} onDismiss={() => {
+          setFileImportConfirmation(null);
+          workspaceNavRef.current?.querySelector<HTMLButtonElement>('button[aria-current="page"]')?.focus();
+        }} />}
+
+      <nav ref={workspaceNavRef} className="workspace-bar" aria-label="Workspaces">
         {workspaces.map(({ name, icon: Icon }) => (
           <button
             type="button"
@@ -2189,7 +2509,7 @@ export default function App() {
 
       {error && (
         <div className="error-banner" role="alert">
-          <strong>Change not committed.</strong>
+          <strong>Project change needs attention.</strong>
           <span>{error}</span>
           <button type="button" className="plain-icon" aria-label="Dismiss error" onClick={() => setError(null)}><X size={15} /></button>
         </div>
@@ -2202,6 +2522,7 @@ export default function App() {
           selectedSceneId={selectedSceneId}
           selectScene={selectScene}
           commit={commit}
+          commitRequired={commitRequired}
           ingestAsset={ingestAsset}
           desktopMode={boot.native_sdk.mode === "tauri"}
           collapsed={railCollapsed}

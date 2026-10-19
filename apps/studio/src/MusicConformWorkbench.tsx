@@ -136,6 +136,7 @@ export default function MusicConformWorkbench({
         <div><span>Changed source scenes</span><strong>{review.changed_scene_count}</strong></div>
         <div><span>Total film duration</span><strong>{fmt(review.original_duration)} → {fmt(review.conformed_duration)}</strong></div>
         <div><span>Fixed cues / markers / transcripts</span><strong>{review.affected_cue_count} / {review.affected_marker_count} / {review.affected_transcript_count}</strong></div>
+        <div><span>Scene-linked SFX to review</span><strong>{review.affected_sfx_cue_count}</strong></div>
         <div><span>Source revision and identity</span><strong>r{review.base_revision} · {review.source_sha256.slice(0,12)}…</strong></div>
       </div>
       <div className="music-conform-changes">
@@ -154,8 +155,9 @@ export default function MusicConformWorkbench({
     </div>:<p className="production-help" role="status">{result.reason}</p>}
     {review&&<div className="music-cut-footnote"><ShieldAlert size={17} aria-hidden="true"/>
       <p>Every affected scene returns to Draft and the previous concept approval is invalidated.
-        Existing global audio cues, markers and transcripts remain at their original
-        absolute times. Their alignment may need manual editing and independent native playback.
+        Global audio cues, markers and transcripts retain their absolute times.
+        Scene-linked SFX follow their scenes, with tails prevalidated; their
+        new energy and sync still require independent listening and native playback.
         The entire change is rejected if a selected beat is invalid or any affected
         scene/profile is timing-locked.</p>
     </div>}
@@ -163,7 +165,7 @@ export default function MusicConformWorkbench({
       <input type="checkbox" aria-label="Acknowledge fixed anchors across conformed scenes"
         checked={ack} disabled={locked} onChange={e=>setAck(e.target.checked)}/>
       I understand that {review.affected_cue_count+review.affected_marker_count+review.affected_transcript_count}
-      fixed-time cue/marker/transcript entries must be checked after this conform.
+      fixed-time entries and {review.affected_sfx_cue_count} scene-linked SFX must be reviewed after this conform.
     </label>}
     <div className="production-button-row">
       <button className="primary-button" type="button"

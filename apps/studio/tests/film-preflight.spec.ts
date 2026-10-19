@@ -1,11 +1,45 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 test("native semantic Film preflight is read-only and cannot be mistaken for real render", async ({ page }) => {
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
   const sceneA = boot.project.scenes[0];
   const sceneB = boot.project.scenes[1];
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial }) => {
     const runtime = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -14,7 +48,22 @@ test("native semantic Film preflight is read-only and cannot be mistaken for rea
     runtime.__PREFLIGHT__ = { calls: [], renders: 0 };
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initial);
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initial.project.id && recipeRequest.generation === initial.project.generation
+            && recipeRequest.revision === initial.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initial.project = await apply(initial.project, recipeRequest);
+          return structuredClone(initial.project);
+        }
+
+        if (command === "bootstrap") {
+          const requested = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (requested !== initial.project.id) throw new Error("Synthetic bootstrap requires an explicitly selected matching project.");
+          return { ...structuredClone(initial), project_selection: { status: "selected", project_id: initial.project.id } };
+        }
         if (command === "motion_canvas_preflight") {
           const request = args?.request as {
             project_id: string; generation: string; revision: number;
@@ -51,8 +100,8 @@ test("native semantic Film preflight is read-only and cannot be mistaken for rea
   await page.getByLabel(sceneA.name + " motion archetype").selectOption("statement");
   await page.getByLabel(sceneB.name + " narrative role").selectOption("problem");
   await page.getByLabel(sceneB.name + " motion archetype").selectOption("diagram_build");
+  await saveFixtureRecipe(page);
   const originalRevision = await page.locator(".revision-chip").first().innerText();
-
   await page.getByRole("button", { name: "Check Film projection" }).click();
   const report = page.getByLabel("Native Film preflight result");
   await expect(report).toContainText("Film projection supported: 1 segment(s), 450 planned frames");
@@ -76,13 +125,29 @@ test("native semantic Film preflight is read-only and cannot be mistaken for rea
 test("unsupported Film projection prevents native dispatch for unchanged inputs", async ({ page }) => {
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial }) => {
     const runtime = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
     };
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initial);
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initial.project.id && recipeRequest.generation === initial.project.generation
+            && recipeRequest.revision === initial.project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initial.project = await apply(initial.project, recipeRequest);
+          return structuredClone(initial.project);
+        }
+
+        if (command === "bootstrap") {
+          const requested = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (requested !== initial.project.id) throw new Error("Synthetic bootstrap requires an explicitly selected matching project.");
+          return { ...structuredClone(initial), project_selection: { status: "selected", project_id: initial.project.id } };
+        }
         if (command === "motion_canvas_preflight") {
           const request = args?.request as {
             project_id: string; generation: string; revision: number; deliverable_id: string;
@@ -113,6 +178,7 @@ test("unsupported Film projection prevents native dispatch for unchanged inputs"
     await page.getByLabel(scene.name + " narrative role").selectOption(role);
     await page.getByLabel(scene.name + " motion archetype").selectOption(archetype);
   }
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("Native Film preflight result")).toContainText("Unsupported camera zoom");
   await expect(page.getByRole("button", { name: "Render native segments" })).toBeDisabled();

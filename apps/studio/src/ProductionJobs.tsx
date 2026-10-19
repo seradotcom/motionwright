@@ -34,6 +34,14 @@ function shortRef(value: string) {
   return value.length <= 24 ? value : value.slice(0, 21) + "…";
 }
 
+// A native job reference is only unique within its provider and Project stamp.
+// Project id scopes the component's cached values; it is not part of the job DTO.
+function productionJobKey(projectId: string, job: ProductionJobProjection) {
+  return JSON.stringify([
+    projectId, job.provider, job.generation, job.revision, job.job_ref,
+  ]);
+}
+
 function providerLabel(provider: string) {
   if (provider === "driver:motion-canvas") return "Motion Canvas";
   if (provider === "driver:mlt-video") return "MLT";
@@ -168,7 +176,10 @@ export default function ProductionJobsWorkspace({
   const [mltInventoryError, setMltInventoryError] = useState<string | null>(null);
   const [ownerReadBusy, setOwnerReadBusy] = useState<string | null>(null);
   const [ownerReadError, setOwnerReadError] = useState<string | null>(null);
-  const [ownerStatusByJob, setOwnerStatusByJob] = useState<Record<string, OwnerMotionStatusObservation>>({});
+  const [ownerStatusByJob, setOwnerStatusByJob] = useState<Record<string, {
+    scope: string;
+    observation: OwnerMotionStatusObservation;
+  }>>({});
   const refreshRef = useRef<() => void>(() => {});
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historicalJobs, setHistoricalJobs] = useState<ProductionJobProjection[]>([]);
@@ -316,8 +327,14 @@ export default function ProductionJobsWorkspace({
       } else {
         // Refuse duplicate pages without mutating the canonical source.
         setHistoricalJobs((current) => {
-          const seen = new Set(current.map((entry) => entry.job_ref));
-          return [...current, ...page.items.filter((entry) => !seen.has(entry.job_ref))];
+          const seen = new Set(current.map((entry) => productionJobKey(project.id, entry)));
+          const additional = page.items.filter((entry) => {
+            const key = productionJobKey(project.id, entry);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          return [...current, ...additional];
         });
       }
       setHistoricalCursor(page.next);
@@ -361,9 +378,11 @@ export default function ProductionJobsWorkspace({
   async function readOwnerOriginal(job: ProductionJobProjection) {
     if (!desktopMode || ownerReadBusy || job.applicability !== "current"
       || job.provider !== "driver:motion-canvas"
+      || job.generation !== project.generation || job.revision !== project.revision
       || !["outcome_unknown", "cancel_requested"].includes(job.state)) return;
     const currentKey = historyKey;
-    setOwnerReadBusy(job.job_ref);
+    const selectedJobKey = productionJobKey(project.id, job);
+    setOwnerReadBusy(selectedJobKey);
     setOwnerReadError(null);
     try {
       const observation = await readOriginalNativeJobStatus(project, job.job_ref);
@@ -377,7 +396,10 @@ export default function ProductionJobsWorkspace({
         || observation.automatic_retry_permitted !== false) {
         throw new Error("Original source status returned untrusted evidence.");
       }
-      setOwnerStatusByJob((prior) => ({ ...prior, [job.job_ref]: observation }));
+      setOwnerStatusByJob((prior) => ({
+        ...prior,
+        [selectedJobKey]: { scope: currentKey, observation },
+      }));
     } catch {
       if (historyKeyRef.current === currentKey) {
         setOwnerReadError("Original read-only status was not confirmed. The local job stays UNKNOWN or cancellation pending. Do not retry the render automatically.");
@@ -410,6 +432,11 @@ export default function ProductionJobsWorkspace({
     } finally {
       if (historyKeyRef.current === scoped) setMltInventoryBusy(false);
     }
+  }
+
+  function originalStatusFor(job: ProductionJobProjection) {
+    const stored = ownerStatusByJob[productionJobKey(project.id, job)];
+    return stored?.scope === historyKey ? stored.observation : undefined;
   }
 
   const visibleJobs = historyOpen ? historicalJobs : jobs;
@@ -593,9 +620,9 @@ export default function ProductionJobsWorkspace({
               <span role="columnheader">Applicability</span>
               <span role="columnheader">Last observation</span>
             </div>
-            {visibleJobs.map((job) => <JobRow key={job.job_ref} job={job}
+            {visibleJobs.map((job) => <JobRow key={productionJobKey(project.id, job)} job={job}
               desktopMode={desktopMode} ownerReadBusy={ownerReadBusy !== null}
-              ownerObservation={ownerStatusByJob[job.job_ref]}
+              ownerObservation={originalStatusFor(job)}
               onReadOriginalStatus={(entry) => { void readOwnerOriginal(entry); }}
             />)}
           </div>
