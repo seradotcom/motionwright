@@ -2260,6 +2260,54 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T18:50:07.247412+00:00"
+        },
+        {
+          "prior_contract_status": "open",
+          "prior_criteria": [
+            {
+              "evidence_ids": [],
+              "id": "MW05-E00-04#/requirement",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "cc5650358cdbc8dc8cbde59a267e1768d3c1b0c0db27d46f18012b573f1c506a",
+              "status": "not_run"
+            },
+            {
+              "evidence_ids": [],
+              "id": "MW05-E00-04#/acceptance",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "10066e0dcf9fc76910569f6776ec5259efbd63200c1230ef8f51e6ba747e6214",
+              "status": "not_run"
+            },
+            {
+              "evidence_ids": [
+                "source-identity-main-951"
+              ],
+              "id": "MW05-E00-04#/negative_case",
+              "missing_assertions": [
+                "An exact assessed-source execution and an assertion-level sufficiency review have not yet been admitted for this canonical field."
+              ],
+              "scope_notes": [
+                "Exact integrated 951 execution/source observations and a separately hash-bound sufficiency review cover this original field only."
+              ],
+              "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
+              "status": "stale"
+            }
+          ],
+          "prior_current_record_ids": [],
+          "prior_technical_status": "stale",
+          "reason": "Original independent clean checkout main918 G0 negative tests execute the no cross-SHA acceptance inheritance oracle; scope is only the original negative clause.",
+          "reviewed_at_utc": "2026-10-19T18:59:32.568140+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "complete_requirement_acceptance": "NOT_COMPLETED",
@@ -2274,7 +2322,7 @@
       "source_record_sha256": "f9f4d4970525abd41489876cefff57fa9c9ae35e7c091572e6b6d291d4688fa5",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Exact original main918 local test log and SHA-bound source; other legacy fields remain stale or NOT_RUN.",
           "media_persistence_or_installed_artifacts": "Real temporary SQLite is exercised by the selected tests; no installed application or native media acceptance is inferred.",
           "retained": "Hashed original log excerpts, exact test/source definitions, executed public ledger fixture and synthetic corruption seed.",
           "status": "selected_original_execution_observations_verified"
@@ -2284,7 +2332,6 @@
           "human_review_status": "not_required",
           "pending_criteria": [
             "MW05-E00-04#/acceptance",
-            "MW05-E00-04#/negative_case",
             "MW05-E00-04#/requirement"
           ],
           "status": "open"
@@ -2312,17 +2359,15 @@
           },
           {
             "evidence_ids": [
-              "source-identity-main-951"
+              "no-source-pass-inheritance-main918-local"
             ],
             "id": "MW05-E00-04#/negative_case",
-            "missing_assertions": [
-              "An exact assessed-source execution and an assertion-level sufficiency review have not yet been admitted for this canonical field."
-            ],
+            "missing_assertions": [],
             "scope_notes": [
-              "Exact integrated 951 execution/source observations and a separately hash-bound sufficiency review cover this original field only."
+              "Exact clean main918 local 28 fixture tests with 10 selected no-inheritance assertions; automated sufficiency review covers this negative field only."
             ],
             "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
-            "status": "stale"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -2334,7 +2379,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "no-source-pass-inheritance-main918-local"
+          ],
           "current_source": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
           "historical_record_ids": [
             "a5-ledger-id-negatives-main-ce22",
@@ -2364,7 +2411,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "A5 original clean-source local current-code negative and sufficiency-only assessment, no automated acceptance of full scenario."
         },
         "schema_version": 1,
         "source": {
@@ -2374,12 +2421,12 @@
         },
         "technical_verification": {
           "evidence_ids": [
-            "source-identity-main-951"
+            "no-source-pass-inheritance-main918-local"
           ],
           "execution_kinds": [
             "synthetic"
           ],
-          "status": "stale"
+          "status": "partial"
         }
       }
     },
@@ -23841,7 +23888,7 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "9c2c8ca7ea400ee0c55ab40c8a19f833927ccb2f1f6ec85d116fdc52db27e1d8"
+    "sha256": "5f42ffe3af0eba308488239c248b9753864f337853bb22e4854e16744e0d5e50"
   },
   "upstream_integrated_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
   "v05_release_ready": false

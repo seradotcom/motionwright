@@ -21314,6 +21314,74 @@
           "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         }
       ]
+    },
+    {
+      "artifact_scope": "Actual local stdout/stderr and precise original test-body excerpts on byte-identical Git source.",
+      "artifacts": [
+        {
+          "member": "source918-original-no-pass-inheritance.json",
+          "member_sha256": "feb0579f7ded4a671ef784be8fa6cf26c8ceef155d111b81e1aa7f1045b59a47",
+          "path": "docs/acceptance/evidence/no-inherited-pass-main-9188210c.zip",
+          "sha256": "4958608a6a8c9bb8b7fe6aa1479e95cad6b3f3495f2afb8237ecb2f253625a80"
+        }
+      ],
+      "assertions": [
+        "An evidence execution or review bound to another source SHA or SOURCE_LOCK cannot be relabeled as a complete current-source criterion.",
+        "Same source bytes under a later commit remain historical until the actual executed product SHA is evaluated.",
+        "A green technical source-policy check and a release-ready boolean do not create contractual or human acceptance."
+      ],
+      "complete_criterion_ids": [
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "criterion_ids": [
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/tests/test_conformance_currency_impact.py",
+          "sha256": "33947b4f92b9a0a25638a1c760ede02234de2f00e21163c6b1785c744740a9d3"
+        },
+        {
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "synthetic",
+        "passed": 28,
+        "profile": "a5-source-and-history-fixtures",
+        "skipped": 0,
+        "source_relation": "clean_local_integrated_main_snapshot",
+        "status": "pass"
+      },
+      "id": "no-source-pass-inheritance-main918-local",
+      "limitations": [
+        "Real local Python fixture execution on an exact clean main918 checkout; it is not a GitHub CI original job.",
+        "Does not prove native media, installed project state, rights, human review or all E00-04 normative conditions.",
+        "Separate A6 independent review is welcome but not asserted by this automated technical sufficiency decision."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        },
+        {
+          "path": "tooling/conformance_currency_impact.py",
+          "sha256": "04ded180ac70b9c662150784006ebcf50f86580c60b7a0216ff855d62fefb30a"
+        },
+        {
+          "path": "tooling/creative_status_policy.py",
+          "sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -26753,6 +26821,92 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6"
+    },
+    {
+      "criterion_id": "MW05-E00-04#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "no-source-pass-inheritance-main918-local": "719e5388d6432182a31cf6fbeb137d6706571adfc9a8f6234df82106fb306427"
+      },
+      "id": "technical-source918-no-inherited-pass-mw05-e00-04",
+      "limitations": [
+        "Sufficient only for the exact negative source-change clause in the original catalogue. Other original requirements, extra evidence-required fields, human acceptance and release remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original source-bound tests reject a changed SHA or lock and preserve historical receipts without current PASS.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main918-local"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "Original currency and creative policy tests reject automatic release/acceptance claims despite current inventory or boolean flags.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main918-local"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-19T18:59:32.568140+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-exact-main918-negative-original-test-body-review"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "A05-E00-04#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "no-source-pass-inheritance-main918-local": "719e5388d6432182a31cf6fbeb137d6706571adfc9a8f6234df82106fb306427"
+      },
+      "id": "technical-source918-no-inherited-pass-a05-e00-04",
+      "limitations": [
+        "Sufficient only for the exact negative source-change clause in the original catalogue. Other original requirements, extra evidence-required fields, human acceptance and release remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original source-bound tests reject a changed SHA or lock and preserve historical receipts without current PASS.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main918-local"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "Original currency and creative policy tests reject automatic release/acceptance claims despite current inventory or boolean flags.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main918-local"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-19T18:59:32.568140+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-exact-main918-negative-original-test-body-review"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
     }
   ],
   "verification_profiles": {
