@@ -243,7 +243,93 @@ def exact_member(raw, wanted):
 
 
 
-def inspect_manifest(capture, record):
+def closure_witnesses(manifest):
+    """Retain every clean participant, grouped by the original database identity."""
+    own_database = source_path(source_database(manifest))
+    lifecycle = manifest.get("lifecycle")
+    require(type(lifecycle) is list and lifecycle, "Missing closure evidence")
+    witnesses = {}
+    for participant in lifecycle:
+        require(type(participant) is dict and participant.get("taints") == []
+                and type(participant.get("exits")) is list and participant["exits"],
+                "A capture participant was tainted or has no observed exit")
+        database = source_path(participant["databasePath"])
+        for result in participant["exits"]:
+            require(type(result) is dict and type(result.get("code")) is int and result["code"] == 0
+                    and result.get("signal") is None, "A process did not exit cleanly")
+        # The source helper emits `this` first, then supplied/known peers. A
+        # different capture can reverse participant order. Preserve every
+        # receipt and its original exit sequence; do not collapse same-DB peers.
+        value = canonical({key: value for key, value in participant.items() if key != "databasePath"})
+        witnesses.setdefault(database, []).append(value)
+    require(own_database in witnesses, "Capture has no closure for its own database")
+    return own_database, {database: tuple(sorted(values)) for database, values in witnesses.items()}
+
+
+def closure_case_identity(record):
+    case = record["test"]
+    require(type(case) is dict and case.get("result") == "passed" and case.get("transport") == "real_jsonl",
+            "Closure correlation requires a passed real-transport browser case")
+    require(all(type(case.get(key)) is str and case[key] for key in ("test_id", "project_id", "file")),
+            "Missing original browser case identity for closure correlation")
+    return case["test_id"], case["project_id"]
+
+
+def correlate_closures(captures):
+    """Cross-bind closed captures only within an existing browser case identity."""
+    bindings, owners, case_records = {}, {}, {}
+    for record, manifest in captures:
+        case = closure_case_identity(record)
+        case_value = canonical(record["test"])
+        require(case_records.setdefault(case, case_value) == case_value,
+                "Conflicting metadata for the same browser case")
+        key = record["index"]
+        require(type(key) is int and key >= 0 and key not in bindings, "Duplicate or invalid closure capture index")
+        own_database, witnesses = closure_witnesses(manifest)
+        binding = {"case": case, "case_value": case_value, "source": record["source"],
+                   "own_database": own_database, "witnesses": witnesses}
+        bindings[key] = binding
+        owners.setdefault((case, own_database), []).append(binding)
+    correlation_checks = 0
+    for binding in bindings.values():
+        own_database, case = binding["own_database"], binding["case"]
+        for database, witnesses in binding["witnesses"].items():
+            peers = owners.get((case, database), [])
+            require(peers, "Closure participant has no correlated capture in this browser case")
+            if database == own_database:
+                continue
+            # If a declared case has several snapshots of a database, every
+            # candidate must agree. Never select the first convenient witness.
+            for peer in peers:
+                correlation_checks += 1
+                require(correlation_checks <= MAX_REQUESTS, "Closure correlation budget exceeded")
+                require(peer["witnesses"][database] == witnesses,
+                        "Correlated capture has a different process closure witness")
+                require(peer["witnesses"].get(own_database) == binding["witnesses"][own_database],
+                        "Correlated database closures are not reciprocal")
+    return bindings
+
+
+def inspect_capture_set(root, records, path_member):
+    """Validate the entire closed set before archiving or starting any reader."""
+    require(type(records) is list and records, "Missing closed capture inventory")
+    require(path_member in {"source", "archive_path"}, "Unknown capture path binding")
+    captures, paths = [], set()
+    for position, record in enumerate(records):
+        require(type(record["index"]) is int and record["index"] == position,
+                "Noncontiguous custody record index")
+        relative = safe_relative(record[path_member])
+        require(relative not in paths, "Repeated capture path in closure inventory")
+        paths.add(relative)
+        capture = root / relative
+        manifest = checked_json_file(capture / "manifest.json")
+        captures.append((record, manifest))
+    bindings = correlate_closures(captures)
+    return [inspect_manifest(root / safe_relative(record[path_member]), record, closure_bindings=bindings)
+            for record in records]
+
+
+def inspect_manifest(capture, record, *, closure_bindings=None):
     """Byte/custody checks only; no Project oracle is inferred here."""
     verify_declared_files(capture, record["source_files"])
     manifest = parse_json((capture / "manifest.json").read_bytes())
@@ -257,16 +343,15 @@ def inspect_manifest(capture, record):
     require(digest == manifest["sourceBeforeSha256"]
               == manifest["sourceAfterSha256"] == manifest["snapshotSha256"],
               "Capture tree digest or before/after identity differs")
-    lifecycle = manifest.get("lifecycle")
-    require(type(lifecycle) is list and lifecycle, "Missing closure evidence")
-    for participant in lifecycle:
-        require(participant.get("taints") == [] and participant.get("exits"),
-                  "A capture participant was tainted or has no observed exit")
-        require(source_path(participant["databasePath"]) == source_path(source_database(manifest)),
-                "Closure receipt belongs to another database")
-        for result in participant["exits"]:
-            require(type(result.get("code")) is int and result["code"] == 0
-                      and result.get("signal") is None, "A process did not exit cleanly")
+    own_database, witnesses = closure_witnesses(manifest)
+    if closure_bindings is None:
+        require(set(witnesses) == {own_database}, "Closure receipt belongs to another database")
+    else:
+        binding = closure_bindings.get(record["index"])
+        require(binding is not None and binding["case"] == closure_case_identity(record)
+                and binding["case_value"] == canonical(record["test"])
+                and binding["source"] == record["source"] and binding["own_database"] == own_database
+                and binding["witnesses"] == witnesses, "Capture differs from its correlated closure evidence")
     declared_files, declared_directories, names = {}, set(), set()
     for entry in entries:
         kind, name = entry["kind"], entry["path"]
@@ -290,12 +375,18 @@ def inspect_manifest(capture, record):
 
 
 
-def seal(args):
+def seal(args, *, artifact_mapping=None):
+    if getattr(args, "original_browser_artifacts_root", None) is not None:
+        no_links(args.source)
     source = args.source.resolve(strict=True)
+    if artifact_mapping is None and getattr(args, "original_browser_artifacts_root", None) is not None:
+        artifact_mapping = OriginalArtifactRoot(args.original_browser_artifacts_root, source)
+    if artifact_mapping is not None:
+        require(artifact_mapping.physical_root == source, "Artifact translation belongs to another physical root")
     output = args.output.resolve()
     require(not output.exists(), "Seal output must not exist")
     output.mkdir(parents=True)
-    classification = browser_inventory(args.browser_report.resolve(strict=True), source)
+    classification = browser_inventory(args.browser_report.resolve(strict=True), source, artifact_mapping=artifact_mapping)
     original_inputs, payloads, provenance = {}, {}, []
 
     def add_source(path, member=None):
@@ -345,8 +436,13 @@ def seal(args):
             continue
         require(all(key in manifest for key in capture_keys), "Incomplete closed capture manifest")
         capture = path.parent
-        require(source_path(manifest["snapshotDirectory"]) == source_path(str(capture / "store")),
-                "Original manifest does not identify this capture store")
+        if artifact_mapping is None:
+            require(source_path(manifest["snapshotDirectory"]) == source_path(str(capture / "store")),
+                    "Original manifest does not identify this capture store")
+        else:
+            require(artifact_mapping.relative(manifest["snapshotDirectory"], kind="directory")
+                    == (capture / "store").relative_to(source).as_posix(),
+                    "Original manifest translates to another capture store")
         relative = capture.relative_to(source).as_posix()
         directory = capture.relative_to(source).parts[0]
         case = cases_by_directory.get(directory)
@@ -373,7 +469,6 @@ def seal(args):
                   "test": {key: value for key, value in case.items()
                            if key not in {"artifact_directories", "source_attachment_paths"}},
                   "test_mapping_basis": mapping_basis, "evidence": {}}
-        inspect_manifest(capture, record)
         file = case["file"]
         if file == "scoped-change-capture.spec.ts" and capture.name == "original-closed-store":
             require(not has_oracle and not (capture / "other-project-oracles.json").exists(),
@@ -447,7 +542,8 @@ def seal(args):
     oracle_sources = {p.parent.relative_to(source).as_posix() for p in source.rglob("oracle.json")}
     require(oracle_sources == {record["source"] for record in records if record["oracle_present"]},
               "Orphan or uncounted oracle")
-    declarations = declared_capture_inventory(classification, source, records, add_source)
+    declarations = declared_capture_inventory(classification, source, records, add_source, artifact_mapping=artifact_mapping)
+    inspect_capture_set(source, records, "source")
     index = {"schema": "motionwright.complete-store-custody/1", "source_commit_operator_supplied": args.source_commit,
              "scope": "All complete closed-store capture manifests, including deliberate empty cases and healthy controls. Archive inclusion alone is not a Project/history readback PASS.",
              "category_counts": dict(Counter(record["category"] for record in records)),
@@ -455,6 +551,8 @@ def seal(args):
              "source_evidence": provenance, "excluded_non_capture_manifests": excluded_non_capture_manifests,
              "original_capture_declarations": declarations, "declared_capture_inventory_equal": True,
              "records": records}
+    if artifact_mapping is not None:
+        index["original_artifact_root_translation"] = artifact_mapping.receipt()
     payloads["browser-classification.json"] = encoded(classification)
     payloads["custody-index.json"] = encoded(index)
     archive_path = output / "closed-stores-custody.zip"
@@ -477,11 +575,13 @@ def seal(args):
     actual = files(extracted)
     require({name: value for name, value in actual.items() if name != "SHA256-MANIFEST.json"} == file_manifest,
               "Custody extraction differs from every-file manifest")
+    inspect_capture_set(extracted, records, "archive_path")
     for record in records:
-        inspect_manifest(extracted / record["archive_path"], record)
         require(files(source / record["source"]) == record["source_files"], "An original capture changed")
     for name, original in original_inputs.items():
         require(identity_bytes((source / name).read_bytes()) == original, "An original evidence source changed")
+    if artifact_mapping is not None:
+        require(tree(source) == artifact_mapping.source_snapshot, "Translated artifact input tree changed during sealing")
     verification = {"schema": "motionwright.custody-archive-verification/1", "source_commit": args.source_commit,
                     "archive": archive_path.name, "archive_identity": {"bytes": archive_path.stat().st_size, "sha256": sha256_file(archive_path)},
                     "closed_stores": len(records), "category_counts": index["category_counts"],
@@ -490,6 +590,9 @@ def seal(args):
                     "zip_crc_verified": True, "all_extracted_files_sha256_verified": True,
                     "includes_manifest_identity": True, "files": actual,
                     "independent_project_readback": "pending; inclusion is custody only"}
+    if artifact_mapping is not None:
+        verification["original_artifact_root_translation"] = {
+            **index["original_artifact_root_translation"], "physical_input_tree_unchanged_during_sealing": True}
     (output / "custody-archive-verification.json").write_bytes(encoded(verification))
     (output / "capture-inventory.json").write_bytes(encoded(index))
     (output / "browser-classification.json").write_bytes(encoded(classification))
@@ -639,6 +742,106 @@ def source_path(value):
     return path
 
 
+def original_artifact_path(value):
+    """Parse a logical path without resolving it or collapsing unsafe components."""
+    require(type(value) is str and 0 < len(value) <= 4096
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value),
+            "Invalid original artifact path")
+    if re.match(r"^[A-Za-z]:[\\/]", value):
+        normalized = value.replace("\\", "/")
+        anchor, tail, flavor = normalized[:1].upper() + ":/", normalized[3:], "windows_drive"
+    else:
+        require(value.startswith("/") and not value.startswith("//") and "\\" not in value,
+                "Original artifact path must use an absolute drive or POSIX root")
+        anchor, tail, flavor = "/", value[1:], "posix"
+    require(tail and not tail.endswith("/"), "Original artifact path must identify a canonical non-root location")
+    relative = safe_relative(tail)
+    return flavor, anchor, relative.parts
+
+
+class OriginalArtifactRoot:
+    """An explicit relocation of original path references, never of their bytes."""
+
+    def __init__(self, original_root, physical_root, *, source_snapshot=None):
+        self.original_root = original_root
+        self.logical = original_artifact_path(original_root)
+        no_links(physical_root)
+        self.physical_root = physical_root.resolve(strict=True)
+        require(self.physical_root.is_dir(), "Translated browser artifacts are not a directory")
+        self.source_snapshot = tree(self.physical_root) if source_snapshot is None else source_snapshot
+        self.report_identity = None
+        self.report_projects = None
+        self.projects = {}
+        self.paths = {}
+
+    def bind_report(self, report, raw):
+        require(self.report_identity is None, "Artifact translation cannot be rebound to another report")
+        config = report.get("config")
+        require(type(config) is dict and type(config.get("projects")) is list
+                and 0 < len(config["projects"]) <= MAX_REQUESTS,
+                "Explicit relocation requires the original browser project output directories")
+        require(all(type(project) is dict for project in config["projects"]), "Malformed browser project configuration")
+        self.report_projects = config["projects"]
+        self.report_identity = identity_bytes(raw)
+
+    def bind_project(self, identity):
+        require(self.report_projects is not None and type(identity) is str and identity,
+                "Artifact translation has no original browser project binding")
+        matches = [project for project in self.report_projects
+                   if project.get("id") == identity or project.get("name") == identity]
+        require(len(matches) == 1, "Selected browser project output directory is missing or ambiguous")
+        original = matches[0].get("outputDir")
+        require(original_artifact_path(original) == self.logical,
+                "Original artifact root differs from the selected browser project's output directory")
+        self.projects[identity] = original
+
+    def relative(self, original, *, kind):
+        require(self.projects and kind in {"file", "directory"}, "Artifact translation lacks a checked project or path kind")
+        flavor, anchor, parts = original_artifact_path(original)
+        root_flavor, root_anchor, root_parts = self.logical
+        require(flavor == root_flavor and anchor == root_anchor and len(parts) > len(root_parts)
+                and parts[:len(root_parts)] == root_parts, "Original artifact path is outside the declared logical root")
+        relative = safe_relative("/".join(parts[len(root_parts):])).as_posix()
+        inventory = self.source_snapshot[0] if kind == "file" else self.source_snapshot[1]
+        require(relative in inventory, "Translated path is missing, has different case or has the wrong file kind")
+        target = self.physical_root / relative
+        no_links(target)
+        resolved = target.resolve(strict=True)
+        require(resolved.relative_to(self.physical_root).as_posix() == relative,
+                "Translated path does not preserve its exact physical components")
+        require(target.is_file() if kind == "file" else target.is_dir(), "Translated path kind changed")
+        entry = {"original_path": original, "relative_path": relative, "kind": kind}
+        if kind == "file":
+            require(file_identity(target) == inventory[relative], "Translated file differs from the input inventory")
+            entry["physical_file_identity"] = inventory[relative]
+        self.paths[(original, kind)] = entry
+        require(len(self.paths) <= MAX_REQUESTS, "Artifact translation path budget exceeded")
+        return relative
+
+    def receipt(self):
+        require(self.projects and self.report_identity is not None, "Artifact translation was not bound to a browser report")
+        flavor, anchor, parts = self.logical
+        result = {
+            "schema": "motionwright.original-artifact-root-translation/1",
+            "original_root_operator_supplied": self.original_root,
+            "original_root_normalized": anchor + "/".join(parts), "original_path_flavor": flavor,
+            "physical_browser_artifacts_root": str(self.physical_root),
+            "original_browser_report_identity": self.report_identity,
+            "selected_project_output_directories": [
+                {"project_id": identity, "original_output_directory": value}
+                for identity, value in sorted(self.projects.items())],
+            "physical_input_tree_identity": identity_bytes(encoded({
+                "files": self.source_snapshot[0], "directories": sorted(self.source_snapshot[1])})),
+            "translated_paths": [self.paths[key] for key in sorted(self.paths)],
+            "original_report_and_manifest_paths_rewritten": False, "original_drive_alias_created": False,
+            "browser_rerun_performed": False, "original_browser_execution_authenticated_here": False,
+            "source_commit_authenticated_here": False, "runner_build_source_authenticated_here": False,
+            "formal_acceptance": False,
+        }
+        require(len(encoded(result)) <= MAX_INPUT_FILE_BYTES, "Artifact translation receipt byte budget exceeded")
+        return result
+
+
 def source_database(manifest):
     return str(source_path(manifest["sourceDirectory"]) / safe_relative(manifest["databaseRelativePath"]))
 
@@ -758,10 +961,13 @@ def safe_extract(archive, destination, max_bytes):
             require(size == entry.file_size, "Truncated ZIP member")
 
 
-def browser_inventory(report_path, artifacts):
+def browser_inventory(report_path, artifacts, *, artifact_mapping=None):
     raw = report_path.read_bytes()
     report = parse_json(raw)
     require(report.get("errors", []) == [], "Browser report has global errors")
+    if artifact_mapping is not None:
+        require(artifact_mapping.physical_root == artifacts, "Browser report translation has another physical root")
+        artifact_mapping.bind_report(report, raw)
     cases, seen = [], set()
 
     def visit(suite):
@@ -780,6 +986,8 @@ def browser_inventory(report_path, artifacts):
                 identity = (spec["id"], test.get("projectId", test.get("projectName", "")))
                 require(identity not in seen, "Duplicate browser case/project identity")
                 seen.add(identity)
+                if artifact_mapping is not None:
+                    artifact_mapping.bind_project(identity[1])
                 item = {"file": filename, "title": spec["title"], "test_id": spec["id"],
                         "project_id": identity[1], "line": spec["line"], "status": test["status"],
                         "result": result["status"], "transport": "real_jsonl", "artifact_directories": [],
@@ -787,11 +995,14 @@ def browser_inventory(report_path, artifacts):
                 for attachment in result.get("attachments", []):
                     if "path" not in attachment:
                         continue
-                    path = Path(attachment["path"])
-                    require(path.is_absolute(), "Attachment path is not absolute")
-                    no_links(path)
-                    require(path.is_file(), "Attachment is not a regular file")
-                    relative = path.resolve(strict=True).relative_to(artifacts)
+                    if artifact_mapping is None:
+                        path = Path(attachment["path"])
+                        require(path.is_absolute(), "Attachment path is not absolute")
+                        no_links(path)
+                        require(path.is_file(), "Attachment is not a regular file")
+                        relative = path.resolve(strict=True).relative_to(artifacts)
+                    else:
+                        relative = PurePosixPath(artifact_mapping.relative(attachment["path"], kind="file"))
                     require(len(relative.parts) >= 2, "Attachment has no distinct case directory")
                     item["source_attachment_paths"].append(relative.as_posix())
                     directory = relative.parts[0]
@@ -845,7 +1056,7 @@ def exact_pointer(raw, pointer):
     return selected, offset, offset + len(selected)
 
 
-def declared_capture_inventory(classification, source, records, add_source):
+def declared_capture_inventory(classification, source, records, add_source, *, artifact_mapping=None):
     """Require a bijection with original declarations; never infer Project data."""
     declarations, verified = [], set()
     positive_title = "complete capture includes every file and a paginated full oracle after all known peers close"
@@ -876,9 +1087,14 @@ def declared_capture_inventory(classification, source, records, add_source):
             if type(value) is dict:
                 if (manifest_keys - {"lifecycle"}) & value.keys():
                     require(manifest_keys <= value.keys(), "Original attachment contains a partial capture declaration")
-                    snapshot = source_path(value["snapshotDirectory"])
-                    require(snapshot.name == "store", "Original capture snapshot is not a complete store directory")
-                    relative = snapshot.parent.relative_to(source_path(str(source))).as_posix()
+                    if artifact_mapping is None:
+                        snapshot = source_path(value["snapshotDirectory"])
+                        require(snapshot.name == "store", "Original capture snapshot is not a complete store directory")
+                        relative = snapshot.parent.relative_to(source_path(str(source))).as_posix()
+                    else:
+                        snapshot = PurePosixPath(artifact_mapping.relative(value["snapshotDirectory"], kind="directory"))
+                        require(snapshot.name == "store", "Original capture snapshot is not a complete store directory")
+                        relative = snapshot.parent.as_posix()
                     register(relative, basis="original_attached_capture_manifest", original=value,
                              attachment=attachment, pointer=pointer)
                     return
@@ -1124,14 +1340,22 @@ def readback(args):
                 "Custody extraction file manifest differs")
         index = checked_json_file(extracted / "custody-index.json")
         require(index["source_commit_operator_supplied"] == args.source_commit, "Custody source identity differs")
+        if "original_artifact_root_translation" in index:
+            translation = index["original_artifact_root_translation"]
+            require(type(translation) is dict and translation.get("schema") == "motionwright.original-artifact-root-translation/1"
+                    and all(translation.get(key) is False for key in (
+                        "original_report_and_manifest_paths_rewritten", "original_drive_alias_created", "browser_rerun_performed",
+                        "original_browser_execution_authenticated_here", "source_commit_authenticated_here",
+                        "runner_build_source_authenticated_here", "formal_acceptance")),
+                    "Relocation metadata cannot authenticate an execution, rewrite originals or grant acceptance")
+            report["original_artifact_root_translation"] = translation
         for entry in index["source_evidence"]:
             require(file_identity(extracted / safe_relative(entry["archive_path"])) == entry["included_identity"],
                     "Original expectation bytes changed")
+        inspected = inspect_capture_set(extracted, index["records"], "archive_path")
         remaining = MAX_TOTAL_LOG_BYTES
-        for position, record in enumerate(index["records"]):
-            require(type(record["index"]) is int and record["index"] == position, "Noncontiguous custody record index")
+        for position, (record, (manifest, database, media_before)) in enumerate(zip(index["records"], inspected)):
             captured = extracted / safe_relative(record["archive_path"])
-            manifest, database, media_before = inspect_manifest(captured, record)
             if record["category"] == "healthy_control_for_deliberately_damaged_copy":
                 report["custody_only"].append({"index": position, "source": record["source"],
                     "reason": record["negative_scope"], "test_result": record["test"]["result"],
@@ -1178,6 +1402,8 @@ def readback(args):
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser-artifacts", type=Path, required=True)
+    parser.add_argument("--original-browser-artifacts-root",
+                        help="Original absolute browser outputDir when reading an unchanged copy at --browser-artifacts")
     parser.add_argument("--browser-report", type=Path, required=True)
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--expected-runner-sha256", required=True)
@@ -1189,12 +1415,16 @@ def arguments(argv=None):
 def main(argv=None):
     args = arguments(argv)
     output_created = False
+    artifact_mapping = None
     receipt = {"schema": "motionwright.closed-store-readback/1", "state": "FAIL", "all_checks_passed": False,
                "source_commit_operator_supplied": args.source_commit, "started_at": utc_now(),
                "expected_browser_inventory_authenticated_here": False,
                "runner_build_source_authenticated_here": False, "formal_acceptance": False,
                "scope": "real_service_sqlite_cas_copy_readback; synthetic_test_content",
                "excludes": ["installed_tauri", "native_realization", "human_acceptance"], "retry_attempted": False}
+    if args.original_browser_artifacts_root is not None:
+        receipt["requested_original_browser_artifacts_root"] = args.original_browser_artifacts_root
+        receipt["browser_rerun_performed"] = False
     try:
         require(bool(re.fullmatch(r"[0-9a-f]{40}", args.source_commit)), "Source binding is not a full commit SHA")
         require(bool(re.fullmatch(r"[0-9a-f]{64}", args.expected_runner_sha256)), "Runner binding is not SHA-256")
@@ -1209,6 +1439,8 @@ def main(argv=None):
         require(output not in report_path.parents and output not in runner.parents, "Output overlaps an input")
         require(source.is_dir(), "Browser artifacts are not a directory")
         source_before = tree(source)
+        if args.original_browser_artifacts_root is not None:
+            artifact_mapping = OriginalArtifactRoot(args.original_browser_artifacts_root, source, source_snapshot=source_before)
         report_before, runner_before = file_identity(report_path), file_identity(runner)
         require(report_before["bytes"] <= MAX_INPUT_FILE_BYTES, "Browser report byte budget exceeded")
         require(runner_before["sha256"] == args.expected_runner_sha256, "Runner SHA-256 differs")
@@ -1217,9 +1449,11 @@ def main(argv=None):
         receipt.update({"runner": runner_before, "browser_report": report_before})
         write_new_json(output / "start.json", {**receipt, "state": "STARTED"})
         archive, seal_receipt, index = seal(SimpleNamespace(source=source, browser_report=report_path,
-                                                          output=output / "custody", source_commit=args.source_commit))
+            output=output / "custody", source_commit=args.source_commit), artifact_mapping=artifact_mapping)
         receipt.update({"archive": seal_receipt["archive_identity"], "closed_stores": index["closed_stores"],
                         "category_counts": index["category_counts"]})
+        if artifact_mapping is not None:
+            receipt["original_artifact_root_translation"] = seal_receipt["original_artifact_root_translation"]
         result = readback(SimpleNamespace(archive=archive, runner=runner, output=output / "readback",
             expected_archive_sha256=seal_receipt["archive_identity"]["sha256"],
             expected_runner_sha256=args.expected_runner_sha256, source_commit=args.source_commit))
