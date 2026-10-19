@@ -190,7 +190,8 @@ def _create_first_project_in_native_window(hwnd: int) -> None:
         allowed = {
             "PRECHECK", "UIA_LOAD", "WINDOW_LOOKUP", "ELEMENT_QUERY",
             "FORM_FIND", "FORM_AMBIGUOUS", "INPUT_NOT_FOCUSABLE",
-            "INPUT_FOCUS", "INPUT_VALUE_PATTERN", "INPUT_SET_VALUE",
+            "INPUT_ACTIVATE", "INPUT_FOCUS", "INPUT_FOCUS_VERIFY",
+            "INPUT_VALUE_PATTERN", "INPUT_INITIAL_VALUE", "INPUT_KEYSTROKE",
             "INPUT_VALUE_READBACK", "BUTTON_ENABLE",
             "INVOKE_LOOKUP", "INVOKE_UNKNOWN",
         }

@@ -80,33 +80,80 @@ if (-not $inputControl.Current.IsEnabled -or
     -not $inputControl.Current.IsKeyboardFocusable) {
     throw 'Original accessible edit is not focusable'
 }
+$Phase = 'INPUT_ACTIVATE'
+Add-Type -AssemblyName Microsoft.VisualBasic
+# Bring the original owned installed window to the foreground. SendKeys is
+# only meaningful if the same HWND owns the keyboard focus.
+[Microsoft.VisualBasic.Interaction]::AppActivate([int]$window.Current.ProcessId)
 $Phase = 'INPUT_FOCUS'
 $inputControl.SetFocus()
-# Set text through the original native UI Automation Edit provider, not
-# SendKeys targeted from a background CI process (which can route key events
-# to the wrong foreground window). Never touch document/SQLite bytes directly.
+$Phase = 'INPUT_FOCUS_VERIFY'
+$focusObserved = $false
+for ($attempt = 0; $attempt -lt 8; $attempt++) {
+    if ($inputControl.Current.HasKeyboardFocus) {
+        $focusObserved = $true
+        break
+    }
+    Start-Sleep -Milliseconds 125
+}
+if (-not $focusObserved) {
+    throw 'Original accessible project-title Edit does not own keyboard focus'
+}
 $Phase = 'INPUT_VALUE_PATTERN'
 $valuePattern = $inputControl.GetCurrentPattern(
     [System.Windows.Automation.ValuePattern]::Pattern
 )
 if ($null -eq $valuePattern -or $valuePattern.Current.IsReadOnly) {
-    throw 'Original accessible project-title Edit lacks writable value pattern'
+    throw 'Original accessible project-title Edit lacks a readable value pattern'
 }
-$Phase = 'INPUT_SET_VALUE'
-$valuePattern.SetValue($ProjectTitle)
+$Phase = 'INPUT_INITIAL_VALUE'
+if ($valuePattern.Current.Value -cne '') {
+    throw 'Original first-use field is not initially empty'
+}
+# React controlled inputs must receive actual key/input events. The earlier
+# UIAutomation SetValue mutation did not persist its value in WebView2.
+# Dispatch only once, never retry a partially delivered title.
+$Phase = 'INPUT_KEYSTROKE'
+[System.Windows.Forms.SendKeys]::SendWait($ProjectTitle)
 $Phase = 'INPUT_VALUE_READBACK'
-if ($valuePattern.Current.Value -cne $ProjectTitle) {
-    throw 'Original accessible Edit did not retain the requested project title'
+$readbackConfirmed = $false
+for ($attempt = 0; $attempt -lt 12; $attempt++) {
+    $valuePattern = $inputControl.GetCurrentPattern(
+        [System.Windows.Automation.ValuePattern]::Pattern
+    )
+    if ($valuePattern.Current.Value -ceq $ProjectTitle) {
+        $readbackConfirmed = $true
+        break
+    }
+    Start-Sleep -Milliseconds 125
+}
+if (-not $readbackConfirmed) {
+    throw 'Native keyboard delivery was not confirmed by the original Edit'
 }
 $Phase = 'BUTTON_ENABLE'
+$buttonEnabled = $false
 for ($attempt = 0; $attempt -lt 16; $attempt++) {
-    $submitControl = $window.FindFirst($scope, $buttonCondition)
-    if ($null -ne $submitControl -and $submitControl.Current.IsEnabled) {
+    $buttons = $window.FindAll($scope, $buttonType)
+    $submitControl = $null
+    $buttonMatches = 0
+    for ($index = 0; $index -lt $buttons.Count; $index++) {
+        $candidate = $buttons.Item($index)
+        if ($candidate.Current.Name -ceq 'Create project') {
+            $buttonMatches++
+            $submitControl = $candidate
+        }
+    }
+    if ($buttonMatches -gt 1) {
+        $Phase = 'FORM_AMBIGUOUS'
+        throw 'Multiple accessible Create project buttons found'
+    }
+    if ($buttonMatches -eq 1 -and $submitControl.Current.IsEnabled) {
+        $buttonEnabled = $true
         break
     }
     Start-Sleep -Milliseconds 250
 }
-if ($null -eq $submitControl -or -not $submitControl.Current.IsEnabled) {
+if (-not $buttonEnabled) {
     throw 'The real Create project action never became enabled'
 }
 # One action, no retry after this point. SQLite identity/readback is tested

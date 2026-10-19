@@ -194,9 +194,14 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         self.assertIn("IsKeyboardFocusable", text)
         self.assertIn("$Phase = 'INVOKE_UNKNOWN'", text)
         self.assertEqual(text.count("$invoke.Invoke()"), 1)
-        self.assertEqual(text.count("$valuePattern.SetValue($ProjectTitle)"), 1)
-        self.assertIn("$valuePattern.Current.Value -cne $ProjectTitle", text)
-        self.assertNotIn("SendKeys]::SendWait", text)
+        self.assertEqual(text.count("SendKeys]::SendWait($ProjectTitle)"), 1)
+        self.assertIn("AppActivate([int]$window.Current.ProcessId)", text)
+        self.assertIn("$inputControl.Current.HasKeyboardFocus", text)
+        self.assertIn("$valuePattern.Current.Value -ceq $ProjectTitle", text)
+        self.assertIn("$inputMatches -gt 1", text)
+        self.assertIn("$buttonMatches -gt 1", text)
+        self.assertNotIn("$buttonCondition", text)
+        self.assertNotIn("$valuePattern.SetValue($ProjectTitle)", text)
         self.assertNotIn("$window.FindFirst($scope, $inputCondition)", text)
 
     def test_single_real_sqlite_project_is_read_only_and_stable(self):
