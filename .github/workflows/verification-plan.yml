@@ -16,6 +16,11 @@ on:
         type: boolean
         required: false
         default: true
+      audit_source_currency:
+        description: Run the strict source-currency audit; historical or insufficient evidence keeps exit 2
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -50,6 +55,7 @@ jobs:
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
             --pattern test_conformance_policy.py \
+            --pattern test_conformance_currency_impact.py \
             --pattern test_acceptance_policy.py \
             --pattern test_acceptance_session.py \
             --pattern test_acceptance_evidence_identity.py \
@@ -191,6 +197,204 @@ jobs:
           path: ${{ runner.temp }}/verification-windows
           if-no-files-found: error
           retention-days: 30
+
+  source-currency-audit:
+    name: Strict source-currency audit (manual)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.audit_source_currency }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      EXPECTED_SOURCE_SHA: ${{ github.sha }}
+      VERIFIER_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      GIT_NO_REPLACE_OBJECTS: '1'
+      GIT_GRAFT_FILE: /dev/null
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Bind the exact source and isolate the conformance verifier imports
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          python3 -I -B -S - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          repo = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'source'
+          env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+          env.update(GIT_NO_REPLACE_OBJECTS='1', GIT_GRAFT_FILE=os.devnull)
+          def git(*args):
+              p = subprocess.run(['git', '--no-replace-objects', '-C', str(repo), *args], env=env,
+                                 capture_output=True, timeout=60, check=True)
+              return p.stdout
+          source = os.environ['EXPECTED_SOURCE_SHA']
+          verifier = os.environ['VERIFIER_WORKFLOW_SHA']
+          assert re.fullmatch('[0-9a-f]{40}', source) and re.fullmatch('[0-9a-f]{40}', verifier)
+          assert git('rev-parse', 'HEAD').decode().strip() == source
+          assert not git('status', '--porcelain', '--untracked-files=all', '--ignored=matching')
+          tree = git('cat-file', '-p', source).splitlines()[0].decode().removeprefix('tree ')
+          assert re.fullmatch('[0-9a-f]{40}', tree)
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / (
+              'conformance-source-currency-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          root.mkdir(exist_ok=False)
+          exports = root / 'verifier'
+          exports.mkdir()
+          names = [
+              '.github/workflows/verification-plan.yml',
+              'tooling/conformance_currency_impact.py', 'tooling/conformance_policy.py',
+              'tooling/tests/test_conformance_currency_impact.py',
+              'docs/acceptance/requirements-status.json',
+              'docs/creative-production/requirements-status.json',
+              'docs/acceptance/acceptance-status.json', 'SOURCE_LOCK.json', 'Cargo.lock']
+          inputs = {}
+          for name in names:
+              entry = git('ls-tree', source, '--', name).decode().split()
+              assert len(entry) == 4 and entry[0] in ('100644', '100755') and entry[1] == 'blob', name
+              blob = git('cat-file', 'blob', entry[2])
+              path = repo / name
+              assert not path.is_symlink() and path.is_file() and path.read_bytes() == blob, name
+              inputs[name] = {'sha256': hashlib.sha256(blob).hexdigest(), 'bytes': len(blob), 'git_blob': entry[2]}
+              if name in ('tooling/conformance_currency_impact.py', 'tooling/conformance_policy.py'):
+                  with (exports / path.name).open('xb') as stream:
+                      stream.write(blob)
+          workflow = '.github/workflows/verification-plan.yml'
+          assert git('show', verifier + ':' + workflow) == git('show', source + ':' + workflow)
+          manifest = {'schema': 'motionwright.conformance-currency-inputs/1', 'source_sha': source,
+                      'source_tree': tree, 'verifier_workflow_sha': verifier, 'inputs': inputs,
+                      'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                      'repository': os.environ['GITHUB_REPOSITORY'], 'job': os.environ['GITHUB_JOB']}
+          (root / 'inputs.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
+          # The child starts outside both checkouts. All standard modules used by the original
+          # tests are imported before the exact, exported conformance modules enter sys.path.
+          runner = '''import copy, hashlib, importlib.util, json, os, pathlib, re, runpy, subprocess, sys, tempfile, unittest
+          root = pathlib.Path(__file__).resolve().parent
+          manifest = json.loads((root / "inputs.json").read_text())
+          repo = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "source"
+          env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+          env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull)
+          os.environ.clear(); os.environ.update(env)
+          def check():
+              def git(*args):
+                  return subprocess.run(["git", "--no-replace-objects", "-C", str(repo), *args],
+                                        capture_output=True, timeout=60, check=True).stdout
+              assert git("rev-parse", "HEAD").decode().strip() == manifest["source_sha"]
+              assert not git("status", "--porcelain", "--untracked-files=all", "--ignored=matching")
+              for name, desc in manifest["inputs"].items():
+                  p = repo / name
+                  assert not p.is_symlink() and hashlib.sha256(p.read_bytes()).hexdigest() == desc["sha256"], name
+          check()
+          exports = root / "verifier"
+          for name in ("conformance_policy", "conformance_currency_impact"):
+              path = exports / (name + ".py")
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == manifest["inputs"]["tooling/" + name + ".py"]["sha256"]
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+          mode = sys.argv[1]
+          if mode == "contracts":
+              suite = unittest.defaultTestLoader.discover(str(repo / "tooling/tests"), pattern="test_conformance_currency_impact.py")
+              discovered = suite.countTestCases()
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              code = 0 if (discovered > 0 and result.testsRun == discovered and result.wasSuccessful()
+                           and not result.skipped and not result.expectedFailures and not result.unexpectedSuccesses) else 1
+              detail = {"discovered": discovered, "executed": result.testsRun, "failures": len(result.failures),
+                        "errors": len(result.errors), "skipped": len(result.skipped),
+                        "expected_failures": len(result.expectedFailures), "unexpected_successes": len(result.unexpectedSuccesses)}
+              (root / "contracts-counts.json").write_text(json.dumps(detail, sort_keys=True) + "\\n")
+          elif mode == "strict":
+              code = sys.modules["conformance_currency_impact"].main([
+                  "--repo", str(repo), "--target", manifest["source_sha"],
+                  "--json", str(root / "source-currency.json"), "--strict"])
+          else:
+              raise ValueError("Unknown verification mode")
+          check()
+          raise SystemExit(code)
+          '''
+          (root / 'runner.py').write_text(runner, encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write('CURRENCY_ROOT=' + str(root) + '\n')
+          print(json.dumps({'source_sha': source, 'source_tree': tree, 'verifier_workflow_sha': verifier,
+                            'bound_inputs': len(inputs)}))
+          PY
+      - name: Run the original source-currency contracts without omissions
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set +e
+          python3 -I -B -S "$CURRENCY_ROOT/runner.py" contracts > "$CURRENCY_ROOT/contracts.stdout" 2> "$CURRENCY_ROOT/contracts.stderr"
+          result=$?
+          printf '%s\n' "$result" > "$CURRENCY_ROOT/contracts.exit"
+          cat "$CURRENCY_ROOT/contracts.stdout" "$CURRENCY_ROOT/contracts.stderr"
+          exit "$result"
+      - name: Reject historical PASS on the exact checked-out SHA
+        if: ${{ !cancelled() && env.CURRENCY_ROOT != '' }}
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set +e
+          python3 -I -B -S "$CURRENCY_ROOT/runner.py" strict > "$CURRENCY_ROOT/strict.stdout" 2> "$CURRENCY_ROOT/strict.stderr"
+          result=$?
+          printf '%s\n' "$result" > "$CURRENCY_ROOT/strict.exit"
+          cat "$CURRENCY_ROOT/strict.stdout" "$CURRENCY_ROOT/strict.stderr"
+          exit "$result"
+      - name: Preserve the actual exits and source-bound evidence
+        if: ${{ always() && env.CURRENCY_ROOT != '' }}
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        env:
+          OBSERVED_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -I -B -S - <<'PY'
+          import hashlib, json, os, pathlib, platform, sys
+          root = pathlib.Path(os.environ['CURRENCY_ROOT'])
+          inputs = json.loads((root / 'inputs.json').read_bytes())
+          names = ['inputs.json', 'contracts-counts.json', 'contracts.stdout', 'contracts.stderr',
+                   'contracts.exit', 'source-currency.json', 'strict.stdout', 'strict.stderr', 'strict.exit']
+          evidence = {}
+          for name in names:
+              path = root / name
+              if path.is_file() and not path.is_symlink():
+                  data = path.read_bytes()
+                  evidence[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+          exits = {name: (root / (name + '.exit')).read_text().strip()
+                   if (root / (name + '.exit')).is_file() else None for name in ('contracts', 'strict')}
+          complete = all(name in evidence for name in names)
+          receipt = {**inputs, 'schema': 'motionwright.conformance-currency-execution/1', 'exits': exits,
+                     'status': 'PASS_WITHIN_SOURCE_CURRENCY_SCOPE' if complete and exits == {'contracts': '0', 'strict': '0'} and os.environ['OBSERVED_JOB_STATUS'] == 'success' else 'NOT_ADMITTED',
+                     'job_status': os.environ['OBSERVED_JOB_STATUS'], 'python': sys.version,
+                     'platform': platform.platform(),
+                     'python_executable_sha256': hashlib.sha256(pathlib.Path(sys.executable).resolve().read_bytes()).hexdigest(),
+                     'runner_sha256': hashlib.sha256((root / 'runner.py').read_bytes()).hexdigest(),
+                     'evidence': evidence, 'formal_verdict': None,
+                     'release_authorized': False, 'historical_pass_transferred': False}
+          (root / 'receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
+          print(json.dumps({'source_sha': receipt['source_sha'], 'exits': exits, 'status': receipt['status']}))
+          if not complete:
+              raise SystemExit('Missing execution evidence; omitted results cannot pass')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() && env.CURRENCY_ROOT != '' }}
+        with:
+          name: conformance-source-currency-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            ${{ env.CURRENCY_ROOT }}/inputs.json
+            ${{ env.CURRENCY_ROOT }}/receipt.json
+            ${{ env.CURRENCY_ROOT }}/contracts-counts.json
+            ${{ env.CURRENCY_ROOT }}/contracts.stdout
+            ${{ env.CURRENCY_ROOT }}/contracts.stderr
+            ${{ env.CURRENCY_ROOT }}/contracts.exit
+            ${{ env.CURRENCY_ROOT }}/source-currency.json
+            ${{ env.CURRENCY_ROOT }}/strict.stdout
+            ${{ env.CURRENCY_ROOT }}/strict.stderr
+            ${{ env.CURRENCY_ROOT }}/strict.exit
 
   g0-complete:
     name: G0 verification complete

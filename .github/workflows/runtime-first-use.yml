@@ -10,6 +10,10 @@ on:
       - "tooling/tests/test_ci_test_runner.py"
       - "tooling/owner_candidate_provenance.py"
       - "tooling/tests/test_owner_candidate_provenance.py"
+      - "tooling/release_manifest.py"
+      - "tooling/package_receipt.py"
+      - "tooling/tests/test_release_manifest*.py"
+      - "tooling/tests/test_candidate_receipt_source.py"
       - "apps/desktop/src-tauri/src/runtime_setup.rs"
       - "docs/owner-native-runtime-onboarding.md"
       - "docs/runtime-first-use-audit.md"
@@ -23,6 +27,10 @@ on:
       - "tooling/tests/test_ci_test_runner.py"
       - "tooling/owner_candidate_provenance.py"
       - "tooling/tests/test_owner_candidate_provenance.py"
+      - "tooling/release_manifest.py"
+      - "tooling/package_receipt.py"
+      - "tooling/tests/test_release_manifest*.py"
+      - "tooling/tests/test_candidate_receipt_source.py"
       - "apps/desktop/src-tauri/src/runtime_setup.rs"
       - "docs/owner-native-runtime-onboarding.md"
       - "docs/runtime-first-use-audit.md"
@@ -165,6 +173,25 @@ jobs:
               "--expected-source", os.environ["MW_SOURCE_SHA"],
               "--report", str(Path(os.environ["RUNNER_TEMP"]) / "first-use-verification" / "first-use.json"),
           ], check=True)
+      - name: Manifest publication and candidate receipt source tests
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          command = [
+              sys.executable, "-B", str(Path(os.environ["MW_CI_VERIFIER_ROOT"]) / "tooling" / "ci_test_runner.py"),
+              "--repo", ".", "--pattern", "test_release_manifest*.py",
+              "--pattern", "test_candidate_receipt_source.py", "--mode", "both",
+              "--expected-source", os.environ["MW_SOURCE_SHA"],
+              "--report", str(Path(os.environ["RUNNER_TEMP"]) / "first-use-verification" / "manifest-publication.json"),
+          ]
+          # Preserve real NTFS controls and report their Unix omissions explicitly.
+          if sys.platform == "win32":
+              command.append("--require-complete")
+          subprocess.run(command, check=True)
       - name: Retain original unittest source identities, failures and omissions
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
