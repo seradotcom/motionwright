@@ -1605,4 +1605,252 @@ mod tests {
             project.audio.transcript[..3]
         );
     }
+    fn localized_profile(project: &Project, voice_track_id: Option<Uuid>) -> DeliverableProfile {
+        let parent = &project.deliverables[0];
+        let mut profile = parent.clone();
+        profile.id = Uuid::now_v7();
+        profile.name = "Localized delivery".into();
+        profile.language = "es-MX".into();
+        profile.parent_profile_id = Some(parent.id);
+        profile.source_revision = Some(project.revision);
+        profile.adaptation_notes =
+            vec!["Explicit localized text and measured voice selection".into()];
+        profile.voice_track_id = voice_track_id;
+        profile.text_overrides = project
+            .scenes
+            .iter()
+            .flat_map(|scene| &scene.nodes)
+            .filter(|node| node.kind == "text")
+            .map(|node| (node.id, "Texto localizado".into()))
+            .collect();
+        profile
+    }
+
+    fn add_localized_voice(project: &mut Project, seconds: i64) -> Uuid {
+        let asset_id = Uuid::now_v7();
+        let track_id = Uuid::now_v7();
+        let source_sha256 = "ef".repeat(32);
+        project.assets.push(Asset {
+            id: asset_id,
+            name: "localized-voice.wav".into(),
+            media_type: "audio/wav".into(),
+            content_sha256: Some(source_sha256.clone()),
+            source_revision: Some("synthetic-localized-timing".into()),
+        });
+        project.audio.voice_tracks.push(VoiceTrack {
+            id: track_id,
+            asset_id,
+            label: "Localized synthetic voice".into(),
+            sample_rate_hz: 48_000,
+            channels: 2,
+            measured_duration: RationalTime {
+                num: seconds,
+                den: 1,
+            },
+            source_sha256,
+            loudness_lufs: None,
+            true_peak_dbfs: None,
+        });
+        track_id
+    }
+
+    #[test]
+    fn localized_missing_voice_never_inherits_unbound_parent_captions() {
+        let original = fixture(AlignmentEvidence::Manual);
+        assert!(original.deliverables[0].voice_track_id.is_none());
+        for timing_locked in [true, false] {
+            let mut project = original.clone();
+            let mut profile = localized_profile(&project, None);
+            profile.timing_locked = timing_locked;
+            let error = project
+                .apply_change(&crate::Change::UpsertDeliverable { profile })
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires an explicit locale voice track")
+            );
+            assert_eq!(
+                project, original,
+                "rejected localization must preserve the entire document"
+            );
+        }
+    }
+
+    #[test]
+    fn localized_explicit_voice_cannot_reuse_implicit_parent_source() {
+        for active_source in [true, false] {
+            let mut project = fixture(AlignmentEvidence::Manual);
+            let source_id = project.audio.voice_tracks[0].id;
+            project.audio.active_voice_track_id = active_source.then_some(source_id);
+            let original = project.clone();
+            let mut profile = localized_profile(&project, Some(source_id));
+            profile.timing_locked = false;
+            let error = project
+                .apply_change(&crate::Change::UpsertDeliverable { profile })
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot reuse the parent language voice track")
+            );
+            assert_eq!(project, original);
+        }
+    }
+
+    #[test]
+    fn locked_localization_compares_the_active_parent_voice_duration() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        project.audio.active_voice_track_id = Some(project.audio.voice_tracks[0].id);
+        let localized_id = add_localized_voice(&mut project, 6);
+        let original = project.clone();
+        let mut profile = localized_profile(&project, Some(localized_id));
+        profile.timing_locked = true;
+        let error = project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("measured voice duration changes")
+        );
+        assert_eq!(project, original);
+        profile.timing_locked = false;
+        project
+            .apply_change(&crate::Change::UpsertDeliverable { profile })
+            .unwrap();
+        assert_eq!(project.deliverables[0], original.deliverables[0]);
+    }
+
+    #[test]
+    fn localized_ambiguous_source_timing_requires_an_explicit_parent_selection() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let localized_id = add_localized_voice(&mut project, 5);
+        let mut localized_segment = project.audio.transcript[0].clone();
+        localized_segment.id = Uuid::now_v7();
+        localized_segment.voice_track_id = localized_id;
+        localized_segment.text = "Texto localizado con tiempos propios.".into();
+        project.audio.transcript.push(localized_segment);
+        let original = project.clone();
+        let mut profile = localized_profile(&project, Some(localized_id));
+        profile.timing_locked = true;
+        let error = project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit parent voice"));
+        assert_eq!(project, original);
+        profile.timing_locked = false;
+        project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        let sidecar = caption_sidecar(&project, profile.id).unwrap();
+        assert!(
+            sidecar
+                .body
+                .contains("Texto localizado con tiempos propios.")
+        );
+        assert!(!sidecar.body.contains("Semantic edits remain editable."));
+    }
+
+    #[test]
+    fn localized_equal_duration_uses_only_its_selected_manual_captions() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        project.deliverables[0].voice_track_id = Some(project.audio.voice_tracks[0].id);
+        let localized_id = add_localized_voice(&mut project, 5);
+        let mut localized_segment = project.audio.transcript[0].clone();
+        localized_segment.id = Uuid::now_v7();
+        localized_segment.voice_track_id = localized_id;
+        localized_segment.text = "Texto localizado con tiempos propios.".into();
+        project.audio.transcript.push(localized_segment);
+        let parent = project.deliverables[0].clone();
+        let original = caption_sidecar(&project, parent.id).unwrap();
+        let mut profile = localized_profile(&project, Some(localized_id));
+        profile.timing_locked = true;
+        project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        let sidecar = caption_sidecar(&project, profile.id).unwrap();
+        assert!(
+            sidecar
+                .body
+                .contains("Texto localizado con tiempos propios.")
+        );
+        assert!(!sidecar.body.contains("Semantic edits remain editable."));
+        assert_eq!(caption_sidecar(&project, parent.id).unwrap(), original);
+        assert_eq!(project.deliverables[0], parent);
+    }
+
+    #[test]
+    fn silent_localization_and_same_language_unbound_variants_remain_valid() {
+        let mut silent = Project::new("Silent localization").unwrap();
+        let mut profile = localized_profile(&silent, None);
+        profile.captions = false;
+        profile.burn_in_captions = false;
+        profile.timing_locked = true;
+        silent
+            .apply_change(&crate::Change::UpsertDeliverable { profile })
+            .unwrap();
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let mut same_language = localized_profile(&project, None);
+        same_language.language = project.deliverables[0].language.clone();
+        same_language.timing_locked = true;
+        let original = caption_sidecar(&project, project.deliverables[0].id).unwrap();
+        project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: same_language.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            caption_sidecar(&project, same_language.id).unwrap().body,
+            original.body
+        );
+    }
+
+    #[test]
+    fn legacy_unbound_localized_profile_cannot_export_inherited_captions() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let mut profile = localized_profile(&project, None);
+        profile.timing_locked = false;
+        project.deliverables.push(profile.clone());
+        let error = caption_sidecar(&project, profile.id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires an explicit locale voice track")
+        );
+    }
+
+    #[test]
+    fn rejected_localized_profile_update_preserves_existing_domain_state() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let source_id = project.audio.voice_tracks[0].id;
+        project.deliverables[0].voice_track_id = Some(source_id);
+        let localized_id = add_localized_voice(&mut project, 5);
+        let mut profile = localized_profile(&project, Some(localized_id));
+        profile.timing_locked = true;
+        project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        let original = project.clone();
+        profile.voice_track_id = Some(source_id);
+        assert!(
+            project
+                .apply_change(&crate::Change::UpsertDeliverable { profile })
+                .is_err()
+        );
+        assert_eq!(
+            project, original,
+            "failed update must preserve the previously accepted profile"
+        );
+    }
 }
