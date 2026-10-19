@@ -54,9 +54,10 @@ class SelectionTests(unittest.TestCase):
                 self.selection([path], (True, False))
 
     def test_only_reviewed_test_and_markdown_changes_need_g0(self):
-        for path in (plan.TESTS, plan.DOCUMENT, "docs/verification/notes.md"):
+        for path in (plan.TESTS, plan.DOCUMENT):
             with self.subTest(path=path):
                 self.selection([path], (False, False))
+        self.selection(["docs/verification/notes.md"], (True, True))
         self.selection(["docs/fixture.bin"], (True, True))
 
     def test_new_otio_file_and_unreviewed_dependency_broaden(self):
@@ -187,6 +188,11 @@ class GitCliTests(unittest.TestCase):
         self.assertEqual(result["jobs"]["rust_media"]["selected"], rust)
         self.assertEqual(result["jobs"]["windows_paths"]["selected"], windows)
         self.assertTrue(result["g0_required"])
+        self.assertFalse(result["automatic_omissions_authorized"])
+        expected_policy = ("manual-explicit" if
+            result["execution_context"]["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+            else "automatic-shadow")
+        self.assertEqual(result["selection_policy"], expected_policy)
         self.assertFalse(result["test_results_admitted"])
         self.assertFalse(result["release_candidate_verified"])
         self.assertEqual({j["result"] for j in result["jobs"].values()}, {"NOT_EXECUTED_BY_PLANNER"})
@@ -304,6 +310,72 @@ class GitCliTests(unittest.TestCase):
         self.assertEqual(repeated.returncode, 2)
         self.assertEqual((directory/"plan.json").read_bytes(), original_plan)
         self.assertEqual((directory/"github-output").read_bytes(), original_outputs)
+
+
+class JobGateTests(unittest.TestCase):
+    def gate(self, event, scope, requested, results=("success", "success"), planner="success",
+             omit=None, plan_id="a" * 64):
+        source = (SOURCE.parents[1] / plan.WORKFLOW).read_text(encoding="utf-8")
+        marker = "      - name: Verify selected jobs and retain explicit omissions\n"
+        self.assertEqual(source.count(marker), 1)
+        block = source.split(marker, 1)[1].split("        run: |\n", 1)[1]
+        code = "\n".join(line[10:] if line.startswith("          ") else line
+                         for line in block.splitlines())
+        jobs = ("verified-native-rust-otio-and-open-timeline-io",
+                "verified-windows-junction-admission")
+        needs = {"otio-impact": {"result": planner, "outputs": {
+            "plan_id": plan_id, "rust_media": requested[0], "windows_paths": requested[1]}}}
+        needs.update({job: {"result": result} for job, result in zip(jobs, results)})
+        if omit is not None:
+            del needs[omit]
+        env = dict(os.environ)
+        env.update(OTIO_NEEDS=json.dumps(needs), GITHUB_EVENT_NAME=event, OTIO_SCOPE=scope)
+        result = subprocess.run([sys.executable, "-I", "-B", "-S", "-c", code],
+                                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=10, check=False)
+        return result
+
+    def test_automatic_shadow_requires_both_original_jobs(self):
+        for event in ("push", "pull_request"):
+            for requested in (("false", "false"), ("true", "false"), ("false", "true")):
+                with self.subTest(event=event, requested=requested):
+                    good = self.gate(event, "all", requested)
+                    self.assertEqual(good.returncode, 0, good.stderr.decode())
+                    record = json.loads(good.stdout)
+                    self.assertEqual(record["selection_policy"], "automatic-shadow")
+                    self.assertFalse(record["formal_acceptance"])
+                    self.assertFalse(record["release_candidate_verified"])
+            self.assertNotEqual(self.gate(event, "all", ("true", "false"),
+                                          ("success", "skipped")).returncode, 0)
+
+    def test_manual_gate_matches_original_scope_and_explicit_omissions(self):
+        cases = (("all", ("true", "true"), ("success", "success")),
+                 ("rust_media", ("true", "false"), ("success", "skipped")),
+                 ("windows_paths", ("false", "true"), ("skipped", "success")))
+        for scope, requested, results in cases:
+            with self.subTest(scope=scope):
+                good = self.gate("workflow_dispatch", scope, requested, results)
+                self.assertEqual(good.returncode, 0, good.stderr.decode())
+                self.assertEqual(json.loads(good.stdout)["selection_policy"], "manual-explicit")
+        self.assertNotEqual(self.gate("workflow_dispatch", "all", ("true", "false"),
+                                      ("success", "skipped")).returncode, 0)
+        self.assertNotEqual(self.gate("workflow_dispatch", "unknown", ("true", "true")).returncode, 0)
+
+    def test_gate_rejects_missing_unknown_or_incompatible_results(self):
+        for bad in ("failure", "cancelled", "skipped", "unknown", None):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.gate("workflow_dispatch", "all", ("true", "true"),
+                                              (bad, "success")).returncode, 0)
+                self.assertNotEqual(self.gate("workflow_dispatch", "all", ("true", "true"),
+                                              planner=bad).returncode, 0)
+        for options in ({"omit": "verified-windows-junction-admission"},
+                        {"plan_id": ""}, {"plan_id": "not-a-plan"}):
+            with self.subTest(options=options):
+                self.assertNotEqual(self.gate("workflow_dispatch", "all", ("true", "true"),
+                                              **options).returncode, 0)
+        self.assertNotEqual(self.gate("workflow_dispatch", "all", ("True", "true")).returncode, 0)
+        self.assertNotEqual(self.gate("push", "rust_media", ("true", "false")).returncode, 0)
+        self.assertNotEqual(self.gate("unknown", "all", ("true", "true")).returncode, 0)
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ jobs:
 
   verified-native-rust-otio-and-open-timeline-io:
     needs: otio-impact
-    if: ${{ needs.otio-impact.result == 'success' && needs.otio-impact.outputs.rust_media == 'true' }}
+    if: ${{ needs.otio-impact.result == 'success' && (github.event_name != 'workflow_dispatch' || needs.otio-impact.outputs.rust_media == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -273,7 +273,7 @@ jobs:
 
   verified-windows-junction-admission:
     needs: otio-impact
-    if: ${{ needs.otio-impact.result == 'success' && needs.otio-impact.outputs.windows_paths == 'true' }}
+    if: ${{ needs.otio-impact.result == 'success' && (github.event_name != 'workflow_dispatch' || needs.otio-impact.outputs.windows_paths == 'true') }}
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -408,3 +408,68 @@ jobs:
           path: verification/otio-windows-reparse/
           if-no-files-found: error
           retention-days: 7
+
+  # Automatic triggers retain the original two jobs until the impact shadow is reviewed.
+  # This stable gate checks actual job results; it does not grant release acceptance.
+  otio-complete:
+    name: OTIO verification complete
+    if: always()
+    needs:
+      - otio-impact
+      - verified-native-rust-otio-and-open-timeline-io
+      - verified-windows-junction-admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      OTIO_NEEDS: ${{ toJSON(needs) }}
+      OTIO_SCOPE: ${{ inputs.scope || 'all' }}
+    steps:
+      - name: Verify selected jobs and retain explicit omissions
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import sys
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          needs = json.loads(os.environ["OTIO_NEEDS"])
+          job_keys = ("verified-native-rust-otio-and-open-timeline-io",
+                      "verified-windows-junction-admission")
+          require(set(needs) == {"otio-impact", *job_keys}, "Incomplete job result inventory")
+          planner = needs["otio-impact"]
+          require(planner.get("result") == "success", "The original planning job did not succeed")
+          outputs = planner.get("outputs", {})
+          plan_id = outputs.get("plan_id", "")
+          require(isinstance(plan_id, str) and re.fullmatch(r"[0-9a-f]{64}", plan_id),
+                  "Missing exact plan identity")
+          requested = (outputs.get("rust_media"), outputs.get("windows_paths"))
+          require(all(value in ("true", "false") for value in requested),
+                  "Selection outputs must be explicit booleans")
+          event = os.environ["GITHUB_EVENT_NAME"]
+          scope = os.environ["OTIO_SCOPE"]
+          if event == "workflow_dispatch":
+              scopes = {"all": ("true", "true"), "rust_media": ("true", "false"),
+                        "windows_paths": ("false", "true")}
+              require(scope in scopes and requested == scopes[scope],
+                      "Selection differs from the original manual scope")
+              required = tuple(value == "true" for value in requested)
+              policy = "manual-explicit"
+          else:
+              require(event in ("push", "pull_request") and scope == "all",
+                      "Unexpected automatic event or narrowed scope")
+              required = (True, True)
+              policy = "automatic-shadow"
+          observed = {}
+          for job, selected in zip(job_keys, required):
+              result = needs[job].get("result")
+              expected = "success" if selected else "skipped"
+              require(result == expected, job + " requires " + expected + ", observed " + str(result))
+              observed[job] = result
+          print(json.dumps({"status": "WORKFLOW_JOBS_VERIFIED", "plan_id": plan_id,
+                            "selection_policy": policy, "job_results": observed,
+                            "formal_acceptance": False, "release_candidate_verified": False},
+                           sort_keys=True))

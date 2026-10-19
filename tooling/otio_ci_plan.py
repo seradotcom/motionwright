@@ -345,7 +345,7 @@ def select_jobs(event_name, scope, inventory):
                     select(True, False, "canonical-rust-exporter-dependency", path)
                 elif path in LINUX:
                     select(True, False, "linux-media-or-publication-input", path)
-                elif path == TESTS or path == DOCUMENT or (path.startswith("docs/") and path.endswith(".md")):
+                elif path == TESTS or path == DOCUMENT:
                     select(False, False, "g0-only-test-or-documentation", path)
                 else:
                     select(True, True, "unreviewed-dependency-conservative-full", path)
@@ -371,6 +371,9 @@ def make_plan(args, git, ctx, raw_event):
         "schema": "motionwright.otio-ci-job-plan/1", "status": "JOB_REQUESTS_PLANNED",
         "execution_context": ctx, "source": before, "event_sha256": sha256(raw_event),
         "requested_scope": args.scope, "change_inventory": inventory, "g0_required": True,
+        "selection_policy": ("manual-explicit" if ctx["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+                             else "automatic-shadow"),
+        "automatic_omissions_authorized": False,
         "jobs": {name: {"selected": selected[name], "result": "NOT_EXECUTED_BY_PLANNER"}
                  for name in ("rust_media", "windows_paths")},
         "reasons": selected["reasons"],
