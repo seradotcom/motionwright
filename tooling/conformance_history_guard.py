@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -105,15 +106,33 @@ def review_row(before: dict, after: dict) -> bool:
         status = old.get("technical_verification", {}).get("status")
         expected_source = old.get("source")
         def captures(value):
-            if not isinstance(value, dict):
+            if not isinstance(value, dict) or value.get("source") != expected_source:
                 return False
-            if value.get("source") != expected_source:
+            if value.get("prior_technical_status", value.get("prior_status")) != status:
                 return False
-            oldstates = (value.get("prior_criteria", value.get("prior_criterion_statuses")) is not None)
-            return (value.get("prior_technical_status", value.get("prior_status")) == status
-                    and (oldstates or value.get("prior_current_record_ids") is not None))
+            prior_contract = old.get("contract_acceptance", {}).get("status")
+            if ("prior_contract_status" in value and
+                    value["prior_contract_status"] != prior_contract):
+                return False
+            if ("prior_current_record_ids" in value and
+                    value["prior_current_record_ids"] !=
+                    old.get("evidence_currency", {}).get("current_record_ids")):
+                return False
+            # H01: a current evidence-ID list, an empty list or a plausible but
+            # invented criterion list cannot prove an actual prior assessment.
+            # Prefer the entire original criteria, including IDs, clause hashes,
+            # statuses, evidence links and missing assertions.
+            if "prior_criteria" in value:
+                return value["prior_criteria"] == old["criteria"]
+            # Retain support for older compact status-map snapshots, but only
+            # when the map is complete and matches every original criterion.
+            statuses = value.get("prior_criterion_statuses")
+            expected_statuses = {
+                criterion["id"]: criterion["status"] for criterion in old["criteria"]
+            }
+            return isinstance(statuses, dict) and statuses == expected_statuses
         if not any(captures(entry) for entry in added):
-            raise HistoryViolation("changed_assessment_has_no_prior_snapshot")
+            raise HistoryViolation("changed_assessment_has_no_authentic_prior_snapshot")
     # Changing only a noncanonical visible title with stable original ID and
     # prior history is safe; it does not reset previously assessed coverage.
     return changed
@@ -150,15 +169,50 @@ def inspect(before: dict, after: dict) -> dict:
             "product_acceptance":False, "release_authorized":False}
 
 
-def git_exact(repo: Path, revision: str, filename: str) -> bytes:
-    if SHA.fullmatch(revision) is None:
-        raise HistoryViolation("exact_sha_required")
-    p = subprocess.run(
-        ["git", "-C", str(repo), "show", revision + ":" + filename],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-    if p.returncode:
+def _unredirected_git(repo: Path, *args: str) -> bytes:
+    # H02: the caller's Git environment may silently substitute the repository,
+    # its object database, reference replacements, config or worktree. A
+    # 40-character commit hash alone does not protect a Git CLI read from those.
+    # Suppress both inherited overrides and repository-local replace refs.
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith("GIT_")}
+    env.update({
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_LAZY_FETCH": "1",
+    })
+    try:
+        proc = subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(repo), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HistoryViolation("git_source_unavailable") from exc
+    if proc.returncode:
         raise HistoryViolation("git_source_unavailable")
-    return p.stdout
+    return proc.stdout
+
+
+def git_exact(repo: Path, revision: str, filename: str) -> bytes:
+    if not isinstance(revision, str) or SHA.fullmatch(revision) is None:
+        raise HistoryViolation("exact_sha_required")
+    if filename not in (*LEDGERS, INDEX):
+        raise HistoryViolation("unrecognized_source_path")
+    try:
+        root = Path(repo).resolve(strict=True)
+    except OSError as exc:
+        raise HistoryViolation("git_repository_unavailable") from exc
+    if not root.is_dir():
+        raise HistoryViolation("git_repository_unavailable")
+    actual = _unredirected_git(root, "rev-parse", "--show-toplevel").decode(
+        "utf-8", errors="strict").strip()
+    if Path(actual).resolve() != root:
+        raise HistoryViolation("git_repository_root_mismatch")
+    if _unredirected_git(root, "cat-file", "-t", revision).strip() != b"commit":
+        raise HistoryViolation("git_exact_revision_not_a_commit")
+    return _unredirected_git(root, "show", revision + ":" + filename)
 
 
 def main() -> int:
@@ -174,7 +228,7 @@ def main() -> int:
         result.update(baseline_sha=args.before,candidate_sha=args.after)
         print(json.dumps(result,sort_keys=True))
         return 0
-    except (HistoryViolation,OSError,subprocess.TimeoutExpired) as error:
+    except (HistoryViolation,OSError,subprocess.TimeoutExpired,UnicodeError) as error:
         print("conformance_history=blocked:"+str(error))
         return 2
 
