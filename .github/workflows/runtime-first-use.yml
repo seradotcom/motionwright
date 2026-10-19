@@ -334,6 +334,10 @@ jobs:
               prefix + "saved_reference_is_project_and_generation_scoped_and_survives_reopen",
               prefix + "verified_replacement_is_persistent_and_no_runtime_secrets_are_copied",
               prefix + "forged_scope_and_corrupted_records_are_rejected",
+              prefix + "clear_saved_rejects_corrupt_reference_without_deleting_bytes",
+              prefix + "clear_saved_rejects_foreign_project_scope_without_deleting_bytes",
+              prefix + "clear_saved_rejects_relative_reference_without_deleting_bytes",
+              prefix + "selecting_new_connection_never_overwrites_foreign_project_record",
               prefix + "missing_registry_root_rejects_all_operations",
           }
           if sys.platform == "win32":
