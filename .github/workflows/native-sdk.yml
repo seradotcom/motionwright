@@ -33,6 +33,13 @@ on:
       - "docs/native-sdk.md"
       - ".github/workflows/native-sdk.yml"
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Select existing SDK verification or focused Motion Canvas contracts
+        type: choice
+        required: false
+        default: all
+        options: [all, mc_driver_contracts]
 
 permissions:
   contents: read
@@ -48,6 +55,7 @@ env:
 
 jobs:
   verify-native-sdk:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'mc_driver_contracts') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -87,6 +95,7 @@ jobs:
         run: cargo test --locked -p motionwright-native --all-targets
 
   macos-owner-path-alias:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'mc_driver_contracts') }}
     needs: verify-native-sdk
     runs-on: macos-latest
     timeout-minutes: 35
@@ -105,6 +114,7 @@ jobs:
         run: cargo test --locked -p motionwright-native --lib path_boundary_tests -- --nocapture
 
   windows-ntfs-owner-path:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'mc_driver_contracts') }}
     needs: verify-native-sdk
     runs-on: windows-latest
     timeout-minutes: 40
@@ -160,6 +170,7 @@ jobs:
           }
 
   real-host-shared-state:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scope == 'mc_driver_contracts') }}
     needs: verify-native-sdk
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -231,3 +242,9 @@ jobs:
           path: verification/native-sdk/public-shared-state
           if-no-files-found: error
           retention-days: 14
+
+  mc-driver-contracts:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'mc_driver_contracts' }}
+    uses: ./.github/workflows/motion-canvas-sdk-contracts.yml
+    with:
+      source_sha: ${{ github.sha }}

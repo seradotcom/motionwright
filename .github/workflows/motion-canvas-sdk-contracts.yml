@@ -1,0 +1,158 @@
+name: Motion Canvas SDK contracts
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact Motionwright verifier SHA from the registered caller
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mc-sdk-contract-execution-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  sdk-contracts:
+    name: Original SDK Rust and Driver Host contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Require the selected manual context and create isolated resources
+        id: paths
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_SHA" = "$EXPECTED_SOURCE"
+          test "$GITHUB_WORKFLOW_SHA" = "$EXPECTED_SOURCE"
+          test "$GITHUB_JOB" = sdk-contracts
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sdk_control_root="$RUNNER_TEMP/motion-canvas-sdk-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$sdk_control_root"
+          mkdir -p "$sdk_control_root"/{work,evidence,cargo,target,rustup,tmp}
+          {
+            echo "SDK_CONTROL_ROOT=$sdk_control_root"
+            echo "SDK_WORK=$sdk_control_root/work"
+            echo "SDK_EVIDENCE=$sdk_control_root/evidence"
+            echo "CARGO_HOME=$sdk_control_root/cargo"
+            echo "CARGO_TARGET_DIR=$sdk_control_root/target"
+            echo "RUSTUP_HOME=$sdk_control_root/rustup"
+            echo "TMPDIR=$sdk_control_root/tmp"
+            echo "TMP=$sdk_control_root/tmp"
+            echo "TEMP=$sdk_control_root/tmp"
+          } >> "$GITHUB_ENV"
+      - name: Checkout the exact Motionwright verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: motionwright
+          fetch-depth: 1
+          persist-credentials: false
+          set-safe-directory: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Source, acceptance, creative and synthetic custody controls before compilation
+        id: g0
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_sha }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          python -B -I -S "$GITHUB_WORKSPACE/motionwright/tooling/motion_canvas_sdk_g1.py" \
+            --phase g0 --source-sha "$EXPECTED_SOURCE" \
+            --motionwright "$GITHUB_WORKSPACE/motionwright" \
+            --work "$SDK_WORK" --output "$SDK_EVIDENCE"
+      - name: Checkout the original complete SDK source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: seradotcom/semwright
+          ref: 54d3459a051adbce4cae9f60c0dea8f60c824be6
+          path: semwright
+          fetch-depth: 1
+          persist-credentials: false
+          set-safe-directory: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Compile once and execute the closed eight plus two original SDK cases
+        id: g1
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_sha }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          python -B -I -S "$GITHUB_WORKSPACE/motionwright/tooling/motion_canvas_sdk_g1.py" \
+            --phase g1 --source-sha "$EXPECTED_SOURCE" \
+            --motionwright "$GITHUB_WORKSPACE/motionwright" \
+            --sdk "$GITHUB_WORKSPACE/semwright" \
+            --work "$SDK_WORK" --output "$SDK_EVIDENCE"
+      - name: Preserve the terminal job and step states
+        if: ${{ always() && steps.paths.outcome == 'success' }}
+        env:
+          WORKFLOW_JOB_STATUS: ${{ job.status }}
+          G0_STEP_OUTCOME: ${{ steps.g0.outcome }}
+          G1_STEP_OUTCOME: ${{ steps.g1.outcome }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -B -I -S - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["SDK_EVIDENCE"])
+          value = {
+              "schema": "motionwright.sdk-g1.workflow-observation/1",
+              "timestamp": datetime.now(timezone.utc).isoformat(),
+              "source_sha": os.environ["GITHUB_SHA"],
+              "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "job_key": os.environ["GITHUB_JOB"],
+              "job_status_observed": os.environ["WORKFLOW_JOB_STATUS"],
+              "g0_step_outcome": os.environ["G0_STEP_OUTCOME"],
+              "g1_step_outcome": os.environ["G1_STEP_OUTCOME"],
+              "test_case_admission": "NOT_ASSERTED_BY_WORKFLOW_STATE",
+              "source_and_result_originals": "g0/ and g1/ command journals",
+              "physical_native_render": False,
+              "human_acceptance": False,
+              "release_ready": False,
+          }
+          payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+          path = root / "workflow-observation.json"
+          with path.open("xb") as stream:
+              stream.write(payload)
+              stream.flush()
+              os.fsync(stream.fileno())
+          actual = path.read_bytes()
+          if actual != payload:
+              raise SystemExit("workflow observation changed during readback")
+          print(json.dumps({"path": str(path), "bytes": len(actual),
+                            "sha256": hashlib.sha256(actual).hexdigest()}))
+          PY
+      - name: Preserve original SDK verification receipts and bounded command logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motion-canvas-sdk-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motion-canvas-sdk-g1-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+          if-no-files-found: error
+          retention-days: 30
