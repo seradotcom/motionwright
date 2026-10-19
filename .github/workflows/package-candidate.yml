@@ -2,6 +2,15 @@ name: Candidate Packages
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Full candidate verification or isolated Windows unit contracts
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - windows_contracts
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -22,6 +31,8 @@ on:
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
       - "tooling/windows_first_project_ui.ps1"
+      - "tooling/ci_test_runner.py"
+      - "tooling/verify_powershell_exit_guard.py"
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
       - "tooling/tests/test_linux_cold_start.py"
@@ -52,6 +63,8 @@ on:
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
       - "tooling/windows_first_project_ui.ps1"
+      - "tooling/ci_test_runner.py"
+      - "tooling/verify_powershell_exit_guard.py"
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
       - "tooling/tests/test_linux_cold_start.py"
@@ -70,6 +83,7 @@ env:
 
 jobs:
   receipt-policy:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -82,6 +96,7 @@ jobs:
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -245,14 +260,29 @@ jobs:
             ci-evidence/linux-appimage-window.json
           if-no-files-found: error
 
-  windows:
-    needs: receipt-policy
+  windows-contracts:
     runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
+      - name: Source and acceptance policy before Windows contract execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B -E -s tooling/source_policy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Source policy failed before Windows contracts' }
+          python -B -E -s tooling/acceptance_policy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Acceptance policy failed before Windows contracts' }
       - name: Windows cold-start unit contracts before package build
         id: windows-contracts
         shell: pwsh
@@ -353,6 +383,32 @@ jobs:
           name: motionwright-windows-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/motionwright-windows-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
+      - name: Observe original PowerShell guard with successful and failing child exits
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proofDir = Join-Path $env:RUNNER_TEMP "motionwright-windows-exit-guard-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          python -B -I -S tooling/verify_powershell_exit_guard.py `
+            --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" `
+            --powershell (Join-Path $PSHOME 'pwsh.exe') --output "$proofDir"
+          if ($LASTEXITCODE -ne 0) { throw 'The real PowerShell exit guard was not verified' }
+      - name: Retain original positive and negative PowerShell exit observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-exit-guard-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motionwright-windows-exit-guard-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+
+  windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
+    needs: [receipt-policy, windows-contracts]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -456,6 +512,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
     needs: receipt-policy
     runs-on: macos-latest
     steps:
@@ -535,7 +592,7 @@ jobs:
   # on PRs, while this job is NOT_RUN until trusted dispatch or main push.
   attest-candidates:
     name: Candidate GH provenance (trusted runs only)
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
