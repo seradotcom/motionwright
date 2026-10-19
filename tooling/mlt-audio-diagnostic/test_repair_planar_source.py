@@ -71,12 +71,12 @@ class OriginalPlanarRepairTests(unittest.TestCase):
         self.assertEqual(digest(original_bytes), repair.ORIGINAL_SHA256)
         transformed, helper = repair.repair_exact_original(original_bytes)
         self.assertNotEqual(transformed, original_bytes)
-        self.assertEqual(len(transformed), 98577)
+        self.assertEqual(len(transformed), 98847)
         self.assertEqual(
             digest(transformed),
-            "47bbce12e1cceb1a5aeb7149f7844522dd8c3f4c5e9b004af57c35cac254d41b",
+            "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0",
         )
-        self.assertEqual(digest(helper), "fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013")
+        self.assertEqual(digest(helper), "d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9")
         self.assertEqual(original.read_bytes(), original_bytes)
 
     def test_repair_retains_four_original_formats_frame_clock_and_send(self):
@@ -95,6 +95,41 @@ class OriginalPlanarRepairTests(unittest.TestCase):
         self.assertIn("avcodec_fill_audio_frame(ctx->audio_avframe,", text)
         self.assertIn("if (!p) {", text)
         self.assertEqual(transformed.count(helper), 1)
+
+    def test_unsigned_u8p_silence_is_nonzero_and_legacy_zero_is_rejected(self):
+        """Independent byte-level guard; libavutil is checked by the C lane."""
+        original = repair.checked_original(self.require_original())
+        transformed, helper = repair.repair_exact_original(original)
+        required = (
+            b"memset(buffer, sample_fmt == AV_SAMPLE_FMT_U8P ? 0x80 : 0,\n"
+            b"           AUDIO_ENCODE_BUFFER_SIZE);"
+        )
+        self.assertIn(required, helper)
+        self.assertNotIn(b"memset(buffer, 0, AUDIO_ENCODE_BUFFER_SIZE);", helper)
+        # U8/U8P represents signed-equivalent zero as 128. An all-zero
+        # audio tail means full-scale negative DC, not silence.
+        self.assertEqual(bytes([0x80]) * 16, b"\x80" * 16)
+        self.assertNotEqual(bytes(16), bytes([0x80]) * 16)
+        old_helper = helper.replace(
+            required, b"memset(buffer, 0, AUDIO_ENCODE_BUFFER_SIZE);",
+        )
+        self.assertNotEqual(old_helper, helper)
+        self.assertEqual(old_helper.count(b"memset(buffer, 0, AUDIO_ENCODE_BUFFER_SIZE);"), 1)
+        self.assertEqual(transformed.count(helper), 1)
+        self.assertEqual(transformed.count(old_helper), 0)
+
+    def test_source_repair_fixes_silence_without_reordering_codec_paths(self):
+        transformed, helper = repair.repair_exact_original(
+            repair.checked_original(self.require_original())
+        )
+        self.assertIn(b"sample_fmt == AV_SAMPLE_FMT_U8P ? 0x80 : 0", helper)
+        self.assertIn(b"av_samples_get_buffer_size(&linesize,", helper)
+        # The only type-specific change is the silence fill; never remove
+        # unsigned samples from the four original encoder branches.
+        self.assertEqual(transformed.count(b"codec->sample_fmt == AV_SAMPLE_FMT_U8P"), 1)
+        self.assertEqual(transformed.count(b"codec->sample_fmt == AV_SAMPLE_FMT_FLTP"), 1)
+        self.assertEqual(transformed.count(b"codec->sample_fmt == AV_SAMPLE_FMT_S16P"), 1)
+        self.assertEqual(transformed.count(b"codec->sample_fmt == AV_SAMPLE_FMT_S32P"), 1)
 
     def test_output_readback_and_repeated_generation_are_fail_closed(self):
         source = self.require_original()

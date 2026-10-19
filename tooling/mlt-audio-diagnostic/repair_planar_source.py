@@ -51,7 +51,11 @@ REPAIRED_HELPER = """static uint8_t *interleaved_to_planar(int samples,
     uint8_t *buffer = mlt_pool_alloc(AUDIO_ENCODE_BUFFER_SIZE);
     if (!buffer)
         return NULL;
-    memset(buffer, 0, AUDIO_ENCODE_BUFFER_SIZE);
+    // FFmpeg's unsigned planar 8-bit silence is 0x80, not zero. Signed
+    // integer and float planar silence is zero. Cover the declared frame,
+    // including the unconsumed AAC tail, without moving either plane.
+    memset(buffer, sample_fmt == AV_SAMPLE_FMT_U8P ? 0x80 : 0,
+           AUDIO_ENCODE_BUFFER_SIZE);
     for (int c = 0; c < channels; c++) {
         uint8_t *p = buffer + (size_t) c * linesize;
         uint8_t *q = audio + (size_t) c * bytes_per_sample;

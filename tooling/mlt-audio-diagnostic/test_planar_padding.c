@@ -119,6 +119,28 @@ static void exercise(enum AVSampleFormat format, int consumed,
         fprintf(stderr, "MLT_PLANAR_AVFRAME_ALLOCATION_FAILED\n");
         exit(2);
     }
+    // Derive silence from actual FFmpeg 6.1 libavutil, not from the repair
+    // implementation or an assumed all-zero PCM encoding. U8P uses 0x80.
+    uint8_t *silence = malloc(AUDIO_ENCODE_BUFFER_SIZE);
+    if (!silence) {
+        fprintf(stderr, "MLT_PLANAR_REFERENCE_ALLOCATION_FAILED\n");
+        exit(2);
+    }
+    memset(silence, 0xa5, AUDIO_ENCODE_BUFFER_SIZE);
+    uint8_t *silence_planes[2] = {silence, silence + ffmpeg_linesize};
+    int silence_rc = av_samples_set_silence(
+        silence_planes, 0, prepared, channels, format);
+    if (silence_rc < 0) {
+        failure("original FFmpeg silence oracle rejected the declared frame",
+                format, consumed, prepared, -1, -1);
+        free(silence);
+        av_frame_free(&good);
+        av_frame_free(&historical);
+        free(repaired);
+        free(interleaved);
+        free(old_compacted);
+        return;
+    }
     good->nb_samples = prepared;
     historical->nb_samples = prepared;
     int good_ret = avcodec_fill_audio_frame(
@@ -136,10 +158,13 @@ static void exercise(enum AVSampleFormat format, int consumed,
                 uint8_t expected[8] = {0};
                 if (i < consumed) {
                     source_sample(format, c, i, expected);
+                } else {
+                    memcpy(expected,
+                           silence_planes[c] + (size_t) i * bps, (size_t) bps);
                 }
                 if (memcmp(good->extended_data[c] + (size_t) i * bps,
                            expected, (size_t) bps) != 0) {
-                    failure("repaired plane diverged from source or zero-tail",
+                    failure("repaired plane diverged from source or FFmpeg silence",
                             format, consumed, prepared, c, i);
                     break;
                 }
@@ -148,6 +173,16 @@ static void exercise(enum AVSampleFormat format, int consumed,
                               expected, (size_t) bps) != 0) {
                     control_disagree = 1;
                 }
+            }
+        }
+        // Source-independent U8P negative control: the original compact
+        // buffer initializes unconsumed bytes to zero, but FFmpeg's signed
+        // offset for unsigned 8-bit silence requires 0x80 instead.
+        if (format == AV_SAMPLE_FMT_U8P && consumed < prepared) {
+            if (silence_planes[1][consumed] != 0x80
+                || historical->extended_data[1][consumed] == 0x80) {
+                failure("legacy all-zero U8P silence unexpectedly valid",
+                        format, consumed, prepared, 1, consumed);
             }
         }
         if (expect_legacy_bad && !control_disagree) {
@@ -161,6 +196,7 @@ static void exercise(enum AVSampleFormat format, int consumed,
 
     av_frame_free(&good);
     av_frame_free(&historical);
+    free(silence);
     free(repaired);
     free(interleaved);
     free(old_compacted);
