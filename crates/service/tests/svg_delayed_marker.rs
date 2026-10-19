@@ -116,3 +116,146 @@ fn real_png_still_imports_and_survives_sqlite_reopen() {
         ONE_PIXEL_PNG
     );
 }
+
+fn encoded_utf16_xml(text: &str, little: bool, with_bom: bool) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if with_bom {
+        bytes.extend_from_slice(if little { &[0xff, 0xfe] } else { &[0xfe, 0xff] });
+    }
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&if little {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        });
+    }
+    bytes
+}
+
+fn encoded_utf32_xml(text: &str, little: bool) -> Vec<u8> {
+    let mut bytes = if little {
+        vec![0xff, 0xfe, 0, 0]
+    } else {
+        vec![0, 0, 0xfe, 0xff]
+    };
+    for letter in text.chars() {
+        let unit = letter as u32;
+        bytes.extend_from_slice(&if little {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        });
+    }
+    bytes
+}
+
+#[test]
+fn utf16_and_utf32_disguised_active_svg_never_becomes_raster_cas() {
+    let active = r#"<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(1)</script></svg>"#;
+    let padded = format!("{}{}", " ".repeat(17_031), active);
+    let cases = [
+        (
+            "utf16le_bom",
+            encoded_utf16_xml(active, true, true),
+            "image/png",
+        ),
+        (
+            "utf16be_padded",
+            encoded_utf16_xml(&padded, false, true),
+            "image/png",
+        ),
+        (
+            "utf16le_no_bom",
+            encoded_utf16_xml(&padded, true, false),
+            "image/png",
+        ),
+        ("utf32le_bom", encoded_utf32_xml(active, true), "image/png"),
+        (
+            "utf32be_bom",
+            encoded_utf32_xml(active, false),
+            "application/octet-stream",
+        ),
+    ];
+
+    for (name, bytes, declared_type) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("project.sqlite3");
+        let source = root.path().join("masquerade.png");
+        fs::write(&source, &bytes).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let project = service.create_project("No encoded SVG imports").unwrap();
+        let before = service.export_project(project.id).unwrap();
+        let sha = hex::encode(Sha256::digest(&bytes));
+        let result = service.import_asset_file(
+            project.id,
+            &project.stamp(),
+            &format!("encoded-svg-{name}"),
+            &source,
+            "masquerade.png".into(),
+            declared_type.into(),
+        );
+        assert!(
+            result.is_err(),
+            "encoded active SVG admitted as media: {name}"
+        );
+        let after = service.export_project(project.id).unwrap();
+        assert_eq!(after.project, before.project, "case={name}");
+        assert_eq!(after.events, before.events, "case={name}");
+        assert_eq!(after.payload_sha256, before.payload_sha256, "case={name}");
+        assert!(
+            service.store().lock().verify_blob(&sha).is_err(),
+            "case={name}"
+        );
+        drop(service);
+        let reopened = StudioService::open(&database).unwrap();
+        assert_eq!(
+            reopened.project(project.id).unwrap(),
+            project,
+            "case={name}"
+        );
+        assert!(
+            reopened.store().lock().verify_blob(&sha).is_err(),
+            "case={name}"
+        );
+        let staged = root.path().join("blobs/.staging");
+        assert!(
+            fs::read_dir(staged).unwrap().next().is_none(),
+            "case={name}"
+        );
+        assert_eq!(fs::read(&source).unwrap(), bytes, "case={name}");
+    }
+}
+
+#[test]
+fn legitimate_utf16_plain_text_without_svg_remains_importable() {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("project.sqlite3");
+    let source = root.path().join("notes.txt");
+    let note = encoded_utf16_xml("Ordinary owner notes ? no executable markup", true, true);
+    fs::write(&source, &note).unwrap();
+    let service = StudioService::open(&database).unwrap();
+    let project = service.create_project("Unicode text imported").unwrap();
+    let committed = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "legitimate-utf16-text",
+            &source,
+            "notes.txt".into(),
+            "text/plain".into(),
+        )
+        .unwrap();
+    assert_eq!(committed.project.revision, 1);
+    let digest = hex::encode(Sha256::digest(&note));
+    assert_eq!(
+        service.store().lock().read_blob(&digest, 4096).unwrap(),
+        note
+    );
+    drop(service);
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), committed.project);
+    assert_eq!(
+        reopened.store().lock().read_blob(&digest, 4096).unwrap(),
+        note
+    );
+}
