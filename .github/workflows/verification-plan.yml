@@ -473,7 +473,6 @@ jobs:
       MW_LINK_SOURCE_SHA: ${{ inputs.package_link_source_sha }}
       MW_LINK_VERIFIER: ${{ github.workspace }}/link-verifier
       MW_LINK_SOURCE: ${{ github.workspace }}/link-source
-      MW_LINK_OUTPUT: ${{ runner.temp }}/package-link-contracts-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Require the reviewed source before checkout
         shell: bash
@@ -495,6 +494,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Execute the four reviewed original unittest IDs once
+        env:
+          MW_LINK_OUTPUT: ${{ runner.temp }}/package-link-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
         run: |
           python -B -I -S - <<'PY'
