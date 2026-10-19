@@ -50,7 +50,7 @@ def verified_plan(path: Path, expected_sha: str) -> dict:
     if (
         plan.get("schema_version") != 4
         or plan.get("clock", {}).get("frame_count") != FRAMES
-        or plan.get("clock", {}).get("frame_rate") != {"num": FPS, "den": 1}
+        or plan.get("clock", {}).get("frame_rate") != {"num": str(FPS), "den": "1"}
         or plan.get("render_profile") != {
             "width": WIDTH, "height": HEIGHT, "frame_rate": FPS
         }
@@ -77,7 +77,7 @@ def verified_plan(path: Path, expected_sha: str) -> dict:
     # envelope. The single authored rectangle still proves the visible move.
     if len(nodes) != 1:
         raise AssertionError("120-frame source must have one original editable object")
-    if nodes[0].get("source_kind") != "Rectangle":
+    if nodes[0].get("source_kind") != "rectangle":
         raise AssertionError("source object is not the admitted rectangle")
     for node in nodes:
         if (
@@ -155,6 +155,91 @@ def assert_centroids(plan: dict, frames: dict[int, bytes]) -> list[dict]:
     return observations
 
 
+
+def assert_two_axis_motion(plan: dict, rows: list[dict]) -> dict:
+    """Verify independent X and Y movement from all 120 decoded centroids.
+
+    A single final frame can be inside the existing 3-pixel positional bound
+    even if the subtler Y camera axis is frozen. Linear regression over all
+    original frames detects that false positive without moving the bound.
+    """
+    if len(plan["nodes"]) != 1 or len(rows) != FRAMES:
+        raise AssertionError("all-frame camera movement requires one saved source")
+    if [row.get("frame") for row in rows] != list(range(FRAMES)):
+        raise AssertionError("decoded camera frames are missing, repeated or out of order")
+    node_id = plan["nodes"][0]["node_id"]
+    if any(row.get("node_id") != node_id for row in rows):
+        raise AssertionError("camera source identity changed across decoded frames")
+    mid = (FRAMES - 1) / 2
+    denominator = sum((frame - mid) ** 2 for frame in range(FRAMES))
+    source = plan["reframe"]
+    expected = (
+        -(source["end_center_x"] - source["start_center_x"])
+        / (3 * source["duration_frames"]),
+        -(source["end_center_y"] - source["start_center_y"])
+        / (3 * source["duration_frames"]),
+    )
+    observed = []
+    max_absolute_error = []
+    for axis in (0, 1):
+        points = []
+        errors = []
+        for frame, row in enumerate(rows):
+            point = row["observed_center"][axis]
+            expected_point = row["expected_center"][axis]
+            if not all(isinstance(value, (int, float)) and math.isfinite(value)
+                       for value in (point, expected_point)):
+                raise AssertionError("native centroid includes invalid or nonfinite data")
+            errors.append(abs(point - expected_point))
+            points.append(point)
+        if max(errors) > 3.0:
+            raise AssertionError("native camera object violates original 3px position bound")
+        mean = sum(points) / FRAMES
+        slope = sum((frame - mid) * (point - mean)
+                    for frame, point in enumerate(points)) / denominator
+        # The original Y move is only 4 source pixels (~1.33 output pixels);
+        # use an absolute slope tolerance that admits RGB quantization yet
+        # rejects no movement, reversed motion, and wrong-axis trajectories.
+        allowed = max(0.001, abs(expected[axis]) * 0.30)
+        if (abs(expected[axis]) < 0.005 or
+                slope * expected[axis] <= 0 or
+                abs(slope - expected[axis]) > allowed):
+            raise AssertionError(
+                ("x", "y")[axis] + "_camera_motion_not_decoded_from_source"
+            )
+        observed.append(slope)
+        max_absolute_error.append(max(errors))
+    return {
+        "frame_count": FRAMES,
+        "observed_center_slope_px_per_frame": [round(x, 9) for x in observed],
+        "expected_center_slope_px_per_frame": [round(x, 9) for x in expected],
+        "max_original_centroid_error_px": [round(x, 6) for x in max_absolute_error],
+        "both_axes_moving_camera_verified_from_decoded_centroids": True,
+        "full_pixel_equality_claim": False,
+    }
+
+
+def assert_full_decoded_camera(plan: dict, rgb: bytes) -> dict:
+    """Observe every frame of bounded decoded RGB24 without rerendering."""
+    if len(rgb) != FRAMES * FRAME_BYTES:
+        raise AssertionError("decoded original RGB source does not contain 120 full frames")
+    memory = memoryview(rgb)
+    node = plan["nodes"][0]
+    rows = []
+    for frame in range(FRAMES):
+        start = frame * FRAME_BYTES
+        expected = frame_center(plan, node, frame)
+        x, y, count = color_center(memory[start:start + FRAME_BYTES], node, expected)
+        rows.append({
+            "frame": frame,
+            "node_id": node["node_id"],
+            "expected_center": [expected[0], expected[1]],
+            "observed_center": [x, y],
+            "matched_color_pixels": count,
+        })
+    return assert_two_axis_motion(plan, rows)
+
+
 def probe_media(media: Path, ffprobe: str) -> dict:
     cmd = [
         ffprobe, "-v", "error", "-select_streams", "v:0",
@@ -203,7 +288,7 @@ def probe_media(media: Path, ffprobe: str) -> dict:
     }
 
 
-def decoded_samples(media: Path, ffmpeg: str) -> dict[int, bytes]:
+def decoded_rgb120(media: Path, ffmpeg: str) -> bytes:
     proc = subprocess.run(
         [ffmpeg, "-nostdin", "-v", "error", "-i", str(media), "-an",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-fps_mode", "passthrough", "pipe:1"],
@@ -211,10 +296,7 @@ def decoded_samples(media: Path, ffmpeg: str) -> dict[int, bytes]:
     )
     if len(proc.stdout) != FRAMES * FRAME_BYTES:
         raise AssertionError("raw decoded frame byte count deviates from original camera clock")
-    return {
-        frame: proc.stdout[frame * FRAME_BYTES:(frame + 1) * FRAME_BYTES]
-        for frame in READBACK_SAMPLES
-    }
+    return proc.stdout
 
 
 def verify(plan_file: Path, plan_sha: str, media: Path, media_sha: str,
@@ -224,7 +306,14 @@ def verify(plan_file: Path, plan_sha: str, media: Path, media_sha: str,
     if re.fullmatch(r"[0-9a-f]{64}", media_sha) is None or digest(media) != media_sha:
         raise AssertionError("native video digest differs from the original trusted receipt")
     observation = probe_media(media, ffprobe)
-    movement = assert_centroids(plan, decoded_samples(media, ffmpeg))
+    rgb = decoded_rgb120(media, ffmpeg)
+    view = memoryview(rgb)
+    sample_frames = {
+        frame: view[frame * FRAME_BYTES:(frame + 1) * FRAME_BYTES]
+        for frame in READBACK_SAMPLES
+    }
+    movement = assert_centroids(plan, sample_frames)
+    temporal_motion = assert_full_decoded_camera(plan, rgb)
     return {
         "schema": "motionwright.manim.camera.decoded-readback/1",
         "compiled_plan_sha256": plan_sha,
@@ -232,6 +321,8 @@ def verify(plan_file: Path, plan_sha: str, media: Path, media_sha: str,
         "binding": plan["binding"],
         "video": observation,
         "native_frame_movement_observations": movement,
+        "all_120_decoded_frame_motion": temporal_motion,
+        "decoded_rgb_sha256": hashlib.sha256(rgb).hexdigest(),
         "source_bound_video_observation": "PASS",
         "native_driver_authority_verified_by_this_reader": False,
         "full_editable_reopen_verified_by_this_reader": False,
