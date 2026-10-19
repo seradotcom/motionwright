@@ -1140,8 +1140,10 @@ def _validate_readonly_observation(report, sdk_root, output, private_work,
                 and manifest["network"] is False
                 and manifest["tools"] == [] and manifest["secrets"] == [],
                 "readonly Host manifest changes authority or executable")
+        # SDK54 DriverMount omits execute when false during serialization.
+        # Require its exact emitted shape; unknown authority fields are refused.
         readonly_same_json(manifest["mounts"], [
-            {"root": "project", "read_only": True, "execute": False}],
+            {"root": "project", "read_only": True}],
             "readonly mount authority")
         catalog = host["catalog_before"]
         require(catalog["original_sdk_digest"] == READONLY_CATALOG_DIGEST,
@@ -1332,6 +1334,13 @@ def execute_readonly_host_fixture(args, runner, rust_tools, executables, build):
         "new_fixture_source": source, "new_fixture_harness": binary,
         **{pin["label"]: file_record(args.sdk / pin["path"]) for pin in READONLY_INPUTS},
     }
+    input_seals = write_json_new(runner.root / "readonly-fixture-input-seals.json", {
+        "schema": "motionwright.sdk-readonly.input-seals/1",
+        "source_sha": args.source_sha, "sdk_source_sha": SDK_SHA,
+        "context": runner.context, "stage": "BEFORE_FIXTURE_INVOKE",
+        "inputs": expected_files,
+        "binary_hashes_are_observations_not_independent_authentication": True,
+    })
     environment = dict(runner.env)
     environment.update(
         MW_SDK_READONLY_SOURCE=str(args.sdk),
@@ -1350,6 +1359,15 @@ def execute_readonly_host_fixture(args, runner, rust_tools, executables, build):
     parsed = parse_rust_result(runner.bytes(executed), (READONLY_CASE_ID,), host=True)
     report_record, report = read_json_record(
         output / "readonly-host-observation.json", 64 * 1024 * 1024)
+    observation_seal = write_json_new(
+        runner.root / "readonly-fixture-observation-seal.json", {
+            "schema": "motionwright.sdk-readonly.observation-seal/1",
+            "source_sha": args.source_sha, "sdk_source_sha": SDK_SHA,
+            "context": runner.context, "input_seals": input_seals,
+            "command": executed, "libtest_result": parsed,
+            "original_observation": report_record,
+            "reader_validation": "NOT_YET_RUN",
+        })
     checked = validate_readonly_observation(
         report, args.sdk, output, private_work, expected_files,
         runner.bytes(executed), report_record)
@@ -1360,11 +1378,16 @@ def execute_readonly_host_fixture(args, runner, rust_tools, executables, build):
               "readonly fixture source")
     same_file(report_record, file_record(Path(report_record["path"])),
               "readonly fixture observation")
+    same_file(input_seals, file_record(Path(input_seals["path"])),
+              "readonly input seal record")
+    same_file(observation_seal, file_record(Path(observation_seal["path"])),
+              "readonly observation seal record")
     observation = {
         "kind": "new_a6_real_sdk_host_readonly_fixture", "sdk_source_sha": SDK_SHA,
         "verifier_source_sha": args.source_sha, "build": build_result,
         "command": executed, "result": parsed, "original_observation": report_record,
         "validated_observation": checked,
+        "input_seals": input_seals, "observation_seal": observation_seal,
         "required_environment": {
             key: environment[key] for key in (
                 "MW_SDK_READONLY_SOURCE", "MW_SDK_READONLY_DRIVER",

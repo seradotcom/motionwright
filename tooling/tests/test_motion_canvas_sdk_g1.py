@@ -159,7 +159,7 @@ def readonly_observation_fixture(root):
         manifest = {
             "executable": copied_driver["path"], "sha256": copied_driver["sha256"],
             "network": False, "tools": [], "secrets": [],
-            "mounts": [{"root": "project", "read_only": True, "execute": False}],
+            "mounts": [{"root": "project", "read_only": True}],
         }
         identity = {"id": "driver:motion-canvas", "kind": "driver", "version": "1.0.0",
                     "namespace": "driver.motion-canvas.", "application": None,
@@ -714,6 +714,18 @@ class SdkG1Controls(unittest.TestCase):
                     ("changed_provider", lambda v: v["hosts"][0]["identity_after"].update(
                         origin="different-provider")),
                     ("write_granted", lambda v: v["hosts"][0]["grants"][0].update(write=True)),
+                    ("write_mount", lambda v: v["hosts"][0]["manifest"]["mounts"][0].update(
+                        read_only=False)),
+                    ("numeric_readonly", lambda v: v["hosts"][0]["manifest"]["mounts"][0].update(
+                        read_only=1)),
+                    ("unexpected_execute_false", lambda v: v["hosts"][0]["manifest"]["mounts"][0].update(
+                        execute=False)),
+                    ("execute_granted", lambda v: v["hosts"][0]["manifest"]["mounts"][0].update(
+                        execute=True)),
+                    ("other_mount_root", lambda v: v["hosts"][0]["manifest"]["mounts"][0].update(
+                        root="other")),
+                    ("extra_mount_authority", lambda v: v["hosts"][0]["manifest"]["mounts"][0].update(
+                        write=False)),
                     ("private_upload", lambda v: v.update(private_work_upload_allowed=True)),
                     ("different_library_driver", lambda v: v["observed_files"]["driver"].update(
                         sha256="a" * 64)),
