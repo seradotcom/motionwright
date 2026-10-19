@@ -31,8 +31,8 @@ MANIM_VERSION = "0.21.0"
 SEMWRIGHT_PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
 SOURCE_INPUTS = {
     "crates/native/examples/native-manim-camera-seed.rs": "cb61f7e548e1a0cc8180bd092050c09a341d428f6a1681098cfc8d77052b64e6",
-    "tooling/native_manim_camera_pixels.py": "d88387a025f611d963581d3ef790d890885ff4545ce05163c58a1a91a950e9e7",
-    "tooling/tests/test_native_manim_camera_pixels.py": "541da5525837fec38943629d4dd11b27f6abd0c11b8284ecf8a8fe5ccb505639",
+    "tooling/native_manim_camera_pixels.py": "671003e7b3a107250f88d41f10f95288450e016d4188e9b1b49f5f19db9e2adf",
+    "tooling/tests/test_native_manim_camera_pixels.py": "0e4a8f9ad489ea9049d98a0669a491f4a80df1480fcc3612e753d16c3e43dd74",
     "crates/driver-manim-community/src/main.rs": "9b6a14be9c0b7aa8548b26b90423d4da1ae6b4561fef2e33954b1491d25dd130",
     "crates/manim-profile/src/planar_camera.rs": "2afd5550f5573a8517cad8c73ffddac06ab62a3f18cd14316b72c5fe837995f3",
     "crates/native/examples/native-manim-e2e.rs": "4eb013102d0a9d0a94da89a66eeada1ddf6d2199b64a5dba2d1b0ddce53f4fba",
