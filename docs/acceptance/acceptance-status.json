@@ -72760,6 +72760,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "5f42ffe3af0eba308488239c248b9753864f337853bb22e4854e16744e0d5e50"
+    "sha256": "a6c35a26c25638d340f0b886c49d422873895083895ae7e2bc704a276c3fc15d"
   }
 }

@@ -21382,6 +21382,75 @@
           "sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f"
         }
       ]
+    },
+    {
+      "artifact_scope": "Original SHA-bound GitHub public source file metadata/digests; no private catalogue/source media text, no human reviewer.",
+      "artifacts": [
+        {
+          "member": "exact-remote-dependency-metadata-main3c.json",
+          "member_sha256": "4030d4bcbb49081ededdaa710d2d78452c6ff126bca58a07c40682529d3347bc",
+          "path": "docs/acceptance/evidence/core-pinned-remote-license-main-9188210c.zip",
+          "sha256": "dec5bc608f4e13ee2fd38762fd35924ce5e56cb609492ec4631f8e952e892a9c"
+        }
+      ],
+      "assertions": [
+        "The original pinned Semwright SHA exists as a public Git commit and has independently retrieved MIT and Apache-2.0 license/notice source blobs.",
+        "SOURCE_LOCK, eight public Git workspace declarations and current main918 source policy agree with the authenticated SHA."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-FOUND-02#/statement",
+        "CR-FOUND-02#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 6,
+        "profile": "current-external-source-pin-inspection",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "pinned-external-core-source-main918",
+      "limitations": [
+        "Private or third-party rights determination is not supplied by file existence.",
+        "Acceptance rejection of a source pin that cannot resolve is not exercised as a genuine integration operation.",
+        "The old main951 Rust --locked job cannot be relabeled as a main3c run; main3c Rust CI is queued.",
+        "No human signature/reviewer identity or installed feature acceptance."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",

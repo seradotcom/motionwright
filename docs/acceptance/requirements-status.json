@@ -589,6 +589,52 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T18:50:07.247412+00:00"
+        },
+        {
+          "prior_contract_status": "open",
+          "prior_criteria": [
+            {
+              "evidence_ids": [
+                "pinned-external-core-source-main3c"
+              ],
+              "id": "CR-FOUND-02#/statement",
+              "missing_assertions": [
+                "Independently review transitive third-party license/rights restrictions for the exact consumer dependency set.",
+                "A6 inspect a complete source-bound on-main3c native SDK consumer run and pin integrity; main951 CI is historical.",
+                "An exact assessed-source execution and an assertion-level sufficiency review have not yet been admitted for this canonical field."
+              ],
+              "scope_notes": [
+                "Main3c exact SOURCE_LOCK pin remote availability and license source verified; current local source policy PASSES. This does not exercise the unverified-input rejection branch."
+              ],
+              "source_clause_sha256": "d17c1eace6177908d11d339c41125c3801d10692b0da0cbac1023487e69a50bf",
+              "status": "stale"
+            },
+            {
+              "evidence_ids": [
+                "pinned-external-core-source-main3c"
+              ],
+              "id": "CR-FOUND-02#/acceptance_criterion",
+              "missing_assertions": [
+                "Execute the product's actual verification guard with a deliberately unavailable/unverified source revision; prove it refuses admission without changing installed source or resource authority.",
+                "Preserve original failed-intake attempt and run the positive case on a frozen exact source/build lock, with A6 independent review.",
+                "An exact assessed-source execution and an assertion-level sufficiency review have not yet been admitted for this canonical field."
+              ],
+              "scope_notes": [
+                "Main3c exact SOURCE_LOCK pin remote availability and license source verified; current local source policy PASSES. This does not exercise the unverified-input rejection branch."
+              ],
+              "source_clause_sha256": "75c3f4d3bf91c44c95727273e85d1ca4b6309589d66e3f943a6d98efed2c0a61",
+              "status": "stale"
+            }
+          ],
+          "prior_current_record_ids": [],
+          "prior_technical_status": "stale",
+          "reason": "Exact current source lock and remote Git/licensing documents positively inspected; source-failure rejection and current source integration CI are not executed.",
+          "reviewed_at_utc": "2026-10-19T19:09:08.682481+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "evidence": [
@@ -602,7 +648,7 @@
       "source_record_sha256": "8d2c57b777e42ecaf2eb90a1c9777b1c92e3af249c7a151b0572314217e01c6c",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Remote metadata and main918 source policy, not native/installed execution or legal approval.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -610,43 +656,41 @@
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
-            "CR-FOUND-02#/acceptance_criterion",
-            "CR-FOUND-02#/statement"
+            "CR-FOUND-02#/statement",
+            "CR-FOUND-02#/acceptance_criterion"
           ],
           "status": "open"
         },
         "criteria": [
           {
             "evidence_ids": [
-              "pinned-external-core-source-main3c"
+              "pinned-external-core-source-main918"
             ],
             "id": "CR-FOUND-02#/statement",
             "missing_assertions": [
               "Independently review transitive third-party license/rights restrictions for the exact consumer dependency set.",
-              "A6 inspect a complete source-bound on-main3c native SDK consumer run and pin integrity; main951 CI is historical.",
-              "An exact assessed-source execution and an assertion-level sufficiency review have not yet been admitted for this canonical field."
+              "A6 inspect a complete source-bound on-main918 native SDK consumer run and pin integrity; main951 CI is historical."
             ],
             "scope_notes": [
-              "Main3c exact SOURCE_LOCK pin remote availability and license source verified; current local source policy PASSES. This does not exercise the unverified-input rejection branch."
+              "Main918 exact SOURCE_LOCK pin remote availability and license source verified; current local source policy PASSES. This does not exercise the unverified-input rejection branch."
             ],
             "source_clause_sha256": "d17c1eace6177908d11d339c41125c3801d10692b0da0cbac1023487e69a50bf",
-            "status": "stale"
+            "status": "partial"
           },
           {
             "evidence_ids": [
-              "pinned-external-core-source-main3c"
+              "pinned-external-core-source-main918"
             ],
             "id": "CR-FOUND-02#/acceptance_criterion",
             "missing_assertions": [
               "Execute the product's actual verification guard with a deliberately unavailable/unverified source revision; prove it refuses admission without changing installed source or resource authority.",
-              "Preserve original failed-intake attempt and run the positive case on a frozen exact source/build lock, with A6 independent review.",
-              "An exact assessed-source execution and an assertion-level sufficiency review have not yet been admitted for this canonical field."
+              "Preserve original failed-intake attempt and run the positive case on a frozen exact source/build lock, with A6 independent review."
             ],
             "scope_notes": [
-              "Main3c exact SOURCE_LOCK pin remote availability and license source verified; current local source policy PASSES. This does not exercise the unverified-input rejection branch."
+              "Main918 exact SOURCE_LOCK pin remote availability and license source verified; current local source policy PASSES. This does not exercise the unverified-input rejection branch."
             ],
             "source_clause_sha256": "75c3f4d3bf91c44c95727273e85d1ca4b6309589d66e3f943a6d98efed2c0a61",
-            "status": "stale"
+            "status": "partial"
           }
         ],
         "dependencies": {
@@ -659,10 +703,13 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "pinned-external-core-source-main918"
+          ],
           "current_source": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
           "historical_record_ids": [
-            "pinned-external-core-source-main3c"
+            "pinned-external-core-source-main3c",
+            "pinned-external-core-source-main918"
           ],
           "history_is_not_new_execution": true
         },
@@ -685,7 +732,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "A5 exact remote pinned Git+license original and integrated source-policy inspection; additional independent adjudication pending."
         },
         "schema_version": 1,
         "source": {
@@ -695,12 +742,12 @@
         },
         "technical_verification": {
           "evidence_ids": [
-            "pinned-external-core-source-main3c"
+            "pinned-external-core-source-main918"
           ],
           "execution_kinds": [
             "source"
           ],
-          "status": "stale"
+          "status": "partial"
         }
       },
       "verification_status": "CI_PARTIAL"
@@ -64675,6 +64722,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "5f42ffe3af0eba308488239c248b9753864f337853bb22e4854e16744e0d5e50"
+    "sha256": "a6c35a26c25638d340f0b886c49d422873895083895ae7e2bc704a276c3fc15d"
   }
 }

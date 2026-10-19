@@ -23888,7 +23888,7 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "5f42ffe3af0eba308488239c248b9753864f337853bb22e4854e16744e0d5e50"
+    "sha256": "a6c35a26c25638d340f0b886c49d422873895083895ae7e2bc704a276c3fc15d"
   },
   "upstream_integrated_sha": "9188210c321b43a9047e0c0b0d8fe184a44d591c",
   "v05_release_ready": false
