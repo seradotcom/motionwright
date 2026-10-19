@@ -82,8 +82,22 @@ if (-not $inputControl.Current.IsEnabled -or
 }
 $Phase = 'INPUT_FOCUS'
 $inputControl.SetFocus()
-$Phase = 'TYPE_TITLE'
-[System.Windows.Forms.SendKeys]::SendWait($ProjectTitle)
+# Set text through the original native UI Automation Edit provider, not
+# SendKeys targeted from a background CI process (which can route key events
+# to the wrong foreground window). Never touch document/SQLite bytes directly.
+$Phase = 'INPUT_VALUE_PATTERN'
+$valuePattern = $inputControl.GetCurrentPattern(
+    [System.Windows.Automation.ValuePattern]::Pattern
+)
+if ($null -eq $valuePattern -or $valuePattern.Current.IsReadOnly) {
+    throw 'Original accessible project-title Edit lacks writable value pattern'
+}
+$Phase = 'INPUT_SET_VALUE'
+$valuePattern.SetValue($ProjectTitle)
+$Phase = 'INPUT_VALUE_READBACK'
+if ($valuePattern.Current.Value -cne $ProjectTitle) {
+    throw 'Original accessible Edit did not retain the requested project title'
+}
 $Phase = 'BUTTON_ENABLE'
 for ($attempt = 0; $attempt -lt 16; $attempt++) {
     $submitControl = $window.FindFirst($scope, $buttonCondition)
