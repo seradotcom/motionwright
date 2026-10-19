@@ -50,7 +50,7 @@ def verified_plan(path: Path, expected_sha: str) -> dict:
     if (
         plan.get("schema_version") != 4
         or plan.get("clock", {}).get("frame_count") != FRAMES
-        or plan.get("clock", {}).get("frame_rate") != {"num": FPS, "den": 1}
+        or plan.get("clock", {}).get("frame_rate") != {"num": str(FPS), "den": "1"}
         or plan.get("render_profile") != {
             "width": WIDTH, "height": HEIGHT, "frame_rate": FPS
         }
@@ -77,7 +77,7 @@ def verified_plan(path: Path, expected_sha: str) -> dict:
     # envelope. The single authored rectangle still proves the visible move.
     if len(nodes) != 1:
         raise AssertionError("120-frame source must have one original editable object")
-    if nodes[0].get("source_kind") != "Rectangle":
+    if nodes[0].get("source_kind") != "rectangle":
         raise AssertionError("source object is not the admitted rectangle")
     for node in nodes:
         if (
@@ -152,6 +152,10 @@ def assert_centroids(plan: dict, frames: dict[int, bytes]) -> list[dict]:
         if not (positions[0][0] - positions[1][0] > 4
                 and positions[1][0] - positions[2][0] > 4):
             raise AssertionError("decoded frames do not show the original moving-camera trajectory")
+        # The authored four-pixel camera Y move is ~1.32 decoded pixels.
+        # An X-only moving image must never satisfy the two-axis source contract.
+        if positions[0][1] - positions[-1][1] < 1.0:
+            raise AssertionError("decoded frames do not show independent vertical camera movement")
     return observations
 
 

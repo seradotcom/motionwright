@@ -15,7 +15,7 @@ import native_manim_camera_pixels as inspect
 def source() -> dict:
     return {
         "schema_version": 4,
-        "clock": {"frame_count": 120, "frame_rate": {"num": 30, "den": 1}},
+        "clock": {"frame_count": 120, "frame_rate": {"num": "30", "den": "1"}},
         "render_profile": {"width": 640, "height": 360, "frame_rate": 30},
         "reframe": {
             "component_version": 2, "duration_frames": 120,
@@ -25,7 +25,7 @@ def source() -> dict:
         "camera": {"center_x": 1000.0, "center_y": 544.0},
         "nodes": [
             {
-                "source_kind": "Rectangle", "node_id": "rect-uuid",
+                "source_kind": "rectangle", "node_id": "rect-uuid",
                 "x_px": 400.0, "y_px": 400.0,
                 "width_px": 220.0, "height_px": 120.0,
                 "fill_hex": "#86C8D1",
@@ -35,12 +35,14 @@ def source() -> dict:
     }
 
 
-def color_frames(plan: dict, still: bool = False) -> dict[int, bytes]:
+def color_frames(plan: dict, still: bool = False, horizontal_only: bool = False) -> dict[int, bytes]:
     frames = {}
     for frame in inspect.READBACK_SAMPLES:
         data = bytearray(inspect.FRAME_BYTES)
         for node in plan["nodes"]:
             cx, cy = inspect.frame_center(plan, node, 0 if still else frame)
+            if horizontal_only:
+                cy = inspect.frame_center(plan, node, 0)[1]
             rgb = bytes.fromhex(node["fill_hex"][1:])
             # A filled rectangle and square interior yield the same stable
             # source-color centroid as the physical large Manim shapes.
@@ -69,6 +71,13 @@ class CameraPixelReaderTests(unittest.TestCase):
         self.assertEqual(len(observations), 3)
         self.assertEqual({row["frame"] for row in observations}, {0, 60, 119})
         self.assertTrue(all(row["matched_color_pixels"] > 100 for row in observations))
+
+    def test_horizontal_only_motion_is_not_a_valid_vertical_camera_move(self):
+        plan = source()
+        # X changes as authored while the Y center is held at frame zero.
+        # The existing broad per-frame center tolerance must not mask this.
+        with self.assertRaisesRegex(AssertionError, "vertical camera movement"):
+            inspect.assert_centroids(plan, color_frames(plan, horizontal_only=True))
 
     def test_static_frames_with_valid_timestamps_do_not_pass_motion(self):
         plan = source()
@@ -102,6 +111,28 @@ class CameraPixelReaderTests(unittest.TestCase):
             path.write_bytes(raw + b"\n")
             with self.assertRaisesRegex(AssertionError, "SHA-256 mismatch"):
                 inspect.verified_plan(path, digest)
+
+    def test_numeric_rational_is_rejected_even_with_matching_source_digest(self):
+        # The native compiler emits canonical rational fields as decimal strings.
+        # Do not silently coerce another representation into an accepted source.
+        with tempfile.TemporaryDirectory() as folder:
+            plan = source()
+            plan["clock"]["frame_rate"] = {"num": 30, "den": 1}
+            raw = json.dumps(plan).encode("utf-8")
+            path = Path(folder) / "wrong-rational-shape.json"
+            path.write_bytes(raw)
+            with self.assertRaisesRegex(AssertionError, "120-frame camera contract"):
+                inspect.verified_plan(path, hashlib.sha256(raw).hexdigest())
+
+    def test_capitalized_rectangle_enum_is_rejected_even_with_matching_digest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = source()
+            plan["nodes"][0]["source_kind"] = "Rectangle"
+            raw = json.dumps(plan).encode("utf-8")
+            path = Path(folder) / "wrong-enum-shape.json"
+            path.write_bytes(raw)
+            with self.assertRaisesRegex(AssertionError, "admitted rectangle"):
+                inspect.verified_plan(path, hashlib.sha256(raw).hexdigest())
 
     def test_nonadmitted_camera_endpoints_rejected_even_with_a_matching_hash(self):
         with tempfile.TemporaryDirectory() as folder:
