@@ -25,6 +25,7 @@ import {
   canvasDraftScope, canvasFieldHasInput, canvasFieldIssue, canvasGroupIssue, canvasNumber,
   canvasSubmissionMatches, createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField, prepareCanvasSubmission,
   readCanvasRecoveries, reconcileCanvasDraft, releaseCanvasSubmission, resolveCanvasField, reviewCanvasContext, writeCanvasRecovery,
+  writeCanvasSessionPointer,
 } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasDraftGroup, CanvasRecoveryEntry, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 
@@ -167,7 +168,16 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       }
       writer.lastRaw = writeCanvasRecovery(window.localStorage, { schema: "motionwright.canvas-recovery/1", scope,
         writerId: writer.writerId, updatedAt: Date.now(), draft: canvasDraftHasWork(next) ? next : null }, writer.lastRaw);
-      try { window.sessionStorage.setItem(CANVAS_SESSION_PREFIX + scope, writer.writerId); } catch { /* The local copy is still durable. */ }
+      try { writeCanvasSessionPointer(window.sessionStorage, CANVAS_SESSION_PREFIX + scope, writer.writerId); }
+      catch (reason) {
+        // The durable record is not lost, but a reload cannot identify its
+        // window without the pointer. Do not grant a mutation until recovery
+        // has been confirmed; explicit Restore remains available.
+        if (mounted.current) setBackupError("Canvas input was saved locally but its session pointer could not be verified. "
+          + "Reload requires an explicit Restore from Local Canvas recovery copies. "
+          + (reason instanceof Error ? reason.message : String(reason)));
+        return false;
+      }
       if (mounted.current) setBackupError(null);
       return true;
     } catch (reason) {

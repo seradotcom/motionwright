@@ -781,3 +781,76 @@ test("lost reply after real Canvas commit cannot replay the already saved operat
     await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
   }
 });
+
+test("Canvas pointer readback is required before real-service commit and explicit reload restores draft", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    await page.evaluate(() => {
+      const state = window as Window & { __denyCanvasPointer?: boolean };
+      state.__denyCanvasPointer = true;
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key: string, raw: string) {
+        if (this === window.sessionStorage && key.startsWith("motionwright.canvas-session.v1:") && state.__denyCanvasPointer)
+          return;
+        return original.call(this, key, raw);
+      };
+    });
+    const authored = "  Draft surviving a silent session pointer failure  ";
+    await input(page, "text").fill(authored);
+    await expect(page.getByRole("alert", { name: "Canvas draft backup warning", exact: true }))
+      .toContainText("session pointer could not be verified");
+    await button(page, "Commit text").click();
+    expect(applyRequests(service)).toHaveLength(0);
+    expect(await service.project(initial.id)).toEqual(initial);
+    expect(await service.history(initial.id, initial.revision)).toEqual([]);
+    const copy = await page.evaluate((text) => {
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (!key?.startsWith("motionwright.canvas-draft.v1:")) continue;
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const value = JSON.parse(raw) as { writerId: string; draft: { fields: { text: { raw: string } } } | null };
+        if (value.draft?.fields.text.raw === text) return { writerId: value.writerId, key, raw };
+      }
+      return null;
+    }, authored);
+    expect(copy).not.toBeNull();
+    if (!copy) throw new Error("The local Canvas author copy was not retained.");
+    await page.reload();
+    await openCanvas(page, scene.name, target.name);
+    await expect(input(page, "text")).not.toHaveValue(authored);
+    await page.getByText("Local Canvas recovery copies", { exact: true }).click();
+    await button(page, "Restore Canvas draft " + copy.writerId).click();
+    await expect(input(page, "text")).toHaveValue(authored);
+    expect(applyRequests(service)).toHaveLength(0);
+    await button(page, "Commit text").click();
+    const final = await checkpoint(service, page, evidence, initial.id, initial.revision + 1,
+      "Restored local author input deliberately committed");
+    expect(storedNode(final, scene.id, target.id).text).toBe(authored);
+    const journal = await service.history(initial.id, initial.revision);
+    expect(journal).toHaveLength(1);
+    expect(journal[0].change.type).toBe("update_canvas_text");
+    expect(applyRequests(service)).toHaveLength(1);
+    await service.close(); await service.start();
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await revision(page, final.revision);
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id, initial.revision)).toEqual(journal);
+    expect(applyRequests(service)).toHaveLength(1);
+    evidence.observations.push({
+      label: "silent_pointer_failure_did_not_apply_and_explicit_restore_committed_once",
+      retainedWriter: copy.writerId, restoredText: authored, revision: final.revision,
+      originalApplyCount: 0, finalApplyCount: 1,
+    });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
