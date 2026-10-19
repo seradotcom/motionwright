@@ -2,17 +2,53 @@ name: V05 OTIO real media source interchange
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Select an OTIO verification scope; all remains the default.'
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - rust_media
+          - windows_paths
   pull_request:
     paths:
       - 'tooling/otio-media/**'
-      - 'crates/domain/examples/otio_real_media_fixture.rs'
+      - 'crates/domain/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.gitattributes'
+      - 'tooling/otio_ci_plan.py'
+      - 'tooling/tests/test_otio_ci_plan.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/source_policy.py'
+      - 'tooling/creative_status_policy.py'
+      - 'tooling/acceptance_policy.py'
       - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
       - '.github/workflows/v05-otio-real-media.yml'
   push:
     branches: ['main']
     paths:
       - 'tooling/otio-media/**'
-      - 'crates/domain/examples/otio_real_media_fixture.rs'
+      - 'crates/domain/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.gitattributes'
+      - 'tooling/otio_ci_plan.py'
+      - 'tooling/tests/test_otio_ci_plan.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/source_policy.py'
+      - 'tooling/creative_status_policy.py'
+      - 'tooling/acceptance_policy.py'
       - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
       - '.github/workflows/v05-otio-real-media.yml'
 
@@ -20,11 +56,73 @@ permissions:
   contents: read
 
 concurrency:
-  group: v05-otio-media-${{ github.ref }}
-  cancel-in-progress: true
+  group: v05-otio-media-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'automatic' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
+  otio-impact:
+    name: OTIO impact and fast contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      plan_id: ${{ steps.plan.outputs.plan_id }}
+      rust_media: ${{ steps.plan.outputs.rust_media }}
+      windows_paths: ${{ steps.plan.outputs.windows_paths }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OTIO_SCOPE: ${{ inputs.scope || 'all' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Always run source, acceptance and selector contracts
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/otio-ci-plan"
+          mkdir -p "$evidence"
+          python -I -B tooling/ci_test_runner.py \
+            --repo . \
+            --test-directory tooling/tests \
+            --pattern test_otio_ci_plan.py \
+            --mode both \
+            --require-complete \
+            --expected-source "$GITHUB_SHA" \
+            --timeout 120 \
+            --report "$evidence/selector-contracts.json"
+          python -B tooling/source_policy.py 2>&1 | tee "$evidence/source-policy.log"
+          python -B tooling/creative_status_policy.py 2>&1 | tee "$evidence/creative-policy.log"
+          python -B tooling/acceptance_policy.py 2>&1 | tee "$evidence/acceptance-policy.log"
+      - name: Bind impact to the actual checkout and original event
+        id: plan
+        run: |
+          set -euo pipefail
+          python -I -B tooling/otio_ci_plan.py \
+            --repo . \
+            --event-file "$GITHUB_EVENT_PATH" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --source-sha "$GITHUB_SHA" \
+            --scope "$OTIO_SCOPE" \
+            --output "$RUNNER_TEMP/otio-ci-plan/plan.json" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Preserve selection and all explicit omissions
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: otio-impact-plan-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/otio-ci-plan/
+          if-no-files-found: error
+          retention-days: 7
+
   verified-native-rust-otio-and-open-timeline-io:
+    needs: otio-impact
+    if: ${{ needs.otio-impact.result == 'success' && needs.otio-impact.outputs.rust_media == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -174,6 +272,8 @@ jobs:
           retention-days: 7
 
   verified-windows-junction-admission:
+    needs: otio-impact
+    if: ${{ needs.otio-impact.result == 'success' && needs.otio-impact.outputs.windows_paths == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
