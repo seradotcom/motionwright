@@ -920,3 +920,68 @@ test("authored Canvas style persists across two real revisions and reopen withou
     await retainEvidence(testInfo,[service],evidence,[()=>page.close()]);
   }
 });
+
+test("Canvas hierarchy retains parent and raw Z through two real revisions and a service restart", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    // The bootstrap fixture has one object. Author the second through the
+    // real Studio command, so both parent and child exist in SQLite.
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    initial = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "authored second Canvas object");
+    const other = sceneNamed(initial, scene.name).nodes[1];
+    await selectNode(page, target.name);
+    const beforeHierarchy = applyRequests(service).length;
+
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: other.id });
+    await page.getByLabel("Canvas z order", { exact: true }).fill("1e");
+    await expect(button(page, "Commit hierarchy")).toBeDisabled();
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue(other.id);
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("1e");
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue(other.id);
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("1e");
+    expect(applyRequests(service)).toHaveLength(beforeHierarchy);
+    expect(await service.project(initial.id)).toEqual(initial);
+
+    await page.getByLabel("Canvas z order", { exact: true }).fill("6");
+    await button(page, "Commit hierarchy").click();
+    const first = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "saved reparent and exact Z");
+    expect(storedNode(first, scene.id, target.id)).toMatchObject({
+      id: target.id, parent_id: other.id, z_index: 6, text: target.text, style: target.style,
+    });
+    expect((await service.history(initial.id,initial.revision)).map(event=>event.change.type))
+      .toEqual(["reparent_canvas_node"]);
+
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: "" });
+    await page.getByLabel("Canvas z order", { exact: true }).fill("9");
+    await button(page, "Commit hierarchy").click();
+    const final = await checkpoint(service, page, evidence, initial.id, initial.revision + 2, "saved scene root and later Z");
+    expect(storedNode(final, scene.id, target.id)).toMatchObject({
+      id: target.id, parent_id: null, z_index: 9, text: target.text, style: target.style,
+    });
+    const journal = await service.history(initial.id,initial.revision);
+    expect(journal.map(event=>event.revision)).toEqual([initial.revision+1,initial.revision+2]);
+    expect(journal.map(event=>event.change.type)).toEqual(["reparent_canvas_node","reparent_canvas_node"]);
+    expect(applyRequests(service)).toHaveLength(beforeHierarchy + 2);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name); await revision(page, final.revision);
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue("");
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("9");
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id,initial.revision)).toEqual(journal);
+    evidence.observations.push({ label: "hierarchy_two_revisions_full_reopen", finalRevision: final.revision,
+      originalNodeId: target.id, originalText: target.text, applyCount: beforeHierarchy + 2 });
+  } finally {
+    await retainEvidence(testInfo,[service],evidence,[()=>page.close()]);
+  }
+});

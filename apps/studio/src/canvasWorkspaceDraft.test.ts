@@ -485,7 +485,7 @@ describe("Canvas style uses one recoverable, revision-bound authoring session", 
     const scope = draft.scope, raw = JSON.stringify({schema:"motionwright.canvas-recovery/1",scope,writerId:"old",updatedAt:1,draft:legacy});
     const decoded = decodeCanvasRecovery(raw,scope,"old").draft!;
     const migrated = reconcileCanvasDraft(decoded,project);
-    expect(migrated.schema).toBe("motionwright.canvas-draft/2");
+    expect(migrated.schema).toBe("motionwright.canvas-draft/3");
     expect(migrated.fields.text.raw).toBe("Kept legacy content");
     expect(migrated.fields.x.raw).toBe("345");
     expect(migrated.fields.font_size.raw).toBe(String(project.scenes[0].nodes[0].style.font_size));
@@ -506,5 +506,114 @@ describe("Canvas style lock authority", () => {
     withNodeLock.scenes[0].nodes[0].property_locks.push("style");
     expect(canvasGroupIssue(draft,withNodeLock,"style")).toContain("lock");
     expect(draft.fields.fill.raw).toBe("#F7EAD7");
+  });
+});
+
+describe("Canvas parent and Z authoring uses the same persistent revision-scoped draft", () => {
+  it("retains parent and exact Z input through ten independent human text revisions", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject), scene = project.scenes[0];
+    const node = scene.nodes[0], parentId = scene.nodes[1].id;
+    let draft = createCanvasDraft(project, scene.id, node.id);
+    draft = editCanvasField(draft,"parent_id",parentId);
+    draft = editCanvasField(draft,"z_index","8");
+    for(let i=0;i<10;i++){
+      project = structuredClone(project); project.revision++;
+      project.scenes[0].nodes[0].text = "Separate author note "+i;
+      draft = reconcileCanvasDraft(draft,project);
+    }
+    expect(draft.fields.parent_id.raw).toBe(parentId);
+    expect(draft.fields.z_index.raw).toBe("8");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toBeNull();
+    expect(prepareCanvasSubmission(draft,project,"hierarchy","hier-10").change).toMatchObject({
+      type:"reparent_canvas_node",parent_id:parentId,z_index:8,
+    });
+  });
+
+  it("retains incomplete Z raw and rejects invalid parents before any service operation", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject), scene = project.scenes[0], node = scene.nodes[0];
+    let draft = editCanvasField(createCanvasDraft(project,scene.id,node.id),"z_index","1e");
+    expect(draft.fields.z_index.raw).toBe("1e");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("Z order");
+    expect(() => prepareCanvasSubmission(draft,project,"hierarchy","bad")).toThrow();
+    draft = editCanvasField(draft,"z_index","2147483648");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("Z order");
+    draft = editCanvasField(draft,"z_index","4");
+    draft = editCanvasField(draft,"parent_id","not-a-saved-object");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("same saved scene");
+    expect(() => prepareCanvasSubmission(draft,project,"hierarchy","invalid-parent")).toThrow();
+  });
+
+  it("requires both parent and Z property locks to be clear for the coupled Rust command", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const source = structuredClone(fixtureProject), scene = source.scenes[0], node = scene.nodes[0];
+    for(const property of ["parent","order"] as const){
+      const locked = structuredClone(source);locked.scenes[0].nodes[0].property_locks.push(property);
+      const draft = editCanvasField(createCanvasDraft(locked,scene.id,node.id),"z_index","7");
+      expect(canvasGroupIssue(draft,locked,"hierarchy")).toContain("lock");
+      expect(() => prepareCanvasSubmission(draft,locked,"hierarchy","locked")).toThrow();
+    }
+    const sceneLocked = structuredClone(source);
+    sceneLocked.locks.push({id:"hier-lock",resource:"scene:"+scene.id,kind:"content",note:"Human review"});
+    const retained = editCanvasField(createCanvasDraft(sceneLocked,scene.id,node.id),"z_index","9");
+    expect(canvasGroupIssue(retained,sceneLocked,"hierarchy")).toContain("lock");
+    expect(retained.fields.z_index.raw).toBe("9");
+  });
+
+  it("acknowledges the saved reparent operation but keeps a later edited Z value", async () => {
+    const { canvasSubmissionMatches } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject),scene=project.scenes[0],first=scene.nodes[0];
+    let draft = createCanvasDraft(project,scene.id,first.id);
+    draft = editCanvasField(draft,"parent_id",scene.nodes[1].id);
+    draft = editCanvasField(draft,"z_index","6");
+    const attempted = prepareCanvasSubmission(draft,project,"hierarchy","hier-ack");
+    draft = editCanvasField(attempted.draft,"z_index","9");
+    const saved=structuredClone(project);saved.revision++;
+    if(attempted.change.type!=="reparent_canvas_node")throw new Error("Wrong command");
+    saved.scenes[0].nodes[0].parent_id=attempted.change.parent_id;
+    saved.scenes[0].nodes[0].z_index=attempted.change.z_index;
+    expect(canvasSubmissionMatches(saved,draft,attempted.submission)).toBe(true);
+    draft=reconcileCanvasDraft(draft,saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.z_index.raw).toBe("9");
+    expect(draft.fields.parent_id.raw).toBe(scene.nodes[1].id);
+    expect(prepareCanvasSubmission(draft,saved,"hierarchy","later").change).toMatchObject({z_index:9});
+  });
+
+  it("requires explicit choice on overlapping peer Z changes and rejects parent cycles", async () => {
+    const { canvasGroupIssue, canvasDraftConflicts, resolveCanvasField } = await import("./canvasWorkspaceDraft");
+    let project=structuredClone(fixtureProject),scene=project.scenes[0],first=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,first.id),"z_index","9");
+    project=structuredClone(project);project.revision++;project.scenes[0].nodes[0].z_index=6;
+    draft=reconcileCanvasDraft(draft,project);
+    expect(canvasDraftConflicts(draft,project).some(conflict=>conflict.field==="z_index")).toBe(true);
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("overlapping");
+    const reviewed=resolveCanvasField(draft,project,"z_index","draft");
+    expect(prepareCanvasSubmission(reviewed,project,"hierarchy","chosen").change).toMatchObject({z_index:9});
+    const cyclic=structuredClone(fixtureProject);
+    cyclic.scenes[0].nodes[1].parent_id=cyclic.scenes[0].nodes[0].id;
+    const candidate=editCanvasField(createCanvasDraft(cyclic,scene.id,first.id),"parent_id",cyclic.scenes[0].nodes[1].id);
+    expect(canvasGroupIssue(candidate,cyclic,"hierarchy")).toContain("descendant");
+  });
+
+  it("migrates valid v2 recovery without losing text, style or its author intent", async () => {
+    const { CANVAS_HIERARCHY_FIELDS } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],first=scene.nodes[0];
+    let draft=createCanvasDraft(project,scene.id,first.id);
+    draft=editCanvasField(draft,"text","Kept human copy");
+    draft=editCanvasField(draft,"fill","#F7EAD7");
+    const previous=structuredClone(draft) as typeof draft; previous.schema="motionwright.canvas-draft/2";
+    for (const field of CANVAS_HIERARCHY_FIELDS) delete (previous.fields as Partial<typeof draft.fields>)[field];
+    const raw=JSON.stringify({schema:"motionwright.canvas-recovery/1",scope:draft.scope,writerId:"v2-author",updatedAt:1,draft:previous});
+    const original=raw;
+    const decoded=decodeCanvasRecovery(raw,draft.scope,"v2-author").draft!;
+    const migrated=reconcileCanvasDraft(decoded,project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/3");
+    expect(migrated.fields.text.raw).toBe("Kept human copy");
+    expect(migrated.fields.fill.raw).toBe("#F7EAD7");
+    expect(migrated.fields.parent_id.raw).toBe(first.parent_id??"");
+    expect(migrated.fields.z_index.raw).toBe(String(first.z_index));
+    expect(raw).toBe(original);
   });
 });

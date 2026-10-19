@@ -387,7 +387,8 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
     </label>
     <button className="button full" type="button" onClick={() => void save("text")} disabled={pending || textIssue !== null} title={textIssue ?? undefined}>Commit text</button>
     <CanvasStructureEditor scene={scene} node={node} commit={commit} draft={draft}
-      edit={edit} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")} pending={pending}/>
+      edit={edit} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")}
+      saveHierarchy={() => void save("hierarchy")} hierarchyIssue={canvasGroupIssue(draft,project,"hierarchy")} pending={pending}/>
     {canvasDraftHasWork(draft) && <button className="button full" type="button" disabled={pending} onClick={() => {
       replace(createCanvasDraft(projectRef.current, scene.id, node.id));
       setError(null); setNotice("Discarded this object's local input. The saved project and other object drafts are unchanged.");

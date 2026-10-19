@@ -1,6 +1,6 @@
 import { Link2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { CANVAS_STYLE_FIELDS, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
+import { CANVAS_STYLE_FIELDS, CANVAS_HIERARCHY_FIELDS, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 import type {
   CanvasNode,
@@ -24,7 +24,7 @@ const finiteOr = (value: string, fallback: number): number => {
 export default function CanvasStructureEditor({
   scene,
   node,
-  commit, draft, edit, saveStyle, styleIssue, pending,
+  commit, draft, edit, saveStyle, styleIssue, saveHierarchy, hierarchyIssue, pending,
 }: {
   scene: Scene;
   node: CanvasNode;
@@ -33,16 +33,14 @@ export default function CanvasStructureEditor({
   edit: (field: CanvasDraftField, raw: string) => void;
   saveStyle: () => void;
   styleIssue: string | null;
+  saveHierarchy: () => void;
+  hierarchyIssue: string | null;
   pending: boolean;
 }) {
-  const [parentId, setParentId] = useState(node.parent_id ?? "");
-  const [zIndex, setZIndex] = useState(node.z_index);
   const [relationKind, setRelationKind] = useState<RelationKind>("align_left");
   const [relationTarget, setRelationTarget] = useState("");
 
   useEffect(() => {
-    setParentId(node.parent_id ?? "");
-    setZIndex(node.z_index);
     setRelationTarget("");
   }, [node.id, node.parent_id, node.z_index]);
 
@@ -51,8 +49,7 @@ export default function CanvasStructureEditor({
     [node.id, scene.nodes],
   );
   const styleDirty = CANVAS_STYLE_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
-  const hierarchyDirty =
-    (parentId || null) !== node.parent_id || zIndex !== node.z_index;
+  const hierarchyDirty = CANVAS_HIERARCHY_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
   const styleLocked = node.property_locks.includes("style");
   const parentLocked = node.property_locks.includes("parent");
   const orderLocked = node.property_locks.includes("order");
@@ -79,49 +76,34 @@ export default function CanvasStructureEditor({
     <div className="canvas-structure-editor">
       <div className="canvas-editor-section">
         <span className="field-label">Hierarchy</span>
+        <p className="semantic-footnote">Draft parent and Z order are recoverable; Commit hierarchy writes both fields atomically.</p>
         <label>
           <span>Parent</span>
-          <select
-            aria-label="Canvas parent"
-            value={parentId}
-            disabled={parentLocked}
-            onChange={(event) => setParentId(event.target.value)}
-          >
+          <select aria-label="Canvas parent" value={draft.fields.parent_id.raw}
+            disabled={pending || parentLocked || orderLocked}
+            aria-invalid={Boolean(canvasFieldIssue("parent_id", draft.fields.parent_id.raw))}
+            onChange={event => edit("parent_id", event.target.value)}>
             <option value="">Scene root</option>
-            {otherNodes.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
+            {draft.fields.parent_id.raw && !otherNodes.some(item => item.id === draft.fields.parent_id.raw)
+              && <option value={draft.fields.parent_id.raw}>Missing parent · review</option>}
+            {otherNodes.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
           </select>
         </label>
         <label>
           <span>Z order</span>
-          <input
-            aria-label="Canvas z order"
-            type="number"
-            step="1"
-            value={zIndex}
-            disabled={orderLocked}
-            onChange={(event) => setZIndex(Math.trunc(finiteOr(event.target.value, zIndex)))}
-          />
+          <input aria-label="Canvas z order" type="text" inputMode="numeric" role="spinbutton"
+            aria-valuemin={-2147483648} aria-valuemax={2147483647}
+            aria-valuenow={canvasFieldIssue("z_index",draft.fields.z_index.raw) ? undefined : Number(draft.fields.z_index.raw)}
+            aria-invalid={Boolean(canvasFieldIssue("z_index",draft.fields.z_index.raw))}
+            value={draft.fields.z_index.raw} disabled={pending || parentLocked || orderLocked}
+            onChange={event => edit("z_index",event.target.value)}/>
+          {canvasFieldIssue("z_index",draft.fields.z_index.raw) && <span className="production-error" role="status">
+            {canvasFieldIssue("z_index",draft.fields.z_index.raw)}</span>}
         </label>
-        <button
-          type="button"
-          className="button full"
-          disabled={!hierarchyDirty || parentLocked || orderLocked}
-          onClick={() =>
-            commit({
-              type: "reparent_canvas_node",
-              scene_id: scene.id,
-              node_id: node.id,
-              parent_id: parentId || null,
-              z_index: zIndex,
-            })
-          }
-        >
-          Commit hierarchy
-        </button>
+        <button type="button" className="button full"
+          disabled={!hierarchyDirty || pending || parentLocked || orderLocked || hierarchyIssue !== null}
+          title={hierarchyIssue ?? undefined} onClick={() => saveHierarchy()}>Commit hierarchy</button>
+        {hierarchyDirty && hierarchyIssue && <p className="semantic-footnote" role="status">{hierarchyIssue}</p>}
         <span className="semantic-footnote">
           Coordinate space: <strong>{node.coordinate_space.replaceAll("_", " ")}</strong>
         </span>
