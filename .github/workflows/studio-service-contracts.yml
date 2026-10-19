@@ -1,0 +1,207 @@
+name: Studio real service on Windows
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact product checkout; selection inputs must match the reviewed contract
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# verification-plan.yml calls this lane only after its always-on G0 jobs.
+# This workflow never retries a browser/service operation or cancels another run.
+jobs:
+  real-service-windows:
+    name: Windows real JSONL, SQLite, browser and closed-store readback
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      MW_SOURCE_SHA: ${{ inputs.source_sha }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Validate source and allocate isolated outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:MW_SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'An exact lowercase source commit is required' }
+          $root = Join-Path $env:RUNNER_TEMP 'studio-real-service'
+          if (Test-Path -LiteralPath $root) { throw 'Output already exists; execution must not be replayed' }
+          foreach ($name in @('', 'evidence', 'temp', 'cargo', 'rustup', 'target', 'npm-cache', 'browsers')) {
+            $path = if ($name) { Join-Path $root $name } else { $root }
+            New-Item -ItemType Directory -Path $path | Out-Null
+          }
+          $values = @{
+            MW_STUDIO_ROOT = $root
+            MW_STUDIO_EVIDENCE = (Join-Path $root 'evidence')
+            TEMP = (Join-Path $root 'temp')
+            TMP = (Join-Path $root 'temp')
+            CARGO_HOME = (Join-Path $root 'cargo')
+            RUSTUP_HOME = (Join-Path $root 'rustup')
+            CARGO_TARGET_DIR = (Join-Path $root 'target')
+            npm_config_cache = (Join-Path $root 'npm-cache')
+            PLAYWRIGHT_BROWSERS_PATH = (Join-Path $root 'browsers')
+          }
+          foreach ($entry in $values.GetEnumerator()) {
+            [IO.File]::AppendAllText($env:GITHUB_ENV, "$($entry.Key)=$($entry.Value)`n", [Text.UTF8Encoding]::new($false))
+          }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: verifier
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.16"
+      - name: Verify the Windows orchestration and custody controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B -E -s verifier/tooling/ci_test_runner.py --repo verifier `
+            --test-directory tooling/tests --pattern test_studio_service_ci.py `
+            --pattern test_studio_closed_store_readback.py --mode both `
+            --expected-source $env:GITHUB_SHA --require-complete `
+            --report "$env:MW_STUDIO_EVIDENCE/windows-infrastructure.json"
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { exit $code }
+      - name: Freeze product source and reviewed browser selection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S verifier/tooling/studio_service_ci.py freeze --repo product `
+            --source-sha $env:MW_SOURCE_SHA --contract verifier/tooling/studio_service_contracts.json `
+            --output "$env:MW_STUDIO_EVIDENCE/source-freeze.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath verifier/tooling/studio_service_contracts.json -Destination "$env:MW_STUDIO_EVIDENCE/selection-contract.json"
+      - name: Require product source and acceptance policy
+        shell: pwsh
+        working-directory: product
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B tooling/source_policy.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B tooling/acceptance_policy.py
+          exit $LASTEXITCODE
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Record tool versions and require Rust format
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S -c "import json,platform,subprocess,sys,os,pathlib; versions={x:subprocess.check_output(a,text=True).strip() for x,a in {'node':['node','--version'],'rustc':['rustc','--version','--verbose'],'cargo':['cargo','--version']}.items()}; versions.update(python=sys.version,python_executable=sys.executable,platform=platform.platform(),source=os.environ['MW_SOURCE_SHA']); pathlib.Path(os.environ['MW_STUDIO_EVIDENCE'],'tool-versions.json').write_text(json.dumps(versions,indent=2)+'\n',encoding='utf-8')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location -LiteralPath product
+          cargo fmt --all -- --check
+          exit $LASTEXITCODE
+      - name: Install locked browser dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $npmCli = Join-Path (Split-Path (Get-Command node).Source) 'node_modules/npm/bin/npm-cli.js'
+          if (!(Test-Path -LiteralPath $npmCli -PathType Leaf)) { throw 'The selected Node installation has no npm CLI' }
+          python -I -B -S verifier/tooling/studio_service_ci.py run `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --purpose dependencies `
+            --cwd "$env:GITHUB_WORKSPACE/product/apps/studio" `
+            --record "$env:MW_STUDIO_EVIDENCE/dependencies.json" --seconds 600 `
+            -- node $npmCli ci --no-audit --no-fund
+          exit $LASTEXITCODE
+      - name: Build the real service runner from its original dependency lock
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = "$env:GITHUB_WORKSPACE/verifier/tooling/studio_service_ci.py"
+          $freeze = "$env:MW_STUDIO_EVIDENCE/source-freeze.json"
+          $product = "$env:GITHUB_WORKSPACE/product"
+          Copy-Item -LiteralPath "$product/Cargo.lock" -Destination "$env:MW_STUDIO_EVIDENCE/Cargo.lock"
+          python -I -B -S $tool run --initial $freeze --purpose build --cwd $product `
+            --record "$env:MW_STUDIO_EVIDENCE/cargo-build.json" --seconds 1200 `
+            -- cargo build --locked -p motionwright-service --example studio_review_session
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -I -B -S $tool runner --initial $freeze --binary "$env:CARGO_TARGET_DIR/debug/examples/studio_review_session.exe" `
+            --build-stage "$env:MW_STUDIO_EVIDENCE/cargo-build.json" --lock "$product/Cargo.lock" `
+            --output "$env:MW_STUDIO_EVIDENCE/runner-identity.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath "$env:CARGO_TARGET_DIR/debug/examples/studio_review_session.exe" `
+            -Destination "$env:MW_STUDIO_EVIDENCE/studio_review_session.exe"
+      - name: List and require every selected real-service case without skips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S verifier/tooling/studio_service_ci.py browser --listing `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --contract verifier/tooling/studio_service_contracts.json `
+            --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" `
+            --record "$env:MW_STUDIO_EVIDENCE/browser-list.json" --report "$env:MW_STUDIO_EVIDENCE/browser-list-report.json" `
+            --output-dir "$env:MW_STUDIO_ROOT/list-artifacts" --service-tmpdir "$env:MW_STUDIO_ROOT/list-stores"
+          exit $LASTEXITCODE
+      - name: Install the browser selected by the frozen package lock
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S verifier/tooling/studio_service_ci.py run `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --purpose browser-install `
+            --cwd "$env:GITHUB_WORKSPACE/product/apps/studio" `
+            --record "$env:MW_STUDIO_EVIDENCE/browser-install.json" --seconds 600 `
+            -- node "$env:GITHUB_WORKSPACE/product/apps/studio/node_modules/@playwright/test/cli.js" install chromium
+          exit $LASTEXITCODE
+      - name: Execute the selected real service cases once
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S verifier/tooling/studio_service_ci.py browser `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --contract verifier/tooling/studio_service_contracts.json `
+            --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" `
+            --record "$env:MW_STUDIO_EVIDENCE/browser-run.json" --report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
+            --output-dir "$env:MW_STUDIO_EVIDENCE/browser-artifacts" --service-tmpdir "$env:MW_STUDIO_ROOT/live-stores"
+          exit $LASTEXITCODE
+      - name: Verify unchanged source, build and complete original browser outcomes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S verifier/tooling/studio_service_ci.py verify --repo product --source-sha $env:MW_SOURCE_SHA `
+            --contract verifier/tooling/studio_service_contracts.json --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" `
+            --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" --report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
+            --stage "$env:MW_STUDIO_EVIDENCE/browser-run.json" --list-report "$env:MW_STUDIO_EVIDENCE/browser-list-report.json" `
+            --list-stage "$env:MW_STUDIO_EVIDENCE/browser-list.json" --output "$env:MW_STUDIO_EVIDENCE/service-gate.json"
+          exit $LASTEXITCODE
+      - name: Archive closed stores and reopen fresh copies through the same real runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = Get-Content -LiteralPath "$env:MW_STUDIO_EVIDENCE/runner-identity.json" -Raw | ConvertFrom-Json
+          python -I -B -S verifier/tooling/studio_closed_store_readback.py `
+            --browser-artifacts "$env:MW_STUDIO_EVIDENCE/browser-artifacts" --browser-report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
+            --runner $identity.binary.path --expected-runner-sha256 $identity.binary.sha256 --source-commit $env:MW_SOURCE_SHA `
+            --output "$env:MW_STUDIO_EVIDENCE/closed-store-readback"
+          exit $LASTEXITCODE
+      - name: Retain an explicit final job status and original generated lock
+        if: always()
+        shell: pwsh
+        env:
+          OBSERVED_JOB_STATUS: ${{ job.status }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:MW_STUDIO_EVIDENCE) { throw 'No original evidence directory was allocated' }
+          python -I -B -S -c "import hashlib,json,os,pathlib,datetime; p=pathlib.Path(os.environ['MW_STUDIO_EVIDENCE']); files=[{'path':str(q.relative_to(p)).replace(chr(92),'/'),'bytes':q.stat().st_size,'sha256':hashlib.sha256(q.read_bytes()).hexdigest()} for q in sorted(p.rglob('*')) if q.is_file()]; r={'schema':'motionwright.studio-service-job/1','at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source_sha':os.environ['MW_SOURCE_SHA'],'verifier_sha':os.environ['GITHUB_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'observed_job_status':os.environ['OBSERVED_JOB_STATUS'],'original_files':files,'formal_verdict':None,'installed_tauri':False,'native_rendering':False,'human_acceptance':False,'automatic_retry':False}; f=(p/'job-status.json').open('x',encoding='utf-8'); f.write(json.dumps(r,indent=2)+'\n'); f.close()"
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: studio-service-windows-${{ inputs.source_sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ env.MW_STUDIO_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 14

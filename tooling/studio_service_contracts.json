@@ -1,0 +1,503 @@
+{
+  "schema": "motionwright.studio-service-selection/1",
+  "scope": "REAL_STUDIO_SERVICE_JSONL_SQLITE",
+  "reference_source_sha": "30e5666e526ed9ea3cc06b13a84f0d2cb4283b3e",
+  "reference_source_tree": "f205327330b9d7809e84cfe639b97613c4b63003",
+  "source_binding_policy": "Source hashes identify the reviewed test selection, configuration and JSONL runner inputs. Every execution also requires its own exact checkout, workflow context and original process receipts; the reference commit is not a PASS for another commit.",
+  "expected_cases": 89,
+  "required_browser_project": "chromium",
+  "required_service_runner_environment": "MOTIONWRIGHT_SERVICE_TEST_BIN",
+  "selectors": [
+    "tests/audio-draft-preservation.spec.ts",
+    "tests/brief-preservation.spec.ts",
+    "tests/brief-service.spec.ts",
+    "tests/canvas-draft-service.spec.ts",
+    "tests/caption-continuity-service.spec.ts",
+    "tests/delivery-profile-preservation.spec.ts",
+    "tests/delivery-recipe.spec.ts",
+    "tests/file-import-service.spec.ts",
+    "tests/project-lifecycle-service.spec.ts",
+    "tests/scoped-change-capture.spec.ts",
+    "tests/scoped-change-service.spec.ts",
+    "tests/project-mutation.spec.ts:813"
+  ],
+  "source_files": {
+    "Cargo.lock": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84",
+    "Cargo.toml": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0",
+    "apps/studio/package-lock.json": "e86192eba51121d2f94ef3abd8ad3b14933d9f4563d76d758f56bc404c708e1f",
+    "apps/studio/package.json": "d018bb850cea3d21f368bff5a014899df9bae43f3f4f21eb13b8ac7e59c50336",
+    "apps/studio/playwright.config.ts": "facf22ed7a17d6150f0bf78a9eeb4e86daed7bd746b7de59dfb1b84ea057d38c",
+    "apps/studio/tests/audio-draft-preservation.spec.ts": "55ceba87399d577218fd2b08fb4205c9e26f737d658ac4d3b8643d0ecb1a02b5",
+    "apps/studio/tests/brief-preservation.spec.ts": "2d322bd451981845c6fcbfeef8f347f609e4769bb0528e70779cd8ffe9c8ce44",
+    "apps/studio/tests/brief-service.spec.ts": "62c060e004ce61ababd55fddee9d9f58457766b820a41c5e18131e7c03636e40",
+    "apps/studio/tests/canvas-draft-service.spec.ts": "034a5f51daae8a20e6866cdec2ea8ad06af80f8e122777c3dc9eb6a97477f86e",
+    "apps/studio/tests/caption-continuity-service.spec.ts": "637e1268d0fa042f66658a3108a5aa73a7b02abce265d2a6d6a4b9b30bc19c99",
+    "apps/studio/tests/delivery-profile-preservation.spec.ts": "8fd5cd65cb4ae2c8d2afd05d5cee90b38f24416beaaf4441e575c4842f0e33b2",
+    "apps/studio/tests/delivery-recipe.spec.ts": "8ae1a43cb63ae58ac6ddc43ceb430ddd8f06d700f00ca8fd158fb3b74a4f92bb",
+    "apps/studio/tests/file-import-service.spec.ts": "50a8180e7c00e2bb66d66c88355e91ddb23db2f6e505445953127aeab74271d8",
+    "apps/studio/tests/project-lifecycle-service.spec.ts": "cc51c9bc00d1aa6e49a9b52f2ddefe0ea733c6ea8ed47e16f9a32f1491e7d6df",
+    "apps/studio/tests/project-mutation.spec.ts": "47dd54a9514fc72737301fd28a2bbc4fd5cf835466007066a88289308e42248f",
+    "apps/studio/tests/scoped-change-capture.spec.ts": "83eb6060b9f9763227abf5eaeafb829b7e1868c062aa602cd14e8819ecae6a39",
+    "apps/studio/tests/scoped-change-service.spec.ts": "da00e020939b9264b36405ca179dc879487c38462f8e4d46fe068467ede41698",
+    "apps/studio/tests/support/scopedChangeService.ts": "0b960034a9673c47baee77dfaa9ac23e7f34a613d3dff1156fca2bc60e1f187e",
+    "crates/service/Cargo.toml": "7f85f62079f85a9ba6078c42a949627b79b801e61d3368c9164f0008b73711c8",
+    "crates/service/examples/studio_review_session.rs": "f00cfea2f9fae9104ffe934668cc83bc434f1d8bc27c0fd5243d206635387af8",
+    "rust-toolchain.toml": "887f9be066a15585a2c583578e84b0fcb541126d81546276bad3d2ff00d61167"
+  },
+  "cases": [
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "three audio groups retain one another's drafts, rational timing and canonical revisions through reopen",
+      "line": 86
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "mix: a late real reply retains Old → Sent → Old, then the next revision saves that intent",
+      "line": 107
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "transcript: a late real reply retains Old → Sent → Old, then the next revision saves that intent",
+      "line": 107
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "cue: a late real reply retains Old → Sent → Old, then the next revision saves that intent",
+      "line": 107
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "real CAS rejection, reload and per-field conflict choices preserve other input and keyboard focus",
+      "line": 121
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "new transcript and cue forms clear only confirmed values while retaining later typing",
+      "line": 154
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "invalid numbers never dispatch and content locks permit recovery without mutation",
+      "line": 173
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "corrupt owned recovery is preserved until explicit discard; newer typing survives the discard",
+      "line": 187
+    },
+    {
+      "file": "audio-draft-preservation.spec.ts",
+      "title": "a removed cue retains its human draft as a readable recovery copy and never recreates itself",
+      "line": 203
+    },
+    {
+      "file": "brief-preservation.spec.ts",
+      "title": "six real revisions preserve an authored plan, pending text, source bytes and full service reopen",
+      "line": 87
+    },
+    {
+      "file": "brief-preservation.spec.ts",
+      "title": "a newly saved brief seeds the real initial plan without overwriting a later authored plan",
+      "line": 233
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "saving the title or brief commits only that group and conserves the other raw inputs",
+      "line": 134
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "a late real reply preserves newer typing and reload never replays an already committed brief",
+      "line": 196
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "returning an in-flight field to its original value survives navigation and reload until explicitly saved",
+      "line": 266
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "a real brief validation failure preserves every input through reload and correction",
+      "line": 347
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "two real clients resolve only the overlapping brief field by keeping the saved value",
+      "line": 393
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "two real clients resolve only the overlapping brief field by keeping the draft value",
+      "line": 393
+    },
+    {
+      "file": "brief-service.spec.ts",
+      "title": "reopening revokes a real grant without changing the revision or clearing the refused brief",
+      "line": 472
+    },
+    {
+      "file": "canvas-draft-service.spec.ts",
+      "title": "an empty library reaches thirteen authored revisions while object, scene and workspace drafts survive a process restart",
+      "line": 180
+    },
+    {
+      "file": "canvas-draft-service.spec.ts",
+      "title": "an independent peer wins overlapping copy while disjoint geometry and locked drafts are preserved",
+      "line": 347
+    },
+    {
+      "file": "canvas-draft-service.spec.ts",
+      "title": "a late real transform acknowledgement preserves newer invalid raw input without replay after reload",
+      "line": 465
+    },
+    {
+      "file": "canvas-draft-service.spec.ts",
+      "title": "another tab restores foreign input explicitly and changed recovery bytes cannot be overwritten or discarded from an older view",
+      "line": 566
+    },
+    {
+      "file": "caption-continuity-service.spec.ts",
+      "title": "fourteen authored revisions retain multi-frame caption spans, output variants and exact sidecars through portable reopen",
+      "line": 93
+    },
+    {
+      "file": "caption-continuity-service.spec.ts",
+      "title": "caption export refuses stale authority, replay, unknown alignment and existing destinations without a project mutation",
+      "line": 211
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "raw fields survive A-B-A, an unrelated real revision, in-app reopen and browser reload without a profile write",
+      "line": 144
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a delayed real save preserves later A input and selected B, then only an explicit valid save reaches SQLite",
+      "line": 182
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "an actual stale CAS refusal preserves sent and later raw input without retry before explicit conflict review",
+      "line": 229
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "an unreadable local recovery copy stays intact while later input is kept and only explicit discard permits saving",
+      "line": 270
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a newly created output profile does not replace the active draft when its real response arrives late",
+      "line": 298
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a real profile Save stops before its grant when recovery becomes blocked: changed-before-save",
+      "line": 338
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a real profile Save stops before its grant when recovery becomes blocked: readback-differs",
+      "line": 338
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "an unknown own copy blocks actual Save until explicit reading proves absence and preserves the later raw",
+      "line": 399
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a known quota warning still permits one explicit real Save without changing the authored raw",
+      "line": 459
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "custom cut stays empty until an explicit full-sequence choice across reload and real revisions",
+      "line": 497
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a custom cut typed empty after a real save stays empty through ACK, reload and a peer full-sequence conflict",
+      "line": 556
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a locally empty cut does not adopt a peer custom list and reviews repeated saved cuts without losing other raw input",
+      "line": 603
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a draft whose profile was removed remains readable and downloadable, then editable after repeated revisions restore that exact profile",
+      "line": 661
+    },
+    {
+      "file": "delivery-profile-preservation.spec.ts",
+      "title": "a removed profile keeps corrupt recovery bytes and later window input as separate downloadable snapshots without a profile write",
+      "line": 719
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "two profiles retain both canonical groups through explicit saves, clear and fresh-process reopen",
+      "line": 301
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "a committed reply held across navigation preserves Sent then Old until explicit conflict resolution",
+      "line": 358
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "typing across Film profile and mix scopes during a real save retains every unsent input",
+      "line": 395
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "two real clients reject a stale save and resolve only the overlapping field with keep saved",
+      "line": 432
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "two real clients reject a stale save and resolve only the overlapping field with keep draft",
+      "line": 432
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "invalid numeric raw survives a real reload and only corrected values reach the service",
+      "line": 485
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "a full recovery budget warns and preserves memory while an explicit service save remains available",
+      "line": 514
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "an unreadable own copy is retained until explicit discard without losing newer typed input",
+      "line": 542
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "a new window with copied session storage offers another window's draft only by explicit recovery",
+      "line": 569
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "project content locks and a real revoked grant reject writes while preserving retryable inputs",
+      "line": 596
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "Film and PCM guards use saved options and expose unsupported combinations without pretending a native result",
+      "line": 633
+    },
+    {
+      "file": "delivery-recipe.spec.ts",
+      "title": "portable export and verified import preserve both recipes and CAS while isolating the new generation's drafts",
+      "line": 734
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "lost voice acknowledgement preserves ten later edits, then two takes remain editable across reopen",
+      "line": 161
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "lost asset acknowledgement recovers its original bytes and identity after later canvas and narrative revisions",
+      "line": 258
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "invalid audio has no partial project mutation and a read-only missing receipt never triggers a retry",
+      "line": 293
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "a failed local backup stops import before grants, while relative paths fail before any retention",
+      "line": 340
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "changed intent and a foreign generation remain visible, downloadable and unable to import or recover",
+      "line": 363
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "peer recovery copies cannot change a pending removal identity and long details remain keyboard accessible",
+      "line": 399
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "real portable handoff preserves authored audio, isolates an old import request and admits a new take after explicit review",
+      "line": 474
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "confirmed voice import stays successful when recovery cleanup is denied, including explicit readback after reopen",
+      "line": 595
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "confirmed recovery keeps ten later revisions when local cleanup is denied and never repeats import",
+      "line": 638
+    },
+    {
+      "file": "file-import-service.spec.ts",
+      "title": "a different window's recovery bytes survive an acknowledged import without inheriting its confirmation",
+      "line": 673
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "empty library creates exact intent, edits Brief and Canvas through several revisions and reopens the same decisions",
+      "line": 73
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "lost creation response retains one original request and readonly recovery opens later saved revisions",
+      "line": 105
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "typing a second project title during first creation survives the empty-to-editor transition",
+      "line": 132
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "unknown retained creation is checked repeatedly without issuing a new key, grant or project",
+      "line": 151
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "a removed local request during a real pending grant prevents creation",
+      "line": 165
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "a changed local request during a real pending grant prevents creation",
+      "line": 165
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "a unreadable local request during a real pending grant prevents creation",
+      "line": 165
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "a missing remembered identity keeps the library available and never opens another project implicitly",
+      "line": 206
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "invalid UTF-8 length and unavailable continuity storage refuse creation while healthy projects still open",
+      "line": 226
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "a corrupt creation record can be downloaded intact and reviewed without blocking an existing project",
+      "line": 254
+    },
+    {
+      "file": "project-lifecycle-service.spec.ts",
+      "title": "real pagination preserves all identities and library keyboard focus survives repeated opens",
+      "line": 277
+    },
+    {
+      "file": "project-mutation.spec.ts",
+      "title": "real asset import already persisted holds the Brief latch until its real reply is published",
+      "line": 969
+    },
+    {
+      "file": "project-mutation.spec.ts",
+      "title": "real voice import already persisted holds the Brief latch until its real reply is published",
+      "line": 969
+    },
+    {
+      "file": "project-mutation.spec.ts",
+      "title": "real import grants reject missing authority, path/effect/scope/generation mismatches, stale sources and reopen replay",
+      "line": 1101
+    },
+    {
+      "file": "project-mutation.spec.ts",
+      "title": "real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit",
+      "line": 1166
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a middle journal loss in an isolated SQLite copy cannot receive a complete oracle",
+      "line": 49
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a tail journal loss in an isolated SQLite copy cannot receive a complete oracle",
+      "line": 49
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a all journal loss in an isolated SQLite copy cannot receive a complete oracle",
+      "line": 49
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a foreign_identity project row cannot redirect reads or mutations and healthy projects remain usable",
+      "line": 87
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a invalid_json project row cannot redirect reads or mutations and healthy projects remain usable",
+      "line": 87
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "complete capture includes every file and a paginated full oracle after all known peers close",
+      "line": 139
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "pending at close remains tainted despite exit zero and a later clean restart",
+      "line": 184
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a timed out real response followed by exit zero never becomes clean capture evidence",
+      "line": 210
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a real stdin transport error is permanent even when EOF lets the process exit zero",
+      "line": 230
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "a broken response pipe records the real nonzero exit and vetoes capture",
+      "line": 247
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "an unobserved process close cannot be promoted to proof by a later timeout",
+      "line": 266
+    },
+    {
+      "file": "scoped-change-capture.spec.ts",
+      "title": "finalization attempts every peer and retains every outcome when preparation and one close fail",
+      "line": 288
+    },
+    {
+      "file": "scoped-change-service.spec.ts",
+      "title": "Studio previews, commits, reopens, undoes and redoes against the real persisted service",
+      "line": 50
+    },
+    {
+      "file": "scoped-change-service.spec.ts",
+      "title": "two Studio clients reject a stale commit and let the author resolve only the overlapping property",
+      "line": 168
+    }
+  ],
+  "scope_limits": {
+    "requires_real_service_runner": true,
+    "mock_transport_fallback_allowed": false,
+    "installed_tauri_verified": false,
+    "native_rendering_verified": false,
+    "closed_store_archive_reopen_verified": false,
+    "human_acceptance": false,
+    "release_authorized": false
+  }
+}
