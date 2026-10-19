@@ -124,11 +124,31 @@ impl Store {
         // Capture and validate every member before publishing even the first
         // member. A path can change after the earlier inspection.
         let staged = self.capture_bundle_blobs(source, manifest)?;
+        // Reject pre-existing destination collisions across the entire
+        // captured set BEFORE publishing its first content-addressed member.
+        // Never delete a foreign or pre-existing blob on failure.
+        self.preflight_bundle_blob_destinations(&staged)?;
         for captured in &staged {
             self.publish_file_import(captured)?;
         }
         drop(staged);
         self.import_project(&manifest.backup)
+    }
+
+    fn preflight_bundle_blob_destinations(&self, staged: &[StagedFileImport]) -> Result<()> {
+        for captured in staged {
+            let expected = captured.descriptor();
+            match self.checked_existing_blob_path(&expected.sha256) {
+                Ok(path) => {
+                    if hash_portable_file(&path, expected.size_bytes)? != *expected {
+                        return Err(StorageError::InvalidBlobDigest);
+                    }
+                }
+                Err(StorageError::BlobMissing { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     fn capture_bundle_blobs(
@@ -721,6 +741,78 @@ mod tests {
         assert_eq!(source.load_project(original.id).unwrap(), advanced);
         let actual = load_bundle_manifest(&destination).unwrap();
         assert_eq!(actual, exported);
+    }
+
+    #[test]
+    fn existing_later_cas_conflict_must_not_publish_unreferenced_first_member() {
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        assert_eq!(manifest.blobs.len(), 2);
+        let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        let before = snapshot(&target);
+        let first = &manifest.blobs[0];
+        let last = &manifest.blobs[1];
+        let foreign_path = target
+            .blob_root()
+            .join("sha256")
+            .join(&last.sha256[..2])
+            .join(&last.sha256);
+        fs::create_dir_all(foreign_path.parent().unwrap()).unwrap();
+        let foreign_original = b"foreign pre-existing CAS leaf; preserve";
+        fs::write(&foreign_path, foreign_original).unwrap();
+
+        let outcome = target.import_project_bundle_inspected(&bundle, &inspected.fingerprint);
+        assert!(
+            outcome.is_err(),
+            "conflicting destination CAS must fail closed"
+        );
+        assert_eq!(
+            snapshot(&target),
+            before,
+            "project/journal/receipts changed"
+        );
+        assert!(target.list_projects(10).unwrap().is_empty());
+        assert_eq!(fs::read(&foreign_path).unwrap(), foreign_original);
+        assert!(
+            target.verify_blob(&first.sha256).is_err(),
+            "an earlier blob was published although the entire project import failed"
+        );
+        let stage = target.blob_root().join(".staging");
+        assert!(
+            fs::read_dir(stage).unwrap().next().is_none(),
+            "private captures leaked after failed import"
+        );
+    }
+
+    #[test]
+    fn verified_matching_existing_cas_still_allows_complete_bundle_import() {
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let first = &manifest.blobs[0];
+        let prior = fs::read(bundle.join(&first.relative_path)).unwrap();
+        let descriptor = target
+            .ingest_blob_file(bundle.join(&first.relative_path))
+            .unwrap();
+        assert_eq!(descriptor.sha256, first.sha256);
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        let imported = target
+            .import_project_bundle_inspected(&bundle, &inspected.fingerprint)
+            .unwrap();
+        assert_eq!(imported.id, manifest.backup.project.id);
+        assert_ne!(imported.generation, manifest.backup.project.generation);
+        assert_eq!(target.read_blob(&first.sha256, 4096).unwrap(), prior);
+        for blob in &manifest.blobs {
+            assert_eq!(
+                target.read_blob(&blob.sha256, 4096).unwrap(),
+                fs::read(bundle.join(&blob.relative_path)).unwrap()
+            );
+        }
     }
 
     #[test]
