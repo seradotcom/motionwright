@@ -140,6 +140,17 @@ class WindowsCandidateUnitTests(unittest.TestCase):
 
     def test_accessible_native_action_must_be_one_confirmed_invocation(self):
         from unittest.mock import Mock
+        if os.name != "nt":
+            # A Linux CI job must prove the Windows native UI transport is
+            # refused before subprocess. Do not forge os.name or weaken the
+            # real disposable-Windows guard to obtain a green test.
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(
+                windows.subprocess, "run",
+            ) as call:
+                with self.assertRaisesRegex(windows.ColdStartError, "restricted"):
+                    windows._create_first_project_in_native_window(12345)
+            call.assert_not_called()
+            return
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(
             windows.subprocess, "run",
             return_value=Mock(returncode=0, stdout="VISIBLE_PROJECT_CREATE_ACTIVATED\n"),
