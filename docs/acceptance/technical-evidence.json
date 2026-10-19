@@ -18935,6 +18935,80 @@
           "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
         }
       ]
+    },
+    {
+      "artifact_scope": "Original CI observations, exact Python test-body excerpts, original source inputs and assertions.",
+      "artifacts": [
+        {
+          "member": "notrun-original-5c42.json",
+          "member_sha256": "84b10f5ad497164b5fc6dec02aa67e2c94935fdd2eb63a60baf0e80d29bea2c3",
+          "path": "docs/acceptance/evidence/gate-notrun-main-5c42c90d.zip",
+          "sha256": "53e0af29b067603e47746fe3144ad10d62eae02503042840671b8a2ac0764bd7"
+        }
+      ],
+      "assertions": [
+        "Original matching source input leaves all 60 unexecuted v0.1 acceptance scenarios NOT_RUN, with PASS=0.",
+        "An unreviewed synthetic session cannot be promoted to PASS.",
+        "v0.5 creative requirement release status cannot be promoted merely by setting a boolean."
+      ],
+      "complete_criterion_ids": [
+        "CR-FOUND-08#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-FOUND-08#/statement",
+        "CR-FOUND-08#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "d7b11b15f13dd7940888367b874548abd484d39f448e26c8ccde2fce7009f47a"
+        },
+        {
+          "path": "tooling/tests/test_acceptance_session.py",
+          "sha256": "1be352e72fd2219a5449b8e3e01e795ca09f2951635ca8cb4a6980490dd7ce10"
+        },
+        {
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 117903232560,
+        "kind": "synthetic",
+        "passed": 3,
+        "profile": "a5-source-and-history-fixtures",
+        "run_id": 39204155180,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39204155180/job/117903232560"
+      },
+      "id": "unexecuted-gate-negative-main-5c42",
+      "limitations": [
+        "Completes only the explicit gate-without-execution negative, not complete resource/profile bookkeeping or installed acceptance.",
+        "The actual source job uses synthetic first-party fixture tests; no human identity is authenticated."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "5c42c90d011b158d6fc47edd055fa0a9c225c018",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "tooling/acceptance_policy.py",
+          "sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e"
+        },
+        {
+          "path": "tooling/acceptance_session.py",
+          "sha256": "94c3d737f65fce00bc3afb20d469b6f614df216d74cb0ebecb4b70ccf0a19ba0"
+        },
+        {
+          "path": "tooling/creative_status_policy.py",
+          "sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -23292,6 +23366,49 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "5d927b28a646e122415e26c8472872d75b7a7838cce5346b29d1a5fdb0e5e524"
+    },
+    {
+      "criterion_id": "CR-FOUND-08#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "unexecuted-gate-negative-main-5c42": "56b7e8d8ed008886f35ba265509cf0627ab031d00742f55b30c9b1acfc49b0b0"
+      },
+      "id": "technical-cr-found-08-gate-negative-5c42",
+      "limitations": [
+        "Only the one original negative field is closed. All full acceptance cases and resource/profile-wide state proofs remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "The exact main CI job executed matching clean checkout intake and confirmed all unexecuted cases NOT_RUN.",
+          "evidence_ids": [
+            "unexecuted-gate-negative-main-5c42"
+          ],
+          "id": "unexecuted-gate-remains-not-run",
+          "status": "pass"
+        },
+        {
+          "basis": "The original CI fixture asserts PASS=0 and the creative policy rejects automatic release promotion.",
+          "evidence_ids": [
+            "unexecuted-gate-negative-main-5c42"
+          ],
+          "id": "no-automatic-pass",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "5b44003bdf38b53e9a1bdff3f83396efcf02f9899c7bfd61a5d12fe2c9bcea1f",
+      "reviewed_at_utc": "2026-10-19T06:07:53.342388+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-direct-source-policy-test-body-review-5c42"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "5c42c90d011b158d6fc47edd055fa0a9c225c018",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "4d61355dcc1f41024d4772f37a5c0874a0fa81aee0820ce284cdce48746f848f"
     }
   ],
   "verification_profiles": {
@@ -23345,6 +23462,21 @@
         "missing_reference_in_original_artifact": {
           "execution_profiles": [
             "otio-h264-source-missing-reference"
+          ]
+        }
+      },
+      "schema_version": 1
+    },
+    "CR-FOUND-08#/acceptance_criterion": {
+      "obligations": {
+        "no-automatic-pass": {
+          "execution_profiles": [
+            "a5-source-and-history-fixtures"
+          ]
+        },
+        "unexecuted-gate-remains-not-run": {
+          "execution_profiles": [
+            "a5-source-and-history-fixtures"
           ]
         }
       },

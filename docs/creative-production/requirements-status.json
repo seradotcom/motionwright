@@ -5796,7 +5796,7 @@
       "complete_requirement_acceptance": "NOT_COMPLETED",
       "id": "MW05-E08-01",
       "implementation": "partial",
-      "implemented_scope": "Source-digest and revision-bound authored music grids, exact rational single-cut snapping, and newly bounded 2â€“16 scene beat conformance as one validated Semwright Native SDK/SQLite CAS revision. Changed/downstream scene starts, local keyframes, timing-locked outputs, source digest and fixed global audio markers are reviewed before mutation; no automatic beat detection or audio retiming is claimed.",
+      "implemented_scope": "Source-digest and revision-bound authored music grids, exact rational single-cut snapping, and newly bounded 2Ã¢â‚¬â€œ16 scene beat conformance as one validated Semwright Native SDK/SQLite CAS revision. Changed/downstream scene starts, local keyframes, timing-locked outputs, source digest and fixed global audio markers are reviewed before mutation; no automatic beat detection or audio retiming is claimed.",
       "remaining_scope": "Real rights-admitted automatic beat/onset analysis, full-film musical selection beyond 16 explicitly mapped cuts, soundtrack time-stretch, propagated/resynced audio cues and transcripts, sample-accurate export and independent human audiovisual acceptance remain open.",
       "source_paths": [
         "crates/domain/src/production_design.rs",
@@ -11216,7 +11216,7 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "c63e1b1d90231eb07bf327062ad8e63cc530b49b7a08ecc3f80fdbb26fb52fc3"
+    "sha256": "44a09ed35fdc27d9800e9aebb8861190c370ac8dc94ee0e0697cc39d76f19894"
   },
   "upstream_integrated_sha": "5c42c90d011b158d6fc47edd055fa0a9c225c018",
   "v05_release_ready": false

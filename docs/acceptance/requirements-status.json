@@ -1026,6 +1026,38 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T05:46:59.286652+00:00"
+        },
+        {
+          "prior_criteria": [
+            {
+              "evidence_ids": [],
+              "id": "CR-FOUND-08#/statement",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "82d93dd92b7408bd4b7c97b38c81fd9c9b5ed8a85856651068c3b8642701630f",
+              "status": "not_run"
+            },
+            {
+              "evidence_ids": [],
+              "id": "CR-FOUND-08#/acceptance_criterion",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "4d61355dcc1f41024d4772f37a5c0874a0fa81aee0820ce284cdce48746f848f",
+              "status": "not_run"
+            }
+          ],
+          "prior_technical_status": "not_run",
+          "reason": "Original CI rejection of unexecuted-gate promotion admitted for the exact negative field; complete resource/profile scheme remains open.",
+          "reviewed_at_utc": "2026-10-19T06:07:53.342388+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "5c42c90d011b158d6fc47edd055fa0a9c225c018",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "evidence": [
@@ -1039,7 +1071,7 @@
       "source_record_sha256": "1c87c02db717374e824787ca3fd37a58e386a7c9596c81fdcfc5a9c22ff72587",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Original 5c42 synthetic policy job, not real installed acceptance.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -1047,31 +1079,36 @@
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
-            "CR-FOUND-08#/acceptance_criterion",
             "CR-FOUND-08#/statement"
           ],
           "status": "open"
         },
         "criteria": [
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "unexecuted-gate-negative-main-5c42"
+            ],
             "id": "CR-FOUND-08#/statement",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "Demonstrate the specified, implemented and accepted status separation for every requested resource/profile in the installed product; the intake policies cover only selected fields."
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Source-bound policy distinguishes technical and contractual states, but does not exercise each installed resource/profile."
+            ],
             "source_clause_sha256": "82d93dd92b7408bd4b7c97b38c81fd9c9b5ed8a85856651068c3b8642701630f",
-            "status": "not_run"
+            "status": "partial"
           },
           {
-            "evidence_ids": [],
-            "id": "CR-FOUND-08#/acceptance_criterion",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "unexecuted-gate-negative-main-5c42"
             ],
-            "scope_notes": [],
+            "id": "CR-FOUND-08#/acceptance_criterion",
+            "missing_assertions": [],
+            "scope_notes": [
+              "Current main CI original source-policy job exercises NOT_RUN under valid source and rejects PASS without an execution."
+            ],
             "source_clause_sha256": "4d61355dcc1f41024d4772f37a5c0874a0fa81aee0820ce284cdce48746f848f",
-            "status": "not_run"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -1084,7 +1121,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "unexecuted-gate-negative-main-5c42"
+          ],
           "current_source": "5c42c90d011b158d6fc47edd055fa0a9c225c018",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
@@ -1097,7 +1136,7 @@
             "tooling/source_policy.py",
             ".github/workflows/ci.yml"
           ],
-          "status": "not_assessed"
+          "status": "partial"
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
@@ -1108,7 +1147,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "original_unexecuted_gate_current_CI_negative_only"
         },
         "schema_version": 1,
         "source": {
@@ -1117,9 +1156,13 @@
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "unexecuted-gate-negative-main-5c42"
+          ],
+          "execution_kinds": [
+            "synthetic"
+          ],
+          "status": "partial"
         }
       },
       "verification_status": "CI_PARTIAL"
@@ -30845,6 +30888,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "c63e1b1d90231eb07bf327062ad8e63cc530b49b7a08ecc3f80fdbb26fb52fc3"
+    "sha256": "44a09ed35fdc27d9800e9aebb8861190c370ac8dc94ee0e0697cc39d76f19894"
   }
 }
