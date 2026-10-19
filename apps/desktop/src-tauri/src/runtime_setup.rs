@@ -102,7 +102,7 @@ impl RuntimeConnectionRegistry {
         let bytes = match fs::symlink_metadata(&destination) {
             Ok(metadata) => {
                 if !metadata.is_file()
-                    || metadata.file_type().is_symlink()
+                    || is_link_or_reparse(&metadata)
                     || metadata.len() == 0
                     || metadata.len() > MAX_CONFIG_BYTES
                 {
@@ -168,10 +168,28 @@ impl RuntimeConnectionRegistry {
         }
         let destination = self.destination(project_id);
         match fs::symlink_metadata(&destination) {
-            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            Ok(metadata) if !metadata.is_file() || is_link_or_reparse(&metadata) => {
                 return Err("Previous Semwright connection reference is not a regular file".into());
             }
-            Ok(_) => {}
+            Ok(metadata) => {
+                if metadata.len() > MAX_CONFIG_BYTES {
+                    return Err("Previous Semwright connection reference is oversized".into());
+                }
+                let existing = fs::read(&destination)
+                    .map_err(|_| "Previous Semwright connection reference cannot be inspected")?;
+                if existing.len() as u64 > MAX_CONFIG_BYTES {
+                    return Err("Previous Semwright connection reference is oversized".into());
+                }
+                // A malformed legacy selection may be replaced deliberately,
+                // but an identifiable selection belonging to another project
+                // must never be overwritten merely because its filename matches.
+                if let Ok(saved) = serde_json::from_slice::<serde_json::Value>(&existing)
+                    && let Some(owner) = saved.get("project_id")
+                    && owner.as_str().and_then(|id| Uuid::parse_str(id).ok()) != Some(project_id)
+                {
+                    return Err("Previous Semwright connection belongs to another project".into());
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => {
                 return Err("Previous Semwright connection reference cannot be inspected".into());
@@ -216,7 +234,7 @@ impl RuntimeConnectionRegistry {
         self.validate_root()?;
         let destination = self.destination(project_id);
         match fs::symlink_metadata(&destination) {
-            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            Ok(metadata) if !metadata.is_file() || is_link_or_reparse(&metadata) => {
                 Err("Saved Semwright reference is not a regular file".into())
             }
             Ok(metadata) => {
