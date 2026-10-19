@@ -405,6 +405,62 @@ mod tests {
     }
 
     #[test]
+    fn selecting_new_connection_never_overwrites_foreign_project_record() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let other_project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let first = tmp.path().join("owner-selected.json");
+        let replacement = tmp.path().join("replacement-selected.json");
+        registry
+            .remember_verified(project, generation, &first)
+            .unwrap();
+        let path = registry.destination(project);
+        let legitimate = fs::read(&path).unwrap();
+
+        // Two different foreign records. The second is intentionally not a
+        // valid SavedConnectionReference, but still declares a distinct owner.
+        // Neither may be replaced just because the filename names our project.
+        for case in ["complete_foreign", "partial_foreign"] {
+            let foreign = if case == "complete_foreign" {
+                let mut payload: serde_json::Value = serde_json::from_slice(&legitimate).unwrap();
+                payload["project_id"] = serde_json::json!(other_project);
+                serde_json::to_vec(&payload).unwrap()
+            } else {
+                format!("{{\"project_id\":\"{other_project}\",\"foreign\":true}}").into_bytes()
+            };
+            fs::write(&path, &foreign).unwrap();
+            let outcome = registry.remember_verified(project, generation, &replacement);
+            assert!(outcome.is_err(), "foreign record was overwritten: {case}");
+            assert_eq!(fs::read(&path).unwrap(), foreign, "case={case}");
+            let mut entries: Vec<_> = fs::read_dir(&registry.root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            entries.sort();
+            assert_eq!(
+                entries,
+                vec![path.file_name().unwrap().to_os_string()],
+                "foreign replacement left private temporary files: {case}"
+            );
+        }
+
+        // A legitimate record is still replaceable, including after an
+        // independently authorized project-generation rotation.
+        fs::write(&path, legitimate).unwrap();
+        let next_generation = Uuid::now_v7();
+        registry
+            .remember_verified(project, next_generation, &replacement)
+            .unwrap();
+        assert_eq!(
+            registry.resolve(project, next_generation).unwrap(),
+            Some(replacement)
+        );
+        assert!(registry.resolve(project, generation).is_err());
+    }
+
+    #[test]
     fn clear_saved_rejects_corrupt_reference_without_deleting_bytes() {
         let tmp = TempDir::new().unwrap();
         let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
