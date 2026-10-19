@@ -232,8 +232,11 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       // Project acknowledges this input; a resolved promise is insufficient.
       if (mounted.current) observe(projectRef.current);
     } catch (reason) {
-      replace(releaseCanvasSubmission(session.current.draft, attempt.submission.id));
-      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason)) + " Your Canvas input has been kept.");
+      // A lost response is not evidence that the service rejected the command.
+      // Keep the exact submitted snapshot in recovery, blocking replay until
+      // the saved revision acknowledges it or the author reviews explicitly.
+      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
+        + " The Canvas result is unconfirmed. Reload to inspect the saved revision; no automatic retry will occur.");
     } finally {
       inFlight.current = false; if (mounted.current) setPending(false);
     }
