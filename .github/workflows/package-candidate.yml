@@ -1,16 +1,18 @@
 name: Candidate Packages
+run-name: Candidate packages / ${{ inputs.verification_scope || 'all' }} / ${{ github.sha }}
 
 on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Full candidate verification or isolated Windows unit contracts
+        description: Full candidate packages, Windows contracts, or Windows installed first-use
         required: true
         type: choice
         default: all
         options:
           - all
           - windows_contracts
+          - windows_installed
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -83,20 +85,24 @@ env:
 
 jobs:
   receipt-policy:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
+      - name: Quick source and conformance policies for every verification scope
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/acceptance_policy.py
+          python3 tooling/creative_status_policy.py
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -512,7 +518,7 @@ jobs:
           if-no-files-found: error
 
   macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed')
     needs: receipt-policy
     runs-on: macos-latest
     steps:
@@ -592,7 +598,7 @@ jobs:
   # on PRs, while this job is NOT_RUN until trusted dispatch or main push.
   attest-candidates:
     name: Candidate GH provenance (trusted runs only)
-    if: (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    if: (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'all') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
