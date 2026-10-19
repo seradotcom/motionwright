@@ -15,7 +15,7 @@ import native_manim_camera_pixels as inspect
 def source() -> dict:
     return {
         "schema_version": 4,
-        "clock": {"frame_count": 120, "frame_rate": {"num": 30, "den": 1}},
+        "clock": {"frame_count": 120, "frame_rate": {"num": "30", "den": "1"}},
         "render_profile": {"width": 640, "height": 360, "frame_rate": 30},
         "reframe": {
             "component_version": 2, "duration_frames": 120,
@@ -25,7 +25,7 @@ def source() -> dict:
         "camera": {"center_x": 1000.0, "center_y": 544.0},
         "nodes": [
             {
-                "source_kind": "Rectangle", "node_id": "rect-uuid",
+                "source_kind": "rectangle", "node_id": "rect-uuid",
                 "x_px": 400.0, "y_px": 400.0,
                 "width_px": 220.0, "height_px": 120.0,
                 "fill_hex": "#86C8D1",
@@ -54,6 +54,29 @@ def color_frames(plan: dict, still: bool = False) -> dict[int, bytes]:
     return frames
 
 
+
+def centroid_rows(plan: dict, *, freeze_x: bool = False,
+                  freeze_y: bool = False, reverse_y: bool = False) -> list[dict]:
+    """Quantized detector samples, not fabricated positive native evidence."""
+    node = plan["nodes"][0]
+    rows = []
+    for frame in range(inspect.FRAMES):
+        target = inspect.frame_center(plan, node, frame)
+        point = [
+            round(inspect.frame_center(plan, node, 0)[0]) if freeze_x else round(target[0]),
+            round(inspect.frame_center(plan, node, 0 if freeze_y else
+                inspect.FRAMES - 1 - frame if reverse_y else frame)[1])
+        ]
+        rows.append({
+            "frame": frame,
+            "node_id": node["node_id"],
+            "expected_center": list(target),
+            "observed_center": point,
+            "matched_color_pixels": 2000,
+        })
+    return rows
+
+
 class CameraPixelReaderTests(unittest.TestCase):
     def test_source_frame_positions_are_exactly_bound_to_camera_linear_move(self):
         plan = source()
@@ -74,6 +97,63 @@ class CameraPixelReaderTests(unittest.TestCase):
         plan = source()
         with self.assertRaisesRegex(AssertionError, "diverges"):
             inspect.assert_centroids(plan, color_frames(plan, still=True))
+
+
+    def test_all_120_centroids_measure_both_camera_axes(self):
+        proof = inspect.assert_two_axis_motion(source(), centroid_rows(source()))
+        self.assertTrue(proof["both_axes_moving_camera_verified_from_decoded_centroids"])
+        self.assertEqual(proof["frame_count"], 120)
+        self.assertAlmostEqual(
+            proof["expected_center_slope_px_per_frame"][0], -40 / 360, places=6
+        )
+        self.assertAlmostEqual(
+            proof["expected_center_slope_px_per_frame"][1], -4 / 360, places=6
+        )
+
+    def test_x_only_motion_cannot_prove_original_y_axis(self):
+        with self.assertRaisesRegex(AssertionError, "y_camera_motion_not_decoded"):
+            inspect.assert_two_axis_motion(source(), centroid_rows(source(), freeze_y=True))
+
+    def test_y_only_motion_cannot_prove_original_x_axis(self):
+        # This false camera first trips the stricter existing 3px position
+        # bound on X, before the two-axis slope gate needs to run.
+        with self.assertRaisesRegex(AssertionError, "original 3px position bound"):
+            inspect.assert_two_axis_motion(source(), centroid_rows(source(), freeze_x=True))
+
+    def test_reversed_y_motion_cannot_pass_frozen_y_position_tolerance(self):
+        with self.assertRaisesRegex(AssertionError, "y_camera_motion_not_decoded"):
+            inspect.assert_two_axis_motion(source(), centroid_rows(source(), reverse_y=True))
+
+    def test_missing_or_reordered_frames_cannot_prove_motion(self):
+        rows = centroid_rows(source())
+        with self.assertRaisesRegex(AssertionError, "missing, repeated or out of order"):
+            inspect.assert_two_axis_motion(source(), rows[:-1] + rows[118:119])
+
+    def test_swapped_source_id_cannot_prove_original_motion(self):
+        rows = centroid_rows(source())
+        rows[42]["node_id"] = "different-object-id"
+        with self.assertRaisesRegex(AssertionError, "identity changed"):
+            inspect.assert_two_axis_motion(source(), rows)
+
+    def test_full_rgb_wrong_frame_count_rejected_before_any_motion_claim(self):
+        with self.assertRaisesRegex(AssertionError, "120 full frames"):
+            inspect.assert_full_decoded_camera(source(), b"\x00" * 2000)
+
+    def test_native_rational_json_is_strings_not_numeric_or_renamed_shape(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for label, mutate in (
+                ("numeric-rational", lambda obj: obj["clock"].update(
+                    frame_rate={"num": 30, "den": 1})),
+                ("title-case-shape", lambda obj: obj["nodes"][0].update(
+                    source_kind="Rectangle")),
+            ):
+                plan = source()
+                mutate(plan)
+                raw = (json.dumps(plan, sort_keys=True) + "\n").encode()
+                path = Path(folder) / (label + ".json")
+                path.write_bytes(raw)
+                with self.assertRaises(AssertionError):
+                    inspect.verified_plan(path, hashlib.sha256(raw).hexdigest())
 
     def test_black_frames_are_not_equivalent_to_saved_source_colors(self):
         plan = source()
