@@ -249,6 +249,64 @@ class SourceIdentityTests(IsolatedGitFixture):
         self.assertEqual(value["tree"], self.contract["reference_source_tree"])
         self.assertEqual(len(value["source_inputs"]), 21)
 
+    def test_lf_checkout_matches_isolated_guard_without_accepting_changed_bytes(self):
+        # This unselected Cargo file models the source-wide status guard. Git
+        # performs the checkout conversion; no product source or process runs.
+        name = "tooling/v01-glib-backport-probe/Cargo.toml"
+        target = self.repo / name
+        original = b'[package]\nname = "synthetic-checkout-fixture"\nversion = "0.0.0"\n'
+        target.parent.mkdir(parents=True)
+        target.write_bytes(original)
+        self.git("add", name)
+        self.commit("add synthetic checkout-conversion input")
+        actual = self.git("rev-parse", "HEAD").decode().strip()
+        self.assertEqual(self.git("show", actual + ":" + name), original)
+        global_config = self.evidence / "synthetic-global.gitconfig"
+        global_config.write_bytes(b"[core]\n\tautocrlf = true\n")
+        checkout_env = {key: value for key, value in os.environ.items()
+                        if not key.upper().startswith("GIT_")}
+        checkout_env.update(GIT_CONFIG_GLOBAL=str(global_config), GIT_CONFIG_NOSYSTEM="1",
+                            GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull,
+                            GIT_OPTIONAL_LOCKS="0")
+
+        def checkout(env):
+            # Materialize a missing file, as in a fresh Actions checkout. An
+            # already stat-clean file can otherwise be left untouched by Git.
+            target.unlink()
+            result = subprocess.run(
+                ["git", "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
+                 "-C", str(self.repo), "checkout-index", "--force", "--", name],
+                env=env, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+
+        checkout(checkout_env)
+        self.assertEqual(target.read_bytes(), original.replace(b"\n", b"\r\n"))
+        # The guard intentionally drops the global profile. The resulting dirty
+        # source must fail, even though a CRLF-capable checkout wrote the bytes.
+        with patch.dict(os.environ, checkout_env, clear=True):
+            self.assertEqual(ci.clean_env()["GIT_CONFIG_GLOBAL"], os.devnull)
+            with self.assertRaisesRegex(ValueError, "changed, extra or ignored input"):
+                ci.source_snapshot(self.repo, actual, self.contract)
+
+        # These are the job-level settings, present before either checkout.
+        # They override the synthetic global policy only for materialization;
+        # the source guard must still discard inherited Git configuration.
+        checkout_env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf",
+                            GIT_CONFIG_VALUE_0="false")
+        checkout(checkout_env)
+        self.assertEqual(target.read_bytes(), original)
+        with patch.dict(os.environ, checkout_env, clear=True):
+            self.assertNotIn("GIT_CONFIG_COUNT", ci.clean_env())
+            observed = ci.source_snapshot(self.repo, actual, self.contract)
+            self.assertEqual(observed["sha"], actual)
+            self.assertEqual(observed["permitted_generated_paths"], [])
+            self.assertTrue(all(row["representation"] == "EXACT_GIT_BYTES"
+                                for row in observed["source_inputs"]))
+            target.write_bytes(original + b"# actual unreviewed source mutation\n")
+            with self.assertRaisesRegex(ValueError, "changed, extra or ignored input"):
+                ci.source_snapshot(self.repo, actual, self.contract)
+
     def test_prepared_state_requires_the_original_tracked_dependency_lock(self):
         observed = ci.source_snapshot(self.repo, self.source_sha, self.contract, prepared=True)
         self.assertIn("Cargo.lock", {row["path"] for row in observed["source_inputs"]})

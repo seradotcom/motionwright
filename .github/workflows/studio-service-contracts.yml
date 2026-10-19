@@ -20,6 +20,11 @@ jobs:
     timeout-minutes: 45
     env:
       MW_SOURCE_SHA: ${{ inputs.source_sha }}
+      # Materialize both checkouts with the same LF profile used by the
+      # isolated source guard, which deliberately ignores global Git config.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
       PYTHONDONTWRITEBYTECODE: "1"
       CARGO_BUILD_JOBS: "2"
       CARGO_TERM_COLOR: never
