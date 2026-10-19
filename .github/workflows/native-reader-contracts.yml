@@ -269,7 +269,10 @@ jobs:
               start = [i for i, line in enumerate(lines) if line == b'          # NATIVE_READER_HARNESS_BEGIN\n']
               end = [i for i, line in enumerate(lines) if line == b'          # NATIVE_READER_HARNESS_END\n']
               require(len(start) == len(end) == 1 and start[0] < end[0], 'Missing original embedded receipt helper')
-              require(b''.join(line[10:] for line in lines[start[0]:end[0] + 1]) == helper_bytes,
+              embedded_lines = lines[start[0]:end[0] + 1]
+              require(all(line == b'\n' or line.startswith(b'          ') for line in embedded_lines),
+                      'Invalid original embedded receipt helper indentation')
+              require(b''.join(line if line == b'\n' else line[10:] for line in embedded_lines) == helper_bytes,
                       'Prepared helper differs from the original workflow')
               groups = {name: {'mode': GROUPS[name]['mode'], 'suites': {
                   filename: {'minimum': minimum, 'ids': suite_catalog(filename, minimum)}
