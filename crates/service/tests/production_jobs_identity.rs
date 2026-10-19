@@ -563,3 +563,198 @@ fn duplicate_known_start_acknowledgements_remain_ambiguous_after_reopen() {
         assert_eq!(reopened.project(project.id).unwrap(), project);
     }
 }
+
+#[test]
+fn camera_start_with_standard_observations_survives_sqlite_reopen() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database = temporary.path().join("camera-jobs.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let project = service.create_project("Saved camera render").unwrap();
+    for (key, command, state, artifact) in [
+        (
+            "camera-1:start",
+            "driver.manim-community.camera.render.start",
+            "queued",
+            false,
+        ),
+        (
+            "camera-1:status:0",
+            "driver.manim-community.render.status",
+            "rendering",
+            false,
+        ),
+        (
+            "camera-1:result",
+            "driver.manim-community.render.result",
+            "succeeded",
+            true,
+        ),
+    ] {
+        complete(
+            &service,
+            &project,
+            key,
+            command,
+            "manim:camera-stable",
+            state,
+            (17, artifact),
+        );
+    }
+    let watermark = service.production_receipt_watermark(project.id).unwrap();
+    let jobs = service.production_jobs(project.id, 16).unwrap();
+    assert_eq!(watermark.count, 6);
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!(job.provider, "driver:manim-community");
+    assert_eq!(job.provider_generation, Some(17));
+    assert_eq!(job.generation, project.generation);
+    assert_eq!(job.revision, project.revision);
+    assert_eq!(job.root_request_id, "camera-1:start");
+    assert_eq!(job.job_ref, "manim:camera-stable");
+    assert_eq!(job.local_observations, 3);
+    assert_eq!(job.state, ProductionJobState::Succeeded);
+    assert!(job.artifact_available && job.result_available);
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(
+        service.production_receipt_watermark(project.id).unwrap(),
+        watermark
+    );
+    drop(service);
+
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(
+        reopened
+            .production_jobs_snapshot(project.id, &watermark)
+            .unwrap(),
+        jobs
+    );
+    assert_eq!(
+        reopened.production_receipt_watermark(project.id).unwrap(),
+        watermark
+    );
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+}
+
+#[test]
+fn camera_early_observations_and_ambiguous_ack_preserve_unknown_without_new_start_intent() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database = temporary.path().join("camera-ambiguous.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let project = service.create_project("Original camera intent").unwrap();
+    let start = "driver.manim-community.camera.render.start";
+    let acknowledgement = late_ack_payload("driver:manim-community", "queued", false);
+    put(
+        &service,
+        &project,
+        "camera-original:start",
+        start,
+        "dispatching",
+        json!({"mutation": true}),
+    );
+    for (key, command, state, artifact) in [
+        (
+            "camera-original:status:0",
+            "driver.manim-community.render.status",
+            "running",
+            false,
+        ),
+        (
+            "camera-original:result",
+            "driver.manim-community.render.result",
+            "succeeded",
+            true,
+        ),
+    ] {
+        put(
+            &service,
+            &project,
+            key,
+            command,
+            "dispatching",
+            json!({"job_ref": "original-job", "mutation": false}),
+        );
+        put(
+            &service,
+            &project,
+            key,
+            command,
+            "completed",
+            late_ack_payload("driver:manim-community", state, artifact),
+        );
+    }
+    let before_ack_watermark = service.production_receipt_watermark(project.id).unwrap();
+    let before_ack = service.production_jobs(project.id, 16).unwrap();
+    assert_eq!(before_ack_watermark.count, 5);
+    assert_eq!(before_ack.len(), 1);
+    assert_eq!(before_ack[0].state, ProductionJobState::OutcomeUnknown);
+    assert!(!before_ack[0].artifact_available && !before_ack[0].result_available);
+    assert!(before_ack[0].progress.is_none());
+    assert_eq!(
+        service.production_receipt_watermark(project.id).unwrap(),
+        before_ack_watermark
+    );
+
+    put(
+        &service,
+        &project,
+        "camera-original:start",
+        start,
+        "completed",
+        acknowledgement.clone(),
+    );
+    let acknowledged = service.production_jobs(project.id, 16).unwrap();
+    assert_eq!(acknowledged.len(), 1);
+    assert_eq!(acknowledged[0].root_request_id, "camera-original:start");
+    assert_eq!(acknowledged[0].state, ProductionJobState::Succeeded);
+    assert_eq!(acknowledged[0].provider_generation, Some(17));
+
+    // A repeated acknowledgement is evidence ambiguity, not permission to
+    // create another start intent or promote the result to trusted success.
+    put(
+        &service,
+        &project,
+        "camera-original:start",
+        start,
+        "completed",
+        acknowledgement,
+    );
+    let watermark = service.production_receipt_watermark(project.id).unwrap();
+    let projected = service.production_jobs(project.id, 16).unwrap();
+    assert_eq!(watermark.count, 7);
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].state, ProductionJobState::OutcomeUnknown);
+    assert_eq!(
+        projected[0].last_observation,
+        ProductionObservationState::OutcomeUnknown
+    );
+    assert_eq!(projected[0].local_observations, 4);
+    assert!(!projected[0].artifact_available && !projected[0].result_available);
+    assert!(projected[0].progress.is_none());
+    let receipts = service.production_receipts(project.id, 32).unwrap();
+    assert_eq!(
+        receipts
+            .iter()
+            .filter(|receipt| receipt.command == start && receipt.stage == "dispatching")
+            .count(),
+        1,
+        "projection must not append a retry of the original camera start"
+    );
+    drop(service);
+
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(
+        reopened
+            .production_jobs_snapshot(project.id, &watermark)
+            .unwrap(),
+        projected
+    );
+    assert_eq!(
+        serde_json::to_value(reopened.production_receipts(project.id, 32).unwrap()).unwrap(),
+        serde_json::to_value(&receipts).unwrap()
+    );
+    assert_eq!(
+        reopened.production_receipt_watermark(project.id).unwrap(),
+        watermark
+    );
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+}

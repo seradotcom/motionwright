@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-manim-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON>"
+        "usage: native-manim-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
     );
     std::process::exit(2);
 }
@@ -308,6 +308,153 @@ async fn realize(
     Ok(())
 }
 
+struct CameraTarget {
+    project_id: Uuid,
+    scene_id: Uuid,
+    deliverable_id: Uuid,
+    request_id: String,
+}
+
+fn text_arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> String {
+    args.next()
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| usage())
+}
+
+fn write_camera_evidence(
+    path: &Path,
+    evidence: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(&serde_json::to_vec_pretty(evidence)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn retain_camera_error(
+    evidence_path: &Path,
+    evidence: &mut serde_json::Value,
+    original_error: semwright_native_sdk::Error,
+    completed_result: Option<serde_json::Value>,
+) -> semwright_native_sdk::Error {
+    if let Some(result) = completed_result {
+        evidence["native_manim_camera_dispatch"] = json!("UNVERIFIED");
+        evidence["failure_stage"] = json!("receipt_read");
+        evidence["result"] = result;
+    } else {
+        evidence["native_manim_camera_dispatch"] = json!(if original_error.outcome_known {
+            "FAIL"
+        } else {
+            "UNKNOWN"
+        });
+        evidence["failure_stage"] = json!("native_dispatch");
+    }
+    evidence["error"] = json!(&original_error);
+    eprintln!("{evidence}");
+    let diagnostic_path = evidence_path.with_extension("diagnostic.json");
+    if let Err(custody_error) = write_camera_evidence(&diagnostic_path, evidence) {
+        eprintln!(
+            "{}",
+            json!({
+                "camera_diagnostic_custody_error": custody_error.to_string(),
+                "diagnostic_path": diagnostic_path,
+                "primary_error_preserved": true
+            })
+        );
+    }
+    original_error
+}
+
+async fn realize_camera(
+    database: &Path,
+    connection_path: &Path,
+    evidence_path: &Path,
+    target: CameraTarget,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = evidence_path
+        .parent()
+        .ok_or("camera evidence has no parent")?;
+    if !parent.is_dir() || evidence_path.exists() {
+        return Err("camera evidence requires an existing parent and unused destination".into());
+    }
+    let service = StudioService::open(database)?;
+    let project = service.project(target.project_id)?;
+    let expected = RevisionStamp::from(&project);
+    let start_id = format!("{}:start", target.request_id);
+    if service
+        .latest_production_receipt(project.id, &start_id)?
+        .is_some()
+    {
+        return Err("camera attempt already exists; inspect its original outcome".into());
+    }
+    let connection = ProductionConnection::load(connection_path)?;
+    if connection.resource != project.resource_key() {
+        return Err("camera connection is not bound to the saved project".into());
+    }
+    let coordinator = ProductionCoordinator::new(service, connection)?;
+    let attempted = coordinator
+        .realize_manim_camera_scene(
+            project.id,
+            &expected,
+            &target.request_id,
+            target.scene_id,
+            target.deliverable_id,
+        )
+        .await;
+    let receipt_result = coordinator.receipts(project.id, 256);
+    let mut evidence = json!({
+        "project_id": project.id,
+        "resource": project.resource_key(),
+        "generation": project.generation,
+        "revision": project.revision,
+        "scene_id": target.scene_id,
+        "deliverable_id": target.deliverable_id,
+        "request_id": target.request_id,
+        "recent_receipts": receipt_result.as_ref().ok(),
+        "receipt_read_error": receipt_result.as_ref().err(),
+        "receipt_window_limit": 256,
+        "decoded_frames_verified": false,
+        "motion_acceptance": "NOT_ASSESSED"
+    });
+    let result = match attempted {
+        Ok(result) => result,
+        Err(error) => {
+            return Err(retain_camera_error(evidence_path, &mut evidence, error, None).into());
+        }
+    };
+    if let Err(error) = receipt_result {
+        return Err(retain_camera_error(evidence_path, &mut evidence, error, Some(result)).into());
+    }
+    // The canonical coordinator already checked the saved plan, profile,
+    // getter digest, native provenance and MP4 custody. Retain that result.
+    drop(coordinator);
+    let reopened = StudioService::open(database)?;
+    if reopened.project(project.id)? != project {
+        return Err("saved camera project changed during native realization".into());
+    }
+    let start = reopened
+        .latest_production_receipt(project.id, &start_id)?
+        .ok_or("original camera start receipt was not durable")?;
+    let terminal = reopened
+        .latest_production_receipt(project.id, &format!("{}:result", target.request_id))?
+        .ok_or("original camera result receipt was not durable")?;
+    if start.command != "driver.manim-community.camera.render.start"
+        || terminal.command != "driver.manim-community.render.result"
+        || start.stage != "completed"
+        || terminal.stage != "completed"
+    {
+        return Err("camera start/result did not retain their original durable commands".into());
+    }
+    evidence["native_manim_camera_dispatch"] = json!("PASS");
+    evidence["result"] = result;
+    evidence["original_start_receipt"] = json!(start);
+    evidence["original_result_receipt"] = json!(terminal);
+    write_camera_evidence(evidence_path, &evidence)?;
+    println!("{}", serde_json::to_string(&evidence)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -333,6 +480,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             realize(&database, &connection, &evidence).await
         }
+        "realize-camera" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            let target = CameraTarget {
+                project_id: text_arg(&mut args).parse()?,
+                scene_id: text_arg(&mut args).parse()?,
+                deliverable_id: text_arg(&mut args).parse()?,
+                request_id: text_arg(&mut args),
+            };
+            if args.next().is_some() {
+                usage();
+            }
+            realize_camera(&database, &connection, &evidence, target).await
+        }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod camera_custody_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_write_failure_preserves_original_native_unknown() {
+        let temporary = tempfile::tempdir().unwrap();
+        let evidence_path = temporary.path().join("camera.json");
+        let diagnostic_path = evidence_path.with_extension("diagnostic.json");
+        std::fs::write(&diagnostic_path, b"existing custody evidence").unwrap();
+        let original = semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::Timeout,
+            "original native outcome is unknown",
+        )
+        .uncertain();
+        let expected = serde_json::to_value(&original).unwrap();
+        let mut evidence = json!({"request_id": "original-attempt"});
+        let returned = retain_camera_error(&evidence_path, &mut evidence, original, None);
+        assert_eq!(serde_json::to_value(&returned).unwrap(), expected);
+        assert_eq!(evidence["native_manim_camera_dispatch"], "UNKNOWN");
+        assert_eq!(evidence["error"], expected);
+        assert_eq!(
+            std::fs::read(&diagnostic_path).unwrap(),
+            b"existing custody evidence"
+        );
+    }
+
+    #[test]
+    fn receipt_read_failure_retains_opaque_result_without_publishing_pass() {
+        let temporary = tempfile::tempdir().unwrap();
+        let evidence_path = temporary.path().join("camera.json");
+        let opaque_result = json!({"opaque_retention_marker": [3, 7, 11]});
+        let original = semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::BackendFailed,
+            "original receipt read failed",
+        );
+        let expected = serde_json::to_value(&original).unwrap();
+        let mut evidence = json!({"request_id": "receipt-custody-attempt"});
+        let returned = retain_camera_error(
+            &evidence_path,
+            &mut evidence,
+            original,
+            Some(opaque_result.clone()),
+        );
+        assert_eq!(serde_json::to_value(&returned).unwrap(), expected);
+        let stored: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(evidence_path.with_extension("diagnostic.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored, evidence);
+        assert_eq!(stored["result"], opaque_result);
+        assert_eq!(stored["error"], expected);
+        assert_eq!(stored["native_manim_camera_dispatch"], "UNVERIFIED");
+        assert_eq!(stored["failure_stage"], "receipt_read");
+        assert!(!evidence_path.exists());
     }
 }
