@@ -319,8 +319,8 @@ impl ManimCameraScenePlanV1 {
     }
 }
 
-/// One closed source-generation branch, intended for the ORIGINAL trusted Manim
-/// compiler/Host after A1 admits this schema. This only emits inert bytes.
+/// Compile the versioned camera profile into inert source for the trusted Manim Host.
+/// Schema validation grants no execution authority.
 /// Never execute this program at import time, trust a ZIP as a grant, or dispatch
 /// from this module. The existing coordinator owns every native effect.
 pub const CAMERA_COMPILER_V1: &str = "motionwright.manim.rust.planar_camera.v1.0";

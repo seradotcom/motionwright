@@ -78,7 +78,9 @@ enum RenderCommand {
 fn classify(command: &str) -> Option<(&'static str, RenderCommand)> {
     let provider = if command.starts_with("driver.motion-canvas.render.") {
         "driver:motion-canvas"
-    } else if command.starts_with("driver.manim-community.render.") {
+    } else if command.starts_with("driver.manim-community.render.")
+        || command == "driver.manim-community.camera.render.start"
+    {
         "driver:manim-community"
     } else if command.starts_with("driver.mlt-video.render.") {
         "driver:mlt-video"

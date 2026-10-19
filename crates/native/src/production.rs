@@ -105,6 +105,7 @@ const BLENDER_COMMANDS: &[&str] = &[
 
 const MANIM_COMMANDS: &[&str] = &[
     "driver.manim-community.render.start",
+    "driver.manim-community.camera.render.start",
     "driver.manim-community.render.status",
     "driver.manim-community.render.cancel",
     "driver.manim-community.render.result",
@@ -1100,6 +1101,42 @@ pub(crate) fn ensure_native_motion_verification(value: &Value) -> NativeResult<(
     Ok(())
 }
 
+struct PreparedManimRender {
+    start_command: &'static str,
+    plan_value: Value,
+    plan_sha256: String,
+    profile: ManimRenderProfile,
+    requires_camera_getters: bool,
+}
+
+fn validate_manim_request_id(request_id: &str) -> NativeResult<()> {
+    if request_id.trim().is_empty()
+        || request_id.len() > 96
+        || request_id.chars().any(char::is_control)
+    {
+        return Err(invalid("Manim production request id is invalid"));
+    }
+    Ok(())
+}
+
+fn verified_manim_camera_getter_digest(
+    artifact: &Value,
+    required: bool,
+) -> NativeResult<Option<String>> {
+    if !required {
+        return Ok(None);
+    }
+    let digest = required_string(
+        artifact,
+        "/camera_getters_sha256",
+        "Manim camera render has no verified native getter digest",
+    )?;
+    if !is_sha256(&digest) {
+        return Err(backend("Manim camera getter digest is malformed"));
+    }
+    Ok(Some(digest))
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -1904,12 +1941,7 @@ impl ProductionCoordinator {
         scene_id: Uuid,
         profile: ManimRenderProfile,
     ) -> NativeResult<Value> {
-        if request_id.trim().is_empty()
-            || request_id.len() > 96
-            || request_id.chars().any(char::is_control)
-        {
-            return Err(invalid("Manim production request id is invalid"));
-        }
+        validate_manim_request_id(request_id)?;
         profile
             .validate()
             .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
@@ -1937,12 +1969,82 @@ impl ProductionCoordinator {
             .map_err(|_| invalid("Manim scene plan could not be digested"))?;
         let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
 
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.render.start",
+                plan_value,
+                plan_sha256,
+                profile,
+                requires_camera_getters: false,
+            },
+        )
+        .await
+    }
+
+    /// Render the admitted camera profile from the current persisted project.
+    /// Source preparation confers no execution grant; the existing Broker
+    /// connection and receipt lifecycle authorize and retain the native job.
+    pub async fn realize_manim_camera_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let compiled =
+            crate::manim_camera_projection::prepare_saved_manim_camera_program_source_only(
+                &self.service,
+                project_id,
+                expected,
+                scene_id,
+                deliverable_id,
+            )?;
+        let plan_value = serde_json::to_value(&compiled.prepared.source)
+            .map_err(|_| invalid("Manim camera scene plan could not be encoded"))?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.camera.render.start",
+                plan_value,
+                plan_sha256: compiled.trusted_compiler.plan_sha256,
+                profile: compiled.prepared.source.render_profile,
+                requires_camera_getters: true,
+            },
+        )
+        .await
+    }
+
+    async fn realize_prepared_manim_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        prepared: PreparedManimRender,
+    ) -> NativeResult<Value> {
+        let PreparedManimRender {
+            start_command,
+            plan_value,
+            plan_sha256,
+            profile,
+            requires_camera_getters,
+        } = prepared;
+
         let started = self
             .execute(
                 project_id,
                 expected,
                 &format!("{request_id}:start"),
-                "driver.manim-community.render.start",
+                start_command,
                 json!({"plan": plan_value, "profile": profile}),
                 true,
             )
@@ -2052,6 +2154,8 @@ impl ProductionCoordinator {
                 "Manim render artifact does not match the bounded Motionwright scene plan",
             ));
         }
+        let camera_getters_sha256 =
+            verified_manim_camera_getter_digest(&artifact, requires_camera_getters)?;
         let verified_path = verify_output_artifact(
             &self.client.connection().output_root,
             &relative_path,
@@ -2059,22 +2163,26 @@ impl ProductionCoordinator {
             MANIM_VIDEO_MAX_BYTES,
         )?;
 
+        let mut verified_artifact = json!({
+            "relative_path": relative_path,
+            "sha256": sha256,
+            "bytes": bytes,
+            "verified_path": verified_path
+        });
+        if let Some(digest) = camera_getters_sha256 {
+            verified_artifact["camera_getters_sha256"] = json!(digest);
+        }
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
             "runtime_contract": "Manim Community 0.21.0",
-            "project_revision": project.revision,
+            "project_revision": expected.revision,
             "scene_id": scene_id,
             "job_ref": job_ref,
             "plan_sha256": plan_sha256,
             "profile": profile,
             "result": result,
-            "artifact": {
-                "relative_path": relative_path,
-                "sha256": sha256,
-                "bytes": bytes,
-                "verified_path": verified_path
-            }
+            "artifact": verified_artifact
         }))
     }
 
@@ -2134,7 +2242,9 @@ impl ProductionCoordinator {
                 ErrorCode::Conflict,
                 "Production request already has a non-terminal or failed receipt; inspect before retrying",
             );
-            return Err(if prior.stage == "outcome_unknown" {
+            let unfinished_mutation = prior.stage == "dispatching"
+                && prior.payload.get("mutation").and_then(Value::as_bool) == Some(true);
+            return Err(if prior.stage == "outcome_unknown" || unfinished_mutation {
                 error.uncertain()
             } else {
                 error
@@ -2838,5 +2948,164 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn camera_artifact_rejects_missing_and_malformed_getter_digest() {
+        for artifact in [
+            json!({}),
+            json!({"camera_getters_sha256": null}),
+            json!({"camera_getters_sha256": 42}),
+            json!({"camera_getters_sha256": ""}),
+            json!({"camera_getters_sha256": "a".repeat(63)}),
+            json!({"camera_getters_sha256": "a".repeat(65)}),
+            json!({"camera_getters_sha256": "AB".repeat(32)}),
+            json!({"camera_getters_sha256": "g".repeat(64)}),
+        ] {
+            let error = verified_manim_camera_getter_digest(&artifact, true).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BackendFailed);
+        }
+    }
+
+    #[test]
+    fn camera_artifact_preserves_exact_native_getter_digest() {
+        let digest = "ab".repeat(32);
+        let artifact = json!({"camera_getters_sha256": digest});
+        assert_eq!(
+            verified_manim_camera_getter_digest(&artifact, true).unwrap(),
+            Some(digest)
+        );
+    }
+
+    #[test]
+    fn legacy_manim_artifact_does_not_acquire_camera_requirements() {
+        for artifact in [
+            json!({"relative_path": "media/static.mp4"}),
+            json!({"camera_getters_sha256": "legacy-extra-field"}),
+        ] {
+            assert_eq!(
+                verified_manim_camera_getter_digest(&artifact, false).unwrap(),
+                None
+            );
+        }
+    }
+    #[cfg(unix)]
+    async fn assert_reopened_prior_mutation_outcome(stage: &str, expected_known: bool) {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.render.start";
+        let request_id = "reopened-original-dispatch";
+        let args = json!({
+            "expected_fingerprint": "a".repeat(64),
+            "profile": {
+                "first_frame": 0,
+                "end_frame_exclusive": 60,
+                "scale": "full",
+                "transparent": false,
+                "timeout_ms": 300_000
+            }
+        });
+        let original_claim = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: request_id.into(),
+            request_sha256: request_digest(command, &args).unwrap(),
+            command: command.into(),
+            stage: "dispatching".into(),
+            payload: json!({"mutation": true}),
+        };
+        service
+            .append_production_receipt(original_claim.clone())
+            .unwrap();
+        if stage != "dispatching" {
+            service
+                .append_production_receipt(ProductionReceiptInput {
+                    stage: stage.into(),
+                    payload: json!({
+                        "mutation": true,
+                        "error": {
+                            "code": "BackendFailed",
+                            "outcome_known": stage == "failed_known"
+                        }
+                    }),
+                    ..original_claim
+                })
+                .unwrap();
+        }
+        let before = service.production_receipts(project.id, 10).unwrap();
+        drop(service);
+
+        // This is a local coordinator recovery fixture. It does not configure
+        // a real Broker, assert user authority or execute a native mutation.
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            before
+        );
+        let mut connection = fake_connection(&temp, project.resource_key());
+        let sentinel = temp.path().join("unexpected-native-dispatch");
+        fs::write(
+            &connection.executable,
+            format!(
+                "#!/bin/sh\nprintf dispatched > '{}'\nexit 97\n",
+                sentinel.to_string_lossy().replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        let coordinator = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                true,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(
+            error.outcome_known, expected_known,
+            "the persisted {stage} receipt determines original outcome knowledge"
+        );
+        assert!(
+            !sentinel.exists(),
+            "recovery dispatched a second native request"
+        );
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            before
+        );
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+        drop(coordinator);
+        drop(reopened);
+        assert_eq!(
+            StudioService::open(temp.path().join("motionwright.sqlite3"))
+                .unwrap()
+                .production_receipts(project.id, 10)
+                .unwrap(),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reopened_dispatching_mutation_preserves_unknown_without_redispatch() {
+        assert_reopened_prior_mutation_outcome("dispatching", false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reopened_outcome_unknown_remains_uncertain_without_redispatch() {
+        assert_reopened_prior_mutation_outcome("outcome_unknown", false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reopened_failed_known_preserves_known_failure_without_redispatch() {
+        assert_reopened_prior_mutation_outcome("failed_known", true).await;
     }
 }
