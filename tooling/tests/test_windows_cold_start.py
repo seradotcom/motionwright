@@ -182,6 +182,20 @@ class WindowsCandidateUnitTests(unittest.TestCase):
                 windows._create_first_project_in_native_window(12345)
         self.assertNotIn("private-must-not-leak", str(ctx.exception))
 
+    def test_native_form_selector_requires_edit_type_and_unique_accessible_button(self):
+        script = Path(__file__).parents[1] / "windows_first_project_ui.ps1"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("ControlType]::Edit", text)
+        self.assertIn("ControlType]::Button", text)
+        self.assertIn("$edits.Item($index)", text)
+        self.assertIn("$buttons.Item($index)", text)
+        self.assertIn("$inputMatches -gt 1", text)
+        self.assertIn("$buttonMatches -gt 1", text)
+        self.assertIn("IsKeyboardFocusable", text)
+        self.assertIn("$Phase = 'INVOKE_UNKNOWN'", text)
+        self.assertEqual(text.count("$invoke.Invoke()"), 1)
+        self.assertNotIn("$window.FindFirst($scope, $inputCondition)", text)
+
     def test_single_real_sqlite_project_is_read_only_and_stable(self):
         path = self.root / "roaming" / "com.seradotcom.motionwright" / "motionwright.sqlite3"
         source = project_db(path)

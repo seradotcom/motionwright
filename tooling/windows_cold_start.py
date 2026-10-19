@@ -189,7 +189,8 @@ def _create_first_project_in_native_window(hwnd: int) -> None:
         # PowerShell error details, host paths, titles, or project data.
         allowed = {
             "PRECHECK", "UIA_LOAD", "WINDOW_LOOKUP", "ELEMENT_QUERY",
-            "FORM_FIND", "INPUT_FOCUS", "TYPE_TITLE", "BUTTON_ENABLE",
+            "FORM_FIND", "FORM_AMBIGUOUS", "INPUT_NOT_FOCUSABLE",
+            "INPUT_FOCUS", "TYPE_TITLE", "BUTTON_ENABLE",
             "INVOKE_LOOKUP", "INVOKE_UNKNOWN",
         }
         markers = re.findall(

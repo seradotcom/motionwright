@@ -24,26 +24,61 @@ $Phase = 'WINDOW_LOOKUP'
 $window = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$WindowHandle)
 if ($null -eq $window) { throw 'Original installed window is unavailable' }
 $Phase = 'ELEMENT_QUERY'
-$inputCondition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::NameProperty, 'Project title'
+# Never select by Name alone: the HTML label and its input can share
+# "Project title". UI Automation may return the non-focusable text label
+# first; SetFocus on that element caused the original installed G2 failure.
+$inputType = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Edit
 )
-$buttonCondition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::NameProperty, 'Create project'
+$buttonType = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Button
 )
 $scope = [System.Windows.Automation.TreeScope]::Descendants
 $inputControl = $null
 $submitControl = $null
+$inputMatches = 0
+$buttonMatches = 0
 $Phase = 'FORM_FIND'
 for ($attempt = 0; $attempt -lt 30; $attempt++) {
-    $inputControl = $window.FindFirst($scope, $inputCondition)
-    $submitControl = $window.FindFirst($scope, $buttonCondition)
-    if ($null -ne $inputControl -and $null -ne $submitControl -and $inputControl.Current.IsEnabled) {
+    $edits = $window.FindAll($scope, $inputType)
+    $buttons = $window.FindAll($scope, $buttonType)
+    $inputControl = $null
+    $submitControl = $null
+    $inputMatches = 0
+    $buttonMatches = 0
+    for ($index = 0; $index -lt $edits.Count; $index++) {
+        $candidate = $edits.Item($index)
+        if ($candidate.Current.Name -ceq 'Project title') {
+            $inputMatches++
+            $inputControl = $candidate
+        }
+    }
+    for ($index = 0; $index -lt $buttons.Count; $index++) {
+        $candidate = $buttons.Item($index)
+        if ($candidate.Current.Name -ceq 'Create project') {
+            $buttonMatches++
+            $submitControl = $candidate
+        }
+    }
+    if ($inputMatches -gt 1 -or $buttonMatches -gt 1) {
+        $Phase = 'FORM_AMBIGUOUS'
+        throw 'More than one matching original accessible form control'
+    }
+    if ($inputMatches -eq 1 -and $buttonMatches -eq 1) {
         break
     }
     Start-Sleep -Milliseconds 250
 }
-if ($null -eq $inputControl -or $null -eq $submitControl) {
-    throw 'Original accessible Project library form not observed'
+if ($inputMatches -ne 1 -or $buttonMatches -ne 1) {
+    throw 'Original accessible edit and create button not observed'
+}
+$Phase = 'INPUT_NOT_FOCUSABLE'
+if (-not $inputControl.Current.IsEnabled -or
+    $inputControl.Current.IsOffscreen -or
+    -not $inputControl.Current.IsKeyboardFocusable) {
+    throw 'Original accessible edit is not focusable'
 }
 $Phase = 'INPUT_FOCUS'
 $inputControl.SetFocus()
