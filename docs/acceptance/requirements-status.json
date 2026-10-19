@@ -2831,6 +2831,48 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T06:59:39.524986+00:00"
+        },
+        {
+          "prior_contract_status": "open",
+          "prior_criteria": [
+            {
+              "evidence_ids": [
+                "backup-compatibility-main-ce22",
+                "delivery-recipes-main-ce22"
+              ],
+              "id": "CR-PROJECT-05#/statement",
+              "missing_assertions": [
+                "remaining_canonical_obligations_not_demonstrated_by_the_scoped_storage_or_domain_assertions",
+                "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
+                "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
+              ],
+              "scope_notes": [
+                "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
+                "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS."
+              ],
+              "source_clause_sha256": "e5462a7a93d71392f6d61f90b4388040c8d90f6add187f35d0cde6b41b5bbe07",
+              "status": "stale"
+            },
+            {
+              "evidence_ids": [],
+              "id": "CR-PROJECT-05#/acceptance_criterion",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "40efacf54396ea47e1b98ca804a2249940018fe756c6af172e54104d461dc8f5",
+              "status": "not_run"
+            }
+          ],
+          "prior_current_record_ids": [],
+          "prior_technical_status": "stale",
+          "reason": "Exact main951 selected Rust CI original test bodies bound to this canonical row; only the original source-byte clause is sufficient, remaining fields explicitly partial.",
+          "reviewed_at_utc": "2026-10-19T15:58:30.933651+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "evidence": [
@@ -2844,7 +2886,7 @@
       "source_record_sha256": "3b2e59a904804fd45f2bc43278aee23d9393be5a66f77368e06a4582bbc90e1d",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Original current-main951 Rust CI source and test logs retained, not an installed product artifact.",
           "media_persistence_or_installed_artifacts": "Temporary SQLite/WAV outputs are observed by assertions; final masters and installed sessions are not inferred.",
           "retained": "Hashed execution excerpts, source structure and the public synthetic seed fixture where referenced.",
           "status": "scoped_outputs_admitted"
@@ -2853,39 +2895,39 @@
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
-            "CR-PROJECT-05#/acceptance_criterion",
-            "CR-PROJECT-05#/statement"
+            "CR-PROJECT-05#/acceptance_criterion"
           ],
           "status": "open"
         },
         "criteria": [
           {
             "evidence_ids": [
-              "backup-compatibility-main-ce22",
-              "delivery-recipes-main-ce22"
+              "asset-original-source-bytes-main-951"
             ],
             "id": "CR-PROJECT-05#/statement",
-            "missing_assertions": [
-              "remaining_canonical_obligations_not_demonstrated_by_the_scoped_storage_or_domain_assertions",
-              "Current BF487 integrated product source lacks a selected matching execution and sufficient current-source review; CE22 evidence retained for history.",
-              "Current df056 criterion awaits exact executed assertions; earlier CE22 is historical only."
-            ],
+            "missing_assertions": [],
             "scope_notes": [
-              "Current storage/domain evidence covers only the assertions and limitations listed in its records; no final media or installed surface is inferred.",
-              "Historical CE22 proof cited only; changed integrated source is not a replay or automatic PASS."
+              "Exact source/main951 Rust test bodies and byte-level service/storage readback of original asset and WAV on reopen; sufficiency review covers this field only."
             ],
             "source_clause_sha256": "e5462a7a93d71392f6d61f90b4388040c8d90f6add187f35d0cde6b41b5bbe07",
-            "status": "stale"
+            "status": "pass"
           },
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "asset-original-source-bytes-main-951"
+            ],
             "id": "CR-PROJECT-05#/acceptance_criterion",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "Execute an actual edit generating a new derived resource with new identity and digest while original asset and audio source bytes remain hash-identical after service reopen.",
+              "Verify this behavior on the supported installed Studio/media path, not just duplicate request rejection."
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Real SQLite service opens and reopens first-party asset bytes and synthetic PCM/WAV; digest-addressed reads match the original input byte-for-byte.",
+              "A reused import request cannot silently replace a previously committed asset with changed file bytes; original CAS content remains intact.",
+              "The storage layer verifies digest identity, deduplication and bounded content reads."
+            ],
             "source_clause_sha256": "40efacf54396ea47e1b98ca804a2249940018fe756c6af172e54104d461dc8f5",
-            "status": "not_run"
+            "status": "partial"
           }
         ],
         "dependencies": {
@@ -2898,7 +2940,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "asset-original-source-bytes-main-951"
+          ],
           "current_source": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
           "historical_record_ids": [
             "backup-compatibility-main-ce22",
@@ -2929,7 +2973,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "A5 source-bound selected actual Rust test body and source-clause scope review, no installed/native inference"
         },
         "schema_version": 1,
         "source": {
@@ -2939,13 +2983,12 @@
         },
         "technical_verification": {
           "evidence_ids": [
-            "backup-compatibility-main-ce22",
-            "delivery-recipes-main-ce22"
+            "asset-original-source-bytes-main-951"
           ],
           "execution_kinds": [
             "integration"
           ],
-          "status": "stale"
+          "status": "partial"
         }
       },
       "verification_status": "CI_PARTIAL"
@@ -3588,6 +3631,40 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T06:59:39.524986+00:00"
+        },
+        {
+          "prior_contract_status": "open",
+          "prior_criteria": [
+            {
+              "evidence_ids": [],
+              "id": "CR-PROJECT-08#/statement",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "2cce2b813e3dd9b53867e870d8db50aa39d0716ab3255d624bdaaf27da750083",
+              "status": "not_run"
+            },
+            {
+              "evidence_ids": [],
+              "id": "CR-PROJECT-08#/acceptance_criterion",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "a9059d48439871422e2a2187656af65664223189cec08cbb235439f83ce4125d",
+              "status": "not_run"
+            }
+          ],
+          "prior_current_record_ids": [],
+          "prior_technical_status": "not_run",
+          "reason": "Exact main951 selected Rust CI original test bodies bound to this canonical row; only the original source-byte clause is sufficient, remaining fields explicitly partial.",
+          "reviewed_at_utc": "2026-10-19T15:58:30.933651+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "evidence": [
@@ -3601,7 +3678,7 @@
       "source_record_sha256": "549bb91140f635689e69098aa58a3f963588647b44189fe610ff8992e94125d4",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Original current-main951 Rust CI source and test logs retained, not an installed product artifact.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -3609,31 +3686,43 @@
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
-            "CR-PROJECT-08#/acceptance_criterion",
-            "CR-PROJECT-08#/statement"
+            "CR-PROJECT-08#/statement",
+            "CR-PROJECT-08#/acceptance_criterion"
           ],
           "status": "open"
         },
         "criteria": [
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "sqlite-resource-pages-main-951"
+            ],
             "id": "CR-PROJECT-08#/statement",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "List other required resource classes through documented bounded pages, including their service/UI readbacks, without eagerly opening media source blobs.",
+              "Verify empty/invalid cursor and page bound behavior for a large indexed project."
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Real SQLite summaries paginate three named projects: page 1 explicitly truncated, page 2 complete, cursor returns every ID exactly once.",
+              "An independently executed 260-event history test paginates backwards across the former 100-record ceiling without missing/duplicating revisions."
+            ],
             "source_clause_sha256": "2cce2b813e3dd9b53867e870d8db50aa39d0716ab3255d624bdaaf27da750083",
-            "status": "not_run"
+            "status": "partial"
           },
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "sqlite-resource-pages-main-951"
+            ],
             "id": "CR-PROJECT-08#/acceptance_criterion",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "Execute a genuinely large multi-asset project and show bounded resource paging does not load every blob.",
+              "Independently verify truncated and next_cursor semantics in installed Studio and through service reopen."
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Real SQLite summaries paginate three named projects: page 1 explicitly truncated, page 2 complete, cursor returns every ID exactly once.",
+              "An independently executed 260-event history test paginates backwards across the former 100-record ceiling without missing/duplicating revisions."
+            ],
             "source_clause_sha256": "a9059d48439871422e2a2187656af65664223189cec08cbb235439f83ce4125d",
-            "status": "not_run"
+            "status": "partial"
           }
         ],
         "dependencies": {
@@ -3646,7 +3735,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "sqlite-resource-pages-main-951"
+          ],
           "current_source": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
@@ -3659,7 +3750,7 @@
             ".github/workflows/project-portability.yml",
             "docs/architecture.md"
           ],
-          "status": "not_assessed"
+          "status": "partial"
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
@@ -3670,7 +3761,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "A5 source-bound selected actual Rust test body and source-clause scope review, no installed/native inference"
         },
         "schema_version": 1,
         "source": {
@@ -3679,9 +3770,13 @@
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "sqlite-resource-pages-main-951"
+          ],
+          "execution_kinds": [
+            "integration"
+          ],
+          "status": "partial"
         }
       },
       "verification_status": "CI_PARTIAL"
@@ -31148,6 +31243,40 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T06:59:39.524986+00:00"
+        },
+        {
+          "prior_contract_status": "open",
+          "prior_criteria": [
+            {
+              "evidence_ids": [],
+              "id": "CR-SEC-02#/statement",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "b29b306156071695c7b4a75d68050354315524c727843d488002a30a6459f0d7",
+              "status": "not_run"
+            },
+            {
+              "evidence_ids": [],
+              "id": "CR-SEC-02#/acceptance_criterion",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "f93669497be41e8daffa19f7b4dc4f69f0543984208bbeb8c975c5dff4b9c8c0",
+              "status": "not_run"
+            }
+          ],
+          "prior_current_record_ids": [],
+          "prior_technical_status": "not_run",
+          "reason": "Exact main951 selected Rust CI original test bodies bound to this canonical row; only the original source-byte clause is sufficient, remaining fields explicitly partial.",
+          "reviewed_at_utc": "2026-10-19T15:58:30.933651+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "evidence": [
@@ -31160,7 +31289,7 @@
       "source_record_sha256": "3c7e670bd1187ed467fa261985bdae6eadcd4ff8c4e859c6017734bfd28398e8",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Original current-main951 Rust CI source and test logs retained, not an installed product artifact.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
@@ -31168,31 +31297,45 @@
           "human_review_required": false,
           "human_review_status": "not_required",
           "pending_criteria": [
-            "CR-SEC-02#/acceptance_criterion",
-            "CR-SEC-02#/statement"
+            "CR-SEC-02#/statement",
+            "CR-SEC-02#/acceptance_criterion"
           ],
           "status": "open"
         },
         "criteria": [
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "asset-input-rejection-main-951"
+            ],
             "id": "CR-SEC-02#/statement",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "Demonstrate complete path, file type and size validation across ZIP/archive imports, special files and OS-native paths, including Windows junctions.",
+              "Capture before/after filesystem and database digests on every rejected media input."
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Executed import rejects active script-bearing SVG even when mislabeled and rejects remote-resource SVG.",
+              "Rejected SVG and undecodable WAV leave the persisted project unchanged, no blob published, and staging empty.",
+              "Unix-only tests reject symlinked original source blobs and symlinked bundle path components before bundle inspection."
+            ],
             "source_clause_sha256": "b29b306156071695c7b4a75d68050354315524c727843d488002a30a6459f0d7",
-            "status": "not_run"
+            "status": "partial"
           },
           {
-            "evidence_ids": [],
+            "evidence_ids": [
+              "asset-input-rejection-main-951"
+            ],
             "id": "CR-SEC-02#/acceptance_criterion",
             "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+              "Reject a real ZIP path-traversal archive and device/special file without any write outside the destination; source-specific Windows reparse-point test required.",
+              "Preserve active SVG and unix symlink rejection already observed, and verify installed path confinement."
             ],
-            "scope_notes": [],
+            "scope_notes": [
+              "Executed import rejects active script-bearing SVG even when mislabeled and rejects remote-resource SVG.",
+              "Rejected SVG and undecodable WAV leave the persisted project unchanged, no blob published, and staging empty.",
+              "Unix-only tests reject symlinked original source blobs and symlinked bundle path components before bundle inspection."
+            ],
             "source_clause_sha256": "f93669497be41e8daffa19f7b4dc4f69f0543984208bbeb8c975c5dff4b9c8c0",
-            "status": "not_run"
+            "status": "partial"
           }
         ],
         "dependencies": {
@@ -31205,7 +31348,9 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "asset-input-rejection-main-951"
+          ],
           "current_source": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
@@ -31217,7 +31362,7 @@
             "crates/service/src/models.rs",
             "tooling/source_policy.py"
           ],
-          "status": "not_assessed"
+          "status": "partial"
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
@@ -31228,7 +31373,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "A5 source-bound selected actual Rust test body and source-clause scope review, no installed/native inference"
         },
         "schema_version": 1,
         "source": {
@@ -31237,9 +31382,13 @@
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "asset-input-rejection-main-951"
+          ],
+          "execution_kinds": [
+            "integration"
+          ],
+          "status": "partial"
         }
       },
       "verification_status": "CI_PARTIAL"
@@ -37601,6 +37750,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "ae6b57020fd2f27f781fd828e702f718b5a4ef8c761907b8f005c44f8b1a3049"
+    "sha256": "463ae015e28d83cc15a6b2acec54bcd6fb33537ec82eb40b00e3092d45e060a1"
   }
 }
