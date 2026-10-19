@@ -1,0 +1,367 @@
+name: Native Manim camera 120 source-bound observation
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact composed source and workflow commit
+        type: string
+        required: true
+      execute_native:
+        description: Perform the single disposable Broker and Driver Host attempt after G0 and G1
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# Separate from the caller. Never replace a running native attempt with a rerun.
+concurrency:
+  group: camera120-execution-${{ github.run_id }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  camera120:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      PYTHONDONTWRITEBYTECODE: "1"
+      GIT_NO_REPLACE_OBJECTS: "1"
+      GIT_NO_LAZY_FETCH: "1"
+      GIT_GRAFT_FILE: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      MW_SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Create isolated configurable directories before setup actions
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/camera120" "$RUNNER_TEMP/camera120-tmp"
+          mkdir "$RUNNER_TEMP/camera120/g0-g1"
+          for key in CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR PIP_CACHE_DIR TMPDIR MW_CAMERA120_ROOT; do
+            case "$key" in
+              CARGO_HOME) value="$RUNNER_TEMP/camera120-cargo" ;;
+              RUSTUP_HOME) value="$RUNNER_TEMP/camera120-rustup" ;;
+              CARGO_TARGET_DIR) value="$RUNNER_TEMP/camera120-target" ;;
+              PIP_CACHE_DIR) value="$RUNNER_TEMP/camera120-pip-cache" ;;
+              TMPDIR) value="$RUNNER_TEMP/camera120-tmp" ;;
+              MW_CAMERA120_ROOT) value="$RUNNER_TEMP/camera120" ;;
+            esac
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
+          done
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Reject source substitutions and native reruns before spending
+        env:
+          EXECUTE_NATIVE: ${{ inputs.execute_native }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$MW_SOURCE_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$MW_SOURCE_SHA"
+          if test "$EXECUTE_NATIVE" = true; then
+            test "$GITHUB_RUN_ATTEMPT" = 1 || {
+              echo 'Native reruns are forbidden; inspect the original attempt.' >&2
+              exit 1
+            }
+          fi
+          python -B -I -S tooling/native_manim_camera120_e2e.py source-preflight \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$MW_SOURCE_SHA" \
+            --output "$MW_CAMERA120_ROOT/g0-g1/source-before.json"
+
+      - name: G0 source policy and acceptance invariants
+        run: |
+          set -euo pipefail
+          python -B -I -S - <<'PY' 2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/source-and-acceptance.log"
+          import importlib.util, os, runpy, sys
+          from pathlib import Path
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          for name in ("public_surface_policy", "v01_glib_backport_integrity", "v01_glib_product_admission", "conformance_policy"):
+              path = root / "tooling" / (name + ".py")
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+          for name in ("source_policy.py", "acceptance_policy.py"):
+              try:
+                  runpy.run_path(str(root / "tooling" / name), run_name="__main__")
+              except SystemExit as result:
+                  if result.code not in (None, 0):
+                      raise
+          PY
+          python -B -I -S tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --test-directory tooling/tests --pattern test_conformance_policy.py \
+            --pattern test_acceptance_policy.py --pattern test_acceptance_evidence_identity.py \
+            --pattern test_acceptance_cross_checkout.py --mode both --require-complete \
+            --expected-source "$MW_SOURCE_SHA" \
+            --report "$MW_CAMERA120_ROOT/g0-g1/contract-controls.json"
+
+      - name: G0 isolated camera capture controls in both entrypoints
+        run: |
+          set -euo pipefail
+          python -B -I -S - <<'PY'
+          import hashlib, importlib.util, json, os, re, sys
+          from pathlib import Path
+          root = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          out = Path(os.environ["MW_CAMERA120_ROOT"]) / "g0-g1"
+          source = json.loads((out / "source-before.json").read_bytes())
+          assert source["source_sha"] == os.environ["MW_SOURCE_SHA"] == os.environ["GITHUB_SHA"]
+          assert source["execution_context"] == {key: os.environ[key] for key in source["execution_context"]}
+          def load_bound(name, relative):
+              path = root / relative
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == source["source_inputs"][relative]["sha256"]
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+              return module
+          capture = load_bound("camera120_g0_capture", "tooling/native_manim_camera120_e2e.py")
+          parser = load_bound("camera120_g0_unittest_summary", "tooling/ci_test_runner.py")
+          relative = "tooling/camera120_checks/test_native_manim_camera120_safety.py"
+          test_path = root / relative
+          definition = capture.file_record(test_path, 65536)
+          assert definition["sha256"] == hashlib.sha256(capture.git(root, "show", source["source_sha"] + ":" + relative)).hexdigest()
+          expected = {
+              "test_positive_original_copy_is_scanned_and_published_with_exact_hashes",
+              "test_same_size_mutation_between_scan_and_publication_fails_without_public_bytes",
+              "test_growth_between_scan_and_publication_fails_without_public_ticket_bytes",
+              "test_original_ticket_material_is_retained_privately_and_never_published",
+              "test_rerun_is_rejected_before_source_queries_filesystem_or_processes",
+          }
+          bootstrap = "import sys, unittest\nfrom pathlib import Path\nroot = Path(sys.argv[1]).resolve(strict=True)\nsys.path.insert(0, str(root))\nloader = unittest.TestLoader()\nif sys.argv[2] == 'discovery':\n    suite = loader.discover(str(root / 'tooling/camera120_checks'), pattern='test_native_manim_camera120_safety.py')\nelse:\n    suite = loader.loadTestsFromName('tooling.camera120_checks.test_native_manim_camera120_safety')\nresult = unittest.TextTestRunner(verbosity=2).run(suite)\nraise SystemExit(0 if result.wasSuccessful() else 1)\n"
+          rows = []
+          for mode in ("discovery", "dotted"):
+              directory = out / ("camera-safety-" + mode)
+              argv = [sys.executable, "-B", "-I", "-S", "-c", bootstrap, str(root), mode]
+              observation = capture.Capture(directory, argv, os.environ.copy(), 30,
+                  stdout_limit=65536, stderr_limit=65536, native=False,
+                  binding={"source_sha": source["source_sha"], "tree_sha": source["tree_sha"],
+                           "test_definition": definition, "execution_context": source["execution_context"]}).wait()
+              row = {"entry_point": mode, "command": argv, "capture": observation, "status": "FAIL", "counts": None}
+              try:
+                  raw = (directory / "stderr.log").read_text(encoding="utf-8")
+                  counts = parser.parse_unittest_summary(raw)
+                  identities = re.findall(r"(?m)^(test_\w+) \([^\n]*Camera120SafetyTests\.\1\) \.\.\. ok$", raw)
+                  row.update(counts=counts, case_names=identities)
+                  assert observation["command_succeeded"] is True
+                  assert type(counts["tests_run"]) is int and counts["tests_run"] == 5 and counts["passed"] == 5
+                  assert counts["terminal_status"] == "OK" and len(identities) == 5 and set(identities) == expected
+                  assert all(type(counts[key]) is int and counts[key] == 0 for key in
+                      ("errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+                  row["status"] = "PASS_SYNTHETIC_CONTROLS"
+              except (AssertionError, OSError, ValueError) as error:
+                  row["failure"] = type(error).__name__ + ": " + str(error)
+              rows.append(row)
+          stable = capture.file_record(test_path, 65536) == definition
+          for relative in ("tooling/native_manim_camera120_e2e.py", "tooling/ci_test_runner.py"):
+              stable &= hashlib.sha256((root / relative).read_bytes()).hexdigest() == source["source_inputs"][relative]["sha256"]
+          passed = stable and all(row["status"] == "PASS_SYNTHETIC_CONTROLS" for row in rows)
+          capture.write_json(out / "camera-safety-controls.json", {
+              "schema": "motionwright.camera120.synthetic-safety-controls/1", "timestamp": capture.utc(),
+              "source": source, "test_definition": definition, "source_inputs_stable": stable,
+              "python": capture.file_record(Path(sys.executable).resolve(strict=True), 128 * 1024 * 1024),
+              "steps": rows, "status": "PASS_SYNTHETIC_CONTROLS" if passed else "FAIL_OR_INCOMPLETE",
+              "scope": "Synthetic capture and retry controls; five tests in each real isolated entry point",
+              "native_attempts": 0, "product_tests": 0, "formal_acceptance": False})
+          raise SystemExit(0 if passed else 1)
+          PY
+
+      - name: G1 unchanged original camera pixel controls in both entrypoints
+        run: |
+          set -euo pipefail
+          python -B -I -S tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --test-directory tooling/tests --pattern test_native_manim_camera_pixels.py \
+            --mode both --require-complete --expected-source "$MW_SOURCE_SHA" \
+            --report "$MW_CAMERA120_ROOT/g0-g1/pixel-controls.json"
+          python -B -I -S - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          p = Path(os.environ["MW_CAMERA120_ROOT"]) / "g0-g1/pixel-controls.json"
+          value = json.loads(p.read_bytes())
+          assert value["executed_source_sha"] == os.environ["MW_SOURCE_SHA"]
+          assert value["status"] == "PASS" and type(value["exit_code"]) is int and value["exit_code"] == 0
+          assert value["require_complete"] is True and len(value["steps"]) == 2
+          assert value["test_definition_sha256"] == {"tooling/tests/test_native_manim_camera_pixels.py": "541da5525837fec38943629d4dd11b27f6abd0c11b8284ecf8a8fe5ccb505639"}
+          assert {r["entry_point"] for r in value["steps"]} == {
+              "discovery:test_native_manim_camera_pixels.py", "dotted:tooling.tests.test_native_manim_camera_pixels"}
+          for row in value["steps"]:
+              assert row["status"] == "PASS" and type(row["exit_code"]) is int and row["exit_code"] == 0
+              assert row["counts"]["terminal_status"] == "OK"
+              assert type(row["counts"]["tests_run"]) is int and row["counts"]["tests_run"] == 11
+              assert row["counts"]["passed"] == 11
+              assert all(type(row["counts"][k]) is int and row["counts"][k] == 0 for k in
+                         ("errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+              for key in ("stdout", "stderr"):
+                  assert hashlib.sha256((p.parent / row[key]["file"]).read_bytes()).hexdigest() == row[key]["sha256"]
+          PY
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy, rustfmt
+
+      - name: G0 format and G1 compile the composed camera fixture once
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check 2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/format.log"
+          cargo build --locked -p motionwright-native \
+            --example native-manim-camera-seed --example ci-manim-camera-plan \
+            --example native-manim-e2e 2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/build-examples.log"
+          cargo build --locked -p motionwright-manim-community-driver --bins \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/build-driver.log"
+          cargo clippy --locked -p motionwright-native \
+            --example ci-manim-camera-plan --example native-manim-camera-seed \
+            --example native-manim-e2e -- -D warnings \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/clippy-examples.log"
+          cargo test --locked -p motionwright-native --example native-manim-camera-seed \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/saved-source-tests.log"
+          cargo test --locked -p motionwright-service --test production_jobs_identity \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/job-identity-tests.log"
+          cargo test --locked -p motionwright-manim-profile --lib planar_camera::source_contract_tests \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/camera-profile-tests.log"
+          cargo test --locked -p motionwright-manim-community-driver \
+            --bin motionwright-manim-community-driver camera \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/camera-driver-tests.log"
+          cargo test --locked -p motionwright-native --test manim_camera_source \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/camera-projection-tests.log"
+          cargo clippy --locked -p motionwright-manim-community-driver --bins -- -D warnings \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/clippy-driver.log"
+          python -B -I -S tooling/native_manim_camera120_e2e.py source-preflight \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$MW_SOURCE_SHA" \
+            --output "$MW_CAMERA120_ROOT/g0-g1/source-after-g1.json"
+          cargo --version > "$MW_CAMERA120_ROOT/g0-g1/cargo-version.txt"
+          rustc -Vv > "$MW_CAMERA120_ROOT/g0-g1/rustc-version.txt"
+          python -B -I -S - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+          root = Path(os.environ["MW_CAMERA120_ROOT"]) / "g0-g1"
+          before = json.loads((root / "source-before.json").read_bytes())
+          after = json.loads((root / "source-after-g1.json").read_bytes())
+          assert all(before[k] == after[k] for k in ("source_sha", "tree_sha", "source_inputs", "execution_context"))
+          rows = []
+          for filename, count, filtered_allowed in (
+              ("saved-source-tests.log", 2, False), ("job-identity-tests.log", 12, False),
+              ("camera-profile-tests.log", 3, True), ("camera-driver-tests.log", 4, True),
+              ("camera-projection-tests.log", 12, False)):
+              raw = (root / filename).read_bytes()
+              footers = re.findall(rb"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", raw)
+              assert len(footers) == 1 and footers[0][:4] == (str(count).encode(), b"0", b"0", b"0")
+              assert filtered_allowed or footers[0][4] == b"0"
+              rows.append({"log": filename, "sha256": hashlib.sha256(raw).hexdigest(),
+                           "tests": count, "failed": 0, "ignored": 0, "measured": 0,
+                           "filtered": int(footers[0][4]), "explicit_camera_filter": filtered_allowed})
+          value = {"schema": "motionwright.camera120.focused-g1/1", "source": after,
+                   "status": "PASS_SELECTED_SOURCE_CONTROLS", "rust_test_targets": rows,
+                   "pixel_reader_controls_per_entrypoint": 11, "pixel_controls_omissions": 0,
+                   "native_runtime_executed_by_this_g1": False, "formal_acceptance": False}
+          with (root / "g1-terminal.json").open("x") as stream:
+              json.dump(value, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+
+      - name: Checkout the original Semwright pin outside Motionwright
+        if: ${{ inputs.execute_native }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: seradotcom/semwright
+          ref: 54d3459a051adbce4cae9f60c0dea8f60c824be6
+          path: _camera120_semwright_checkout
+          persist-credentials: false
+
+      - name: Keep dependency source and configurable resources outside the tested checkout
+        if: ${{ inputs.execute_native }}
+        run: |
+          set -euo pipefail
+          mv "$GITHUB_WORKSPACE/_camera120_semwright_checkout" "$MW_CAMERA120_ROOT/semwright"
+          test "$(git --no-replace-objects -C "$MW_CAMERA120_ROOT/semwright" rev-parse HEAD)" = 54d3459a051adbce4cae9f60c0dea8f60c824be6
+          test -z "$(git --no-replace-objects status --porcelain --untracked-files=all)"
+
+      - name: Provision disposable sandbox and exact Manim runtime
+        if: ${{ inputs.execute_native }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap ffmpeg fontconfig libcairo2-dev libpango1.0-dev pkg-config \
+            python3-pip python3-dev libpipewire-0.3-dev clang
+          mkdir "$MW_CAMERA120_ROOT/manim-runtime"
+          /usr/bin/python3 -m pip install --disable-pip-version-check --no-compile \
+            --target "$MW_CAMERA120_ROOT/manim-runtime/site-packages" \
+            --report "$MW_CAMERA120_ROOT/g0-g1/manim-install-original.json" 'manim==0.21.0'
+          printf '%s\n' '{"schema":1,"manim_version":"0.21.0"}' > "$MW_CAMERA120_ROOT/manim-runtime/runtime.json"
+          bash "$MW_CAMERA120_ROOT/semwright/scripts/dev/ci-driver-bwrap-profile.sh" \
+            "$MW_CAMERA120_ROOT/g0-g1/sandbox-profile.txt"
+          dpkg-query -W -f='${Package}\t${Version}\n' \
+            bubblewrap ffmpeg fontconfig libcairo2 python3 libpango-1.0-0 \
+            > "$MW_CAMERA120_ROOT/g0-g1/system-packages.txt"
+
+      - name: Build the pinned original Broker and sandbox
+        if: ${{ inputs.execute_native }}
+        working-directory: ${{ runner.temp }}/camera120/semwright
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/camera120-sem-target
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/build-broker.log"
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox \
+            2>&1 | tee "$MW_CAMERA120_ROOT/g0-g1/build-sandbox.log"
+
+      - name: Perform one original camera attempt and source-bound physical readback
+        if: ${{ inputs.execute_native }}
+        run: |
+          set -euo pipefail
+          python -B -I -S tooling/native_manim_camera120_e2e.py run \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$MW_SOURCE_SHA" \
+            --semwright "$MW_CAMERA120_ROOT/semwright" \
+            --motionwright-bins "$RUNNER_TEMP/camera120-target/debug" \
+            --semwright-bins "$RUNNER_TEMP/camera120-sem-target/debug" \
+            --runtime "$MW_CAMERA120_ROOT/manim-runtime" \
+            --python "$(readlink -f /usr/bin/python3)" \
+            --ffmpeg "$(readlink -f /usr/bin/ffmpeg)" --ffprobe "$(readlink -f /usr/bin/ffprobe)" \
+            --work "$MW_CAMERA120_ROOT/owner-work" --output "$MW_CAMERA120_ROOT/technical-evidence"
+
+      - name: Preserve exact technical originals after success, failure or uncertainty
+        if: ${{ always() && inputs.execute_native }}
+        run: |
+          set -euo pipefail
+          python -B -I -S tooling/native_manim_camera120_e2e.py finalize \
+            --evidence "$MW_CAMERA120_ROOT/technical-evidence" \
+            --owner-work "$MW_CAMERA120_ROOT/owner-work" \
+            --output "$MW_CAMERA120_ROOT/publish"
+
+      - name: Upload G0 and G1 originals with their actual source and attempt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manim-camera120-g0-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/camera120/g0-g1
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload only the technical synthetic allowlist
+        if: ${{ always() && inputs.execute_native }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manim-camera120-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/camera120/publish
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30

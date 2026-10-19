@@ -2,6 +2,12 @@ name: Native Manim Community round-trip
 
 on:
   workflow_dispatch:
+    inputs:
+      camera120:
+        description: Run the bounded 120-frame camera verification on this exact ref
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -23,8 +29,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-manim-roundtrip-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.camera120 && format('native-manim-camera120-dispatch-{0}', github.run_id) || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.camera120) }}
 
 defaults:
   run:
@@ -39,6 +45,7 @@ env:
 
 jobs:
   native-manim-roundtrip:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.camera120) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -204,3 +211,10 @@ jobs:
           path: verification/native-manim-public
           if-no-files-found: error
           retention-days: 14
+
+  native-manim-camera120:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.camera120 }}
+    uses: ./.github/workflows/native-manim-camera120.yml
+    with:
+      source_sha: ${{ github.sha }}
+      execute_native: true
