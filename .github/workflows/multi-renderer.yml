@@ -76,4 +76,4 @@ jobs:
           workspaces: semwright
       - name: Verify curated Blender driver catalog has no generic Python escape
         working-directory: semwright
-        run: cargo test -p semwright-driver-blender curated_commands_are_migrated_without_generic_python_escape --lib
+        run: cargo test --locked -p semwright-driver-blender curated_commands_are_migrated_without_generic_python_escape --lib
