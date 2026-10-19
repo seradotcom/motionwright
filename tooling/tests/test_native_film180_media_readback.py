@@ -26,16 +26,50 @@ def original_source_and_receipts() -> tuple[dict, dict, dict]:
         "deliverables": [{
             "id": profile, "width": 1920, "height": 1080,
             "captions": True, "burn_in_captions": True,
+            "frame_rate": {"num": "30", "den": "1"},
             "voice_track_id": voice,
         }],
         "scenes": [
-            {"id": scene1, "nodes": [{"id": i} for i in nodes[:3]]},
-            {"id": scene2, "nodes": [{"id": nodes[3]}]},
+            {
+                "id": scene1, "nodes": [{"id": i} for i in nodes[:3]],
+                "start": {"num": "0", "den": "1"},
+                "duration": {"num": "3", "den": "1"},
+            },
+            {
+                "id": scene2, "nodes": [{"id": nodes[3]}],
+                "start": {"num": "3", "den": "1"},
+                "duration": {"num": "3", "den": "1"},
+            },
         ],
-        "audio": {"voice_tracks": [{
-            "id": voice, "source_sha256": sha, "sample_rate_hz": 48000,
-            "channels": 2,
-        }]},
+        "audio": {
+            "voice_tracks": [{
+                "id": voice, "source_sha256": sha, "sample_rate_hz": 48000,
+                "channels": 2,
+                "measured_duration": {"num": "6", "den": "1"},
+            }],
+            "transcript": [
+                {
+                    "voice_track_id": voice, "start": {"num": "1", "den": "5"},
+                    "end": {"num": "9", "den": "10"},
+                    "alignment": {"kind": "manual"}, "text": "Opening title",
+                },
+                {
+                    "voice_track_id": voice, "start": {"num": "11", "den": "10"},
+                    "end": {"num": "12", "den": "5"},
+                    "alignment": {"kind": "manual"}, "text": "Following caption",
+                },
+            ],
+        },
+        "production_design": {
+            "delivery_recipes": {
+                profile: {
+                    "scene_intents": [
+                        {"scene_id": scene1, "role": "evidence", "archetype": "evidence_frame"},
+                        {"scene_id": scene2, "role": "evidence", "archetype": "statement"},
+                    ],
+                },
+            },
+        },
     }
     receipt = {
         "project_resource": f"project:{project}", "generation": generation,
@@ -110,6 +144,32 @@ class Film180ReadbackContracts(unittest.TestCase):
         self.assertEqual(len(out["scene_ids"]), 2)
         self.assertEqual(len(out["node_ids"]), 4)
         self.assertEqual(out["revision"], 11)
+
+    def test_saved_rational_scene_boundary_not_silently_retimed(self):
+        src, film, master = original_source_and_receipts()
+        src["scenes"][1]["start"]["num"] = "4"
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "rational_clock_changed"):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_manually_aligned_cue_windows_bound_to_original_voice(self):
+        src, film, master = original_source_and_receipts()
+        src["audio"]["transcript"][1]["end"]["num"] = "74"
+        src["audio"]["transcript"][1]["end"]["den"] = "30"
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "caption_cues_not_original"):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_rewritten_narrative_recipe_not_authorial_original(self):
+        src, film, master = original_source_and_receipts()
+        pid = src["deliverables"][0]["id"]
+        src["production_design"]["delivery_recipes"][pid]["scene_intents"][0]["role"] = "hook"
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "narrative_intents_changed"):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_retimed_voice_duration_not_original_six_seconds(self):
+        src, film, master = original_source_and_receipts()
+        src["audio"]["voice_tracks"][0]["measured_duration"]["num"] = "5"
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "stereo_voice"):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
 
     def test_forged_old_film_revision_is_rejected(self):
         src, film, master = original_source_and_receipts()

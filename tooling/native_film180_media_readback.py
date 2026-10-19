@@ -104,11 +104,19 @@ def source_identity(source: dict, motion: dict, master: dict, wave_sha: str,
             and [len(scene.get("nodes", [])) for scene in scenes] == [3, 1],
             "180frame_original_source_scene_graph_changed")
     profile = profiles[0]
+    ratio = lambda num, den: {"num": str(num), "den": str(den)}
     require(profile.get("width") == WIDTH
             and profile.get("height") == HEIGHT
+            and profile.get("frame_rate") == ratio(FRAME_RATE, 1)
             and profile.get("captions") is True
             and profile.get("burn_in_captions") is True,
             "saved_source_caption_output_profile_changed")
+    require(
+        [(scene.get("start"), scene.get("duration")) for scene in scenes] == [
+            (ratio(0, 1), ratio(3, 1)), (ratio(3, 1), ratio(3, 1))
+        ],
+        "saved_two_scene_original_rational_clock_changed"
+    )
     profile_id = profile.get("id")
     require(profile_id == motion.get("deliverable_id")
             and profile_id == master.get("deliverable_id")
@@ -131,12 +139,39 @@ def source_identity(source: dict, motion: dict, master: dict, wave_sha: str,
             and voices[0].get("source_sha256") == wave_sha
             and voices[0].get("sample_rate_hz") == PCM_RATE
             and voices[0].get("channels") == 2
+            and voices[0].get("measured_duration") == ratio(6, 1)
             and profile.get("voice_track_id") == voices[0].get("id")
             and type(original_audio) is dict
             and original_audio.get("sha256") == wave_sha
             and original_audio.get("sample_rate") == PCM_RATE
             and original_audio.get("channels") == 2,
             "original_selected_stereo_voice_digest_or_profile_changed")
+    transcript = source.get("audio", {}).get("transcript")
+    require(type(transcript) is list and len(transcript) == 2,
+            "original_two_captions_not_saved_in_authorial_source")
+    expected_cues = [
+        (ratio(1, 5), ratio(9, 10)),
+        (ratio(11, 10), ratio(12, 5)),
+    ]
+    for cue, (expected_start, expected_end) in zip(transcript, expected_cues):
+        require(type(cue) is dict
+                and cue.get("voice_track_id") == voices[0].get("id")
+                and cue.get("start") == expected_start
+                and cue.get("end") == expected_end
+                and cue.get("alignment", {}).get("kind") == "manual"
+                and type(cue.get("text")) is str
+                and 1 <= len(cue["text"]) <= 160,
+                "saved_manual_native_caption_cues_not_original")
+    recipes = source.get("production_design", {}).get("delivery_recipes")
+    require(type(recipes) is dict and set(recipes) == {profile_id},
+            "saved_original_delivery_recipe_missing_or_duplicated")
+    intents = recipes[profile_id].get("scene_intents")
+    require(type(intents) is list and intents == [
+        {"scene_id": scenes[0].get("id"), "role": "evidence",
+         "archetype": "evidence_frame"},
+        {"scene_id": scenes[1].get("id"), "role": "evidence",
+         "archetype": "statement"},
+    ], "saved_original_two_scene_narrative_intents_changed")
     encoded = master.get("master")
     require(type(encoded) is dict
             and encoded.get("artifact", {}).get("sha256") == mp4_sha
