@@ -389,3 +389,122 @@ describe("Canvas session recovery pointer admission", () => {
     expect(read("canvas-session")).toBe("window-1");
   });
 });
+
+describe("Canvas style uses one recoverable, revision-bound authoring session", () => {
+  it("preserves fill, typography and exact raw values through ten other author revisions", async () => {
+    const { CANVAS_STYLE_FIELDS, canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    const scene = project.scenes[0], first = scene.nodes[0];
+    let draft = createCanvasDraft(project, scene.id, first.id);
+    for (const [field, raw] of Object.entries({ fill: "#F7EAD7", font_size: "55", line_height: "1.35", font_weight: "600" })) {
+      draft = editCanvasField(draft, field as typeof CANVAS_STYLE_FIELDS[number], raw);
+    }
+    for (let index = 0; index < 10; index++) {
+      project = structuredClone(project); project.revision++;
+      project.scenes[0].nodes[0].text = "External copy " + index;
+      draft = reconcileCanvasDraft(draft, project);
+    }
+    expect(draft.fields.fill.raw).toBe("#F7EAD7");
+    expect(draft.fields.font_size.raw).toBe("55");
+    expect(draft.fields.line_height.raw).toBe("1.35");
+    expect(canvasGroupIssue(draft, project, "style")).toBeNull();
+    const saved = prepareCanvasSubmission(draft, project, "style", "style-10").change;
+    expect(saved.type).toBe("update_canvas_style");
+    if (saved.type === "update_canvas_style") expect(saved.style).toMatchObject({ fill: "#F7EAD7", font_size: 55, line_height: 1.35 });
+  });
+
+  it("rejects partial typography and composes unrelated saved style changes", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project, project.scenes[0].id, project.scenes[0].nodes[0].id), "font_size", "1e");
+    expect(canvasGroupIssue(draft, project, "style")).toContain("Font size");
+    expect(() => prepareCanvasSubmission(draft, project, "style", "no")).toThrow();
+    draft = editCanvasField(draft, "font_size", "63");
+    project = structuredClone(project); project.revision++; project.scenes[0].nodes[0].style.stroke = "#AA3412";
+    draft = reconcileCanvasDraft(draft, project);
+    expect(canvasGroupIssue(draft, project, "style")).toBeNull();
+    const change = prepareCanvasSubmission(draft, project, "style", "composed").change;
+    if (change.type === "update_canvas_style") expect(change.style).toMatchObject({ stroke: "#AA3412", font_size: 63 });
+  });
+
+  it("keeps a later human style decision through the saved acknowledgement", async () => {
+    const { canvasSubmissionMatches } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project, project.scenes[0].id, project.scenes[0].nodes[0].id), "fill", "#132435");
+    const submitted = prepareCanvasSubmission(draft, project, "style", "style-attempt");
+    draft = editCanvasField(submitted.draft, "fill", "#ABCDEF");
+    const saved = structuredClone(project); saved.revision++;
+    if (submitted.change.type !== "update_canvas_style") throw new Error("Expected style");
+    saved.scenes[0].nodes[0].style = submitted.change.style;
+    expect(canvasSubmissionMatches(saved, draft, submitted.submission)).toBe(true);
+    draft = reconcileCanvasDraft(draft, saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.fill.raw).toBe("#ABCDEF");
+    const next = prepareCanvasSubmission(draft, saved, "style", "later");
+    if (next.change.type === "update_canvas_style") expect(next.change.style.fill).toBe("#ABCDEF");
+  });
+
+  it("prevents overwriting an overlapping peer fill without explicit review", async () => {
+    const { canvasGroupIssue, canvasDraftConflicts, resolveCanvasField } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project, project.scenes[0].id, project.scenes[0].nodes[0].id), "fill", "#123456");
+    project = structuredClone(project);project.revision++;project.scenes[0].nodes[0].style.fill = "#888888";
+    draft = reconcileCanvasDraft(draft, project);
+    expect(canvasDraftConflicts(draft,project).some(c => c.field === "fill")).toBe(true);
+    expect(canvasGroupIssue(draft,project,"style")).toContain("overlapping");
+    expect(() => prepareCanvasSubmission(draft,project,"style","blocked")).toThrow();
+    draft = resolveCanvasField(draft,project,"fill","draft");
+    const committed = prepareCanvasSubmission(draft,project,"style","chosen");
+    if (committed.change.type === "update_canvas_style") expect(committed.change.style.fill).toBe("#123456");
+  });
+
+  it("keeps optional shape typography null instead of silently converting to zero", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject), shape = project.scenes[0].nodes.find(node => node.kind === "shape")!;
+    let draft = createCanvasDraft(project,project.scenes[0].id,shape.id);
+    expect(canvasGroupIssue(draft,project,"style")).toContain("already match");
+    draft = editCanvasField(draft,"stroke","#AE2177");
+    const change = prepareCanvasSubmission(draft,project,"style","shape").change;
+    expect(change.type).toBe("update_canvas_style");
+    if(change.type === "update_canvas_style") {
+      expect(change.style.stroke).toBe("#AE2177");
+      expect(change.style.font_size).toBeNull();
+      expect(change.style.line_height).toBeNull();
+      expect(change.style.font_weight).toBeNull();
+    }
+  });
+
+  it("upgrades valid old v1 Canvas copies without dropping text and numeric drafts", async () => {
+    const { CANVAS_STYLE_FIELDS } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project,project.scenes[0].id,project.scenes[0].nodes[0].id),"text","Kept legacy content");
+    draft = editCanvasField(draft,"x","345");
+    const legacy = structuredClone(draft);
+    legacy.schema = "motionwright.canvas-draft/1";
+    for (const field of CANVAS_STYLE_FIELDS) delete (legacy.fields as Partial<typeof draft.fields>)[field];
+    const scope = draft.scope, raw = JSON.stringify({schema:"motionwright.canvas-recovery/1",scope,writerId:"old",updatedAt:1,draft:legacy});
+    const decoded = decodeCanvasRecovery(raw,scope,"old").draft!;
+    const migrated = reconcileCanvasDraft(decoded,project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/2");
+    expect(migrated.fields.text.raw).toBe("Kept legacy content");
+    expect(migrated.fields.x.raw).toBe("345");
+    expect(migrated.fields.font_size.raw).toBe(String(project.scenes[0].nodes[0].style.font_size));
+  });
+});
+
+describe("Canvas style lock authority", () => {
+  it("rejects locked style without losing the author's draft", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const original = structuredClone(fixtureProject);
+    const scene = original.scenes[0], node = scene.nodes[0];
+    const draft = editCanvasField(createCanvasDraft(original,scene.id,node.id),"fill","#F7EAD7");
+    const withSceneLock = structuredClone(original);
+    withSceneLock.locks.push({id:"style-scene-lock",resource:"scene:"+scene.id,kind:"style",note:"Approved art direction"});
+    expect(canvasGroupIssue(draft,withSceneLock,"style")).toContain("lock");
+    expect(() => prepareCanvasSubmission(draft,withSceneLock,"style","blocked")).toThrow();
+    const withNodeLock = structuredClone(original);
+    withNodeLock.scenes[0].nodes[0].property_locks.push("style");
+    expect(canvasGroupIssue(draft,withNodeLock,"style")).toContain("lock");
+    expect(draft.fields.fill.raw).toBe("#F7EAD7");
+  });
+});

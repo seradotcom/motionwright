@@ -386,6 +386,8 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       {canvasFieldIssue("text", draft.fields.text.raw) && <span id={fieldId("text") + "-error"} className="production-error">{canvasFieldIssue("text", draft.fields.text.raw)}</span>}
     </label>
     <button className="button full" type="button" onClick={() => void save("text")} disabled={pending || textIssue !== null} title={textIssue ?? undefined}>Commit text</button>
+    <CanvasStructureEditor scene={scene} node={node} commit={commit} draft={draft}
+      edit={edit} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")} pending={pending}/>
     {canvasDraftHasWork(draft) && <button className="button full" type="button" disabled={pending} onClick={() => {
       replace(createCanvasDraft(projectRef.current, scene.id, node.id));
       setError(null); setNotice("Discarded this object's local input. The saved project and other object drafts are unchanged.");
@@ -1042,7 +1044,6 @@ export default function CanvasWorkspace({
                 </label>
               </div>
 
-              <CanvasStructureEditor scene={scene} node={selectedNode} commit={commit} />
             </>
           )}
           <TypographySafetyReview
