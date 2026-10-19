@@ -1,9 +1,13 @@
 """Synthetic negative/positive tests for A5 history guard; no original private data."""
 from __future__ import annotations
 import copy
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import conformance_history_guard as guard
@@ -76,7 +80,7 @@ class HistoryGuardTests(unittest.TestCase):
     def test_technical_status_change_without_saved_prior_snapshot_fails(self):
         row=self.new[guard.LEDGERS[0]]["requirements"][0]
         row["technical_assessment"]["technical_verification"]["status"]="pass"
-        self.assertViolation("changed_assessment_has_no_prior_snapshot")
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
 
     def test_forged_new_source_label_does_not_satisfy_prior_snapshot(self):
         row=self.new[guard.LEDGERS[0]]["requirements"][0]
@@ -84,7 +88,7 @@ class HistoryGuardTests(unittest.TestCase):
         row["assessment_history"].append({
             "source":{**self.source,"motionwright_sha":"e"*40},
             "prior_technical_status":"not_run","prior_criteria":[self.field]})
-        self.assertViolation("changed_assessment_has_no_prior_snapshot")
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
 
     def test_row_id_renaming_cannot_drop_old_history(self):
         self.new[guard.LEDGERS[0]]["requirements"][0]["id"]="EXAMPLE-RENAMED"
@@ -154,6 +158,121 @@ class HistoryGuardTests(unittest.TestCase):
     def test_missing_row_or_evidence_index_is_not_success(self):
         self.new.pop(guard.INDEX)
         self.assertViolation("missing_source_index")
+
+    def test_H01_empty_previous_criterion_list_does_not_prove_history(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({
+            "source":self.source, "prior_technical_status":"not_run",
+            "prior_criteria":[]})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_H01_invented_old_criterion_does_not_prove_history(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        false_criterion=copy.deepcopy(self.field)
+        false_criterion["status"]="pass"
+        row["assessment_history"].append({
+            "source":self.source, "prior_technical_status":"not_run",
+            "prior_criteria":[false_criterion]})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_H01_only_current_evidence_ids_is_not_prior_snapshot(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({
+            "source":self.source,"prior_technical_status":"not_run",
+            "prior_current_record_ids":["record-current"]})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_H01_false_previous_evidence_list_invalidates_real_criteria(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({
+            "source":self.source, "prior_technical_status":"not_run",
+            "prior_criteria":[copy.deepcopy(self.field)],
+            "prior_current_record_ids":["invented"]})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_H01_real_compact_status_snapshot_matches_every_criterion(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({
+            "source":self.source,"prior_technical_status":"not_run",
+            "prior_criterion_statuses":{"EXAMPLE-01#/statement":"not_run"}})
+        result=guard.inspect(self.old,self.new)
+        self.assertEqual(result["changed_assessments_with_history"],1)
+
+    def test_H01_empty_compact_status_map_is_not_accepted(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({
+            "source":self.source,"prior_technical_status":"not_run",
+            "prior_criterion_statuses":{}})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_H01_invented_contract_previous_state_is_not_accepted(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({
+            "source":self.source,"prior_technical_status":"not_run",
+            "prior_criteria":[copy.deepcopy(self.field)],
+            "prior_contract_status":"accepted"})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    @staticmethod
+    def _synthetic_repo(root, text):
+        root.mkdir(parents=True)
+        def run(*args):
+            p=subprocess.run(["git","-C",str(root),*args],
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False)
+            if p.returncode:
+                raise AssertionError(p.stderr.decode("utf-8","replace"))
+            return p.stdout.decode("utf-8").strip()
+        run("init","-q")
+        (root/"docs/acceptance").mkdir(parents=True)
+        (root/guard.INDEX).write_text(text,encoding="utf-8")
+        run("add","--",guard.INDEX)
+        run("-c","user.name=Test","-c","user.email=test@example.invalid",
+            "commit","-q","-m","Synthetic exact source")
+        return run("rev-parse","HEAD"),run
+
+    def test_H02_inherited_git_dir_and_work_tree_cannot_redirect_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary)
+            real_sha,real=self._synthetic_repo(base/"real", "genuine-source")
+            other_sha,other=self._synthetic_repo(base/"other","substituted-source")
+            self.assertNotEqual(real_sha,other_sha)
+            with mock.patch.dict(os.environ,{
+                    "GIT_DIR":str(base/"other"/".git"),
+                    "GIT_WORK_TREE":str(base/"other"),
+                    "GIT_CONFIG_COUNT":"1",
+                    "GIT_CONFIG_KEY_0":"core.quotePath",
+                    "GIT_CONFIG_VALUE_0":"false"}):
+                self.assertEqual(guard.git_exact(base/"real",real_sha,guard.INDEX),
+                                 b"genuine-source")
+
+    def test_H02_git_replace_ref_does_not_substitute_original_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/"repo"
+            before,run=self._synthetic_repo(root,"original-object")
+            (root/guard.INDEX).write_text("replacement-object",encoding="utf-8")
+            run("add","--",guard.INDEX)
+            run("-c","user.name=Test","-c","user.email=test@example.invalid",
+                "commit","-q","-m","Replacement object")
+            after=run("rev-parse","HEAD")
+            self.assertNotEqual(before,after)
+            run("replace",before,after)
+            # This is the original bypass: unguarded Git show now returns
+            # contents from the replaced commit, despite the original SHA.
+            self.assertEqual(run("show",before+":"+guard.INDEX),
+                             "replacement-object")
+            self.assertEqual(guard.git_exact(root,before,guard.INDEX),
+                             b"original-object")
+
+    def test_H02_noncanonical_source_path_cannot_be_requested(self):
+        with self.assertRaisesRegex(guard.HistoryViolation,"unrecognized_source_path"):
+            guard.git_exact(Path("."),"a"*40,"../../private/secret.json")
 
 
 if __name__=="__main__":
