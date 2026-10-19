@@ -741,6 +741,18 @@ class RawCustodyTests(unittest.TestCase):
                 reads.append((size, len(raw)))
                 return raw
 
+        def observed_open(path, mode="r", *args, **kwargs):
+            stream = original_open(path, mode, *args, **kwargs)
+            return ObservedReader(stream) if path == target and mode == "rb" else stream
+
+        # A tiny input must not request the entire default 256 MiB budget.
+        for contents in (b"12345678", b""):
+            self.raw.write_bytes(contents)
+            reads.clear()
+            with patch.object(Path, "open", observed_open):
+                self.assertEqual(ci.read(self.raw), contents)
+            self.assertEqual(reads, [(len(contents) + 1, len(contents))])
+
         def grow_before_open(path, mode="r", *args, **kwargs):
             if path == target and mode == "rb":
                 with original_open(path, "ab") as writer:
@@ -748,6 +760,15 @@ class RawCustodyTests(unittest.TestCase):
                 return ObservedReader(original_open(path, mode, *args, **kwargs))
             return original_open(path, mode, *args, **kwargs)
 
+        self.raw.write_bytes(b"12345678")
+        reads.clear()
+        with patch.object(Path, "open", grow_before_open), self.assertRaisesRegex(ValueError, "changed during read"):
+            ci.read(self.raw)
+        self.assertEqual(reads, [(9, 9)])
+        self.assertEqual(self.raw.stat().st_size, 72)
+
+        self.raw.write_bytes(b"12345678")
+        reads.clear()
         with patch.object(Path, "open", grow_before_open), self.assertRaisesRegex(ValueError, "exceeds budget during read"):
             ci.read(self.raw, limit=8)
         self.assertEqual(reads, [(9, 9)])

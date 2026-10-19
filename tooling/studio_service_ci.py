@@ -101,7 +101,7 @@ def read(path, limit=256 * 1024 * 1024):
             f"Non-regular or reparse input: {path.name}")
     require(before.st_size <= limit, f"Input exceeds budget: {path.name}")
     with path.open("rb") as stream:
-        raw = stream.read(limit + 1)
+        raw = stream.read(min(limit + 1, before.st_size + 1))
     require(len(raw) <= limit, f"Input exceeds budget during read: {path.name}")
     after = path.lstat()
     signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
