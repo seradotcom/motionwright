@@ -308,9 +308,105 @@ def affected_packages(paths: set[str], graphs: list[dict[str, Any]]) -> list[str
         affected = expanded
 
 
+def reviewed_workflow_closure(review: Any, *, trees: dict[str, Tree],
+                              source: dict[str, str], paths: set[str],
+                              changes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check a caller-reviewed, exact-source workflow dependency inventory.
+
+    This validates a trust input; a JSON review ID cannot authenticate its
+    author or establish that its dependency audit was complete. Literal source
+    references add a positive omission check. Absence of a literal reference
+    never establishes independence. Unsupported relationships stay broad.
+    """
+    require(isinstance(review, dict), "workflow impact review must be an object")
+    require(set(review) == {"schema_version", "kind", "mode", "status", "review_id",
+                            "source", "changed_paths", "workflow_graphs"},
+            "workflow impact review fields are missing or unsupported")
+    require(type(review["schema_version"]) is int and review["schema_version"] == 1
+            and review["kind"] == "motionwright-reviewed-workflow-impact"
+            and review["mode"] == "shadow" and review["status"] == "REVIEWED",
+            "workflow impact review is not an explicit reviewed shadow inventory")
+    require(isinstance(review["review_id"], str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", review["review_id"]),
+            "workflow impact review ID is invalid")
+    require(review["source"] == source, "workflow impact review source is stale or unrelated")
+    require(bool(paths) and isinstance(review["changed_paths"], list)
+            and review["changed_paths"] == sorted(paths),
+            "workflow impact review must cover every changed path exactly")
+    inventories = {sha: tree.workflows() for sha, tree in trees.items()}
+    current = inventories[source["checkout_sha"]]
+    require(all(inventory == current for inventory in inventories.values()),
+            "added, removed or renamed workflows require full disposition")
+    require(paths <= current and all(change["status"] == "M"
+                                    and len(change["paths"]) == 1 for change in changes),
+            "reviewed narrowing only covers modified workflow definitions")
+    views = unique_objects(review["workflow_graphs"], "source_sha", "workflow graph")
+    require(set(views) == set(trees), "workflow review does not cover every compared source tree")
+    edges: dict[str, set[str]] = {workflow: set() for workflow in current}
+    for sha, tree in sorted(trees.items()):
+        view = views[sha]
+        require(set(view) == {"source_sha", "tree_sha", "workflows", "unresolved_dependencies"},
+                "workflow graph fields are missing or unsupported")
+        require(view["tree_sha"] == tree.tree_sha, "workflow review tree differs from Git")
+        require(view["unresolved_dependencies"] == [], "workflow graph has unresolved dependencies")
+        nodes = view["workflows"]
+        require(isinstance(nodes, dict) and set(nodes) == inventories[sha],
+                "workflow graph inventory is missing or unexpected")
+        for workflow, node in sorted(nodes.items()):
+            safe_path(workflow)
+            require(isinstance(node, dict) and set(node) == {"sha256", "depends_on", "basis"},
+                    "workflow dependency record is incomplete")
+            raw = tree.read(workflow)
+            require(node["sha256"] == hashlib.sha256(raw).hexdigest(),
+                    "workflow review definition hash differs from Git")
+            dependencies = node["depends_on"]
+            require(isinstance(dependencies, list)
+                    and all(isinstance(item, str) for item in dependencies)
+                    and dependencies == sorted(set(dependencies))
+                    and set(dependencies) <= inventories[sha] and workflow not in dependencies,
+                    "workflow dependencies are duplicate, unsafe or outside the inventory")
+            require(isinstance(node["basis"], str) and 1 <= len(node["basis"]) <= 2000,
+                    "workflow dependency review basis is required")
+            # This initial profile deliberately excludes implicit workflow
+            # activation and reusable workflows. A reviewed graph alone does
+            # not supply their event/ref/artifact applicability contracts.
+            require(not any(token in raw for token in
+                            (b"workflow_call", b"workflow_run", b"repository_dispatch")),
+                    "workflow activation or reusable relationship needs a wider contract")
+            references = {other for other in inventories[sha]
+                          if other != workflow and other.encode("utf-8") in raw}
+            require(references <= set(dependencies),
+                    "workflow graph omits a literal definition reference")
+            edges[workflow].update(dependencies)
+    closure = set(paths)
+    while True:
+        expanded = closure | {consumer for consumer, dependencies in edges.items()
+                              if closure.intersection(dependencies)}
+        if expanded == closure:
+            break
+        closure = expanded
+    return {
+        "status": "APPLIED",
+        "review_id_sha256": hashlib.sha256(review["review_id"].encode("utf-8")).hexdigest(),
+        "review_sha256": digest(review),
+        "authentication": "caller-must-authenticate-review-and-audit-completeness",
+        # A plan may be retained as a public technical artifact. Keep the
+        # original review ID and narrative basis in the private review only.
+        "workflow_graphs": [
+            {"source_sha": sha, "tree_sha": views[sha]["tree_sha"],
+             "workflows": {path: {"sha256": node["sha256"], "depends_on": node["depends_on"]}
+                           for path, node in sorted(views[sha]["workflows"].items())}}
+            for sha in sorted(views)
+        ],
+        "selected_workflows": sorted(closure),
+        "evidence_claim": "workflow-impact-review-not-execution-or-acceptance",
+    }
+
+
 def build_plan(repo: Path, *, base: str, head: str, checkout: str,
                event: str, repository: str, candidate: bool = False,
-               allow_advanced_pr_base: bool = False) -> dict[str, Any]:
+               allow_advanced_pr_base: bool = False,
+               workflow_impact_review: dict[str, Any] | None = None) -> dict[str, Any]:
     commit_sha(base, zero=True)
     commit_sha(head)
     commit_sha(checkout)
@@ -396,6 +492,21 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
     workflow_hashes = {p: hashlib.sha256(current.read(p)).hexdigest() for p in sorted(inventory)}
     old_workflows = set().union(*(tree.workflows() for tree in trees.values()))
     deleted_workflows = sorted(old_workflows - inventory)
+    workflow_review = {"status": "NOT_SUPPLIED"}
+    if workflow_impact_review is not None:
+        try:
+            require(not candidate and not force_full and not deleted_workflows,
+                    "candidate, prior expansion or removed workflow takes precedence")
+            workflow_review = reviewed_workflow_closure(
+                workflow_impact_review, trees=trees,
+                source={"repository": repository, "event": event, "base_sha": base,
+                        "head_sha": head, "checkout_sha": checkout},
+                paths=paths, changes=changes,
+            )
+        except PlanError as error:
+            workflow_review = {"status": "NOT_APPLIED", "reason": str(error),
+                               "review_sha256": digest(workflow_impact_review)}
+            force_full.append("workflow-impact-review-not-applicable")
     selected: dict[str, dict[str, Any]] = {}
 
     def select(workflows: set[str], stage: str, reason: str) -> None:
@@ -405,9 +516,17 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
             item["reasons"].add(reason)
 
     select({CI, PLANNER}, "G0", "always-fast-contract-format-lint-and-security-checks")
+    if workflow_review["status"] == "APPLIED":
+        select(paths, "G1", "changed-workflow-execution-definition")
+        select(set(workflow_review["selected_workflows"]) - paths, "G2",
+               "reviewed-workflow-consumer-closure-over-compared-source-trees")
     unknown = []
     for path in sorted(paths):
         if path in NEUTRAL_PATHS:
+            continue
+        if workflow_review["status"] == "APPLIED":
+            # Admission above requires that every changed path is a modified
+            # workflow, so no product, lock or shared action input bypasses G2.
             continue
         if (path.endswith(("Cargo.toml", "Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"))
                 or path in ("SOURCE_LOCK.json", "rust-toolchain.toml", "rust-toolchain")
@@ -477,6 +596,7 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
         "changed_paths": sorted(paths), "unknown_paths": sorted(unknown),
         "dependency_graphs": graphs, "affected_package_roots": affected,
         "workflow_inventory_sha256": workflow_hashes,
+        "workflow_impact_review": workflow_review,
         "selected_workflows": [
             {"workflow": p, "stages": sorted(selected[p]["stages"]), "reasons": sorted(selected[p]["reasons"])}
             for p in sorted(selected)
@@ -626,6 +746,9 @@ def main() -> int:
     p.add_argument("--allow-advanced-pr-base", action="store_true",
                    help="PR only: accept an exact two-parent merge whose first parent descends from "
                         "the event base; record both bases and expand the full shadow inventory")
+    p.add_argument("--reviewed-workflow-impact", type=Path,
+                   help="optional private, independently reviewed workflow dependency inventory; "
+                        "must be outside the source checkout and match every compared source")
     p.add_argument("--output", type=Path)
     a = sub.add_parser("aggregate")
     a.add_argument("--plan", type=Path, required=True)
@@ -635,9 +758,15 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "plan":
+            workflow_review = None
+            if args.reviewed_workflow_impact:
+                require(not args.reviewed_workflow_impact.resolve().is_relative_to(args.repo.resolve()),
+                        "private workflow impact review must be outside source checkout")
+                workflow_review = read_json(args.reviewed_workflow_impact)
             result = build_plan(args.repo, base=args.base, head=args.head, checkout=args.checkout,
                                 event=args.event, repository=args.repository, candidate=args.candidate,
-                                allow_advanced_pr_base=args.allow_advanced_pr_base)
+                                allow_advanced_pr_base=args.allow_advanced_pr_base,
+                                workflow_impact_review=workflow_review)
         else:
             result = aggregate(read_json(args.plan), read_json(args.expected), read_json(args.observed))
         rendered = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
