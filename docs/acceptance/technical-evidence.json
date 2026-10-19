@@ -8947,11 +8947,17 @@
     "domain-in-memory-history": {
       "kind": "unit"
     },
+    "external-core-locked-ci": {
+      "kind": "integration"
+    },
     "ffmpeg-h264-admission": {
       "kind": "native"
     },
     "otio-h264-source-missing-reference": {
       "kind": "native"
+    },
+    "public-core-source-audit": {
+      "kind": "source"
     },
     "source-declaration-inspection": {
       "kind": "source"
@@ -20978,6 +20984,168 @@
           "sha256": "406bd06ec031685e3c2621bb02f438620a6e034cb7be05a5212886619f6f81d3"
         }
       ]
+    },
+    {
+      "artifact_scope": "Redistributable source/package metadata and hash-bound source-policy checks.",
+      "artifacts": [
+        {
+          "member": "external-public-core-source-main951.json",
+          "member_sha256": "1479de537b36a70f00f2ca33610088a7919ccecaed67d03f1ecff7671a96ab72",
+          "path": "docs/acceptance/evidence/external-core-locked-build-main-951b53da.zip",
+          "sha256": "a94d76699a30955ecaf934c975a8e164623fd2579d1d538af0da93076f0e7a28"
+        }
+      ],
+      "assertions": [
+        "Motionwright's canonical Git repo is distinct from the Core repository.",
+        "Eight Semwright dependencies resolve from a public Git URL at the exact revision in SOURCE_LOCK.json, with no local path override.",
+        "All six tracked application-owned crate manifests are named motionwright-*, and no Semwright Core crate is copied into tracked crates or vendor trees.",
+        "Public source policy explicitly checks source pin identity and rejects private-material publication."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "crates/domain/Cargo.toml",
+          "sha256": "8787b18304fa8b66c57597168d2d54ced44acfb0911467f8cad8dcb3c31a5a3b"
+        },
+        {
+          "path": "crates/driver-manim-community/Cargo.toml",
+          "sha256": "b681cb4d68dd871b4bcbc72174179781cb5ffb7124ff8bcf0b830e1368dc7838"
+        },
+        {
+          "path": "crates/manim-profile/Cargo.toml",
+          "sha256": "027d8100a187bbfad0604adddab09bc4cc5080071b4a33fc702e355b6960deca"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "07afd9a66630bba5dae5dc73178302bcbc5a69e4f5ae4cdbfda5b039e61d137f"
+        },
+        {
+          "path": "crates/service/Cargo.toml",
+          "sha256": "7f85f62079f85a9ba6078c42a949627b79b801e61d3368c9164f0008b73711c8"
+        },
+        {
+          "path": "crates/storage/Cargo.toml",
+          "sha256": "f60ec852c01b3dd28ded6bf1560645f43655d4e13bc46feef990b566b3e0d263"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 9,
+        "profile": "public-core-source-audit",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "separate-core-source-main951",
+      "limitations": [
+        "Static source inspection does not verify runtime behavior or consent/license of an external asset.",
+        "Main CI execution is retained separately; a source check alone is not a native or installed acceptance."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original CI job IDs/log digests/selected lines and exact source-locked dependency input.",
+      "artifacts": [
+        {
+          "member": "external-locked-build-observations-main951.json",
+          "member_sha256": "143efe85b7f9dce24282d8d98064cb19550cd70b60e2118ac56ff75dbd4e3b55",
+          "path": "docs/acceptance/evidence/external-core-locked-build-main-951b53da.zip",
+          "sha256": "a94d76699a30955ecaf934c975a8e164623fd2579d1d538af0da93076f0e7a28"
+        }
+      ],
+      "assertions": [
+        "The original source-policy job on exact main951 passes and reports the declared public Semwright revision/version.",
+        "The original rust-tests job uses cargo test --locked with the Git Cargo.lock bytes and completes compiled Motionwright domain, storage, service and native crates against Git dependency APIs."
+      ],
+      "complete_criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "26126771ca906af88eabb43d785f132cc7657a452093069aef68fd5c4f98ead0"
+        },
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "external-core-locked-ci",
+        "run_id": 39212333814,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39212333814"
+      },
+      "id": "external-core-locked-build-main951",
+      "limitations": [
+        "Scoped external Core boundary only; product media or installed UI are not inferred.",
+        "Original selected CI jobs succeed, but no human license/rights interpretation or stable release is asserted."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "07afd9a66630bba5dae5dc73178302bcbc5a69e4f5ae4cdbfda5b039e61d137f"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -26329,6 +26497,94 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "e5462a7a93d71392f6d61f90b4388040c8d90f6add187f35d0cde6b41b5bbe07"
+    },
+    {
+      "criterion_id": "CR-FOUND-01#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "external-core-locked-build-main951": "02439c83e019c7e0f06125318bd3472f0a5bf5b15294892a66f4815114a0df71",
+        "separate-core-source-main951": "1360e5e08f38f25fd83b4ae024391b1192747085f7383258d2e0b570fca1d1d3"
+      },
+      "id": "technical-cr-found-01-statement-main951",
+      "limitations": [
+        "The exact original repo boundary is a technically objective contract; this automated review is not a human evaluator or a license decision."
+      ],
+      "obligations": [
+        {
+          "basis": "Git source checks verify separate app repository, eight public Semwright Git crates and no copied Core local path.",
+          "evidence_ids": [
+            "separate-core-source-main951"
+          ],
+          "id": "external-repo-and-public-contract-source",
+          "status": "pass"
+        },
+        {
+          "basis": "Exact original main951 CI executes --locked Rust tests on Motionwright Native consumer, with matching Semwright SOURCE_LOCK.",
+          "evidence_ids": [
+            "external-core-locked-build-main951"
+          ],
+          "id": "external-locked-native-consumer-build",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "290409caa5453dc7de687e85b197fa4bdce79e0286ca04db7f8675961bd9e29f",
+      "reviewed_at_utc": "2026-10-19T16:05:31.214868+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-git-source-and-original-locked-ci-review-main951"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "d7b9334791eac150d827bb1976a4319b290380feb751c05a14581a8dbc61fd86"
+    },
+    {
+      "criterion_id": "CR-FOUND-01#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "external-core-locked-build-main951": "02439c83e019c7e0f06125318bd3472f0a5bf5b15294892a66f4815114a0df71",
+        "separate-core-source-main951": "1360e5e08f38f25fd83b4ae024391b1192747085f7383258d2e0b570fca1d1d3"
+      },
+      "id": "technical-cr-found-01-acceptance_criterion-main951",
+      "limitations": [
+        "The exact original repo boundary is a technically objective contract; this automated review is not a human evaluator or a license decision."
+      ],
+      "obligations": [
+        {
+          "basis": "Six tracked Motionwright-owned packages, no Semwright path overrides or Core vendor crate; exact source lock bound.",
+          "evidence_ids": [
+            "separate-core-source-main951"
+          ],
+          "id": "no-private-crate-copy-or-local-core-path",
+          "status": "pass"
+        },
+        {
+          "basis": "Original source policy and --locked Cargo job succeed using public crate Git versions; no private Core checkout dependency.",
+          "evidence_ids": [
+            "external-core-locked-build-main951"
+          ],
+          "id": "public-contract-build-executes",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "902e5e8837630368044af6a18cc156d66d08cb34b2d0393a3f128e8dd96f7772",
+      "reviewed_at_utc": "2026-10-19T16:05:31.214868+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-git-source-and-original-locked-ci-review-main951"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6"
     }
   ],
   "verification_profiles": {
@@ -26382,6 +26638,36 @@
         "missing_reference_in_original_artifact": {
           "execution_profiles": [
             "otio-h264-source-missing-reference"
+          ]
+        }
+      },
+      "schema_version": 1
+    },
+    "CR-FOUND-01#/acceptance_criterion": {
+      "obligations": {
+        "no-private-crate-copy-or-local-core-path": {
+          "execution_profiles": [
+            "public-core-source-audit"
+          ]
+        },
+        "public-contract-build-executes": {
+          "execution_profiles": [
+            "external-core-locked-ci"
+          ]
+        }
+      },
+      "schema_version": 1
+    },
+    "CR-FOUND-01#/statement": {
+      "obligations": {
+        "external-locked-native-consumer-build": {
+          "execution_profiles": [
+            "external-core-locked-ci"
+          ]
+        },
+        "external-repo-and-public-contract-source": {
+          "execution_profiles": [
+            "public-core-source-audit"
           ]
         }
       },

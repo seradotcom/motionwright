@@ -81,6 +81,40 @@
             "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
           },
           "superseded_at_utc": "2026-10-19T06:59:39.524986+00:00"
+        },
+        {
+          "prior_contract_status": "open",
+          "prior_criteria": [
+            {
+              "evidence_ids": [],
+              "id": "CR-FOUND-01#/statement",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "d7b9334791eac150d827bb1976a4319b290380feb751c05a14581a8dbc61fd86",
+              "status": "not_run"
+            },
+            {
+              "evidence_ids": [],
+              "id": "CR-FOUND-01#/acceptance_criterion",
+              "missing_assertions": [
+                "complete_canonical_obligation_evidence_not_admitted"
+              ],
+              "scope_notes": [],
+              "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6",
+              "status": "not_run"
+            }
+          ],
+          "prior_current_record_ids": [],
+          "prior_technical_status": "not_run",
+          "reason": "Original objective Core-consumer boundary verified against source, public Git SDK dependencies, locked Cargo CI and an explicit automated sufficiency review.",
+          "reviewed_at_utc": "2026-10-19T16:05:31.214868+00:00",
+          "source": {
+            "digest_kind": "git-text-lf",
+            "motionwright_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+            "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+          }
         }
       ],
       "evidence": [
@@ -94,39 +128,42 @@
       "source_record_sha256": "a6cf5b29c633e8a8f5fb73fdaede56f14d418e1f554c8f5420bca3fb3eefcca8",
       "technical_assessment": {
         "artifact_verification": {
-          "currency_note": "Original artifacts retain their executed source. Updated source locations do not admit current media, installed or human acceptance.",
+          "currency_note": "Original exact SHA Git source and selected locked CI; no install/human/rights acceptance inferred.",
           "media_persistence_or_installed_artifacts": "not_promoted_from_test_logs",
           "status": "not_admitted"
         },
         "contract_acceptance": {
           "human_review_required": false,
           "human_review_status": "not_required",
-          "pending_criteria": [
-            "CR-FOUND-01#/acceptance_criterion",
-            "CR-FOUND-01#/statement"
-          ],
-          "status": "open"
+          "pending_criteria": [],
+          "status": "accepted"
         },
         "criteria": [
           {
-            "evidence_ids": [],
-            "id": "CR-FOUND-01#/statement",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "separate-core-source-main951",
+              "external-core-locked-build-main951"
             ],
-            "scope_notes": [],
+            "id": "CR-FOUND-01#/statement",
+            "missing_assertions": [],
+            "scope_notes": [
+              "Exact main951 public Git SDK dependency boundary and source policy, separately observed by the source lock and successful --locked integration jobs."
+            ],
             "source_clause_sha256": "d7b9334791eac150d827bb1976a4319b290380feb751c05a14581a8dbc61fd86",
-            "status": "not_run"
+            "status": "pass"
           },
           {
-            "evidence_ids": [],
-            "id": "CR-FOUND-01#/acceptance_criterion",
-            "missing_assertions": [
-              "complete_canonical_obligation_evidence_not_admitted"
+            "evidence_ids": [
+              "separate-core-source-main951",
+              "external-core-locked-build-main951"
             ],
-            "scope_notes": [],
+            "id": "CR-FOUND-01#/acceptance_criterion",
+            "missing_assertions": [],
+            "scope_notes": [
+              "Exact main951 public Git SDK dependency boundary and source policy, separately observed by the source lock and successful --locked integration jobs."
+            ],
             "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6",
-            "status": "not_run"
+            "status": "pass"
           }
         ],
         "dependencies": {
@@ -139,7 +176,10 @@
           "requirement_ids": []
         },
         "evidence_currency": {
-          "current_record_ids": [],
+          "current_record_ids": [
+            "separate-core-source-main951",
+            "external-core-locked-build-main951"
+          ],
           "current_source": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
           "historical_record_ids": [],
           "history_is_not_new_execution": true
@@ -152,7 +192,7 @@
             "tooling/source_policy.py",
             ".github/workflows/ci.yml"
           ],
-          "status": "not_assessed"
+          "status": "implemented"
         },
         "integration": {
           "meaning": "Observed integrated source snapshot; implementation completeness is a separate dimension.",
@@ -163,7 +203,7 @@
         "review": {
           "method": "automated",
           "reviewer_kind": "automated_technical",
-          "scope": "source_locations_and_immutable_historical_evidence_reconciled_against_current_main"
+          "scope": "A5 current Git source and original external Cargo locked test-body/contract review."
         },
         "schema_version": 1,
         "source": {
@@ -172,9 +212,15 @@
           "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         },
         "technical_verification": {
-          "evidence_ids": [],
-          "execution_kinds": [],
-          "status": "not_run"
+          "evidence_ids": [
+            "separate-core-source-main951",
+            "external-core-locked-build-main951"
+          ],
+          "execution_kinds": [
+            "source",
+            "integration"
+          ],
+          "status": "pass"
         }
       },
       "verification_status": "CI_PARTIAL"
@@ -37750,6 +37796,6 @@
   "technical_evidence_index": {
     "digest_kind": "git-text-lf",
     "path": "docs/acceptance/technical-evidence.json",
-    "sha256": "463ae015e28d83cc15a6b2acec54bcd6fb33537ec82eb40b00e3092d45e060a1"
+    "sha256": "c36d125ba1d022a6c95ffa80d79ee7e9da0d2da7eeea23dd763745794851c824"
   }
 }
