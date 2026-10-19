@@ -391,10 +391,109 @@ fn rational_cmp(left: RationalTime, right: RationalTime) -> std::cmp::Ordering {
     left_scaled.cmp(&right_scaled)
 }
 
+/// Check the current delivery target before native dispatch or artifact reuse.
+/// Structural validation remains read-compatible with historical drafts; this
+/// boundary does not relabel, repair, or infer the language of their media.
+pub fn validate_deliverable_voice_authority(project: &Project, profile_id: Uuid) -> Result<()> {
+    project.validate()?;
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|candidate| candidate.id == profile_id)
+        .ok_or_else(|| DomainError::NotFound(format!("deliverable:{profile_id}")))?;
+    validate_localized_voice_authority(project, profile)
+}
+
+pub(crate) fn validate_localized_voice_authority(
+    project: &Project,
+    profile: &DeliverableProfile,
+) -> Result<()> {
+    let Some(parent_id) = profile.parent_profile_id else {
+        return Ok(());
+    };
+    let parent = project
+        .deliverables
+        .iter()
+        .find(|candidate| candidate.id == parent_id)
+        .ok_or_else(|| DomainError::Invalid("deliverable parent profile does not exist".into()))?;
+    if profile.language == parent.language {
+        return Ok(());
+    }
+
+    let mut transcript_tracks = project
+        .audio
+        .transcript
+        .iter()
+        .map(|segment| segment.voice_track_id);
+    let first_transcript_track = transcript_tracks.next();
+    let sole_transcript_track =
+        first_transcript_track.filter(|first| transcript_tracks.all(|track_id| track_id == *first));
+    let parent_voice_id = parent
+        .voice_track_id
+        .or(project.audio.active_voice_track_id)
+        .or(sole_transcript_track);
+    if profile.voice_track_id.is_none()
+        && (parent_voice_id.is_some() || !project.audio.transcript.is_empty())
+    {
+        return Err(DomainError::Invalid(
+            "localized deliverable requires an explicit locale voice track".into(),
+        ));
+    }
+    // Audio uses the active voice while implicit captions use their unique
+    // transcript source. Neither may silently override a different authority.
+    if parent.voice_track_id.is_none()
+        && matches!(
+            (project.audio.active_voice_track_id, sole_transcript_track),
+            (Some(audio), Some(captions)) if audio != captions
+        )
+    {
+        return Err(DomainError::Invalid(
+            "localized deliverable requires an explicit parent voice selection when source audio and captions differ".into(),
+        ));
+    }
+    if parent_voice_id.is_some() && profile.voice_track_id == parent_voice_id {
+        return Err(DomainError::Invalid(
+            "localized deliverable cannot reuse the parent language voice track".into(),
+        ));
+    }
+    if !profile.timing_locked {
+        return Ok(());
+    }
+    match (parent_voice_id, profile.voice_track_id) {
+        (Some(parent_track_id), Some(localized_track_id)) => {
+            let track = |id| {
+                project
+                    .audio
+                    .voice_tracks
+                    .iter()
+                    .find(|track| track.id == id)
+                    .ok_or_else(|| {
+                        DomainError::Invalid("deliverable voice track does not exist".into())
+                    })
+            };
+            if track(parent_track_id)?.measured_duration
+                != track(localized_track_id)?.measured_duration
+            {
+                return Err(DomainError::Invalid(
+                    "localized deliverable cannot keep source timing when measured voice duration changes; re-time the variant or disable timing lock".into(),
+                ));
+            }
+        }
+        (None, Some(_)) if !project.audio.transcript.is_empty() => {
+            return Err(DomainError::Invalid(
+                "localized deliverable with locked timing requires an explicit parent voice selection".into(),
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn transcript_for_profile(
     project: &Project,
     profile: &DeliverableProfile,
 ) -> Result<Vec<crate::TranscriptSegment>> {
+    validate_localized_voice_authority(project, profile)?;
     if project.audio.transcript.is_empty() {
         return Err(DomainError::Invalid(
             "caption export requires transcript segments".into(),
@@ -520,6 +619,7 @@ pub fn variant_dependency_fingerprint(
         .iter()
         .find(|candidate| candidate.id == profile_id)
         .ok_or_else(|| DomainError::NotFound(format!("deliverable:{profile_id}")))?;
+    validate_localized_voice_authority(project, profile)?;
     let recipe = project.production_design.delivery_recipes.get(&profile_id);
     let original_mix = recipe.and_then(|recipe| recipe.original_mix.as_ref());
     if original_mix.is_some()
@@ -715,6 +815,7 @@ pub fn caption_sidecar(project: &Project, profile_id: Uuid) -> Result<CaptionSid
         .iter()
         .find(|candidate| candidate.id == profile_id)
         .ok_or_else(|| DomainError::NotFound(format!("deliverable:{profile_id}")))?;
+    validate_localized_voice_authority(project, profile)?;
     if !profile.captions {
         return Err(DomainError::Invalid(
             "captions are disabled for this deliverable profile".into(),
@@ -1873,5 +1974,42 @@ mod tests {
             );
             assert_eq!(project, before);
         }
+    }
+    #[test]
+    fn delivery_readiness_rechecks_current_sources_while_drafts_remain_repairable() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let original_voice = project.audio.voice_tracks[0].id;
+        let localized_voice = add_localized_voice(&mut project, 5);
+        project.audio.active_voice_track_id = Some(original_voice);
+        let mut profile = localized_profile(&project, Some(localized_voice));
+        profile.timing_locked = false;
+        project
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        validate_deliverable_voice_authority(&project, profile.id).unwrap();
+        project
+            .apply_change(&crate::Change::SetActiveVoiceTrack {
+                track_id: localized_voice,
+            })
+            .unwrap();
+        project.validate().unwrap();
+        let before = project.clone();
+        assert!(
+            validate_deliverable_voice_authority(&project, profile.id)
+                .unwrap_err()
+                .to_string()
+                .contains("explicit parent voice selection")
+        );
+        assert!(transcript_for_profile(&project, &profile).is_err());
+        validate_deliverable_voice_authority(&project, project.deliverables[0].id).unwrap();
+        assert_eq!(project, before);
+        project
+            .apply_change(&crate::Change::SetActiveVoiceTrack {
+                track_id: original_voice,
+            })
+            .unwrap();
+        validate_deliverable_voice_authority(&project, profile.id).unwrap();
     }
 }
