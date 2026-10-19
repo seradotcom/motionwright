@@ -49,6 +49,7 @@ fn usage() -> ! {
          readback EXISTING_DATABASE NEW_OBSERVATION_JSON |\
          edit EXISTING_DATABASE ORIGINAL_NATIVE_EVIDENCE NEW_EDITED_PROJECT_JSON |\
          render EXISTING_DATABASE OWNED_CONNECTION NEW_EVIDENCE_JSON |\
+         stage-audio EXISTING_DATABASE OWNED_CONNECTION SOURCE_WAV OWNER_FILENAME NEW_AUDIO_RECEIPT |\
          master EXISTING_DATABASE OWNED_CONNECTION NATIVE_FILM_RESULT WAV_OWNER_RELATIVE WAV_SHA256 NEW_MASTER_EVIDENCE"
     );
     std::process::exit(2);
@@ -825,6 +826,99 @@ fn verify_original_audio_file_binding(relative: &str, sha256: &str) -> FixtureRe
     Ok(())
 }
 
+/// Admit an already imported, first-party synthetic WAV into the exact
+/// owner output root that the authorized Host uses. No arbitrary source,
+/// external rights assumption, native effect or silent overwrite is allowed.
+fn stage_owned_source_wav(
+    database: &Path,
+    connection_path: &Path,
+    original_wav: &Path,
+    owner_name: &str,
+    receipt: &Path,
+) -> FixtureResult<()> {
+    if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Err("Film180 original WAV staging requires a disposable CI runner".into());
+    }
+    must_be_unused(receipt)?;
+    if !original_wav.is_absolute() || original_wav.is_symlink() || !original_wav.is_file() {
+        return Err(
+            "original imported first-party source WAV is not an absolute ordinary file".into(),
+        );
+    }
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    let [project] = projects.as_slice() else {
+        return Err("source-bound WAV staging requires one original saved project".into());
+    };
+    verified_projection(project)?;
+    let profile = &project.deliverables[0];
+    let voice_id = profile
+        .voice_track_id
+        .ok_or("original saved voice not selected")?;
+    let voice = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|v| v.id == voice_id)
+        .ok_or("saved first-party voice not registered in CAS")?;
+    verify_original_audio_file_binding(owner_name, &voice.source_sha256)?;
+    if voice.measured_duration != RationalTime::new(6, 1)?
+        || voice.channels != 2
+        || voice.sample_rate_hz != PCM_RATE
+    {
+        return Err("first-party saved voice duration or channel profile changed".into());
+    }
+    let actual = fs::read(original_wav)?;
+    let expected_bytes = usize::try_from(PCM_FRAMES)? * 4 + 44;
+    if actual.len() != expected_bytes || hex::encode(Sha256::digest(&actual)) != voice.source_sha256
+    {
+        return Err("original owner-imported WAV bytes are not the saved CAS source".into());
+    }
+    let connection = ProductionConnection::load(connection_path)?;
+    if connection.resource != project.resource_key() {
+        return Err("original WAV owner output is bound to a different project".into());
+    }
+    let output_root = &connection.output_root;
+    if !output_root.is_absolute() || !output_root.is_dir() || output_root.is_symlink() {
+        return Err("owner output root is not an existing ordinary absolute directory".into());
+    }
+    let destination = output_root.join(owner_name);
+    must_be_unused(&destination)?;
+    let mut staged = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&destination)?;
+    staged.write_all(&actual)?;
+    staged.sync_all()?;
+    if fs::metadata(&destination)?.len() != expected_bytes as u64
+        || hex::encode(Sha256::digest(fs::read(&destination)?)) != voice.source_sha256
+    {
+        return Err("staged first-party WAV bytes changed inside original owner root".into());
+    }
+    let payload = serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.native.film180.owner-staged-audio/1",
+        "project_id":project.id,
+        "generation":project.generation,
+        "revision":project.revision,
+        "owner_filename":owner_name,
+        "source_sha256":voice.source_sha256,
+        "source_bytes":expected_bytes,
+        "native_Broker_audio_effect_performed":false,
+        "staged_source_rights":"original first-party synthetic fixture only",
+        "master_or_audition_verified":false,
+        "human_approval":false,
+    }))?;
+    let mut out = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(receipt)?;
+    out.write_all(&payload)?;
+    out.write_all(b"\n")?;
+    out.sync_all()?;
+    println!("{}", String::from_utf8(payload)?);
+    Ok(())
+}
+
 /// Final H264/AAC master only from the existing, original native Film output.
 /// The old MLT AAC right-channel tail defect remains RED until an independent
 /// full decoded-PCM and video-frame observer admits this newly sourced result.
@@ -1087,6 +1181,20 @@ async fn main() -> FixtureResult<()> {
                 usage();
             }
             render_original(&database, &connection, &evidence).await?;
+        }
+        "stage-audio" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let wave = path_arg(&mut args);
+            let owner_name = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let receipt = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            stage_owned_source_wav(&database, &connection, &wave, &owner_name, &receipt)?;
         }
         "master" => {
             let database = path_arg(&mut args);
