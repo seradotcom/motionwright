@@ -96,7 +96,7 @@ fn seed(database: &Path) -> FixtureResult<Project> {
         "camera120:add-scene",
         Change::AddScene {
             name: "Four-second bounded camera movement".into(),
-            objective: "Realize a moving original camera over independently editable shapes".into(),
+            objective: "Realize a moving original camera over one editable source shape".into(),
             duration_seconds: 4,
         },
     )?;
@@ -110,23 +110,18 @@ fn seed(database: &Path) -> FixtureResult<Project> {
             renderer: RendererKind::ManimCommunity,
         },
     )?;
-    for (index, source) in [
-        shape("rectangle", 400.0, 400.0, 220.0, 120.0, "#86C8D1", 0),
-        shape("circle", 1050.0, 430.0, 160.0, 160.0, "#F5B84A", 1),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        apply(
-            &service,
-            &mut project,
-            &format!("camera120:shape:{index}"),
-            Change::AddCanvasNode {
-                scene_id,
-                node: source,
-            },
-        )?;
-    }
+    // The compiled native getter has a 256 KiB inline envelope:
+    // 120 frames + one object = 247,808 estimated bytes. Adding a second
+    // object makes it 370,688 bytes and must not be silently accepted.
+    apply(
+        &service,
+        &mut project,
+        "camera120:single-editable-source-shape",
+        Change::AddCanvasNode {
+            scene_id,
+            node: shape("rectangle", 400.0, 400.0, 220.0, 120.0, "#86C8D1", 0),
+        },
+    )?;
 
     // Make matte a real saved authoring choice, not a Python-render fallback.
     let mut language = project.visual_language.clone();
@@ -249,7 +244,7 @@ mod tests {
         assert_eq!(reframe.start_center_x, 960.0);
         assert_eq!(reframe.end_center_x, 1000.0);
         assert_eq!(saved.scenes[0].renderer, RendererKind::ManimCommunity);
-        assert_eq!(saved.scenes[0].nodes.len(), 2);
+        assert_eq!(saved.scenes[0].nodes.len(), 1);
         assert_eq!(saved.scenes[0].duration, RationalTime::new(4, 1).unwrap());
         assert_eq!(saved.scenes[0].camera.center_x, reframe.end_center_x);
         assert_eq!(saved.scenes[0].camera.center_y, reframe.end_center_y);

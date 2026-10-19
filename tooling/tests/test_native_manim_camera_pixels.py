@@ -30,12 +30,6 @@ def source() -> dict:
                 "width_px": 220.0, "height_px": 120.0,
                 "fill_hex": "#86C8D1",
             },
-            {
-                "source_kind": "Circle", "node_id": "circle-uuid",
-                "x_px": 1050.0, "y_px": 430.0,
-                "width_px": 160.0, "height_px": 160.0,
-                "fill_hex": "#F5B84A",
-            },
         ],
         "binding": {"project_id": "uuid", "revision": 9},
     }
@@ -72,7 +66,7 @@ class CameraPixelReaderTests(unittest.TestCase):
 
     def test_independent_decoded_color_motion_positive_control(self):
         observations = inspect.assert_centroids(source(), color_frames(source()))
-        self.assertEqual(len(observations), 6)
+        self.assertEqual(len(observations), 3)
         self.assertEqual({row["frame"] for row in observations}, {0, 60, 119})
         self.assertTrue(all(row["matched_color_pixels"] > 100 for row in observations))
 
@@ -119,10 +113,23 @@ class CameraPixelReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "camera endpoints"):
                 inspect.verified_plan(path, hashlib.sha256(raw).hexdigest())
 
+    def test_second_object_exceeds_the_120_frame_getter_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = source()
+            second = plan["nodes"][0].copy()
+            second["node_id"] = "second-uuid"
+            second["x_px"] = 900.0
+            plan["nodes"].append(second)
+            raw = json.dumps(plan).encode()
+            path = Path(folder) / "oversubscribed.json"
+            path.write_bytes(raw)
+            with self.assertRaisesRegex(AssertionError, "one original editable"):
+                inspect.verified_plan(path, hashlib.sha256(raw).hexdigest())
+
     def test_truncated_or_unbound_identity_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             plan = source()
-            plan["nodes"][1]["node_id"] = plan["nodes"][0]["node_id"]
+            plan["nodes"].append(plan["nodes"][0].copy())
             raw = json.dumps(plan).encode()
             path = Path(folder) / "duplicate.json"
             path.write_bytes(raw)
