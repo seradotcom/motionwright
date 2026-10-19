@@ -311,3 +311,64 @@ describe("bounded Canvas recovery storage", () => {
     expect(full).toBe(true); expect(storage.length).toBeGreaterThan(20); expect(storage.length).toBeLessThan(CANVAS_COPY_LIMIT);
   });
 });
+
+describe("Canvas recovery writes are atomic", () => {
+  const seeded = () => {
+    const storage = new MemoryStorage(), base = draftFor(source());
+    const older = copy(null, "older-clean", 10), newer = copy(null, "newer-clean", 11);
+    storage.setItem(canvasRecoveryKey(older.scope, older.writerId), JSON.stringify(older));
+    storage.setItem(canvasRecoveryKey(newer.scope, newer.writerId), JSON.stringify(newer));
+    return { storage, base, older, newer };
+  };
+
+  it("does not remove old clean copies before a rejected write", () => {
+    const { storage, base, older, newer } = seeded();
+    const before = new Map(storage.data);
+    storage.failWrites = true;
+    const attempted = copy(editCanvasField(base, "text", "A human decision"), "new-author", 12);
+    expect(() => retain(storage, attempted)).toThrow(/QuotaExceededError/);
+    expect(storage.data).toEqual(before);
+    expect(storage.getItem(canvasRecoveryKey(older.scope, older.writerId))).toBe(JSON.stringify(older));
+    expect(storage.getItem(canvasRecoveryKey(newer.scope, newer.writerId))).toBe(JSON.stringify(newer));
+  });
+
+  it("retires only same-scope old clean copies after confirmed clean replacement", () => {
+    const { storage, base, older, newer } = seeded();
+    const replacement = copy(null, "new-clean", 20), key = canvasRecoveryKey(replacement.scope, replacement.writerId);
+    const originalSet = storage.setItem.bind(storage);
+    storage.setItem = (path, raw) => {
+      if (path === key) {
+        expect(storage.getItem(canvasRecoveryKey(older.scope, older.writerId))).not.toBeNull();
+        expect(storage.getItem(canvasRecoveryKey(newer.scope, newer.writerId))).not.toBeNull();
+      }
+      originalSet(path, raw);
+    };
+    const retained = retain(storage, replacement);
+    expect(storage.getItem(key)).toBe(retained);
+    expect(storage.getItem(canvasRecoveryKey(older.scope, older.writerId))).toBeNull();
+    expect(storage.getItem(canvasRecoveryKey(newer.scope, newer.writerId))).toBeNull();
+    expect(readCanvasRecoveries(storage, base.scope).entries[0].value.draft).toBeNull();
+  });
+
+  it("preserves every existing copy when storage silently fails to write", () => {
+    const { storage, base } = seeded();
+    const before = new Map(storage.data), attempted = copy(editCanvasField(base, "text", "Kept input"), "silent-writer", 21);
+    const key = canvasRecoveryKey(attempted.scope, attempted.writerId);
+    const originalSet = storage.setItem.bind(storage);
+    storage.setItem = (path, raw) => { if (path !== key) originalSet(path, raw); };
+    expect(() => retain(storage, attempted)).toThrow(/could not be verified/);
+    expect(storage.data).toEqual(before);
+  });
+
+  it("does not evict 128 clean copies to hide a capacity error", () => {
+    const storage = new MemoryStorage(), base = draftFor(source());
+    for (let index = 0; index < CANVAS_COPY_LIMIT; index++) {
+      const saved = copy(null, "old-clean-" + index, index);
+      storage.setItem(canvasRecoveryKey(saved.scope, saved.writerId), JSON.stringify(saved));
+    }
+    const before = new Map(storage.data);
+    expect(() => retain(storage, copy(editCanvasField(base, "text", "New work"), "newest", 129)))
+      .toThrow(/full/);
+    expect(storage.data).toEqual(before);
+  });
+});
