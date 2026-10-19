@@ -1068,13 +1068,17 @@ impl Project {
         if matches!(
             change,
             Change::SetDeliveryRecipe { .. }
+                | Change::UpsertDeliverable { .. }
                 | Change::RemoveAsset { .. }
                 | Change::RemoveDeliverable { .. }
         ) {
-            // A failed recipe or deletion must not leave the caller with a
+            // A failed recipe, profile change or deletion must not leave the caller with a
             // partially changed document, even outside Store's transaction.
             let mut candidate = self.clone();
             candidate.apply_change_in_place(change)?;
+            if let Change::UpsertDeliverable { profile } = change {
+                delivery::validate_localized_voice_authority(&candidate, profile)?;
+            }
             *self = candidate;
             return Ok(());
         }
