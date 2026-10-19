@@ -63,7 +63,7 @@ CSS13_INPUT_REVIEW = {
     "reference_source_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
     "reference_tree_sha": "d543db7b4bb236b405c9554155b604fef38fe2fe",
     "consumer_inventory_entries": 932,
-    "consumer_inventory_sha256": "225811c0e7daf175191951706cd7c94d662f840aecc4726084047e6ef796f7e4",
+    "consumer_inventory_sha256": "af44fbf1dc84f40770bb4d1dc1322bc862dacc1fc9eca2d58825a4baa56a5537",
 }
 
 

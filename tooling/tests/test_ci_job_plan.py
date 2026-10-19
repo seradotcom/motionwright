@@ -395,6 +395,12 @@ class Css13GitBoundary(unittest.TestCase):
 
     def install_css_fixture(self, *, enabled=True):
         """A synthetic repository review, never evidence for reference951."""
+        # Authenticate the LF provider copied into this synthetic Git history.
+        # Windows checkout conversion must not replace the reviewed blob.
+        provider = self.repo / ci.PROVIDER
+        normalized = provider.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(ci.digest(normalized), ci.REVIEWED_PROVIDER_SHA256)
+        provider.write_bytes(normalized)
         for name in ci.CSS13_PATHS:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
