@@ -254,9 +254,9 @@ jobs:
           sys.modules[spec.name]=tests
           spec.loader.exec_module(tests)
           suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
-          if suite.countTestCases()!=11: raise SystemExit("expected exactly 11 repair contracts")
+          if suite.countTestCases()!=13: raise SystemExit("expected exactly 13 repair contracts")
           result=unittest.TextTestRunner(verbosity=2).run(suite)
-          complete=(result.testsRun==11 and result.wasSuccessful() and not result.skipped
+          complete=(result.testsRun==13 and result.wasSuccessful() and not result.skipped
                     and not result.expectedFailures and not result.unexpectedSuccesses)
           report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
                   "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
@@ -443,7 +443,7 @@ jobs:
                   "planar_test_binary_sha256":sha(work/"build/test_planar_padding"),
                   "observed_tools":tools,"observed_loaded_libraries":libraries,
                   "python_version":sys.version,"platform":sys.platform,
-                  "python_contract_tests":{"source_composition":19,"original_observer":32,"planar_repair":11},
+                  "python_contract_tests":{"source_composition":19,"original_observer":32,"planar_repair":13},
                   "python_skipped":0,"planar_C_layout_cases":12,
                   "constructor_C_sanitizers":"PASS","planar_layout_C_sanitizers":"PASS",
                   "actual_combined_consumer_module_compile":"PASS",
