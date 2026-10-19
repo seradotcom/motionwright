@@ -110,6 +110,14 @@ def run_probe(
                 child.wait(timeout=4)
     if result["status"] != "WINDOW_OBSERVED":
         if window_seen and ready_check is not None:
+            if window_interaction is not None:
+                if not interacted:
+                    raise RuntimeError(
+                        "Installed first-use empty-store authority never permitted a native UI action"
+                    )
+                raise RuntimeError(
+                    "One original native Create action was sent but SQLite never confirmed a project"
+                )
             raise RuntimeError("Window appeared, but installed project bootstrap never became ready within the bounded probe")
         raise RuntimeError("Motionwright never created an X11 window within the bounded probe")
     return result

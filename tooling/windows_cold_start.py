@@ -178,8 +178,25 @@ def _create_first_project_in_native_window(hwnd: int) -> None:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ColdStartError("Native accessible project-creation action was not confirmed") from error
-    require(result.returncode == 0 and result.stdout.strip() == "VISIBLE_PROJECT_CREATE_ACTIVATED",
-            "Native accessible project-creation action was not confirmed")
+    if result.returncode != 0 or result.stdout.strip() != "VISIBLE_PROJECT_CREATE_ACTIVATED":
+        # Only a closed technical stage enum enters the public runner log.
+        # Never include raw UI automation stderr, arguments, process paths
+        # or arbitrary text from a downloaded/installed binary.
+        safe_stderr = getattr(result, "stderr", "")
+        if not isinstance(safe_stderr, str):
+            safe_stderr = ""
+        stages = (
+            ("Original installed window is unavailable", "WINDOW_UIA_UNAVAILABLE"),
+            ("Original accessible Project library form not observed", "FORM_NOT_OBSERVED"),
+            ("The real Create project action never became enabled", "CREATE_DISABLED"),
+            ("Original create button lacks an accessible Invoke action", "INVOKE_NOT_SUPPORTED"),
+            ("Unexpected original first-use title", "SOURCE_TITLE_MISMATCH"),
+        )
+        stage = next((code for marker, code in stages if marker in safe_stderr),
+                     "ACTION_CONFIRMATION_UNAVAILABLE")
+        raise ColdStartError(
+            "Native accessible project-creation action was not confirmed: " + stage
+        )
 
 
 def windows_motionwright_window(process_id: int) -> int | None:

@@ -167,6 +167,21 @@ class WindowsCandidateUnitTests(unittest.TestCase):
             with self.assertRaisesRegex(windows.ColdStartError, "not confirmed"):
                 windows._create_first_project_in_native_window(12345)
 
+    def test_native_accessibility_error_stage_is_closed_and_never_leaks_raw_text(self):
+        from unittest.mock import Mock
+        if os.name != "nt":
+            return
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(
+            windows.subprocess, "run",
+            return_value=Mock(
+                returncode=1, stdout="",
+                stderr="File path private-must-not-leak. Original accessible Project library form not observed",
+            ),
+        ):
+            with self.assertRaisesRegex(windows.ColdStartError, "FORM_NOT_OBSERVED") as ctx:
+                windows._create_first_project_in_native_window(12345)
+        self.assertNotIn("private-must-not-leak", str(ctx.exception))
+
     def test_single_real_sqlite_project_is_read_only_and_stable(self):
         path = self.root / "roaming" / "com.seradotcom.motionwright" / "motionwright.sqlite3"
         source = project_db(path)
