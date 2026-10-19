@@ -725,3 +725,59 @@ test("another tab restores foreign input explicitly and changed recovery bytes c
       [() => page.close(), ...(second ? [() => second!.close()] : [])]);
   }
 });
+
+test("lost reply after real Canvas commit cannot replay the already saved operation", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  const original = service.invoke.bind(service);
+  let swallowed = false;
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    evidence.initial = initial; evidence.final = initial;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    const savedText = "  First committed text despite lost transport acknowledgment  ";
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const result = await original<T>(command, args);
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (command === "apply_change" && request?.change.type === "update_canvas_text" && !swallowed) {
+        swallowed = true;
+        throw new Error("synthetic transport lost its reply after real SQLite commit");
+      }
+      return result;
+    };
+    await input(page, "text").fill(savedText);
+    await button(page, "Commit text").click();
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toBeVisible();
+    await expect(button(page, "Commit text")).toBeDisabled();
+    const actuallySaved = await service.project(initial.id);
+    evidence.final = actuallySaved;
+    evidence.checkpoints.push({ label: "write persisted before the lost reply", project: actuallySaved });
+    expect(actuallySaved.revision).toBe(initial.revision + 1);
+    expect(storedNode(actuallySaved, scene.id, target.id).text).toBe(savedText);
+    const storedJournal = await service.history(initial.id, initial.revision);
+    expect(storedJournal).toHaveLength(1);
+    expect(storedJournal[0].change.type).toBe("update_canvas_text");
+    expect(applyRequests(service)).toHaveLength(1);
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toBeVisible();
+    expect(applyRequests(service)).toHaveLength(1);
+    await page.reload();
+    await openCanvas(page, scene.name, target.name);
+    await revision(page, initial.revision + 1);
+    await expect(input(page, "text")).toHaveValue(savedText);
+    await expect(button(page, "Commit text")).toBeDisabled();
+    expect(await service.project(initial.id)).toEqual(actuallySaved);
+    expect(await service.history(initial.id, initial.revision)).toEqual(storedJournal);
+    expect(applyRequests(service)).toHaveLength(1);
+    evidence.observations.push({ label: "real_commit_unknown_reply_readback_no_replay", projectId: initial.id,
+      savedRevision: actuallySaved.revision, applyCount: 1, simulatedFailure: "reply_only" });
+  } finally {
+    service.invoke = original;
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
