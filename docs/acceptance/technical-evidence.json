@@ -21469,6 +21469,207 @@
           "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         }
       ]
+    },
+    {
+      "artifact_scope": "Actual local stdout/stderr and precise original test-body excerpts on byte-identical Git source.",
+      "artifacts": [
+        {
+          "member": "source918-original-no-pass-inheritance.json",
+          "member_sha256": "00a20beab6a0fcb9fa99279449440a90939016ff60e0fb5ac9f44d0361adebfb",
+          "path": "docs/acceptance/evidence/no-inherited-pass-main-a6a6e983.zip",
+          "sha256": "be826a0931b2f473090af42a5b4cd7fbf7c5c8e91a8534110edd6555439b9b6a"
+        }
+      ],
+      "assertions": [
+        "An evidence execution or review bound to another source SHA or SOURCE_LOCK cannot be relabeled as a complete current-source criterion.",
+        "Same source bytes under a later commit remain historical until the actual executed product SHA is evaluated.",
+        "A green technical source-policy check and a release-ready boolean do not create contractual or human acceptance."
+      ],
+      "complete_criterion_ids": [
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "criterion_ids": [
+        "MW05-E00-04#/negative_case",
+        "A05-E00-04#/negative_scenario"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/tests/test_conformance_currency_impact.py",
+          "sha256": "33947b4f92b9a0a25638a1c760ede02234de2f00e21163c6b1785c744740a9d3"
+        },
+        {
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "synthetic",
+        "passed": 28,
+        "profile": "a5-source-and-history-fixtures",
+        "skipped": 0,
+        "source_relation": "clean_local_integrated_main_snapshot",
+        "status": "pass"
+      },
+      "id": "no-source-pass-inheritance-main-a6a6-local",
+      "limitations": [
+        "Real local Python fixture execution on an exact clean maina6a6 checkout; it is not a GitHub CI original job.",
+        "Does not prove native media, installed project state, rights, human review or all E00-04 normative conditions.",
+        "Separate A6 independent review is welcome but not asserted by this automated technical sufficiency decision."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        },
+        {
+          "path": "tooling/conformance_currency_impact.py",
+          "sha256": "04ded180ac70b9c662150784006ebcf50f86580c60b7a0216ff855d62fefb30a"
+        },
+        {
+          "path": "tooling/creative_status_policy.py",
+          "sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original selected test-body excerpts, clean exact Git source and original peer technical G1 statement.",
+      "artifacts": [
+        {
+          "member": "source-a6a6-title-history-original-local.json",
+          "member_sha256": "52674b3cb2622d3cda87e8a4dbbf682b396178580ab45ca60498bfd2ef694322",
+          "path": "docs/acceptance/evidence/title-history-negative-main-a6a6e983.zip",
+          "sha256": "5f0930212efd8d489a658037f022eebeb35d9fcbc1e2e8fbf3c1f6754f4689ae"
+        }
+      ],
+      "assertions": [
+        "Changing a visible requirement title preserves original canonical ID and all technical assessment history.",
+        "Deletion, reordering, invented prior criteria and incomplete prior status maps are rejected rather than resetting history.",
+        "Exact Git object reads reject environment/replace-ref substitution."
+      ],
+      "complete_criterion_ids": [
+        "MW05-E00-01#/negative_case",
+        "A05-E00-01#/negative_scenario"
+      ],
+      "criterion_ids": [
+        "MW05-E00-01#/negative_case",
+        "A05-E00-01#/negative_scenario"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/tests/test_conformance_history_guard.py",
+          "sha256": "27d2d67fe9c0fa4c7cb4cb72cb45e278a9372d4a1548dab72f9e1d2e380abe94"
+        },
+        {
+          "path": "tooling/conformance_history_guard.py",
+          "sha256": "383c73d985aa2da14d998cdb755c9b9ea6ff60262490dda391f8acbac9f67d6a"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "synthetic",
+        "passed": 31,
+        "profile": "a5-source-and-history-fixtures",
+        "skipped": 0,
+        "source_relation": "clean_local_integrated_main_snapshot",
+        "status": "pass"
+      },
+      "id": "a5-title-history-original-main-a6a6",
+      "limitations": [
+        "Only stable-ID visible rename/history immutability negative and synthetic original guard integrity.",
+        "A6 reviewed identical source/test blobs on PR334, while the local 31 cases were rerun on exact main a6a6; no CI/job or human approval is transferred.",
+        "No full original acceptance scenario, product release, installed operation or independent creative review is claimed."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "tooling/conformance_history_guard.py",
+          "sha256": "383c73d985aa2da14d998cdb755c9b9ea6ff60262490dda391f8acbac9f67d6a"
+        },
+        {
+          "path": "tooling/tests/test_conformance_history_guard.py",
+          "sha256": "27d2d67fe9c0fa4c7cb4cb72cb45e278a9372d4a1548dab72f9e1d2e380abe94"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original SHA-bound GitHub public source file metadata/digests; no private catalogue/source media text, no human reviewer.",
+      "artifacts": [
+        {
+          "member": "exact-remote-dependency-metadata-main3c.json",
+          "member_sha256": "0a6e519dfbf7ed98240f902114a87cb993a4ee4b8011112c0674e483d9905c00",
+          "path": "docs/acceptance/evidence/core-pinned-remote-license-main-a6a6e983.zip",
+          "sha256": "b1fc448295f90e4908687e6f4e1bcce533a5fcabfd61a18f7bad18ede8827b2f"
+        }
+      ],
+      "assertions": [
+        "The original pinned Semwright SHA exists as a public Git commit and has independently retrieved MIT and Apache-2.0 license/notice source blobs.",
+        "SOURCE_LOCK, eight public Git workspace declarations and current main-a6a6 source policy agree with the authenticated SHA."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-FOUND-02#/statement",
+        "CR-FOUND-02#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 6,
+        "profile": "current-external-source-pin-inspection",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "pinned-external-core-source-main-a6a6",
+      "limitations": [
+        "Private or third-party rights determination is not supplied by file existence.",
+        "Acceptance rejection of a source pin that cannot resolve is not exercised as a genuine integration operation.",
+        "The old main951 Rust --locked job cannot be relabeled as a main3c run; main3c Rust CI is queued.",
+        "No human signature/reviewer identity or installed feature acceptance."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -26994,6 +27195,162 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "MW05-E00-04#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "no-source-pass-inheritance-main-a6a6-local": "c432974644d8aef9c25337c73cc861f81c802f7e80a0ff5ee7e0d06a8a97ef05"
+      },
+      "id": "technical-source-a6a6-no-inherited-pass-mw05-e00-04",
+      "limitations": [
+        "Sufficient only for the exact negative source-change clause in the original catalogue. Other original requirements, extra evidence-required fields, human acceptance and release remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original source-bound tests reject a changed SHA or lock and preserve historical receipts without current PASS.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main-a6a6-local"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "Original currency and creative policy tests reject automatic release/acceptance claims despite current inventory or boolean flags.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main-a6a6-local"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-19T19:51:22.175189+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-exact-maina6a6-negative-original-test-body-review"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "A05-E00-04#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "no-source-pass-inheritance-main-a6a6-local": "c432974644d8aef9c25337c73cc861f81c802f7e80a0ff5ee7e0d06a8a97ef05"
+      },
+      "id": "technical-source-a6a6-no-inherited-pass-a05-e00-04",
+      "limitations": [
+        "Sufficient only for the exact negative source-change clause in the original catalogue. Other original requirements, extra evidence-required fields, human acceptance and release remain open."
+      ],
+      "obligations": [
+        {
+          "basis": "Original source-bound tests reject a changed SHA or lock and preserve historical receipts without current PASS.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main-a6a6-local"
+          ],
+          "id": "changed_source_rejected",
+          "status": "pass"
+        },
+        {
+          "basis": "Original currency and creative policy tests reject automatic release/acceptance claims despite current inventory or boolean flags.",
+          "evidence_ids": [
+            "no-source-pass-inheritance-main-a6a6-local"
+          ],
+          "id": "no_implied_acceptance",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "99aac7589d418457b5f80e5c7f62ddcdbbd9ee546a3c9f7cabb8d6a3f80568a9",
+      "reviewed_at_utc": "2026-10-19T19:51:22.175189+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-exact-maina6a6-negative-original-test-body-review"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1"
+    },
+    {
+      "criterion_id": "MW05-E00-01#/negative_case",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-title-history-original-main-a6a6": "f808f9a043ac123a5b72a27314139680075023aa70a82f4e5e946c36e1dae061"
+      },
+      "id": "technical-a5-title-history-main-a6a6-mw05-e00-01",
+      "limitations": [
+        "Completes only this original negative clause, not whole E00-01 report, installed UI, A05 scenario or authenticated human acceptance."
+      ],
+      "obligations": [
+        {
+          "basis": "Original clean a6a6 31-method tests demonstrate visible title rename, preserved history and H01/H02 rejection; A6 independently reviewed byte-identical guard/test inputs with 62 executions on the original branch.",
+          "evidence_ids": [
+            "a5-title-history-original-main-a6a6"
+          ],
+          "id": "original_id_survives_rename",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "2c0ac9d7feb50de7f0fc45ac385166a111cfe1a5a88a597116feb11695977e15",
+      "reviewed_at_utc": "2026-10-19T19:53:44.636566+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-a6a6-current-source-review-with-independent-A6-G1-original"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d"
+    },
+    {
+      "criterion_id": "A05-E00-01#/negative_scenario",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "a5-title-history-original-main-a6a6": "f808f9a043ac123a5b72a27314139680075023aa70a82f4e5e946c36e1dae061"
+      },
+      "id": "technical-a5-title-history-main-a6a6-a05-e00-01",
+      "limitations": [
+        "Completes only this original negative clause, not whole E00-01 report, installed UI, A05 scenario or authenticated human acceptance."
+      ],
+      "obligations": [
+        {
+          "basis": "Original clean a6a6 31-method tests demonstrate visible title rename, preserved history and H01/H02 rejection; A6 independently reviewed byte-identical guard/test inputs with 62 executions on the original branch.",
+          "evidence_ids": [
+            "a5-title-history-original-main-a6a6"
+          ],
+          "id": "original_id_survives_rename",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "2c0ac9d7feb50de7f0fc45ac385166a111cfe1a5a88a597116feb11695977e15",
+      "reviewed_at_utc": "2026-10-19T19:53:44.636566+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-a6a6-current-source-review-with-independent-A6-G1-original"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d"
     }
   ],
   "verification_profiles": {
