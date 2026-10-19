@@ -17,7 +17,7 @@ class HistoryGuardTests(unittest.TestCase):
                     "status":"not_run","evidence_ids":[],
                     "missing_assertions":["source-run-pending"]}
         self.row={"id":"EXAMPLE-01","source_record_sha256":"d"*64,
-            "display_title":"A concise title",
+            "title":"A concise title",
             "assessment_history":[{"source":self.source,"prior_technical_status":"not_run",
                                    "prior_criteria":[copy.deepcopy(self.field)]}],
             "technical_assessment":{
@@ -46,17 +46,20 @@ class HistoryGuardTests(unittest.TestCase):
             guard.inspect(self.old,self.new)
 
     def test_visible_title_change_preserves_structured_history(self):
-        self.new[guard.LEDGERS[0]]["requirements"][0]["display_title"]="Renamed visibly"
+        self.new[guard.LEDGERS[0]]["requirements"][0]["title"]="Renamed visibly"
         result=guard.inspect(self.old,self.new)
         self.assertEqual(result["ledger_rows_verified"],1)
         self.assertEqual(result["result"],"history_preserved")
         self.assertFalse(result["release_authorized"])
 
     def test_removed_history_is_not_reset(self):
-        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[]
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["title"]="Renamed requirement, same ID"
+        row["assessment_history"]=[]
         self.assertViolation("assessment_history_rewritten_or_truncated")
 
     def test_reordered_history_is_rejected(self):
+        self.new[guard.LEDGERS[0]]["requirements"][0]["title"]="Changed title"
         self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[{
             "source":self.source,"prior_technical_status":"not_run","prior_criteria":[]},
             {"source":self.source,"prior_technical_status":"not_run","prior_criteria":[self.field]}]
@@ -98,7 +101,7 @@ class HistoryGuardTests(unittest.TestCase):
 
     def test_source_record_fingerprint_cannot_change_with_title(self):
         row=self.new[guard.LEDGERS[0]]["requirements"][0]
-        row["display_title"]="Change name"
+        row["title"]="Change name"
         row["source_record_sha256"]="0"*64
         self.assertViolation("canonical_row_identity_changed")
 
