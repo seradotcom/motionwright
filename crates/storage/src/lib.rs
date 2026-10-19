@@ -1168,13 +1168,17 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
+        // A valid SQLite revision is nonnegative signed i64. Casting a larger
+        // user-supplied u64 directly would wrap to a negative cursor and
+        // replay history already consumed by the caller.
+        let after_revision = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
             "SELECT revision,payload_json,created_at FROM events
              WHERE project_id=?1 AND revision>?2
              ORDER BY revision ASC LIMIT ?3",
         )?;
         let rows = stmt.query_map(
-            params![id.to_string(), revision as i64, limit as i64],
+            params![id.to_string(), after_revision, limit as i64],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)? as u64,
