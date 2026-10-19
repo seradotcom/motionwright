@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import importlib.util
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLING = Path(__file__).resolve().parents[1]
@@ -332,6 +334,252 @@ class GitSourceBoundary(unittest.TestCase):
         with self.assertRaises(ci.PlanError):
             ci.write_new(self.root / "absent/../traversal.json", {}, self.repo)
         self.assertFalse((self.root / "absent").exists())
+
+
+class Css13GateBoundary(unittest.TestCase):
+    def test_disabled_and_nonboolean_gates_never_read_a_source_or_admit_a_mask(self):
+        for disabled in (False, None, "true", 1):
+            with self.subTest(disabled=disabled), mock.patch.object(ci, "CSS13_PILOT_ENABLED", disabled), \
+                    mock.patch.object(ci, "git", side_effect=AssertionError("disabled gate read Git")):
+                self.assertEqual(ci.reviewed_css13_inputs(Path.cwd(), {}, execution())["status"], "DISABLED")
+
+    def test_malformed_review_is_not_a_truthy_approval(self):
+        for change in ({"consumer_inventory_entries": True}, {"consumer_inventory_entries": 0},
+                       {"consumer_inventory_sha256": "missing"}, {"reference_source_sha": "stale"},
+                       {"schema": "other"}, {"human_accepted": True}):
+            review = dict(ci.CSS13_INPUT_REVIEW, repository="example/job-contract", **change)
+            with self.subTest(change=change), mock.patch.object(ci, "CSS13_PILOT_ENABLED", True), \
+                    mock.patch.object(ci, "CSS13_INPUT_REVIEW", review):
+                result = ci.reviewed_css13_inputs(Path.cwd(), {}, execution())
+                self.assertEqual(result["status"], "NOT_APPLIED")
+                self.assertEqual(result["fallback"], "FULL_CI")
+
+    def test_mixed_mask_keeps_required_studio_browser_desktop_and_run_attempt_binding(self):
+        plan, _ = result_fixture()
+        plan["jobs"]["rust-tests"] = {"selected": False, "reason": "synthetic-css-mask"}
+        plan["plan_id"] = ci.digest(ci.canonical({k: v for k, v in plan.items() if k != "plan_id"}))
+        needs = {"plan": {"result": "success", "outputs": {"plan_id": plan["plan_id"]}}}
+        for job, choice in plan["jobs"].items():
+            outputs = {k: str(v) for k, v in plan["source"].items() if k != "parents"} if choice["selected"] else {}
+            if choice["selected"]:
+                outputs.update(plan_id=plan["plan_id"], run_id="11", run_attempt="1", emitter_job=job)
+            needs[job] = {"result": "success" if choice["selected"] else "skipped", "outputs": outputs}
+        result = ci.aggregate(plan, needs, execution(), source_observation())
+        self.assertEqual(result["status"], "JOB_SELECTION_CONSISTENT")
+        self.assertEqual(result["jobs"]["rust-tests"]["execution_claim"], "NOT_EXECUTED")
+        for job in ("source-policy", "rust-core", "studio", "studio-tests", "browser-acceptance", "desktop-linux"):
+            for state in ("skipped", "failure", "cancelled"):
+                with self.subTest(job=job, state=state):
+                    bad = copy.deepcopy(needs)
+                    bad[job]["result"] = state
+                    self.assertEqual(ci.aggregate(plan, bad, execution(), source_observation())["status"], "FAIL")
+        for field, value in (("run_attempt", "2"), ("run_id", "12"), ("plan_id", "f" * 64),
+                             ("checkout_sha", "e" * 40), ("emitter_job", "rust-tests")):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(needs)
+                bad["desktop-linux"]["outputs"][field] = value
+                self.assertEqual(ci.aggregate(plan, bad, execution(), source_observation())["status"], "FAIL")
+        bad = copy.deepcopy(needs)
+        bad["rust-tests"]["outputs"] = {"prior_pass": "true"}
+        self.assertEqual(ci.aggregate(plan, bad, execution(), source_observation())["status"], "FAIL")
+        self.assertIs(result["test_case_results_admitted"], False)
+        self.assertIs(result["formal_acceptance"], False)
+
+
+class Css13GitBoundary(unittest.TestCase):
+    # Reuse only fixture operations, not inherited old test methods.
+    setUp = GitSourceBoundary.setUp
+    git = GitSourceBoundary.git
+    commit = GitSourceBoundary.commit
+    invoke = GitSourceBoundary.invoke
+
+    def install_css_fixture(self, *, enabled=True):
+        """A synthetic repository review, never evidence for reference951."""
+        for name in ci.CSS13_PATHS:
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(".synthetic-fixture { color: red; }\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "synthetic CSS sources")
+        inventory = []
+        for row in ci.git(self.repo, "ls-tree", "-r", "-z", "HEAD").split(b"\0"):
+            if row:
+                metadata, name = row.split(b"\t", 1)
+                mode, kind, oid = metadata.decode().split()
+                self.assertEqual(kind, "blob")
+                if name.decode() not in {*ci.CSS13_PATHS, ci.SELF}:
+                    inventory.append([name.decode(), mode, oid])
+        self.css_review = dict(ci.CSS13_INPUT_REVIEW, repository="example/job-contract",
+                               consumer_inventory_entries=len(inventory),
+                               consumer_inventory_sha256=ci.digest(ci.canonical(sorted(inventory))))
+        text = (self.repo / ci.SELF).read_text()
+        lines = text.splitlines(keepends=True)
+        replacements = {"CSS13_PILOT_ENABLED": enabled, "CSS13_INPUT_REVIEW": self.css_review}
+        for node in reversed(ast.parse(text).body):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if name in replacements:
+                    lines[node.lineno - 1:node.end_lineno] = [name + " = " + repr(replacements[name]) + "\n"]
+        self.base = self.commit(ci.SELF, "".join(lines).encode(), "synthetic private review and feature gate")
+        self.git("checkout", "-qb", "feature")
+
+    def css_change(self, raw=b".synthetic-fixture { color: blue; }\n"):
+        return self.commit(ci.CSS13_PATHS[0], raw, "synthetic CSS-only change")
+
+    def plan_pr(self, head=None, *, checkout=None, base=None):
+        head = head or self.git("rev-parse", "HEAD").strip()
+        event = {"pull_request": {"base": {"sha": base or self.base}, "head": {"sha": head}}}
+        process, path, output = self.invoke(observed=execution(checkout or head), event=event)
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        return json.loads(path.read_bytes()), output.read_text()
+
+    def assert_full(self, plan):
+        self.assertTrue(all(row["selected"] for row in plan["jobs"].values()), plan)
+        self.assertNotEqual(plan["css13_review"]["status"], "APPLIED")
+
+    def test_real_git_css_merge_omits_only_rust_tests_after_both_tree_checks(self):
+        self.install_css_fixture()
+        head = self.css_change()
+        self.git("checkout", "-q", "main")
+        self.git("merge", "--no-ff", "-qm", "synthetic exact merge", "feature")
+        merge = self.git("rev-parse", "HEAD").strip()
+        plan, output = self.plan_pr(head, checkout=merge)
+        self.assertEqual(plan["css13_review"]["status"], "APPLIED")
+        self.assertEqual([job for job, row in plan["jobs"].items() if not row["selected"]], ["rust-tests"])
+        self.assertEqual({row["source_sha"] for row in plan["css13_review"]["compared_inputs"]}, {self.base, head, merge})
+        self.assertTrue(all(len(row["css_blobs"]) == 13 for row in plan["css13_review"]["compared_inputs"]))
+        self.assertIn("rust_tests=false\n", output)
+        self.assertIn("studio_tests=true\n", output)
+        self.assertIn("browser_acceptance=true\n", output)
+        self.assertEqual(plan["source"]["checkout_sha"], merge)
+        self.assertNotEqual(merge, head)
+        self.assertIs(plan["css13_review"]["execution_result_reused"], False)
+
+    def test_disabled_feature_and_main_manual_keep_full_scope_on_real_git(self):
+        self.install_css_fixture(enabled=False)
+        head = self.css_change()
+        plan, _ = self.plan_pr(head)
+        self.assert_full(plan)
+        self.assertEqual(plan["css13_review"]["status"], "DISABLED")
+        for event, ref, body in (("push", "refs/heads/main", {"before": self.base, "after": head}),
+                                 ("workflow_dispatch", "refs/heads/feat/candidate", {})):
+            with self.subTest(event=event):
+                process, path, _ = self.invoke(observed=execution(head, event=event, ref=ref), event=body)
+                self.assertEqual(process.returncode, 0, process.stderr.decode())
+                self.assert_full(json.loads(path.read_bytes()))
+
+    def test_equal_unreviewed_consumer_on_base_and_head_and_git_replace_keep_full(self):
+        self.install_css_fixture()
+        reviewed_base = self.base
+        self.base = self.commit("crates/domain/src/lib.rs", b"pub fn new_reader_boundary() {}\n", "unreviewed consumer")
+        unsafe_head = self.css_change()
+        plan, _ = self.plan_pr(unsafe_head)
+        self.assertEqual(plan["changed_paths"], [ci.CSS13_PATHS[0]])
+        self.assert_full(plan)
+        self.assertIn("consumer inventory changed", plan["css13_review"]["reason"])
+        self.git("checkout", "-qb", "safe-lookalike", reviewed_base)
+        safe_head = self.css_change()
+        self.git("checkout", "-q", unsafe_head)
+        self.git("replace", unsafe_head, safe_head)
+        replaced, _ = self.plan_pr(unsafe_head)
+        self.assert_full(replaced)
+        self.assertEqual(replaced["source"]["checkout_sha"], unsafe_head)
+
+    def test_enabled_gate_still_keeps_css_only_main_and_manual_full(self):
+        self.install_css_fixture()
+        head = self.css_change()
+        for event, ref, body in (("push", "refs/heads/main", {"before": self.base, "after": head}),
+                                 ("workflow_dispatch", "refs/heads/feat/candidate", {})):
+            with self.subTest(event=event):
+                process, path, _ = self.invoke(observed=execution(head, event=event, ref=ref), event=body)
+                self.assertEqual(process.returncode, 0, process.stderr.decode())
+                plan = json.loads(path.read_bytes())
+                self.assert_full(plan)
+                self.assertEqual(plan["css13_review"]["status"], "NOT_APPLIED")
+
+    def test_changed_locks_workflow_tests_or_new_reader_keep_full(self):
+        self.install_css_fixture()
+        for name, raw in (("Cargo.lock", b"# changed lock\nversion = 4\n"),
+                          (ci.WORKFLOW, b"name: changed CI\non: [push]\njobs: {}\n"),
+                          ("tooling/tests/new_reader.py", b"# a new test input needs review\n"),
+                          ("apps/studio/src/main.tsx", b"// changed app input\n"),
+                          (".cargo/config.toml", b"[build]\njobs = 1\n")):
+            with self.subTest(path=name):
+                self.git("reset", "--hard", self.base)
+                self.commit(name, raw, "changed non-CSS consumer input")
+                head = self.css_change()
+                plan, _ = self.plan_pr(head)
+                self.assert_full(plan)
+
+    def test_added_removed_renamed_or_mode_changed_css_cannot_use_modification_profile(self):
+        self.install_css_fixture()
+        path = self.repo / ci.CSS13_PATHS[0]
+        for status in ("A", "D", "R", "T"):
+            with self.subTest(status=status):
+                self.git("reset", "--hard", self.base)
+                if status == "A":
+                    extra = "apps/studio/src/new.css"
+                    (self.repo / extra).write_text(".extra { color: red; }\n")
+                    self.git("add", extra)
+                elif status == "D":
+                    self.git("rm", ci.CSS13_PATHS[0])
+                elif status == "R":
+                    self.git("mv", ci.CSS13_PATHS[0], "apps/studio/src/renamed.css")
+                else:
+                    path.chmod(0o755)
+                    self.git("update-index", "--chmod=+x", ci.CSS13_PATHS[0])
+                self.git("commit", "-qm", "out-of-profile CSS source status")
+                head = self.git("rev-parse", "HEAD").strip()
+                plan, _ = self.plan_pr(head)
+                self.assert_full(plan)
+
+    def test_resource_escape_binary_budget_and_missing_unchanged_css_keep_full(self):
+        self.install_css_fixture()
+        for raw in (b'.x { background: url("external.png"); }\n', b'@import "other.css";\n',
+                    b'.x { background: u/**/rl("external.png"); }\n', b'.x { color: \\72 ed; }\n',
+                    b'/* unclosed', b'\xff\n', b'x' * 131_073):
+            with self.subTest(raw_prefix=raw[:36]):
+                self.git("reset", "--hard", self.base)
+                head = self.css_change(raw)
+                plan, _ = self.plan_pr(head)
+                self.assert_full(plan)
+        self.git("reset", "--hard", self.base)
+        self.git("rm", ci.CSS13_PATHS[1])
+        self.git("commit", "-qm", "synthetic missing old CSS source")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        head = self.css_change()
+        plan, _ = self.plan_pr(head)
+        self.assertEqual(plan["changed_paths"], [ci.CSS13_PATHS[0]])
+        self.assert_full(plan)
+
+    def test_trimmed_graph_range_wrong_context_candidate_and_shallow_cannot_admit(self):
+        self.install_css_fixture()
+        head = self.css_change()
+        provider, _ = ci.load_provider(self.repo, head)
+        impact = provider.build_plan(self.repo, base=self.base, head=head, checkout=head,
+                                     event="pull_request", repository="example/job-contract", candidate=False,
+                                     allow_advanced_pr_base=True)
+        variants = []
+        for key, value in (("candidate", True), ("unknown_paths", [ci.CSS13_PATHS[0]]),
+                           ("expansion_reasons", ["advanced-pr-base-requires-full-shadow-inventory"]),
+                           ("change_ranges", []), ("dependency_graphs", impact["dependency_graphs"][:-1]),
+                           ("changes", [{"status": "R100", "paths": [ci.CSS13_PATHS[0], ci.CSS13_PATHS[1]]}])):
+            variants.append((key, dict(impact, **{key: value}), execution(head)))
+        variants.append(("wrong-source", impact, execution("f" * 40)))
+        variants.append(("enabled-main", impact, execution(head, event="push", ref="refs/heads/main")))
+        variants.append(("enabled-manual", impact, execution(head, event="workflow_dispatch", ref="refs/heads/feat/candidate")))
+        advanced = copy.deepcopy(impact)
+        advanced["source"]["pr_base_reconciliation"]["advanced"] = True
+        variants.append(("advanced-base-without-expansion-label", advanced, execution(head)))
+        with mock.patch.object(ci, "CSS13_PILOT_ENABLED", True), mock.patch.object(ci, "CSS13_INPUT_REVIEW", self.css_review):
+            self.assertEqual(ci.reviewed_css13_inputs(self.repo, impact, execution(head))["status"], "APPLIED")
+            for label, changed, context in variants:
+                with self.subTest(label=label):
+                    self.assertEqual(ci.reviewed_css13_inputs(self.repo, changed, context)["status"], "NOT_APPLIED")
+            (self.repo / ".git/shallow").write_text(self.base + "\n", encoding="ascii")
+            result = ci.reviewed_css13_inputs(self.repo, impact, execution(head))
+            self.assertEqual(result["status"], "NOT_APPLIED")
+            self.assertIn("Complete CSS comparison history", result["reason"])
 
 
 if __name__ == "__main__":

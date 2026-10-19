@@ -37,6 +37,35 @@ JOBS = (*ALWAYS, *SELECTABLE)
 # and the explicitly reviewed neutral paths. Any later input change disables it.
 NEUTRAL_INPUT_REVIEW = None
 
+# This is a separate per-job pilot, not a neutral-input exemption. Enable it
+# only in a reviewed integration change; its first change still runs full CI.
+# Every compared tree must retain the same executed planner and the complete
+# reviewed non-CSS inventory, including this proposal's exact test source.
+CSS13_PILOT_ENABLED = False
+CSS13_PATHS = (
+    "apps/studio/src/brand-campaign.css",
+    "apps/studio/src/caption-readability.css",
+    "apps/studio/src/command-palette.css",
+    "apps/studio/src/creative-alternatives.css",
+    "apps/studio/src/creative-runtime-doctor.css",
+    "apps/studio/src/delivery-variant-impact.css",
+    "apps/studio/src/evaluator-experiment.css",
+    "apps/studio/src/narration-review.css",
+    "apps/studio/src/native-contrast.css",
+    "apps/studio/src/production-design.css",
+    "apps/studio/src/styles.css",
+    "apps/studio/src/typographySafety.css",
+    "apps/studio/src/variant-continuity.css",
+)
+CSS13_INPUT_REVIEW = {
+    "schema": "motionwright.ci-css13-input-review/1",
+    "repository": "seradotcom/motionwright",
+    "reference_source_sha": "951b53da504b38e1bdfc7fb9a1da66c5f1b55a0e",
+    "reference_tree_sha": "d543db7b4bb236b405c9554155b604fef38fe2fe",
+    "consumer_inventory_entries": 932,
+    "consumer_inventory_sha256": "225811c0e7daf175191951706cd7c94d662f840aecc4726084047e6ef796f7e4",
+}
+
 
 class PlanError(ValueError):
     pass
@@ -228,6 +257,143 @@ def select_jobs(impact, execution, neutral_paths):
             for job in JOBS}
 
 
+def reviewed_css13_inputs(repo, impact, execution):
+    """Admit only the reviewed CSS modification scope; uncertainty keeps full CI.
+
+    The reference SHA is source-review provenance, never an execution result.
+    The inventory excludes the 13 CSS paths and SELF; SELF is separately bound
+    byte-for-byte over every compared tree. No caller-provided review is read.
+    """
+    if CSS13_PILOT_ENABLED is not True:
+        return {"status": "DISABLED", "reason": "css13-pilot-disabled"}
+    try:
+        review = CSS13_INPUT_REVIEW
+        require(isinstance(review, dict) and set(review) == {
+            "schema", "repository", "reference_source_sha", "reference_tree_sha",
+            "consumer_inventory_entries", "consumer_inventory_sha256"}, "Invalid CSS review fields")
+        require(review["schema"] == "motionwright.ci-css13-input-review/1"
+                and review["repository"] == execution["GITHUB_REPOSITORY"], "CSS review repository differs")
+        require(all(isinstance(review[key], str) and SHA.fullmatch(review[key])
+                    for key in ("reference_source_sha", "reference_tree_sha")), "Invalid CSS review source")
+        require(type(review["consumer_inventory_entries"]) is int
+                and 0 < review["consumer_inventory_entries"] <= 20_000
+                and isinstance(review["consumer_inventory_sha256"], str)
+                and HASH.fullmatch(review["consumer_inventory_sha256"]), "Incomplete CSS consumer inventory")
+        require(execution["GITHUB_EVENT_NAME"] in ("pull_request", "push")
+                and execution["GITHUB_REF"] != "refs/heads/main"
+                and (execution["GITHUB_EVENT_NAME"] != "push"
+                     or execution["GITHUB_REF"].startswith("refs/heads/feat/")), "CSS pilot is ordinary branch/PR only")
+        require(impact.get("candidate") is False and not impact.get("expansion_reasons")
+                and not impact.get("blockers") and not impact.get("unknown_paths"), "Full CI boundary takes precedence")
+        require(git(repo, "rev-parse", "--is-shallow-repository").strip() == b"false",
+                "Complete CSS comparison history required")
+        source = impact["source"]
+        require(source["repository"] == execution["GITHUB_REPOSITORY"]
+                and source["event"] == execution["GITHUB_EVENT_NAME"]
+                and source["checkout_sha"] == execution["GITHUB_SHA"], "CSS source context differs")
+        compared = {source[key] for key in ("base_sha", "head_sha", "checkout_sha")}
+        if source.get("merge_base_sha") is not None:
+            compared.add(source["merge_base_sha"])
+        require(all(isinstance(sha, str) and SHA.fullmatch(sha) and sha != ZERO for sha in compared),
+                "CSS comparison requires exact source commits")
+        if source["event"] == "pull_request":
+            require(source.get("merge_base_sha") is not None
+                    and source["pr_base_reconciliation"]["advanced"] is False,
+                    "Advanced or incomplete PR base requires full CI")
+        graphs = impact["dependency_graphs"]
+        require(isinstance(graphs, list) and len(graphs) == len(compared)
+                and {graph["source_sha"] for graph in graphs} == compared
+                and all(graph.get("issues") == [] for graph in graphs), "Incomplete CSS dependency graphs")
+        changed = impact["changed_paths"]
+        require(isinstance(changed, list) and changed and len(changed) == len(set(changed))
+                and set(changed) <= set(CSS13_PATHS), "CSS pilot requires only reviewed paths")
+        changes = impact["changes"]
+        require(isinstance(changes, list) and changes
+                and all(change.get("status") == "M" and isinstance(change.get("paths"), list)
+                        and len(change["paths"]) == 1 for change in changes)
+                and {change["paths"][0] for change in changes} == set(changed), "CSS additions/removals/renames/types require full CI")
+        # Re-read every declared comparison range; a trimmed diff cannot admit
+        # a scope that the actual Git objects do not have.
+        ranges = impact["change_ranges"]
+        expected_ranges = ({("base-to-head", source["base_sha"], source["head_sha"])}
+                           if source["event"] == "push" else
+                           {("complete-pr-history", source["merge_base_sha"], source["head_sha"])})
+        if source["event"] == "pull_request" and source["checkout_sha"] != source["head_sha"]:
+            require(source["checkout_parents"] == [source["base_sha"], source["head_sha"]],
+                    "CSS checkout requires exact ordered PR parents")
+            expected_ranges.add(("actual-base-to-checkout", source["base_sha"], source["checkout_sha"]))
+        require(isinstance(ranges, list) and len(ranges) == len(expected_ranges)
+                and {(row["kind"], row["before"], row["after"]) for row in ranges} == expected_ranges,
+                "CSS change ranges are incomplete")
+        actual_changed = set()
+        range_receipts = []
+        for kind, before, after in sorted(expected_ranges):
+            raw = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+                      "--no-renames", before, after, "--")
+            tokens = raw.split(b"\0")
+            require(tokens[-1] == b"" and len(tokens[:-1]) % 2 == 0, "Malformed CSS diff")
+            for index in range(0, len(tokens) - 1, 2):
+                path = tokens[index + 1].decode("utf-8", "strict")
+                require(tokens[index] == b"M" and path in CSS13_PATHS, "Actual change is outside CSS modification scope")
+                actual_changed.add(path)
+            range_receipts.append({"kind": kind, "before": before, "after": after,
+                                   "name_status_sha256": digest(raw)})
+        require(actual_changed == set(changed), "Declared CSS changes differ from actual Git ranges")
+        own_source = blob(repo, source["checkout_sha"], SELF)
+        css_cache, inventory_receipts = {}, []
+        for sha in sorted(compared):
+            raw_commit = git(repo, "cat-file", "commit", sha)
+            require(hashlib.sha1(b"commit " + str(len(raw_commit)).encode() + b"\0" + raw_commit).hexdigest() == sha,
+                    "CSS commit object identity differs")
+            require(blob(repo, sha, SELF) == own_source, "CSS planner changed across compared trees")
+            inventory, entries = [], {}
+            for row in git(repo, "ls-tree", "-r", "-z", sha).split(b"\0"):
+                if not row:
+                    continue
+                metadata, name = row.split(b"\t", 1)
+                mode, kind, oid = metadata.decode("ascii", "strict").split()
+                path = name.decode("utf-8", "strict")
+                require(path not in entries and kind == "blob" and mode in ("100644", "100755"),
+                        "CSS comparison contains a nonregular or duplicate source")
+                entries[path] = (mode, oid)
+                if path not in {*CSS13_PATHS, SELF}:
+                    inventory.append([path, mode, oid])
+            require(len(inventory) == review["consumer_inventory_entries"]
+                    and digest(canonical(sorted(inventory))) == review["consumer_inventory_sha256"],
+                    "Reviewed non-CSS consumer inventory changed")
+            css_blobs = []
+            for path in CSS13_PATHS:
+                require(path in entries and entries[path][0] == "100644", "CSS input missing or type/mode changed")
+                oid = entries[path][1]
+                if oid not in css_cache:
+                    size = int(git(repo, "cat-file", "-s", oid).strip())
+                    require(0 < size <= 131_072, "CSS input exceeds reviewed size profile")
+                    raw = git(repo, "cat-file", "blob", oid)
+                    require(len(raw) == size and hashlib.sha1(b"blob " + str(size).encode() + b"\0" + raw).hexdigest() == oid,
+                            "CSS blob identity differs")
+                    text = raw.decode("utf-8", "strict")
+                    require("\\" not in text and "\0" not in text, "CSS escape or binary input needs review")
+                    # Conservative lexical boundary, not a general CSS parser.
+                    # Check original and comment-stripped text; strings may cause
+                    # a full selection, which is safe for this small pilot.
+                    stripped = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+                    require("/*" not in stripped and "*/" not in stripped, "Unclosed CSS comment needs review")
+                    for form in (text, stripped):
+                        require(not re.search(r"(?:url|image-set|image|src)\s*\(", form, re.I)
+                                and set(re.findall(r"@([A-Za-z_-][A-Za-z_0-9-]*)", form.lower())) <= {"media", "keyframes"},
+                                "CSS resource or at-rule dependency needs review")
+                    css_cache[oid] = {"bytes": size, "sha256": digest(raw)}
+                css_blobs.append({"path": path, "blob_oid": oid, **css_cache[oid]})
+            inventory_receipts.append({"source_sha": sha, "non_css_entries": len(inventory),
+                "non_css_inventory_sha256": digest(canonical(sorted(inventory))), "css_blobs": css_blobs})
+        return {"status": "APPLIED", "reason": "reviewed-css13-ordinary-rust-tests-only",
+                "review_sha256": digest(canonical(review)), "compared_inputs": inventory_receipts,
+                "actual_change_ranges": range_receipts, "omitted_job": "rust-tests",
+                "execution_result_reused": False, "test_case_results_admitted": False}
+    except (PlanError, OSError, ValueError, UnicodeError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        return {"status": "NOT_APPLIED", "reason": str(error), "fallback": "FULL_CI"}
+
+
 def make_plan(repo, event, execution):
     observed = source(repo, execution)
     require(not git(repo, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"),
@@ -252,6 +418,10 @@ def make_plan(repo, event, execution):
             os.environ.clear()
             os.environ.update(original_environment)
         neutral, neutral_reason = reviewed_neutral_paths(repo, impact)
+    css13_review = reviewed_css13_inputs(repo, impact, execution)
+    jobs = select_jobs(impact, execution, neutral)
+    if css13_review["status"] == "APPLIED":
+        jobs["rust-tests"] = {"selected": False, "reason": css13_review["reason"]}
     result = {"schema": "motionwright.ci-job-plan/1", "workflow": WORKFLOW,
               "execution_context": execution, "source": observed,
               "event_source": {"base_sha": base, "head_sha": head},
@@ -266,9 +436,12 @@ def make_plan(repo, event, execution):
               "dependency_graphs": impact["dependency_graphs"],
               "affected_package_roots": impact["affected_package_roots"],
               "neutral_review_status": neutral_reason,
+              "css13_review": css13_review,
               "selection_policy_sha256": digest(canonical({"always": ALWAYS, "selectable": SELECTABLE,
-                                                           "neutral_review": NEUTRAL_INPUT_REVIEW})),
-              "jobs": select_jobs(impact, execution, neutral),
+                                                           "neutral_review": NEUTRAL_INPUT_REVIEW,
+                                                           "css13_enabled": CSS13_PILOT_ENABLED,
+                                                           "css13_review": CSS13_INPUT_REVIEW})),
+              "jobs": jobs,
               "test_case_results_admitted": False, "other_workflows_controlled": False,
               "release_verdict": False}
     result["plan_id"] = digest(canonical(result))
