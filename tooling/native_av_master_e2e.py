@@ -13,15 +13,17 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
 import tomllib
 from pathlib import Path
+from contextlib import contextmanager
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
 from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render_receipts
-from native_provider_loss_correlation import inspect_provider_lifetime, CorrelationEvidenceError
+from native_provider_loss_correlation import inspect_provider_lifetime
 from native_provider_broker_events import read_owner_broker_event_history
 from native_provider_live_watch import PassiveLiveBrokerWatch, public_lifecycle_kind_counts
 from native_av_failure_guard import (
@@ -136,11 +138,386 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
     raise AssertionError("semwrightd did not expose the owner socket")
 
 
+
+class NativeObservationFailure(AssertionError):
+    """A required CI observation failed; never expose its private exception text."""
+
+
+def _observation_error(phase: str, error: BaseException) -> dict:
+    phases = {
+        "render_diagnostic", "failure_files", "receipt_reconciliation", "broker_live_watch",
+        "broker_history", "provider_lifecycle", "provider_correlation", "broker_cleanup", "workspace_cleanup",
+    }
+    phase = phase if phase in phases else "observation"
+    known = (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.TimeoutExpired)
+    category = next((kind.__name__ for kind in known if isinstance(error, kind)), "Exception")
+    return {"phase": phase, "error_class": category, "status": "NOT_CAPTURED"}
+
+
+def _report_observation_failure(label: str, failures) -> None:
+    # A broken diagnostic sink is secondary to the original native exception.
+    try:
+        print(label + "=" + json.dumps(failures, sort_keys=True))
+    except BaseException:
+        pass
+
+
+def finalize_native_observation(*, primary_error, finalizers, cleanup, cleanup_phase="broker_cleanup") -> list[dict]:
+    """Attempt each registered finalizer and cleanup once without replacing a primary error."""
+    failures = []
+    try:
+        for phase, finalize in finalizers:
+            try:
+                finalize()
+            except BaseException as error:
+                failures.append(_observation_error(phase, error))
+    finally:
+        try:
+            cleanup()
+        except BaseException as error:
+            failures.append(_observation_error(cleanup_phase, error))
+    if failures:
+        # Closed phase/class categories only; no stderr, argv or opaque native identity.
+        _report_observation_failure("native-observation-finalization", failures)
+        if primary_error is None:
+            raise NativeObservationFailure("Native observation finalization did not complete") from None
+    return failures
+
+
+@contextmanager
+def _native_workspace():
+    temporary = tempfile.TemporaryDirectory(prefix="motionwright-native-av-")
+    primary_error = None
+    try:
+        yield temporary.name
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        finalize_native_observation(
+            primary_error=primary_error, finalizers=[], cleanup=temporary.cleanup,
+            cleanup_phase="workspace_cleanup",
+        )
+
+
+def _file_identity(value) -> dict:
+    return {
+        "device": value.st_dev, "inode": value.st_ino, "bytes": value.st_size,
+        "mtime_ns": value.st_mtime_ns, "ctime_ns": value.st_ctime_ns,
+    }
+
+
+def _no_link(value) -> bool:
+    return not stat.S_ISLNK(value.st_mode) and not (
+        getattr(value, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _contained_file_identity(root: Path, source: Path) -> tuple[dict, list[tuple[int, int]]]:
+    root = root.absolute()
+    source = source.absolute()
+    relative = source.relative_to(root)
+    if ".." in relative.parts:
+        raise ValueError("OUTSIDE_ROOT")
+    parents = [root]
+    for part in relative.parts[:-1]:
+        parents.append(parents[-1] / part)
+    identity = []
+    for parent in parents:
+        value = parent.lstat()
+        if not _no_link(value) or not stat.S_ISDIR(value.st_mode):
+            raise ValueError("SYMLINK_OR_REPARSE_POINT")
+        identity.append((value.st_dev, value.st_ino))
+    value = source.lstat()
+    if not _no_link(value) or value.st_nlink != 1:
+        raise ValueError("SYMLINK_REPARSE_OR_HARDLINK")
+    if not stat.S_ISREG(value.st_mode):
+        raise ValueError("NOT_REGULAR")
+    return _file_identity(value), identity
+
+
+def copy_native_failure_file(root: Path, source: Path, destination: Path, *, byte_limit: int) -> dict:
+    """Copy bounded regular bytes with handle/path identity and two source reads; no decoding."""
+    result = {"capture_status": "NOT_CAPTURED", "omission_reason": None}
+    created_identity = None
+    try:
+        relative = source.absolute().relative_to(root.absolute())
+        if ".." in relative.parts:
+            raise ValueError("OUTSIDE_ROOT")
+        result["source_relative_path"] = relative.as_posix()
+        before, parents = _contained_file_identity(root, source)
+        if not 0 < before["bytes"] <= byte_limit:
+            raise ValueError("EMPTY_OR_SIZE_LIMIT")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(source, flags), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not _no_link(opened) or not stat.S_ISREG(opened.st_mode) or _file_identity(opened) != before:
+                raise ValueError("SOURCE_CHANGED")
+            data = stream.read(byte_limit + 1)
+            if len(data) != before["bytes"]:
+                raise ValueError("SOURCE_CHANGED")
+            stream.seek(0)
+            if stream.read(byte_limit + 1) != data or _file_identity(os.fstat(stream.fileno())) != before:
+                raise ValueError("SOURCE_CHANGED")
+            after, after_parents = _contained_file_identity(root, source)
+            if after != before or after_parents != parents:
+                raise ValueError("SOURCE_CHANGED")
+        # The caller owns this private directory. Exclusive creation never overwrites evidence.
+        destination_parent = destination.parent
+        parent_value = destination_parent.lstat()
+        if not _no_link(parent_value) or not stat.S_ISDIR(parent_value.st_mode):
+            raise ValueError("DESTINATION_NOT_PRIVATE_DIRECTORY")
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            created_identity = (os.fstat(stream.fileno()).st_dev, os.fstat(stream.fileno()).st_ino)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        copied, copied_parents = _contained_file_identity(destination_parent, destination)
+        if (copied["device"], copied["inode"]) != created_identity or copied_parents != [(parent_value.st_dev, parent_value.st_ino)]:
+            raise ValueError("DESTINATION_CHANGED")
+        # Verify the copy through a no-follow descriptor as well.
+        with os.fdopen(os.open(destination, flags), "rb") as stream:
+            if _file_identity(os.fstat(stream.fileno())) != copied or stream.read(byte_limit + 1) != data:
+                raise ValueError("DESTINATION_CHANGED")
+        if _contained_file_identity(destination_parent, destination) != (copied, copied_parents):
+            raise ValueError("DESTINATION_CHANGED")
+        final, final_parents = _contained_file_identity(root, source)
+        if final != before or final_parents != parents:
+            raise ValueError("SOURCE_CHANGED")
+        result.update(
+            capture_status="CAPTURED_UNVERIFIED", source_identity=before,
+            source_identity_after=final, source_sha256=hashlib.sha256(data).hexdigest(),
+            copy_sha256=hashlib.sha256(data).hexdigest(), bytes=len(data),
+            destination_name=destination.name, copy_identity=copied,
+        )
+    except FileNotFoundError:
+        result["omission_reason"] = "MISSING"
+    except FileExistsError:
+        result["omission_reason"] = "DESTINATION_EXISTS"
+    except ValueError as error:
+        allowed = {
+            "OUTSIDE_ROOT", "SYMLINK_OR_REPARSE_POINT", "SYMLINK_REPARSE_OR_HARDLINK",
+            "NOT_REGULAR", "EMPTY_OR_SIZE_LIMIT", "SOURCE_CHANGED", "DESTINATION_CHANGED",
+            "DESTINATION_NOT_PRIVATE_DIRECTORY",
+        }
+        result["omission_reason"] = str(error) if str(error) in allowed else "OUTSIDE_ROOT"
+    except OSError:
+        result["omission_reason"] = "IO_ERROR"
+    if result["capture_status"] != "CAPTURED_UNVERIFIED" and created_identity is not None:
+        # Remove only the same file this call created; never delete a raced replacement.
+        try:
+            value = destination.lstat()
+            if _no_link(value) and (value.st_dev, value.st_ino) == created_identity:
+                destination.unlink()
+        except OSError:
+            pass
+    return result
+
+
+def preserve_native_failure_evidence(output_root: Path, *, native_outcome: str) -> dict:
+    """Retain bounded private originals before sandbox cleanup, including baseline/composition."""
+    names = {
+        "native-observations.ndjson": 8 * 1024 * 1024,
+        "native-observations-receipt.json": 1024 * 1024,
+        "artifact-manifest.json": 1024 * 1024,
+    }
+    receipt = {
+        "schema": "motionwright.ci-native-failure-custody/1",
+        "motionwright_source_sha": GITHUB_SHA, "semwright_source_pin": PIN, "fixture": FIXTURE,
+        "native_outcome": native_outcome if native_outcome in {"UNKNOWN", "FAILED_KNOWN"} else "NOT_PROVEN",
+        "capture_phase": "BEFORE_TEMPORARY_OUTPUT_CLEANUP",
+        "retention_scope": "RUNNER_LOCAL_ONLY", "driver_host_exit_evidence": "NOT_OBSERVED",
+        "media_decoded": False, "terminal_native_result_verified": False,
+        "original_render_retry_permitted": False, "files": [], "discovery_omissions": [],
+        "limits": {"directory_depth": 6, "directory_entries": 36064, "files": 32, "total_bytes": 96 * 1024 * 1024},
+    }
+    known_files, frames, pending = [], [], [(output_root, 0)]
+    seen = 0
+    while pending:
+        directory, depth = pending.pop()
+        try:
+            value = directory.lstat()
+            if not _no_link(value) or not stat.S_ISDIR(value.st_mode):
+                receipt["discovery_omissions"].append("SYMLINK_REPARSE_OR_NON_DIRECTORY")
+                continue
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > receipt["limits"]["directory_entries"]:
+                        raise OverflowError
+                    path = Path(entry.path)
+                    if entry.name in names:
+                        known_files.append(path)
+                    elif path.parent.name == "frames" and path.suffix == ".png":
+                        frames.append(path)
+                    elif entry.is_dir(follow_symlinks=False):
+                        if depth < receipt["limits"]["directory_depth"]:
+                            pending.append((path, depth + 1))
+                        else:
+                            receipt["discovery_omissions"].append("DIRECTORY_DEPTH_LIMIT")
+                    elif entry.is_symlink():
+                        receipt["discovery_omissions"].append("SYMLINK_NOT_TRAVERSED")
+        except OverflowError:
+            receipt["discovery_omissions"].append("DIRECTORY_ENTRY_LIMIT")
+            break
+        except OSError:
+            receipt["discovery_omissions"].append("DIRECTORY_UNAVAILABLE")
+    destination_root = EVIDENCE / "native-failure-originals"
+    destination_root.mkdir(mode=0o700, exist_ok=False)
+    selected = [
+        (path, destination_root / f"{index:03d}-{path.name}", names[path.name])
+        for index, path in enumerate(sorted(known_files))
+    ]
+    selected.extend(
+        (path, EVIDENCE / f"UNVERIFIED-native-frame-{index:06d}.png", 16 * 1024 * 1024)
+        for index, path in enumerate(sorted(frames)) if index in (0, 20, 44, 60, 179)
+    )
+    remaining = receipt["limits"]["total_bytes"]
+    for index, (source, destination, limit) in enumerate(selected):
+        if index >= receipt["limits"]["files"] or remaining <= 0:
+            receipt["files"].append({"capture_status": "NOT_CAPTURED", "omission_reason": "FILE_OR_TOTAL_BYTE_LIMIT"})
+            break
+        item = copy_native_failure_file(output_root, source, destination, byte_limit=min(limit, remaining))
+        receipt["files"].append(item)
+        remaining -= item.get("bytes", 0)
+    for name in names:
+        if not any(path.name == name for path in known_files):
+            receipt["files"].append({"source_name": name, "capture_status": "NOT_CAPTURED", "omission_reason": "NOT_FOUND"})
+    if not frames:
+        receipt["files"].append({"source_kind": "diagnostic_frame", "capture_status": "NOT_CAPTURED", "omission_reason": "NOT_FOUND"})
+    receipt["discovery_omissions"] = sorted(set(receipt["discovery_omissions"]))
+    statuses = [item["capture_status"] for item in receipt["files"]]
+    receipt["capture_status"] = (
+        "CAPTURED_UNVERIFIED" if statuses and all(value == "CAPTURED_UNVERIFIED" for value in statuses)
+        and not receipt["discovery_omissions"] else
+        "PARTIAL_UNVERIFIED" if "CAPTURED_UNVERIFIED" in statuses else "NOT_CAPTURED"
+    )
+    write_private_json(EVIDENCE / "native-failure-files.json", receipt)
+    return receipt
+
+
+def retain_render_failure(error: BaseException, output_root: Path) -> None:
+    """Optional custody must preserve the same primary exception and must not issue commands."""
+    outcome = error.diagnostic.get("source_outcome") if isinstance(error, NativeCommandFailure) else (
+        "UNKNOWN" if isinstance(error, subprocess.TimeoutExpired) else "NOT_PROVEN"
+    )
+    if isinstance(error, NativeCommandFailure):
+        try:
+            write_private_json(EVIDENCE / "native-render-failure-diagnostic.json", {
+                **error.diagnostic, "motionwright_source_sha": GITHUB_SHA,
+                "semwright_source_pin": PIN, "fixture": FIXTURE,
+            })
+        except BaseException as secondary:
+            _report_observation_failure("native-render-failure-diagnostic", _observation_error("render_diagnostic", secondary))
+    try:
+        preserve_native_failure_evidence(output_root, native_outcome=outcome)
+    except BaseException as secondary:
+        _report_observation_failure("native-failure-files", _observation_error("failure_files", secondary))
+
+
+def _finalize_native_session(*, primary_error, lifecycle, live_broker_watch, live_watch_started,
+                             daemon, socket, session, env, log_stream) -> None:
+    reconciliation = None
+    completed_lifecycle = None
+
+    def reconcile_receipts():
+        nonlocal reconciliation
+        diagnostic = EVIDENCE / "motionwright-render-diagnostic.json"
+        if diagnostic.is_file() and 0 < diagnostic.stat().st_size <= 2 * 1024 * 1024:
+            try:
+                incident = json.loads(diagnostic.read_text(encoding="utf-8"))
+                reconciliation = summarize_render_receipts(incident.get("receipts"))
+                write_private_json(EVIDENCE / "provider-status-reconciliation.json", reconciliation)
+            except (OSError, ValueError, TypeError, UnicodeError) as error:
+                write_private_json(EVIDENCE / "provider-status-reconciliation.json", {
+                    "schema": "motionwright-ci-render-status-reconciliation/1",
+                    "render_outcome": "not_proven",
+                    "diagnostic_parse_error_class": _observation_error("receipt_reconciliation", error)["error_class"],
+                })
+                raise
+
+    def finish_live_watch():
+        if live_broker_watch is not None and live_watch_started:
+            live_events = live_broker_watch.finish()
+            live_events["motionwright_source_sha"] = GITHUB_SHA
+            live_events["semwright_source_pin"] = PIN
+            write_private_json(EVIDENCE / "native-provider-live-broker-events.json", live_events)
+            safe_counts = public_lifecycle_kind_counts(live_events)
+            print(
+                "v01-provider-live-broker-events=" + live_events["observation"]
+                + " counts=" + json.dumps(safe_counts, sort_keys=True)
+                + " early_exit=" + str(live_events["subscriber_exited_before_finalize"])
+            )
+
+    def retain_broker_history():
+        if FIXTURE == "baseline" and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1":
+            if daemon is not None and daemon.poll() is None and socket.is_socket():
+                broker_events = read_owner_broker_event_history(SW_BINS / "semwright", socket, session, env=env)
+            else:
+                broker_events = {
+                    "schema": "motionwright-ci-native-provider-broker-events/1",
+                    "observation": "BROKER_UNAVAILABLE_BEFORE_READ_ONLY_REPLAY",
+                    "trusted_lifecycle_event_count": 0, "events": [],
+                    "provider_generation_root_cause": "NOT_PROVEN",
+                    "original_render_retry_permitted": False,
+                    "terminal_native_result_verified": False, "read_only_broker_replay": False,
+                    "installed_owner_recovery": "NOT_RUN", "public_owner_payloads_copied": False,
+                }
+            broker_events["motionwright_source_sha"] = GITHUB_SHA
+            broker_events["semwright_source_pin"] = PIN
+            write_private_json(EVIDENCE / "native-provider-broker-events.json", broker_events)
+            kinds = [
+                "provider.connected", "provider.disconnected", "provider.capabilities.changed",
+                "provider.generation.invalidated", "provider.removed",
+            ]
+            safe_counts = {kind: sum(item["kind"] == kind for item in broker_events["events"]) for kind in kinds}
+            print("v01-provider-broker-events=" + broker_events["observation"] + " counts=" + json.dumps(safe_counts, sort_keys=True))
+
+    def finish_lifecycle():
+        nonlocal completed_lifecycle
+        if lifecycle is not None:
+            completed_lifecycle = lifecycle.stop()
+
+    def correlate_lifetime():
+        if completed_lifecycle is not None:
+            correlation = inspect_provider_lifetime(completed_lifecycle, reconciliation)
+            correlation["motionwright_source_sha"] = GITHUB_SHA
+            correlation["semwright_source_pin"] = PIN
+            write_private_json(EVIDENCE / "native-provider-loss-correlation.json", correlation)
+
+    def cleanup_broker():
+        try:
+            if daemon is not None and daemon.poll() is None:
+                pid = daemon.pid
+                daemon.terminate()
+                try:
+                    daemon.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(pid, signal.SIGKILL)
+                    daemon.wait(timeout=5)
+        finally:
+            log_stream.close()
+
+    # Every observer is attempted before intentional shutdown, even if an earlier
+    # optional observation failed. No render.start, effect grant or retry occurs here.
+    finalize_native_observation(
+        primary_error=primary_error,
+        finalizers=[
+            ("receipt_reconciliation", reconcile_receipts),
+            ("broker_live_watch", finish_live_watch),
+            ("broker_history", retain_broker_history),
+            ("provider_lifecycle", finish_lifecycle),
+            ("provider_correlation", correlate_lifetime),
+        ],
+        cleanup=cleanup_broker,
+    )
+
 def main() -> None:
     exact_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-av-") as raw:
+    with _native_workspace() as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         paths: dict[str, Path] = {}
@@ -414,39 +791,44 @@ def main() -> None:
         session = paths["runtime"] / "motionwright.session"
         daemon_log = EVIDENCE / "semwrightd.log"
         log_stream = daemon_log.open("wb")
-        daemon = subprocess.Popen(
-            [
-                str(SW_BINS / "semwrightd"),
-                "--config",
-                str(config_path),
-                "--socket",
-                str(socket),
-            ],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_stream,
-            stderr=log_stream,
-            start_new_session=True,
-        )
-        # CI-only, passive process / memory sampling while the real pinned
-        # providers run. Never reads argv/env/secrets and never retries jobs.
-        lifecycle = ProviderLifecycleSampler(
-            daemon, EVIDENCE / "native-provider-lifecycle.json", interval=2.0
-        )
-        lifecycle.start()
-        # Capture typed owner-session Broker transitions WHILE the original
-        # render is running. A post-render replay alone cannot observe them
-        # if the Broker exits before the finally block.
-        live_broker_watch = (
-            PassiveLiveBrokerWatch(
-                SW_BINS / "semwright", socket, session, env=env,
-            )
-            if FIXTURE == "baseline"
-            and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
-            else None
-        )
-
+        lifecycle = None
+        live_broker_watch = None
+        live_watch_started = False
+        primary_error = None
+        daemon = None
         try:
+            daemon = subprocess.Popen(
+                [
+                    str(SW_BINS / "semwrightd"),
+                    "--config",
+                    str(config_path),
+                    "--socket",
+                    str(socket),
+                ],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_stream,
+                stderr=log_stream,
+                start_new_session=True,
+            )
+            # CI-only, passive process / memory sampling while the real pinned
+            # providers run. Never reads argv/env/secrets and never retries jobs.
+            lifecycle = ProviderLifecycleSampler(
+                daemon, EVIDENCE / "native-provider-lifecycle.json", interval=2.0
+            )
+            lifecycle.start()
+            # Capture typed owner-session Broker transitions WHILE the original
+            # render is running. A post-render replay alone cannot observe them
+            # if the Broker exits before the finally block.
+            live_broker_watch = (
+                PassiveLiveBrokerWatch(
+                    SW_BINS / "semwright", socket, session, env=env,
+                )
+                if FIXTURE == "baseline"
+                and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
+                else None
+            )
+
             wait_for_socket(daemon, socket, daemon_log)
             discovered = run_json(
                 [
@@ -503,6 +885,7 @@ def main() -> None:
                 raise AssertionError("Semwright did not create a private persistent session ticket")
             if live_broker_watch is not None:
                 # Bounded read-only CLI; no native render.start or effect grant.
+                live_watch_started = True
                 live_broker_watch.start()
 
             connection_path = paths["config"] / "motionwright-connection.json"
@@ -532,27 +915,7 @@ def main() -> None:
                     timeout=1500 if IS_COMPOSITION else 420,
                 )
             except Exception as error:
-                if isinstance(error, NativeCommandFailure):
-                    # Only known enums and counters; never upload stdout,
-                    # opaque provider job IDs, owner paths or private receipts.
-                    write_private_json(
-                        EVIDENCE / "native-render-failure-diagnostic.json",
-                        {
-                            **error.diagnostic,
-                            "motionwright_source_sha": GITHUB_SHA,
-                            "semwright_source_pin": PIN,
-                            "fixture": FIXTURE,
-                        },
-                    )
-                if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA:
-                    # Failed native evidence is retained as explicitly unverified
-                    # diagnostic imagery, never promoted to a delivery receipt.
-                    candidates = list(paths["output"].glob("*/frames/*.png"))
-                    if len(candidates) <= 36000:
-                        for index, frame in enumerate(sorted(candidates)):
-                            if index in (0, 20, 44, 60, 179) and frame.is_file() and not frame.is_symlink() and frame.stat().st_size <= 16*1024*1024:
-                                if frame.resolve().is_relative_to(paths["output"].resolve()):
-                                    shutil.copyfile(frame, EVIDENCE / f"UNVERIFIED-native-frame-{index:06d}.png")
+                retain_render_failure(error, paths["output"])
                 raise
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
@@ -722,125 +1085,15 @@ def main() -> None:
                     },
                 },
             )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            # A malformed optional diagnostic must never mask the original
-            # native failure or prevent cleanup of the pinned Driver Host.
-            try:
-                reconciliation = None
-                diagnostic = EVIDENCE / "motionwright-render-diagnostic.json"
-                if diagnostic.is_file() and 0 < diagnostic.stat().st_size <= 2 * 1024 * 1024:
-                    try:
-                        incident = json.loads(diagnostic.read_text(encoding="utf-8"))
-                        report = summarize_render_receipts(incident.get("receipts"))
-                        reconciliation = report
-                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", report)
-                    except (OSError, ValueError, TypeError, UnicodeError) as error:
-                        write_private_json(EVIDENCE / "provider-status-reconciliation.json", {
-                            "schema": "motionwright-ci-render-status-reconciliation/1",
-                            "render_outcome": "not_proven",
-                            "diagnostic_parse_error_class": type(error).__name__,
-                        })
-                if live_broker_watch is not None:
-                    try:
-                        live_events = live_broker_watch.finish()
-                        live_events["motionwright_source_sha"] = GITHUB_SHA
-                        live_events["semwright_source_pin"] = PIN
-                        write_private_json(
-                            EVIDENCE / "native-provider-live-broker-events.json",
-                            live_events,
-                        )
-                        # Durable public CI logs retain only closed-enum
-                        # transition COUNTS; the event generations, owner
-                        # identity and original raw watch output stay private.
-                        safe_counts = public_lifecycle_kind_counts(live_events)
-                        print(
-                            "v01-provider-live-broker-events="
-                            + live_events["observation"]
-                            + " counts="
-                            + json.dumps(safe_counts, sort_keys=True)
-                            + " early_exit="
-                            + str(live_events["subscriber_exited_before_finalize"])
-                        )
-                    except (OSError, ValueError, TypeError, RuntimeError, KeyError):
-                        print("v01-provider-live-broker-events=UNVERIFIED_OPTIONAL_OBSERVATION")
-                # In the exact v0.1 AV CI lane only, read a bounded snapshot of
-                # the pinned Broker's own session-filtered lifecycle events.
-                # Never reissue render.start or any native mutation after
-                # a Timeout/UNKNOWN; the watcher reads historical events only.
-                if (
-                    FIXTURE == "baseline"
-                    and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
-                ):
-                    try:
-                        if daemon.poll() is None and socket.is_socket():
-                            broker_events = read_owner_broker_event_history(
-                                SW_BINS / "semwright", socket, session, env=env
-                            )
-                        else:
-                            broker_events = {
-                                "schema": "motionwright-ci-native-provider-broker-events/1",
-                                "observation": "BROKER_UNAVAILABLE_BEFORE_READ_ONLY_REPLAY",
-                                "trusted_lifecycle_event_count": 0,
-                                "events": [],
-                                "provider_generation_root_cause": "NOT_PROVEN",
-                                "original_render_retry_permitted": False,
-                                "terminal_native_result_verified": False,
-                                "read_only_broker_replay": False,
-                                "installed_owner_recovery": "NOT_RUN",
-                                "public_owner_payloads_copied": False,
-                            }
-                        broker_events["motionwright_source_sha"] = GITHUB_SHA
-                        broker_events["semwright_source_pin"] = PIN
-                        write_private_json(
-                            EVIDENCE / "native-provider-broker-events.json", broker_events
-                        )
-                        # CI text can identify *which allowlisted lifecycle
-                        # transition* occurred without logging any event
-                        # payload, generation, owner path or native job ref.
-                        kinds = [
-                            "provider.connected", "provider.disconnected",
-                            "provider.capabilities.changed",
-                            "provider.generation.invalidated", "provider.removed",
-                        ]
-                        safe_counts = {
-                            kind: sum(
-                                item["kind"] == kind
-                                for item in broker_events["events"]
-                            )
-                            for kind in kinds
-                        }
-                        print(
-                            "v01-provider-broker-events="
-                            + broker_events["observation"]
-                            + " counts="
-                            + json.dumps(safe_counts, sort_keys=True)
-                        )
-                    except (OSError, ValueError, TypeError, KeyError):
-                        print("v01-provider-broker-events=UNVERIFIED_OPTIONAL_OBSERVATION")
-                # Finish *before* intentional owner shutdown so teardown is
-                # not confused with an unexpected process failure.
-                completed_lifecycle = lifecycle.stop()
-                try:
-                    correlation = inspect_provider_lifetime(completed_lifecycle, reconciliation)
-                    correlation["motionwright_source_sha"] = GITHUB_SHA
-                    correlation["semwright_source_pin"] = PIN
-                    write_private_json(EVIDENCE / "native-provider-loss-correlation.json", correlation)
-                except (CorrelationEvidenceError, OSError, TypeError, ValueError):
-                    # Optional forensic accounting must not hide the actual
-                    # native error or claim that a provider recovered.
-                    pass
-            finally:
-                try:
-                    if daemon.poll() is None:
-                        pid = daemon.pid
-                        daemon.terminate()
-                        try:
-                            daemon.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(pid, signal.SIGKILL)
-                            daemon.wait(timeout=5)
-                finally:
-                    log_stream.close()
+            _finalize_native_session(
+                primary_error=primary_error, lifecycle=lifecycle,
+                live_broker_watch=live_broker_watch, live_watch_started=live_watch_started,
+                daemon=daemon, socket=socket, session=session, env=env, log_stream=log_stream,
+            )
 
     print(
         json.dumps(
