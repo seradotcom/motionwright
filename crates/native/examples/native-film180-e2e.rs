@@ -14,7 +14,7 @@ use motionwright_native::{
         FilmBuildOptions, MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY,
         SceneFilmIntent, build_motion_canvas_segments,
     },
-    production::{ProductionConnection, ProductionCoordinator},
+    production::{MotionCanvasRenderEvidence, ProductionConnection, ProductionCoordinator},
 };
 use motionwright_service::{StudioService, VoiceImportMetadata};
 use semwright_media_time::{Rate, ResolvedCue};
@@ -38,11 +38,13 @@ const PCM_RATE: u32 = 48_000;
 const PCM_FRAMES: u32 = 288_000;
 const CAPTION_WINDOWS: [(i64, i64); 2] = [(6, 27), (33, 72)];
 const NATIVE_REQUEST: &str = "film180-original-native-single-run-v1";
+const EDITED_REQUEST: &str = "film180-edited-native-single-run-v1";
 
 fn usage() -> ! {
     eprintln!(
         "usage: native-film180-e2e seed FRESH_DATABASE NEW_SOURCE_WAV NEW_PROJECT_JSON |\
          readback EXISTING_DATABASE NEW_OBSERVATION_JSON |\
+         edit EXISTING_DATABASE ORIGINAL_NATIVE_EVIDENCE NEW_EDITED_PROJECT_JSON |\
          render EXISTING_DATABASE OWNED_CONNECTION NEW_EVIDENCE_JSON"
     );
     std::process::exit(2);
@@ -355,7 +357,7 @@ fn seed_original(database: &Path, wav_path: &Path, project_json: &Path) -> Fixtu
         source_node(
             "Second source title",
             "text",
-            Some("New scene retains original intent"),
+            Some(ORIGINAL_SECOND_TEXT),
             180.,
             160.,
             1,
@@ -495,6 +497,18 @@ fn seed_original(database: &Path, wav_path: &Path, project_json: &Path) -> Fixtu
     Ok(project)
 }
 
+fn bound_stage_request(project: &Project) -> FixtureResult<&'static str> {
+    let second = &project.scenes[1];
+    let [node] = second.nodes.as_slice() else {
+        return Err("Film180 stage source lost its single editable second subject".into());
+    };
+    match node.text.as_deref() {
+        Some(ORIGINAL_SECOND_TEXT) => Ok(NATIVE_REQUEST),
+        Some(EDITED_SECOND_TEXT) => Ok(EDITED_REQUEST),
+        _ => Err("Film180 original/edited source text is not an admitted revision".into()),
+    }
+}
+
 async fn render_original(database: &Path, connection: &Path, evidence: &Path) -> FixtureResult<()> {
     if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
         return Err("Film180 original native effects require disposable GitHub Actions".into());
@@ -513,14 +527,37 @@ async fn render_original(database: &Path, connection: &Path, evidence: &Path) ->
             "native Film180 owner connection is not bound to the exact saved project".into(),
         );
     }
-    let request_id = NATIVE_REQUEST;
-    let previous =
-        service.latest_production_receipt(original.id, &format!("{request_id}:start"))?;
-    if previous.is_some() {
-        return Err(
-            "native Film180 original effect identity already exists; inspect outcome, never retry"
-                .into(),
-        );
+    let request_id = bound_stage_request(&original)?;
+    if request_id == EDITED_REQUEST {
+        // A later revision is not evidence that the first physical render
+        // succeeded. The prior, separately authorized native result and
+        // native verification must have durable original receipts.
+        for suffix in ["motion:0:render-result", "motion:0:verify"] {
+            let prior = format!("{NATIVE_REQUEST}:{suffix}");
+            if service
+                .latest_production_receipt(original.id, &prior)?
+                .is_none()
+            {
+                return Err(
+                    "edited native Film180 cannot precede the original terminal result".into(),
+                );
+            }
+        }
+    }
+    // Mirror the original ProductionCoordinator effect IDs exactly. A
+    // generic ":start" would miss an already applied composition or a render
+    // whose native outcome is UNKNOWN; never issue that mutation twice.
+    for suffix in ["motion:0:apply", "motion:0:render-start"] {
+        let effect_id = format!("{request_id}:{suffix}");
+        if service
+            .latest_production_receipt(original.id, &effect_id)?
+            .is_some()
+        {
+            return Err(
+                "native Film180 original effect identity already exists; inspect outcome, never retry"
+                    .into(),
+            );
+        }
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let outcome = coordinator
@@ -603,6 +640,134 @@ async fn render_original(database: &Path, connection: &Path, evidence: &Path) ->
     Ok(())
 }
 
+const ORIGINAL_SECOND_TEXT: &str = "New scene retains original intent";
+const EDITED_SECOND_TEXT: &str = "Edited scene retained after reopening";
+
+/// A new synthetic CI source revision is admissible only after the *original*
+/// native producer returned a terminal, source-bound result and its original
+/// start receipt exists. This does not inspect pixels or grant any effect.
+fn edit_saved_project(
+    database: &Path,
+    first_render_evidence: &Path,
+    project_json: &Path,
+) -> FixtureResult<()> {
+    if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Err("Film180 edit-after-native fixture is restricted to disposable CI".into());
+    }
+    must_be_unused(project_json)?;
+    if !first_render_evidence.is_absolute()
+        || first_render_evidence.is_symlink()
+        || !first_render_evidence.is_file()
+        || !(1..=8 * 1024 * 1024).contains(&fs::metadata(first_render_evidence)?.len())
+    {
+        return Err(
+            "source-bound first native result file is missing or outside the budget".into(),
+        );
+    }
+    let source: MotionCanvasRenderEvidence =
+        serde_json::from_slice(&fs::read(first_render_evidence)?)?;
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    let [original] = projects.as_slice() else {
+        return Err("source-bound original Film180 project not found".into());
+    };
+    let old_film_sha = verified_projection(original)?;
+    if source.project_resource != original.resource_key()
+        || source.generation != original.generation
+        || source.revision != original.revision
+        || source.deliverable_id != original.deliverables[0].id
+        || source.frame_rate != Rate::new(FRAME_RATE, 1)?
+        || source.segments.len() != 1
+        || source.segments[0].frame_count != FRAME_COUNT
+        || source.segments[0].scene_ids != original.scenes.iter().map(|s| s.id).collect::<Vec<_>>()
+        || source.segments[0]
+            .verification
+            .pointer("/report/support_level")
+            .and_then(serde_json::Value::as_str)
+            != Some("native")
+    {
+        return Err("original native render receipt is not bound to this saved source".into());
+    }
+    let applied = format!("{NATIVE_REQUEST}:motion:0:apply");
+    let started = format!("{NATIVE_REQUEST}:motion:0:render-start");
+    if service
+        .latest_production_receipt(original.id, &applied)?
+        .is_none()
+        || service
+            .latest_production_receipt(original.id, &started)?
+            .is_none()
+    {
+        return Err("original native apply/render-start custody is absent".into());
+    }
+    let second = &original.scenes[1];
+    let [node] = second.nodes.as_slice() else {
+        return Err("original second source scene is not one editable subject".into());
+    };
+    if node.kind != "text" || node.text.as_deref() != Some(ORIGINAL_SECOND_TEXT) {
+        return Err(
+            "original source second editable text no longer matches admitted content".into(),
+        );
+    }
+    let scene_id = second.id;
+    let node_id = node.id;
+    let baseline = original.clone();
+    let edited = service
+        .apply(
+            baseline.id,
+            &RevisionStamp::from(&baseline),
+            "film180:edit-existing-second-text-after-native",
+            &Change::UpdateCanvasText {
+                scene_id,
+                node_id,
+                text: Some(EDITED_SECOND_TEXT.into()),
+            },
+        )?
+        .project;
+    if edited.revision != baseline.revision + 1
+        || edited.generation != baseline.generation
+        || edited.scenes[0] != baseline.scenes[0]
+        || edited.scenes[1].nodes[0].id != node_id
+        || edited.scenes[1].nodes[0].text.as_deref() != Some(EDITED_SECOND_TEXT)
+        || edited.audio != baseline.audio
+        || edited.assets != baseline.assets
+        || edited.deliverables != baseline.deliverables
+        || edited.production_design != baseline.production_design
+    {
+        return Err("native original edit changed content beyond the one authorized text".into());
+    }
+    let edited_film_sha = verified_projection(&edited)?;
+    if edited_film_sha == old_film_sha {
+        return Err("saved editable source text changed but native Film stayed identical".into());
+    }
+    let bytes = serde_json::to_vec_pretty(&edited)?;
+    let mut out = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(project_json)?;
+    out.write_all(&bytes)?;
+    out.write_all(b"\n")?;
+    out.sync_all()?;
+    drop(service);
+    let reopened = StudioService::open(database)?.project(edited.id)?;
+    if reopened != edited || verified_projection(&reopened)? != edited_film_sha {
+        return Err("edited Film180 project did not survive a new SQLite open".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "schema":"motionwright.native.film180.edited-after-native/1",
+            "project_id":edited.id,"generation":edited.generation,
+            "baseline_revision":baseline.revision,"revision":edited.revision,
+            "source_node_id":node_id,"source_scene_id":scene_id,
+            "original_Film_sha256":old_film_sha,"edited_Film_sha256":edited_film_sha,
+            "frame_count":FRAME_COUNT,
+            "first_native_result_source_bound":true,
+            "new_render_performed":false,"human_approval":false
+        }))?
+    );
+    Ok(())
+}
+
 fn readback_original(database: &Path, observation: &Path) -> FixtureResult<()> {
     must_be_unused(observation)?;
     let service = StudioService::open(database)?;
@@ -655,6 +820,15 @@ async fn main() -> FixtureResult<()> {
             }
             readback_original(&database, &target)?;
         }
+        "edit" => {
+            let database = path_arg(&mut args);
+            let original_native_evidence = path_arg(&mut args);
+            let edited_project = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            edit_saved_project(&database, &original_native_evidence, &edited_project)?;
+        }
         "render" => {
             let database = path_arg(&mut args);
             let connection = path_arg(&mut args);
@@ -700,6 +874,38 @@ mod tests {
         assert!(
             seed_original(&db, &wave, &json).is_err(),
             "never reuse a prior effect's source"
+        );
+    }
+
+    #[test]
+    fn editable_second_revision_uses_distinct_native_identity_and_requires_original_result() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("owner.sqlite3");
+        let wave = directory.path().join("original.wav");
+        let json = directory.path().join("original.json");
+        let project = seed_original(&db, &wave, &json).unwrap();
+        assert_eq!(bound_stage_request(&project).unwrap(), NATIVE_REQUEST);
+        let mut edited = project.clone();
+        edited.scenes[1].nodes[0].text = Some(EDITED_SECOND_TEXT.into());
+        assert_eq!(bound_stage_request(&edited).unwrap(), EDITED_REQUEST);
+        assert_ne!(
+            verified_projection(&edited).unwrap(),
+            verified_projection(&project).unwrap()
+        );
+        edited.scenes[1].nodes[0].text = Some("unauthorized arbitrary replacement".into());
+        assert!(bound_stage_request(&edited).is_err());
+
+        let missing_original_receipt = directory.path().join("missing-native-result.json");
+        let edited_json = directory.path().join("edited.json");
+        assert!(edit_saved_project(&db, &missing_original_receipt, &edited_json).is_err());
+        assert!(!edited_json.exists());
+        let reopened = StudioService::open(&db)
+            .unwrap()
+            .project(project.id)
+            .unwrap();
+        assert_eq!(
+            reopened, project,
+            "failed native edit must not mutate saved source"
         );
     }
 
