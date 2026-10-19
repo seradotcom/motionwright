@@ -1036,7 +1036,7 @@ export default function CanvasWorkspace({
             project={project} scene={scene} profile={profile}
             sceneTime={scenePlayhead} onSelectNode={selectNode}
           />
-          <VisualLanguageEditor project={project} commit={commit} />
+          <VisualLanguageEditor project={project} commit={commitRequired} />
         </aside>
       </div>
     </div>
