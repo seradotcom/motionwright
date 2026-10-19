@@ -49,12 +49,12 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: Original narration lock and conservative timelines
         run: |
-          cargo test -p motionwright-domain --test narration_take_lock
-          cargo test -p motionwright-domain --test narration_impact
-          cargo test -p motionwright-service --test approved_narration_cas
-          cargo test -p motionwright-native --lib narration_tests
+          cargo test --locked -p motionwright-domain --test narration_take_lock
+          cargo test --locked -p motionwright-domain --test narration_impact
+          cargo test --locked -p motionwright-service --test approved_narration_cas
+          cargo test --locked -p motionwright-native --lib narration_tests
       - name: Strict canonical domain, service, Native SDK consumer
-        run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
   studio-and-desktop-contract:
     runs-on: ubuntu-24.04

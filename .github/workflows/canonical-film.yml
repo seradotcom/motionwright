@@ -36,6 +36,6 @@ jobs:
       - name: Source policy
         run: python3 tooling/source_policy.py
       - name: Motionwright Film projection
-        run: cargo test -p motionwright-native film::tests --all-targets
+        run: cargo test --locked -p motionwright-native film::tests --all-targets
       - name: Canonical Film clippy
-        run: cargo clippy -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-native --all-targets -- -D warnings

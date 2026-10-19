@@ -44,11 +44,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: One source-bound multi-scene project CAS and SQLite replay
         run: |
-          cargo test -p motionwright-domain --test brand_campaign
-          cargo test -p motionwright-service --test brand_campaign_persistence
-          cargo test -p motionwright-native --lib brand_campaign_tests
+          cargo test --locked -p motionwright-domain --test brand_campaign
+          cargo test --locked -p motionwright-service --test brand_campaign_persistence
+          cargo test --locked -p motionwright-native --lib brand_campaign_tests
       - name: Strict first-party source and native SDK Clippy
-        run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
   owner-visual-review:
     runs-on: ubuntu-24.04

@@ -52,10 +52,10 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
-      - run: cargo test -p motionwright-domain --test native_property_fidelity -- --nocapture
-      - run: cargo test -p motionwright-domain --test production_design -- --nocapture
-      - run: cargo test -p motionwright-service --test native_property_fidelity -- --nocapture
-      - run: cargo clippy -p motionwright-domain -p motionwright-service --all-targets -- -D warnings
+      - run: cargo test --locked -p motionwright-domain --test native_property_fidelity -- --nocapture
+      - run: cargo test --locked -p motionwright-domain --test production_design -- --nocapture
+      - run: cargo test --locked -p motionwright-service --test native_property_fidelity -- --nocapture
+      - run: cargo clippy --locked -p motionwright-domain -p motionwright-service --all-targets -- -D warnings
 
   studio-and-browser:
     needs: source-policy

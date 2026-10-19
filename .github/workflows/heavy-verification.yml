@@ -70,7 +70,7 @@ jobs:
       - run: npm --prefix apps/studio ci --no-audit --no-fund
       - uses: Swatinem/rust-cache@v2
       - name: Build release-shaped desktop binary
-        run: cargo build -p motionwright-desktop --release
+        run: cargo build --locked -p motionwright-desktop --release
       - uses: actions/upload-artifact@v4
         with:
           name: motionwright-linux-binary

@@ -49,11 +49,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: Exact source-bound transactional OTIO operations and persisted replay
         run: |
-          cargo test -p motionwright-domain --test otio_cut_owner_review
-          cargo test -p motionwright-service --test otio_cut_commit_persistence
-          cargo test -p motionwright-native --lib otio_cut_tests
+          cargo test --locked -p motionwright-domain --test otio_cut_owner_review
+          cargo test --locked -p motionwright-service --test otio_cut_commit_persistence
+          cargo test --locked -p motionwright-native --lib otio_cut_tests
       - name: Strict domain, service and Semwright Native SDK consumer clippy
-        run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
   studio-owner-review:
     runs-on: ubuntu-24.04

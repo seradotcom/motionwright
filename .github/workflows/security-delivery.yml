@@ -167,9 +167,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Storage and import security contracts
-        run: cargo test -p motionwright-storage -p motionwright-service --all-targets
+        run: cargo test --locked -p motionwright-storage -p motionwright-service --all-targets
       - name: Clippy
-        run: cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
 
   desktop-boundary:
     needs: source-boundary
@@ -186,9 +186,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check bounded desktop command surface
-        run: cargo check -p motionwright-desktop
+        run: cargo check --locked -p motionwright-desktop
       - name: Effect-grant boundary regressions
-        run: cargo test -p motionwright-desktop effect_grants
+        run: cargo test --locked -p motionwright-desktop effect_grants
       - name: Native PNG preview security regressions
         run: cargo test --locked -p motionwright-desktop native_preview
       - name: Measured WAV / native AV master source regressions
@@ -196,7 +196,7 @@ jobs:
       - name: Verified MP4 local delivery security regressions
         run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Clippy desktop boundary
-        run: cargo clippy -p motionwright-desktop --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-desktop --all-targets -- -D warnings
 
   dependency-review:
     if: github.event_name == 'pull_request'

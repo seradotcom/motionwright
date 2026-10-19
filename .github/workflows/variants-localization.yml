@@ -52,11 +52,11 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Delivery domain invariants
-        run: cargo test -p motionwright-domain delivery::tests --all-targets
+        run: cargo test --locked -p motionwright-domain delivery::tests --all-targets
       - name: Native variant and SDK contracts
-        run: cargo test -p motionwright-native --lib
+        run: cargo test --locked -p motionwright-native --lib
       - name: Variant clippy
-        run: cargo clippy -p motionwright-domain -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-domain -p motionwright-native --all-targets -- -D warnings
 
   variant-studio:
     runs-on: ubuntu-24.04

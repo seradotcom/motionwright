@@ -58,7 +58,7 @@ jobs:
           git rev-parse HEAD > verification/performance/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/performance/checkout-tree.txt
           status=0
-          cargo build -p motionwright-service --example acceptance_bench --release \
+          cargo build --locked -p motionwright-service --example acceptance_bench --release \
             > verification/performance/build.stdout.log 2> verification/performance/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/performance/build-exit-code.txt
           cat verification/performance/build.stdout.log
@@ -221,7 +221,7 @@ jobs:
           git rev-parse HEAD > verification/waveform/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/waveform/checkout-tree.txt
           status=0
-          cargo build -p motionwright-service --example waveform_bench --release \
+          cargo build --locked -p motionwright-service --example waveform_bench --release \
             > verification/waveform/build.stdout.log 2> verification/waveform/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/waveform/build-exit-code.txt
           cat verification/waveform/build.stdout.log
@@ -297,7 +297,7 @@ jobs:
           git rev-parse HEAD > verification/responsiveness/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/responsiveness/checkout-tree.txt
           status=0
-          cargo build -p motionwright-service --example responsiveness_bench --release \
+          cargo build --locked -p motionwright-service --example responsiveness_bench --release \
             > verification/responsiveness/build.stdout.log 2> verification/responsiveness/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/responsiveness/build-exit-code.txt
           cat verification/responsiveness/build.stdout.log

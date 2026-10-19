@@ -55,8 +55,8 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
-      - run: cargo test -p motionwright-native --lib creative_doctor::tests -- --nocapture
-      - run: cargo clippy -p motionwright-native --lib -- -D warnings
+      - run: cargo test --locked -p motionwright-native --lib creative_doctor::tests -- --nocapture
+      - run: cargo clippy --locked -p motionwright-native --lib -- -D warnings
 
   studio-browser:
     needs: source-boundaries
@@ -104,4 +104,4 @@ jobs:
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm --prefix apps/studio ci --no-audit --no-fund
       - run: npm --prefix apps/studio run build
-      - run: cargo check -p motionwright-desktop --bin motionwright-desktop
+      - run: cargo check --locked -p motionwright-desktop --bin motionwright-desktop

@@ -50,12 +50,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p verification/render-window-cache
-          cargo test -p motionwright-storage --test render_window_cache -- --nocapture 2>&1 | tee verification/render-window-cache/storage-tests.txt
-          cargo test -p motionwright-storage --lib derived_cache -- --nocapture 2>&1 | tee verification/render-window-cache/cache-integrity-tests.txt
+          cargo test --locked -p motionwright-storage --test render_window_cache -- --nocapture 2>&1 | tee verification/render-window-cache/storage-tests.txt
+          cargo test --locked -p motionwright-storage --lib derived_cache -- --nocapture 2>&1 | tee verification/render-window-cache/cache-integrity-tests.txt
       - name: Enforce strict Rust on all new cache APIs
         run: |
           set -euo pipefail
-          cargo clippy -p motionwright-storage -p motionwright-service --all-targets -- -D warnings 2>&1 | tee verification/render-window-cache/clippy.txt
+          cargo clippy --locked -p motionwright-storage -p motionwright-service --all-targets -- -D warnings 2>&1 | tee verification/render-window-cache/clippy.txt
       - name: Bind evidence to source commit without claiming native frame speedups
         if: always()
         run: |

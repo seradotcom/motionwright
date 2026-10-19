@@ -40,10 +40,10 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: Verify source-owned generation journal, SQLite and SDK contracts
         run: |
-          cargo test -p motionwright-domain --test paid_generation_ledger
-          cargo test -p motionwright-service --test paid_generation_persistence
-          cargo test -p motionwright-native --lib generation_journal_tests
-      - run: cargo clippy -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+          cargo test --locked -p motionwright-domain --test paid_generation_ledger
+          cargo test --locked -p motionwright-service --test paid_generation_persistence
+          cargo test --locked -p motionwright-native --lib generation_journal_tests
+      - run: cargo clippy --locked -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
   editor-contracts:
     runs-on: ubuntu-24.04

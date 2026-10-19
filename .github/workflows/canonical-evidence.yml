@@ -45,4 +45,4 @@ jobs:
         working-directory: _semwright
         run: cargo test -p semwright-native-sdk --features effects --test effects_conformance
       - name: Motionwright canonical adapter tests
-        run: cargo test -p motionwright-native canonical::tests --all-targets
+        run: cargo test --locked -p motionwright-native canonical::tests --all-targets
