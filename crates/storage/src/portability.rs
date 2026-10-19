@@ -755,7 +755,11 @@ mod tests {
         let before = snapshot(&target);
         let first = &manifest.blobs[0];
         let last = &manifest.blobs[1];
-        let foreign_path = target.blob_root().join(&last.relative_path);
+        let foreign_path = target
+            .blob_root()
+            .join("sha256")
+            .join(&last.sha256[..2])
+            .join(&last.sha256);
         fs::create_dir_all(foreign_path.parent().unwrap()).unwrap();
         let foreign_original = b"foreign pre-existing CAS leaf; preserve";
         fs::write(&foreign_path, foreign_original).unwrap();
