@@ -301,16 +301,128 @@ class SdkG1Controls(unittest.TestCase):
             with self.assertRaises(sdk.Refused):
                 sdk.require_same_snapshot({"tree": "first"}, {"tree": "other"})
 
+    def test_build_seal_uses_final_test_profile_driver(self):
+        for omit_driver in (False, True):
+            with self.subTest(omit_driver=omit_driver):
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp).resolve()
+                    target, source = root / "target", root / "sdk"
+                    target.mkdir()
+                    source.mkdir()
+                    driver = target / "semwright-motion-canvas-driver"
+                    driver.write_bytes(b"development-profile-original")
+                    old_driver = sdk.file_record(driver)
+                    calls = []
+                    outputs = {}
+                    targets = (
+                        ("semwright-sandbox", False,
+                         "crates/plugin-host/src/semwright-sandbox.rs"),
+                        ("semwright_driver_motion_canvas", True,
+                         "crates/driver-motion-canvas/src/lib.rs"),
+                        ("host_conformance", True,
+                         "crates/driver-motion-canvas/tests/host_conformance.rs"),
+                        ("semwright-motion-canvas-driver", False,
+                         "crates/driver-motion-canvas/src/main.rs"),
+                    )
+                    def compile_fixture(label, argv, cwd, timeout):
+                        calls.append(argv)
+                        self.assertEqual(cwd, source)
+                        stage = len(calls)
+                        selected = targets[:1] if stage == 1 else targets[1:]
+                        self.assertLessEqual(stage, 2)
+                        rows = []
+                        for name, is_test, path in selected:
+                            binary = target / name
+                            binary.write_bytes(("final-test-profile:" + name).encode())
+                            if omit_driver and name == "semwright-motion-canvas-driver":
+                                continue
+                            rows.append({
+                                "reason": "compiler-artifact",
+                                "target": {"name": name,
+                                           "src_path": str(source / path)},
+                                "profile": {"test": is_test},
+                                "executable": str(binary),
+                            })
+                        rows.append({"reason": "build-finished", "success": True})
+                        outputs[label] = ("\n".join(map(json.dumps, rows)) + "\n").encode()
+                        return label
+                    runner = mock.Mock()
+                    runner.env = {"CARGO_TARGET_DIR": str(target)}
+                    runner.command.side_effect = compile_fixture
+                    runner.bytes.side_effect = outputs.__getitem__
+                    if omit_driver:
+                        with self.assertRaises(sdk.Refused):
+                            sdk.prepare_original_executables(runner, "cargo", source)
+                        continue
+                    records, observation = sdk.prepare_original_executables(
+                        runner, "cargo", source)
+                    self.assertEqual(len(records), 4)
+                    self.assertEqual(calls[0][-4:],
+                                     ["-p", "semwright-plugin-host",
+                                      "--bin", "semwright-sandbox"])
+                    self.assertIn("--no-run", calls[1])
+                    self.assertTrue(observation[
+                        "execution_uses_prepared_harnesses_without_cargo"])
+                    self.assertEqual(records[("semwright-motion-canvas-driver", False)],
+                                     sdk.file_record(driver))
+                    with self.assertRaises(sdk.Refused):
+                        sdk.same_file(old_driver, sdk.file_record(driver), "old build")
+                    sdk.record_binaries(records)
+                    driver.write_bytes(b"changed-after-build-window")
+                    with self.assertRaises(sdk.Refused):
+                        sdk.record_binaries(records)
+
+    def test_direct_harness_preserves_seals_and_package_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            source = root / "sdk"
+            package = source / "crates/driver-motion-canvas"
+            package.mkdir(parents=True)
+            records = {}
+            for name, is_test in (
+                ("semwright-sandbox", False),
+                ("semwright-motion-canvas-driver", False),
+                ("semwright_driver_motion_canvas", True),
+                ("host_conformance", True),
+            ):
+                binary = root / name
+                binary.write_bytes(("synthetic:" + name).encode())
+                records[(name, is_test)] = sdk.file_record(binary)
+            runner = mock.Mock()
+            runner.command.return_value = {"original_result": "synthetic"}
+            key = ("semwright_driver_motion_canvas", True)
+            arguments = [sdk.UNIT_IDS[0], "--exact", "--nocapture"]
+            got = sdk.execute_original_harness(
+                runner, "original-case", records, key, arguments, source)
+            self.assertEqual(got, {"original_result": "synthetic"})
+            runner.command.assert_called_once_with(
+                "original-case", [records[key]["path"], *arguments],
+                package, 180, env=None)
+            with self.assertRaises(sdk.Refused):
+                sdk.execute_original_harness(
+                    runner, "wrong-target", records,
+                    ("semwright-motion-canvas-driver", False), [], source)
+            self.assertEqual(runner.command.call_count, 1)
+            def mutate_during_execution(*args, **kwargs):
+                Path(records[("semwright-motion-canvas-driver", False)]["path"]) \
+                    .write_bytes(b"unexpected-runtime-relink")
+                return {"original_result": "synthetic"}
+            runner.command.side_effect = mutate_during_execution
+            with self.assertRaises(sdk.Refused):
+                sdk.execute_original_harness(
+                    runner, "mutated-case", records, key, arguments, source)
+            self.assertEqual(runner.command.call_count, 2)
+
     def test_unittest_zero_skip_and_exact_method_inventory(self):
         module = "tooling.tests.test_motion_canvas_sdk_g1"
         rows = [f"{name} ({module}.SdkG1Controls.{name}) ... ok"
                 for name in sdk.QA_METHODS]
-        output = ("\n".join(rows) + "\n\nRan 16 tests in 0.001s\n\nOK\n").encode()
+        output = ("\n".join(rows) + f"\n\nRan {len(sdk.QA_METHODS)} tests in 0.001s\n\nOK\n").encode()
         good = sdk.parse_unittest_result(output, module)
-        self.assertEqual(good["tests_run"], 16)
+        self.assertEqual(good["tests_run"], len(sdk.QA_METHODS))
         self.assertEqual(good["skipped"], 0)
         for data in (output.replace(b"OK\n", b"OK (skipped=1)\n"),
-                     output.replace(b"Ran 16", b"Ran 0"),
+                     output.replace(f"Ran {len(sdk.QA_METHODS)}".encode(), b"Ran 0"),
                      output.replace(sdk.QA_METHODS[0].encode(),
                                     b"test_invented", 1),
                      output.replace(module.encode(), b"other.module", 1)):

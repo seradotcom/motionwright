@@ -68,6 +68,8 @@ QA_METHODS = (
     "test_late_capture_mutation_is_rejected",
     "test_existing_journal_is_never_overwritten",
     "test_source_and_tool_mutation_prevents_pass",
+    "test_build_seal_uses_final_test_profile_driver",
+    "test_direct_harness_preserves_seals_and_package_directory",
     "test_unittest_zero_skip_and_exact_method_inventory",
 )
 CONTEXT_KEYS = (
@@ -687,8 +689,69 @@ def build_records_json(records):
 
 
 def record_binaries(records):
-    for record in records.values():
-        same_file(record, file_record(Path(record["path"])), "built executable")
+    for (name, _), record in records.items():
+        same_file(record, file_record(Path(record["path"])),
+                  "built executable " + name)
+
+
+def prepare_original_executables(runner, cargo, sdk):
+    # Integration-test preparation also builds the driver binary. Seal that
+    # final test-profile artifact, never the earlier development-profile file.
+    sandbox = runner.command(
+        "build-original-sandbox",
+        [cargo, "build", "--locked", "--message-format=json",
+         "-p", "semwright-plugin-host", "--bin", "semwright-sandbox"],
+        sdk, 1200,
+    )
+    target = Path(runner.env["CARGO_TARGET_DIR"])
+    records = compiler_artifacts(
+        runner.bytes(sandbox), target,
+        {("semwright-sandbox", False):
+             "crates/plugin-host/src/semwright-sandbox.rs"}, sdk,
+    )
+    preparation = runner.command(
+        "prepare-original-driver-and-two-test-harnesses",
+        [cargo, "test", "--locked", "-p", "semwright-driver-motion-canvas",
+         "--no-run", "--lib", "--test", "host_conformance",
+         "--message-format=json"],
+        sdk, 900,
+    )
+    prepared = compiler_artifacts(
+        runner.bytes(preparation), target,
+        {("semwright_driver_motion_canvas", True):
+             "crates/driver-motion-canvas/src/lib.rs",
+         ("host_conformance", True):
+             "crates/driver-motion-canvas/tests/host_conformance.rs",
+         ("semwright-motion-canvas-driver", False):
+             "crates/driver-motion-canvas/src/main.rs"},
+        sdk,
+    )
+    records.update(prepared)
+    record_binaries(records)
+    return records, {
+        "sandbox_build": sandbox, "test_harness_preparation": preparation,
+        "compiled_executables": build_records_json(records),
+        "preparation_executed_test_cases": 0,
+        "execution_uses_prepared_harnesses_without_cargo": True,
+        "binary_hashes_are_observed_not_independently_authenticated": True,
+        "compiled_executable_bytes_retained": False,
+    }
+
+
+def execute_original_harness(runner, label, records, target, arguments, sdk,
+                             *, env=None):
+    require(target in (("semwright_driver_motion_canvas", True),
+                       ("host_conformance", True)) and target in records,
+            "an original prepared SDK test harness is required")
+    record_binaries(records)
+    # Match Cargo's test working directory. Compile-time Cargo paths remain
+    # embedded in these original harnesses; execution never invokes a compiler.
+    result = runner.command(
+        label, [records[target]["path"], *arguments],
+        sdk / "crates/driver-motion-canvas", 180, env=env,
+    )
+    record_binaries(records)
+    return result
 
 
 def assert_outside_roots(path, roots):
@@ -850,76 +913,33 @@ def phase_g1(args, runner, python, git_exe, observations):
     sandbox_files["installed_profile"] = file_record(
         Path("/etc/apparmor.d/bwrap-userns-restrict"), 1024 * 1024)
     observations["sandbox_runtime_files_observed"] = sandbox_files
-    build = runner.command(
-        "build-shared-sandbox-and-driver",
-        [cargo, "build", "--locked", "--message-format=json",
-         "-p", "semwright-plugin-host", "--bin", "semwright-sandbox",
-         "-p", "semwright-driver-motion-canvas",
-         "--bin", "semwright-motion-canvas-driver"],
-        args.sdk, 1200,
+    all_executables, observations["build"] = prepare_original_executables(
+        runner, cargo, args.sdk,
     )
-    target = Path(runner.env["CARGO_TARGET_DIR"])
-    binaries = compiler_artifacts(
-        runner.bytes(build), target,
-        {("semwright-sandbox", False): "crates/plugin-host/src/semwright-sandbox.rs",
-         ("semwright-motion-canvas-driver", False):
-             "crates/driver-motion-canvas/src/main.rs"},
-        args.sdk,
-    )
-    preparation = runner.command(
-        "prepare-two-original-test-harnesses",
-        [cargo, "test", "--locked", "-p", "semwright-driver-motion-canvas",
-         "--no-run", "--lib", "--test", "host_conformance",
-         "--message-format=json"],
-        args.sdk, 900,
-    )
-    harnesses = compiler_artifacts(
-        runner.bytes(preparation), target,
-        {("semwright_driver_motion_canvas", True):
-             "crates/driver-motion-canvas/src/lib.rs",
-         ("host_conformance", True):
-             "crates/driver-motion-canvas/tests/host_conformance.rs"},
-        args.sdk,
-    )
-    all_executables = dict(binaries)
-    all_executables.update(harnesses)
-    observations["build"] = {
-        "shared_build": build, "test_harness_preparation": preparation,
-        "compiled_executables": build_records_json(all_executables),
-        "preparation_executed_test_cases": 0,
-        "binary_hashes_are_observed_not_independently_authenticated": True,
-        "compiled_executable_bytes_retained": False,
-    }
     write_json_new(runner.root / "build-executables.json", observations["build"])
     observations["selected_sdk_results"] = []
     for index, case_id in enumerate(UNIT_IDS):
-        record_binaries(all_executables)
-        result = runner.command(
-            f"rust-library-{index + 1:02d}",
-            [cargo, "test", "--locked", "-p", "semwright-driver-motion-canvas",
-             "--lib", case_id, "--", "--exact", "--nocapture"],
-            args.sdk, 180,
+        result = execute_original_harness(
+            runner, f"rust-library-{index + 1:02d}", all_executables,
+            ("semwright_driver_motion_canvas", True),
+            [case_id, "--exact", "--nocapture"], args.sdk,
         )
         parsed = parse_rust_result(runner.bytes(result), (case_id,))
-        record_binaries(all_executables)
         observation = {"kind": "original_sdk_rust_unit", "sdk_source_sha": SDK_SHA,
                        "command": result, "result": parsed}
         observations["selected_sdk_results"].append(observation)
         write_json_new(runner.root / f"rust-library-{index + 1:02d}.json", observation)
-    helper = Path(binaries[("semwright-sandbox", False)]["path"])
+    helper = Path(all_executables[("semwright-sandbox", False)]["path"])
     host_env = dict(runner.env)
     host_env.update(SEMWRIGHT_TEST_MOTION_CANVAS="1",
                     SEMWRIGHT_TEST_SANDBOX_HELPER=str(helper))
     validate_host_environment(host_env, helper)
-    record_binaries(all_executables)
-    host = runner.command(
-        "original-driver-host-two",
-        [cargo, "test", "--locked", "-p", "semwright-driver-motion-canvas",
-         "--test", "host_conformance", "--", "--ignored", "--nocapture"],
-        args.sdk, 180, env=host_env,
+    host = execute_original_harness(
+        runner, "original-driver-host-two", all_executables,
+        ("host_conformance", True), ["--ignored", "--nocapture"],
+        args.sdk, env=host_env,
     )
     parsed = parse_rust_result(runner.bytes(host), HOST_IDS, host=True)
-    record_binaries(all_executables)
     observations["host_result"] = {
         "kind": "original_real_driver_host_no_render",
         "sdk_source_sha": SDK_SHA, "command": host, "result": parsed,
