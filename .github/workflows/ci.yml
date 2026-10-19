@@ -70,6 +70,26 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.13"
+      - name: Preserve browser custody failures, original exits and UNKNOWN without replay
+        id: browser_custody_guards
+        env:
+          MW_CI_BROWSER_TEST_TMP: ${{ runner.temp }}
+        run: >-
+          python3 -I -B tooling/ci_test_runner.py
+          --repo "$GITHUB_WORKSPACE"
+          --pattern test_ci_browser_evidence.py --mode both --require-complete
+          --expected-source "$GITHUB_SHA"
+          --report "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/browser-custody-guards/result.json"
+      - name: Retain original G0 browser custody guard results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ci-browser-custody-guards-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: |
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-custody-guards/result.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-custody-guards/result-*-stdout.log
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-custody-guards/result-*-stderr.log
+          if-no-files-found: error
       - name: Verify public source boundary and Semwright pin
         run: python3 tooling/source_policy.py
       - name: Verify source distribution hygiene guards
@@ -314,7 +334,28 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - name: Browser acceptance
-        run: npm run test:e2e
+        id: browser
+        working-directory: .
+        env:
+          CI_PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+        run: >-
+          python3 -I -B tooling/ci_browser_evidence.py
+          --repo "$GITHUB_WORKSPACE" --plan-id "$CI_PLAN_ID"
+          --output "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/browser-original"
+      - name: Retain the original browser command, streams and JSON
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() && (steps.browser.outcome == 'success' || steps.browser.outcome == 'failure' || steps.browser.outcome == 'cancelled') }}
+        with:
+          name: ci-browser-original-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: |
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/intent.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/process-started.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/process-outcome.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/stdout.log
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/stderr.log
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/playwright-report.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/browser-original/receipt.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
