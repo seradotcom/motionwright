@@ -22097,6 +22097,402 @@
           "sha256": "1f959cbe8cf5f5ee7dbed8c2596087ea710f6e064be0e35b47dbdcc5343b0a57"
         }
       ]
+    },
+    {
+      "artifact_scope": "Original selected CI assertion lines and exact source test bodies, without private catalogue prose, media or human observations.",
+      "artifacts": [
+        {
+          "member": "asset-original-original-a6a6.json",
+          "member_sha256": "55a9cbabc309744f43635bc6d45230f3e20c2962ad17c4ef20ca7f7b30e689fe",
+          "path": "docs/acceptance/evidence/project-safety-pagination-main-a6a6e983.zip",
+          "sha256": "ffd7ca30e2c1fd5cc59998a0bc86ece955ad74bb5068ff547ac5246e11b6513f"
+        }
+      ],
+      "assertions": [
+        "Real SQLite service opens and reopens first-party asset bytes and synthetic PCM/WAV; digest-addressed reads match the original input byte-for-byte.",
+        "A reused import request cannot silently replace a previously committed asset with changed file bytes; original CAS content remains intact.",
+        "The storage layer verifies digest identity, deduplication and bounded content reads."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-05#/statement"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-05#/statement",
+        "CR-PROJECT-05#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/service/tests/file_import_idempotency.rs",
+          "sha256": "253e5d359f823d2f375dd8acf21c0e7a4f027524302ea98befa8756e2615fc29"
+        },
+        {
+          "path": "crates/service/tests/file_import_secret_boundaries.rs",
+          "sha256": "db8180b12ca9394552d4cd29bea42076e1e90a36a237abf627313dcd1ddac537"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "26126771ca906af88eabb43d785f132cc7657a452093069aef68fd5c4f98ead0"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118264713263,
+        "kind": "integration",
+        "passed": 4,
+        "profile": "sqlite-original-asset-voice",
+        "run_id": 39311852633,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39311852633/job/118264713263"
+      },
+      "id": "asset-original-source-bytes-main-a6a6",
+      "limitations": [
+        "No complete installed Studio media-edit workflow, new derived resource identity, external-editor rights or native renderer media master is observed.",
+        "Source/media preservation is demonstrated at service/storage original-byte level; formal ACC-003/004 scenarios remain open."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "406bd06ec031685e3c2621bb02f438620a6e034cb7be05a5212886619f6f81d3"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original selected CI assertion lines and exact source test bodies, without private catalogue prose, media or human observations.",
+      "artifacts": [
+        {
+          "member": "resource-pagination-original-a6a6.json",
+          "member_sha256": "6831e3d74ea9051a29fff7888a97ac30a914fc99b5e622a58f5d59b6e7cf0ece",
+          "path": "docs/acceptance/evidence/project-safety-pagination-main-a6a6e983.zip",
+          "sha256": "ffd7ca30e2c1fd5cc59998a0bc86ece955ad74bb5068ff547ac5246e11b6513f"
+        }
+      ],
+      "assertions": [
+        "Real SQLite summaries paginate three named projects: page 1 explicitly truncated, page 2 complete, cursor returns every ID exactly once.",
+        "An independently executed 260-event history test paginates backwards across the former 100-record ceiling without missing/duplicating revisions."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-PROJECT-08#/statement",
+        "CR-PROJECT-08#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "26126771ca906af88eabb43d785f132cc7657a452093069aef68fd5c4f98ead0"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118264713263,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "sqlite-project-pages",
+        "run_id": 39311852633,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39311852633/job/118264713263"
+      },
+      "id": "sqlite-resource-pages-main-a6a6",
+      "limitations": [
+        "The three-project test is not a large multimedia project; no full installed project-library pagination or unloaded multi-gigabyte blobs is exercised.",
+        "No performance/OOM readback for a large project or blob fetch when listing every resource class has been admitted."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "406bd06ec031685e3c2621bb02f438620a6e034cb7be05a5212886619f6f81d3"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original selected CI assertion lines and exact source test bodies, without private catalogue prose, media or human observations.",
+      "artifacts": [
+        {
+          "member": "asset-security-original-a6a6.json",
+          "member_sha256": "b1b1db1013e978b2aa216722398518b110121b4b4620c9cb39c8cea8680a2687",
+          "path": "docs/acceptance/evidence/project-safety-pagination-main-a6a6e983.zip",
+          "sha256": "ffd7ca30e2c1fd5cc59998a0bc86ece955ad74bb5068ff547ac5246e11b6513f"
+        }
+      ],
+      "assertions": [
+        "Executed import rejects active script-bearing SVG even when mislabeled and rejects remote-resource SVG.",
+        "Rejected SVG and undecodable WAV leave the persisted project unchanged, no blob published, and staging empty.",
+        "Unix-only tests reject symlinked original source blobs and symlinked bundle path components before bundle inspection."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-SEC-02#/statement",
+        "CR-SEC-02#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "406bd06ec031685e3c2621bb02f438620a6e034cb7be05a5212886619f6f81d3"
+        },
+        {
+          "path": "crates/service/tests/file_import_idempotency.rs",
+          "sha256": "253e5d359f823d2f375dd8acf21c0e7a4f027524302ea98befa8756e2615fc29"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "26126771ca906af88eabb43d785f132cc7657a452093069aef68fd5c4f98ead0"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118264713263,
+        "kind": "integration",
+        "passed": 5,
+        "profile": "sqlite-service-input-security",
+        "run_id": 39311852633,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39311852633/job/118264713263"
+      },
+      "id": "asset-input-rejection-main-a6a6",
+      "limitations": [
+        "Zip traversal via a crafted compressed ZIP input and Windows reparse/junction cases are not proven by these selected Rust tests.",
+        "Special-file or device-file rejection, user-defined size limits across media kinds and installed writes outside the authorized root remain unproven.",
+        "The scoped positive/negative fixture tests are not the complete original ACC-043/044 scenarios."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "7184bd50d92690e82dbeb1ddf17eedf4ece16a01b3a4a8a0e78397ae66894dff"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "406bd06ec031685e3c2621bb02f438620a6e034cb7be05a5212886619f6f81d3"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Redistributable source/package metadata and hash-bound source-policy checks.",
+      "artifacts": [
+        {
+          "member": "external-public-core-source-main-a6a6.json",
+          "member_sha256": "1fcc40593ec5f3ddc06739a616a7b38736a0faf8f3d19b32f2baec533370b3f1",
+          "path": "docs/acceptance/evidence/external-core-locked-build-main-a6a6e983.zip",
+          "sha256": "c1d2785db9b6335826dd1faa8e6050244357c823d3ea0f7f7461cbd219f79c57"
+        }
+      ],
+      "assertions": [
+        "Motionwright's canonical Git repo is distinct from the Core repository.",
+        "Eight Semwright dependencies resolve from a public Git URL at the exact revision in SOURCE_LOCK.json, with no local path override.",
+        "All six tracked application-owned crate manifests are named motionwright-*, and no Semwright Core crate is copied into tracked crates or vendor trees.",
+        "Public source policy explicitly checks source pin identity and rejects private-material publication."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "crates/domain/Cargo.toml",
+          "sha256": "8787b18304fa8b66c57597168d2d54ced44acfb0911467f8cad8dcb3c31a5a3b"
+        },
+        {
+          "path": "crates/driver-manim-community/Cargo.toml",
+          "sha256": "b681cb4d68dd871b4bcbc72174179781cb5ffb7124ff8bcf0b830e1368dc7838"
+        },
+        {
+          "path": "crates/manim-profile/Cargo.toml",
+          "sha256": "027d8100a187bbfad0604adddab09bc4cc5080071b4a33fc702e355b6960deca"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "07afd9a66630bba5dae5dc73178302bcbc5a69e4f5ae4cdbfda5b039e61d137f"
+        },
+        {
+          "path": "crates/service/Cargo.toml",
+          "sha256": "7f85f62079f85a9ba6078c42a949627b79b801e61d3368c9164f0008b73711c8"
+        },
+        {
+          "path": "crates/storage/Cargo.toml",
+          "sha256": "f60ec852c01b3dd28ded6bf1560645f43655d4e13bc46feef990b566b3e0d263"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 9,
+        "profile": "public-core-source-audit",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "separate-core-source-main-a6a6",
+      "limitations": [
+        "Static source inspection does not verify runtime behavior or consent/license of an external asset.",
+        "Main CI execution is retained separately; a source check alone is not a native or installed acceptance."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original CI job IDs/log digests/selected lines and exact source-locked dependency input.",
+      "artifacts": [
+        {
+          "member": "external-locked-build-observations-main-a6a6.json",
+          "member_sha256": "d7934229ae733f14286dbedba186d48e6a26227043e8f66bf21d47b787f28126",
+          "path": "docs/acceptance/evidence/external-core-locked-build-main-a6a6e983.zip",
+          "sha256": "c1d2785db9b6335826dd1faa8e6050244357c823d3ea0f7f7461cbd219f79c57"
+        }
+      ],
+      "assertions": [
+        "The original source-policy job on exact main-a6a6 passes and reports the declared public Semwright revision/version.",
+        "The original rust-tests job uses cargo test --locked with the Git Cargo.lock bytes and completes compiled Motionwright domain, storage, service and native crates against Git dependency APIs."
+      ],
+      "complete_criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "26126771ca906af88eabb43d785f132cc7657a452093069aef68fd5c4f98ead0"
+        },
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "external-core-locked-ci",
+        "run_id": 39311852633,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39311852633"
+      },
+      "id": "external-core-locked-build-main-a6a6",
+      "limitations": [
+        "Scoped external Core boundary only; product media or installed UI are not inferred.",
+        "Original selected CI jobs succeed, but no human license/rights interpretation or stable release is asserted."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "07afd9a66630bba5dae5dc73178302bcbc5a69e4f5ae4cdbfda5b039e61d137f"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -28080,6 +28476,137 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "ceb5620d72b779c9a6d22ee0ae1d1408b4cec7945b8b2076fc56e60ccbfefea2"
+    },
+    {
+      "criterion_id": "CR-PROJECT-05#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "asset-original-source-bytes-main-a6a6": "88510b0ba63a82e404fc0afccbbff9f92befdaed282643e955397fa8af7c55aa"
+      },
+      "id": "technical-cr-project-05-original-bytes-main-a6a6",
+      "limitations": [
+        "Only original source-byte retention and digest at service/storage level is complete. Derived-resource editability, installed UI, external rights and linked whole acceptance cases stay open."
+      ],
+      "obligations": [
+        {
+          "basis": "Selected original CI tests import real first-party binary asset and synthetic 48kHz WAV, then read each CAS blob by SHA256 and compare every byte.",
+          "evidence_ids": [
+            "asset-original-source-bytes-main-a6a6"
+          ],
+          "id": "original-asset-and-voice-bytes-hashed",
+          "status": "pass"
+        },
+        {
+          "basis": "The original executed service test drops the connection, reopens SQLite, asserts full persisted equality and both original files remain byte-identical; request replay cannot replace committed source.",
+          "evidence_ids": [
+            "asset-original-source-bytes-main-a6a6"
+          ],
+          "id": "byte-preservation-through-service-reopen",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "60fdb131de705d807cb7e45aaa8b11aec9123036cc55a88bfeaa4c8e1d97de8f",
+      "reviewed_at_utc": "2026-10-19T22:43:11.278805+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-source-and-original-rust-test-body-review-a6a6"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "e5462a7a93d71392f6d61f90b4388040c8d90f6add187f35d0cde6b41b5bbe07"
+    },
+    {
+      "criterion_id": "CR-FOUND-01#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "external-core-locked-build-main-a6a6": "7af0dfb2c184f74e688f54e42eddc15ba75eb49adb22831189f16f3c58188a63",
+        "separate-core-source-main-a6a6": "57da3634b88ef46afa08abdc0c95df479881156f4ded29e150e51a6193d90fad"
+      },
+      "id": "technical-cr-found-01-statement-main-a6a6",
+      "limitations": [
+        "The exact original repo boundary is a technically objective contract; this automated review is not a human evaluator or a license decision."
+      ],
+      "obligations": [
+        {
+          "basis": "Git source checks verify separate app repository, eight public Semwright Git crates and no copied Core local path.",
+          "evidence_ids": [
+            "separate-core-source-main-a6a6"
+          ],
+          "id": "external-repo-and-public-contract-source",
+          "status": "pass"
+        },
+        {
+          "basis": "Exact original main-a6a6 CI executes --locked Rust tests on Motionwright Native consumer, with matching Semwright SOURCE_LOCK.",
+          "evidence_ids": [
+            "external-core-locked-build-main-a6a6"
+          ],
+          "id": "external-locked-native-consumer-build",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "290409caa5453dc7de687e85b197fa4bdce79e0286ca04db7f8675961bd9e29f",
+      "reviewed_at_utc": "2026-10-19T22:45:05.048030+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-git-source-and-original-locked-ci-review-main-a6a6"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "d7b9334791eac150d827bb1976a4319b290380feb751c05a14581a8dbc61fd86"
+    },
+    {
+      "criterion_id": "CR-FOUND-01#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "external-core-locked-build-main-a6a6": "7af0dfb2c184f74e688f54e42eddc15ba75eb49adb22831189f16f3c58188a63",
+        "separate-core-source-main-a6a6": "57da3634b88ef46afa08abdc0c95df479881156f4ded29e150e51a6193d90fad"
+      },
+      "id": "technical-cr-found-01-acceptance_criterion-main-a6a6",
+      "limitations": [
+        "The exact original repo boundary is a technically objective contract; this automated review is not a human evaluator or a license decision."
+      ],
+      "obligations": [
+        {
+          "basis": "Six tracked Motionwright-owned packages, no Semwright path overrides or Core vendor crate; exact source lock bound.",
+          "evidence_ids": [
+            "separate-core-source-main-a6a6"
+          ],
+          "id": "no-private-crate-copy-or-local-core-path",
+          "status": "pass"
+        },
+        {
+          "basis": "Original source policy and --locked Cargo job succeed using public crate Git versions; no private Core checkout dependency.",
+          "evidence_ids": [
+            "external-core-locked-build-main-a6a6"
+          ],
+          "id": "public-contract-build-executes",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "902e5e8837630368044af6a18cc156d66d08cb34b2d0393a3f128e8dd96f7772",
+      "reviewed_at_utc": "2026-10-19T22:45:05.048030+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-git-source-and-original-locked-ci-review-main-a6a6"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a6a6e98349dd65298a7d1612f3b45aad03443fae",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6"
     }
   ],
   "verification_profiles": {
