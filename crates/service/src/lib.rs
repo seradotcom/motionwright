@@ -61,12 +61,58 @@ fn invalid_import(message: impl Into<String>) -> StorageError {
 }
 
 fn source_looks_like_svg(source: &Path) -> StorageResult<bool> {
+    // Search the actual staged bytes, not only their first 16 KiB. A legal
+    // XML document may have arbitrarily long leading whitespace/comments;
+    // an active SVG following that prolog must not become a raster asset.
+    // Typical binary media return immediately on their first non-whitespace
+    // byte, preserving large-file fast paths without a second full scan.
     let mut input = File::open(source)?;
-    let mut prefix = vec![0_u8; SVG_SNIFF_BYTES];
-    let read = input.read(&mut prefix)?;
-    prefix.truncate(read);
-    let prefix = String::from_utf8_lossy(&prefix).to_ascii_lowercase();
-    Ok(prefix.contains("<svg"))
+    let mut chunk = [0_u8; SVG_SNIFF_BYTES];
+    let mut first_chunk = true;
+    let mut xml_like = false;
+    let mut marker = 0_usize;
+    let mut scanned = 0_u64;
+    const SVG_MARKER: &[u8] = b"<svg";
+    loop {
+        let read = input.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(false);
+        }
+        let offset = if first_chunk && chunk[..read].starts_with(&[0xef, 0xbb, 0xbf]) {
+            3 // Ignore one UTF-8 BOM only at the source beginning.
+        } else {
+            0
+        };
+        first_chunk = false;
+        for byte in &chunk[offset..read] {
+            if !xml_like {
+                if byte.is_ascii_whitespace() {
+                    continue;
+                }
+                if *byte != b'<' {
+                    return Ok(false);
+                }
+                xml_like = true;
+            }
+            let normalized = byte.to_ascii_lowercase();
+            if normalized == SVG_MARKER[marker] {
+                marker += 1;
+                if marker == SVG_MARKER.len() {
+                    return Ok(true);
+                }
+            } else {
+                marker = usize::from(normalized == b'<');
+            }
+        }
+        scanned = scanned.saturating_add(read as u64);
+        if scanned > MAX_SVG_IMPORT_BYTES {
+            // Do not silently admit an oversized text/XML-like payload under
+            // another caller-provided MIME after exhausting the SVG budget.
+            return Err(invalid_import(
+                "unrecognized XML-like asset exceeds the bounded SVG inspection budget",
+            ));
+        }
+    }
 }
 
 fn has_event_handler(text: &str) -> bool {
