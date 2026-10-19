@@ -39,6 +39,19 @@
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "superseded_at_utc": "2026-10-18T08:10:48.778363+00:00"
+    },
+    {
+      "candidate_invalidation_at_utc": "2026-10-19T01:06:50.220016+00:00",
+      "exact_product_branch": "ab1eac760c788d2daffc341281e04fd2c1657e8e",
+      "index_sha256": "bec9be34c143f9e76b19ee33dc81badf152dd0228a4f7dba5faad0fb1f821652",
+      "prior_total_records": 41,
+      "prior_total_reviews": 20,
+      "scope": "Conservative candidate-only invalidation. Original executions and reviews remain immutable at their recorded SHAs; no run is relabelled and no new positive evaluation is admitted.",
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      }
     }
   ],
   "catalog_counts": {
@@ -14268,7 +14281,7 @@
   "schema": "motionwright.technical-evidence/1",
   "source": {
     "digest_kind": "git-text-lf",
-    "motionwright_sha": "5ed6c6355a7730b53a51350a1834e94c9ab687b9",
+    "motionwright_sha": "ab1eac760c788d2daffc341281e04fd2c1657e8e",
     "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
   },
   "source_reference_observations": {
