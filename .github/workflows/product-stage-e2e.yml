@@ -11,6 +11,7 @@ on:
       - 'crates/native/examples/native-render-e2e.rs'
       - 'crates/native/tests/product_stage.rs'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
       - 'tooling/product_stage_native_evidence.py'
       - 'tooling/native_tests/test_product_stage_native_evidence.py'
       - '.github/workflows/product-stage-e2e.yml'

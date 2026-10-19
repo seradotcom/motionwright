@@ -13,6 +13,7 @@ on:
       - 'apps/studio/src/craftComponents.test.ts'
       - 'apps/studio/tests/craft-components.spec.ts'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
       - 'tooling/creative_frame_evidence.py'
       - 'tooling/craft_public_artifact.py'
       - 'tooling/tests/test_craft_public_artifact.py'

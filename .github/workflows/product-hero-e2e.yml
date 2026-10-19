@@ -10,6 +10,7 @@ on:
       - 'crates/native/src/film.rs'
       - 'crates/native/examples/native-render-e2e.rs'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
       - 'tooling/creative_frame_evidence.py'
       - 'tooling/native_tests/test_creative_frame_evidence.py'
       - '.github/workflows/product-hero-e2e.yml'

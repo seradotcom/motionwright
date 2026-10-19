@@ -11,6 +11,7 @@ on:
       - 'crates/native/examples/native-render-e2e.rs'
       - 'crates/storage/src/lib.rs'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
       - 'tooling/measured_native_evidence.py'
       - 'tooling/native_tests/test_measured_native_evidence.py'
       - '.github/workflows/measured-data-native-e2e.yml'

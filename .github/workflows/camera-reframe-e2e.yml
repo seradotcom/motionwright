@@ -11,6 +11,7 @@ on:
       - 'crates/native/examples/native-render-e2e.rs'
       - 'crates/native/tests/camera_reframe.rs'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_av_media_probe.py'
       - 'tooling/camera_reframe_native_evidence.py'
       - 'tooling/native_tests/test_camera_reframe_native_evidence.py'
       - 'tooling/tests/test_v05_camera_native_golden_guard.py'
