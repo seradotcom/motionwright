@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/mlt-audio-diagnostic.yml'
       - 'tooling/mlt-audio-diagnostic/**'
+      - 'tooling/mlt_repair_verification.py'
+      - 'tooling/tests/test_mlt_repair_verification.py'
 permissions:
   contents: read
 concurrency:
@@ -26,15 +28,17 @@ jobs:
       - name: Prepare isolated source verification
         run: |
           set -euo pipefail
-          work="$GITHUB_WORKSPACE/verification/mlt-audio-observer-source/$GITHUB_SHA"
-          mkdir -p "$work"/{source,build,constructors,public,tmp}
-          control="$RUNNER_TEMP/mw-mlt-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir "$control"
+          work="$RUNNER_TEMP/mw-mlt-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$work"
+          mkdir "$work"/{source,build,constructors,public,tmp,control}
+          control="$work/control"
           export MW_DIAG_SOURCE="$control/source"
+          export MW_DIAG_VERIFY="$control/verification"
           export MW_DIAG_CHECK="$control/check-source.py"
           echo "MW_DIAG_WORK=$work" >> "$GITHUB_ENV"
           echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
           echo "MW_DIAG_SOURCE=$MW_DIAG_SOURCE" >> "$GITHUB_ENV"
+          echo "MW_DIAG_VERIFY=$MW_DIAG_VERIFY" >> "$GITHUB_ENV"
           echo "MW_DIAG_CHECK=$MW_DIAG_CHECK" >> "$GITHUB_ENV"
           cat > "$MW_DIAG_CHECK" <<'PY'
           import hashlib,json,os,pathlib,re,shutil,stat,subprocess,sys
@@ -44,9 +48,12 @@ jobs:
 
           repo=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
           export=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          verifier=pathlib.Path(os.environ["MW_DIAG_VERIFY"])
           expected=os.environ["GITHUB_SHA"]
           require(re.fullmatch(r"[0-9a-f]{40}",expected),"invalid source SHA")
-          require(export.is_absolute() and not export.resolve().is_relative_to(repo),"export must be outside checkout")
+          for directory in (export,verifier):
+              require(directory.is_absolute() and not directory.resolve().is_relative_to(repo),
+                      "export must be outside checkout")
           env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           env.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,
                      GIT_CONFIG_GLOBAL=os.devnull,GIT_GRAFT_FILE=os.devnull,
@@ -59,45 +66,96 @@ jobs:
 
           folder="tooling/mlt-audio-diagnostic"
           names={"audio_tap.h","instrument_consumer.py","verify_trace.py",
-                 "test_verify_trace.py","test_audio_tap.c","README.md"}
-          require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,"wrong worktree")
+                 "test_verify_trace.py","test_audio_tap.c","README.md",
+                 "repair_planar_source.py","test_repair_planar_source.py","test_planar_padding.c"}
+          verify_paths={"tooling/mlt_repair_verification.py",
+                        "tooling/tests/test_mlt_repair_verification.py"}
+          source_paths={folder+"/"+name for name in names}|verify_paths
+          workflow_path=".github/workflows/mlt-audio-diagnostic.yml"
+          require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,
+                  "wrong worktree")
           require(git("rev-parse","HEAD").decode().strip()==expected,"HEAD differs from requested SHA")
-          require(not git("status","--porcelain=v1","--untracked-files=all","--",folder),"diagnostic sources changed or untracked")
-          require(not git("ls-files","--others","--ignored","--exclude-standard","-z","--",folder),"ignored diagnostic sources")
-          for p in (repo/"tooling",repo/folder):
+          require(not git("status","--porcelain=v1","--untracked-files=all"),"checkout changed or untracked")
+          require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
+                  "ignored checkout files")
+          for p in (repo/"tooling",repo/folder,repo/"tooling/tests",repo/".github",
+                    repo/".github/workflows"):
               require(p.is_dir() and not p.is_symlink(),"source directory is not regular")
           require({p.name for p in (repo/folder).iterdir()}==names,"diagnostic source set is not closed")
           originals={}
           oids={}
-          for entry in git("ls-tree","-rz","--full-tree",expected,"--",folder).split(b"\0"):
-              if not entry: continue
-              metadata,raw_path=entry.split(b"\t",1)
+          for path in sorted(source_paths|{workflow_path}):
+              entries=git("ls-tree","-rz",expected,"--",path).split(b"\0")
+              require(len(entries)==2 and entries[-1]==b"","expected one source blob")
+              metadata,raw_path=entries[0].split(b"\t",1)
               mode,kind,oid=metadata.split()
-              path=raw_path.decode("utf-8")
               require(mode in (b"100644",b"100755") and kind==b"blob","nonregular source blob")
-              require(path in {folder+"/"+name for name in names},"unexpected source path")
+              require(raw_path.decode("utf-8")==path,"source path differs")
               data=git("cat-file","blob",oid.decode("ascii"))
+              require(hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+                      ==oid.decode("ascii"),"Git blob object digest differs")
               p=repo/path
-              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,"worktree bytes differ from Git blob")
+              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,
+                      "worktree bytes differ from Git blob")
               originals[path]=data
               oids[path]=oid.decode("ascii")
-          require(set(originals)=={folder+"/"+name for name in names},"missing source blob")
+          require(set(originals)==source_paths|{workflow_path},"missing source blob")
           require(len(sys.argv)==2 and sys.argv[1] in ("export","verify"),"expected export or verify")
           if sys.argv[1]=="export":
               export.mkdir(exist_ok=False)
-              for path,data in originals.items():
-                  with (export/pathlib.Path(path).name).open("xb") as handle: handle.write(data)
-          require(export.is_dir() and not export.is_symlink(),"export directory is not regular")
-          require({p.name for p in export.iterdir()}==names,"export source set changed")
-          for path,data in originals.items():
-              p=export/pathlib.Path(path).name
-              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,"export bytes changed")
+              verifier.mkdir(exist_ok=False)
+              for path in sorted(source_paths):
+                  destination=(verifier if path in verify_paths else export)/pathlib.Path(path).name
+                  with destination.open("xb") as handle: handle.write(originals[path])
+          for directory,expected_names in (
+              (export,names),(verifier,{pathlib.Path(path).name for path in verify_paths})
+          ):
+              require(directory.is_dir() and not directory.is_symlink(),"export directory is not regular")
+              require({p.name for p in directory.iterdir()}==expected_names,"export source set changed")
+          for path in source_paths:
+              p=(verifier if path in verify_paths else export)/pathlib.Path(path).name
+              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==originals[path],"export bytes changed")
           print(json.dumps({"schema":"motionwright.mlt-observer-source-inputs/1",
                             "source_sha":expected,"tree":git("rev-parse",expected+"^{tree}").decode().strip(),
-                            "sources":{path:hashlib.sha256(data).hexdigest() for path,data in sorted(originals.items())},
-                            "source_blob_oids":dict(sorted(oids.items()))},sort_keys=True,indent=2))
+                            "sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                       for path in sorted(source_paths)},
+                            "source_blob_oids":{path:oids[path] for path in sorted(source_paths)},
+                            "workflow":{"path":workflow_path,"sha256":hashlib.sha256(originals[workflow_path]).hexdigest(),
+                                        "git_blob_oid":oids[workflow_path]}},sort_keys=True,indent=2))
           PY
           python3 -B -I -S "$MW_DIAG_CHECK" export > "$work/public/source-inputs.json"
+      - name: Check source and acceptance policies
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py > "$MW_DIAG_WORK/public/source-policy.stdout.log" 2> "$MW_DIAG_WORK/public/source-policy.stderr.log"
+          python3 -B tooling/acceptance_policy.py > "$MW_DIAG_WORK/public/acceptance-policy.stdout.log" 2> "$MW_DIAG_WORK/public/acceptance-policy.stderr.log"
+          python3 -B tooling/creative_status_policy.py > "$MW_DIAG_WORK/public/creative-status-policy.stdout.log" 2> "$MW_DIAG_WORK/public/creative-status-policy.stderr.log"
+      - name: Verify source composition and identity contracts
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          python3 -B -I -S - > "$MW_DIAG_WORK/public/composition-contracts.stdout.log" \
+            2> "$MW_DIAG_WORK/public/composition-contracts.stderr.log" <<'PY'
+          import importlib.util,json,os,pathlib,sys,unittest
+          source=pathlib.Path(os.environ["MW_DIAG_VERIFY"])
+          spec=importlib.util.spec_from_file_location("test_mlt_repair_verification",
+                                                     source/"test_mlt_repair_verification.py")
+          if spec is None or spec.loader is None: raise SystemExit("missing exact composition contracts")
+          tests=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=tests
+          spec.loader.exec_module(tests)
+          suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
+          if suite.countTestCases()!=19: raise SystemExit("expected exactly 19 composition contracts")
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          complete=(result.testsRun==19 and result.wasSuccessful() and not result.skipped
+                    and not result.expectedFailures and not result.unexpectedSuccesses)
+          report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
+                  "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
+                  "unexpected_successes":len(result.unexpectedSuccesses),"complete":bool(complete)}
+          (pathlib.Path(os.environ["MW_DIAG_WORK"])/"public/composition-contracts.json").write_text(
+              json.dumps(report,indent=2)+"\n")
+          if not complete: raise SystemExit(1)
+          PY
       - name: Install compiler and FFmpeg 6.1 development libraries
         run: |
           set -euo pipefail
@@ -178,72 +236,230 @@ jobs:
           assert re.search(r"\nOK\s*$",text),text
           assert "skipped=" not in text
           PY
-      - name: Generate instrumented consumer and compile the real module
+      - name: Verify the pinned planar repair source
         run: |
           set -euo pipefail
-          python3 -B -I -S "$MW_DIAG_SOURCE/instrument_consumer.py" \
-            --consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
-            --output-dir "$MW_DIAG_WORK/build/instrumented-source" \
-            > "$MW_DIAG_WORK/public/instrumenter.stdout.log"
-          cp "$MW_DIAG_WORK/build/instrumented-source/consumer_avformat.c" \
-            "$MW_DIAG_WORK/build/instrumented-source/audio_tap.h" \
-            "$MW_MLT_SOURCE/src/modules/avformat/"
+          original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
+          cd "$RUNNER_TEMP"
+          MOTIONWRIGHT_MLT_V722_ORIGINAL="$original" \
+            python3 -B -I -S - > "$MW_DIAG_WORK/public/repair-contracts.stdout.log" \
+            2> "$MW_DIAG_WORK/public/repair-contracts.stderr.log" <<'PY'
+          import importlib.util,json,os,pathlib,sys,unittest
+          source=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          spec=importlib.util.spec_from_file_location("test_repair_planar_source",
+                                                     source/"test_repair_planar_source.py")
+          if spec is None or spec.loader is None: raise SystemExit("missing exact repair contracts")
+          tests=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=tests
+          spec.loader.exec_module(tests)
+          suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
+          if suite.countTestCases()!=11: raise SystemExit("expected exactly 11 repair contracts")
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          complete=(result.testsRun==11 and result.wasSuccessful() and not result.skipped
+                    and not result.expectedFailures and not result.unexpectedSuccesses)
+          report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
+                  "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
+                  "unexpected_successes":len(result.unexpectedSuccesses),"complete":bool(complete)}
+          (pathlib.Path(os.environ["MW_DIAG_WORK"])/"public/repair-contracts.json").write_text(
+              json.dumps(report,indent=2)+"\n")
+          if not complete: raise SystemExit(1)
+          PY
+      - name: Prepare the exact repaired and instrumented consumer
+        run: |
+          set -euo pipefail
+          python3 -B -I -S "$MW_DIAG_VERIFY/mlt_repair_verification.py" prepare \
+            --source-dir "$MW_DIAG_SOURCE" --verification-source-dir "$MW_DIAG_VERIFY" \
+            --source-receipt "$MW_DIAG_WORK/public/source-inputs.json" \
+            --original-consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
+            --output-dir "$MW_DIAG_WORK/build/repair-prepared" --expected-source "$GITHUB_SHA" \
+            > "$MW_DIAG_WORK/public/repair-prepare.stdout.log" \
+            2> "$MW_DIAG_WORK/public/repair-prepare.stderr.log"
+          cp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
+            "$MW_DIAG_WORK/public/prepare-receipt.json"
+      - name: Compile and execute the twelve sanitized planar layout cases
+        run: |
+          set -euo pipefail
+          prepared="$MW_DIAG_WORK/build/repair-prepared"
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror \
+            -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
+            -I"$prepared" "$MW_DIAG_SOURCE/test_planar_padding.c" \
+            $(pkg-config --cflags --libs libavcodec libavutil) \
+            -o "$MW_DIAG_WORK/build/test_planar_padding"
+          ldd "$MW_DIAG_WORK/build/test_planar_padding" > "$MW_DIAG_WORK/public/planar-loaded-libraries.txt"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            "$MW_DIAG_WORK/build/test_planar_padding" \
+            > "$MW_DIAG_WORK/public/planar.stdout.log" \
+            2> "$MW_DIAG_WORK/public/planar.stderr.log"
           python3 -B -I -S - <<'PY'
-          import os,pathlib,re,subprocess
-          source=pathlib.Path(os.environ["MW_MLT_SOURCE"])
+          import os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          expected=b"MLT_PLANAR_LAYOUT_PASS checks=12 source-layout-only, no native master\n"
+          assert (public/"planar.stdout.log").read_bytes()==expected,"planar case receipt differs"
+          assert (public/"planar.stderr.log").read_bytes()==b"","unexpected planar diagnostics"
+          PY
+      - name: Compile the complete repaired consumer with the observer
+        run: |
+          set -euo pipefail
+          source="$MW_DIAG_WORK/build/repaired-mlt-source"
+          test ! -e "$source"
+          cp -a "$MW_MLT_SOURCE" "$source"
+          cp "$MW_DIAG_WORK/build/repair-prepared/consumer_avformat.c" \
+            "$MW_DIAG_WORK/build/repair-prepared/audio_tap.h" "$source/src/modules/avformat/"
+          echo "MW_MLT_COMBINED_SOURCE=$source" >> "$GITHUB_ENV"
+          export MW_MLT_COMBINED_SOURCE="$source"
+          python3 -B -I -S - <<'PY'
+          import hashlib,os,pathlib,re,subprocess
+          source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          original=pathlib.Path(os.environ["MW_MLT_SOURCE"])/"src/modules/avformat/consumer_avformat.c"
+          combined=source/"src/modules/avformat/consumer_avformat.c"
+          assert hashlib.sha256(original.read_bytes()).hexdigest()=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          assert hashlib.sha256(combined.read_bytes()).hexdigest()=="202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
           modules=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
           assert "MOD_AVFORMAT" in modules
           args=["cmake","-S",str(source),"-B",str(work/"build/mlt"),
                 "-DCMAKE_BUILD_TYPE=RelWithDebInfo","-DBUILD_TESTING=OFF",
-                "-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF"]
+                "-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF","-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
           args += ["-D"+name+"="+("ON" if name=="MOD_AVFORMAT" else "OFF") for name in modules]
           with (work/"public/cmake-configure.log").open("wb") as log:
               subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,check=True)
           PY
           cmake --build "$MW_DIAG_WORK/build/mlt" --target mltavformat --parallel 2 \
             > "$MW_DIAG_WORK/public/consumer-module-build.log" 2>&1
-          cp "$MW_DIAG_WORK/build/instrumented-source/instrumented-source.json" \
-            "$MW_DIAG_WORK/public/instrumented-source.json"
-      - name: Bind completed source evidence
+          cp "$MW_DIAG_WORK/build/mlt/compile_commands.json" "$MW_DIAG_WORK/public/compile_commands.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
+          consumer=(source/"src/modules/avformat/consumer_avformat.c").resolve(strict=True)
+          assert hashlib.sha256(consumer.read_bytes()).hexdigest()=="202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
+          compile_rows=json.loads((work/"build/mlt/compile_commands.json").read_text())
+          def compiled_file(row):
+              path=pathlib.Path(row["file"])
+              return (path if path.is_absolute() else pathlib.Path(row["directory"])/path).resolve()
+          selected=[row for row in compile_rows if compiled_file(row)==consumer]
+          assert len(selected)==1,"expected one actual combined consumer compile command"
+          directory=pathlib.Path(selected[0]["directory"]).resolve(strict=True)
+          assert directory.is_relative_to((work/"build/mlt").resolve(strict=True))
+          assert selected[0].get("command") or selected[0].get("arguments")
+          module=list((work/"build/mlt").rglob("libmltavformat.so"))
+          objects=list((work/"build/mlt").rglob("consumer_avformat.c.o"))
+          assert len(module)==1 and len(objects)==1
+          with (work/"public/consumer-loaded-libraries.txt").open("wb") as log:
+              subprocess.run(["ldd",str(module[0])],stdout=log,stderr=subprocess.STDOUT,check=True)
+          (work/"public/combined-consumer-compile-command.json").write_text(
+              json.dumps(selected[0],indent=2)+"\n")
+          PY
+      - name: Bind completed planar repair source evidence
         run: |
           set -euo pipefail
           python3 -B -I -S "$MW_DIAG_CHECK" verify > "$MW_DIAG_WORK/source-inputs-after.json"
           cmp "$MW_DIAG_WORK/public/source-inputs.json" "$MW_DIAG_WORK/source-inputs-after.json"
+          python3 -B -I -S "$MW_DIAG_VERIFY/mlt_repair_verification.py" verify-prepared \
+            --source-dir "$MW_DIAG_SOURCE" --verification-source-dir "$MW_DIAG_VERIFY" \
+            --source-receipt "$MW_DIAG_WORK/public/source-inputs.json" \
+            --original-consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
+            --output-dir "$MW_DIAG_WORK/build/repair-prepared" --expected-source "$GITHUB_SHA" \
+            > "$MW_DIAG_WORK/public/repair-verify.stdout.log" \
+            2> "$MW_DIAG_WORK/public/repair-verify.stderr.log"
+          cmp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
+            "$MW_DIAG_WORK/public/prepare-receipt.json"
           python3 -B -I -S - <<'PY'
-          import hashlib,json,os,pathlib
+          import hashlib,json,os,pathlib,re,shutil,sys
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
           public=work/"public"
           def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-          inputs=json.loads((public/"source-inputs.json").read_text())
-          files=inputs["sources"]
-          source_identity=json.loads((public/"instrumented-source.json").read_text())
-          assert source_identity["input_consumer_sha256"]=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-          assert source_identity["output_consumer_sha256"]=="9190366bf2cddfd8214497fa9ec42fa2ef55dfbed5f8248c69b7aaae7854cabb"
-          evidence={p.name:sha(p) for p in public.iterdir() if p.is_file()}
+          def json_file(name):return json.loads((public/name).read_text())
+          inputs=json_file("source-inputs.json")
+          assert inputs["source_sha"]==os.environ["GITHUB_SHA"]
+          prepared=json_file("prepare-receipt.json")
+          assert prepared["schema"]=="motionwright.mlt-planar-repair-preparation/1"
+          assert prepared["source_sha"]==inputs["source_sha"] and prepared["tree"]==inputs["tree"]
+          assert prepared["source_inputs_sha256"]==sha(public/"source-inputs.json")
+          assert prepared["sources"]==inputs["sources"] and prepared["source_blob_oids"]==inputs["source_blob_oids"]
+          assert prepared["C_layout_checks"]==prepared["full_consumer_compile"]==prepared["physical_runtime"]=="NOT_RUN"
+          assert prepared["outputs"]["consumer_avformat.c"]=="202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
+          assert prepared["outputs"]["planar-helper-under-test.h"]=="fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013"
+          for name in ("provider_compiled","provider_admitted","native_dispatched",
+                       "master_audio_tail_corrected","production_master_accepted","release_authorized"):
+              assert prepared[name] is False
+          for name,expected in (("composition-contracts.json",19),("repair-contracts.json",11)):
+              result=json_file(name)
+              assert result=={"tests_run":expected,"failures":0,"errors":0,"skipped":0,
+                              "expected_failures":0,"unexpected_successes":0,"complete":True}
+          observer=(public/"python.stderr.log").read_text()
+          assert re.search(r"Ran 32 tests in ",observer) and re.search(r"\nOK\s*$",observer)
+          assert "skipped=" not in observer
+          assert (public/"planar.stdout.log").read_bytes()==b"MLT_PLANAR_LAYOUT_PASS checks=12 source-layout-only, no native master\n"
+          assert not (public/"planar.stderr.log").read_bytes()
+          original=pathlib.Path(os.environ["MW_MLT_SOURCE"])/"src/modules/avformat/consumer_avformat.c"
+          source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
+          consumer=source/"src/modules/avformat/consumer_avformat.c"
+          assert sha(original)=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          assert sha(consumer)==prepared["outputs"]["consumer_avformat.c"]
+          assert sha(source/"src/modules/avformat/audio_tap.h")==prepared["outputs"]["audio_tap.h"]
+          command=json_file("combined-consumer-compile-command.json")
+          compiled_path=pathlib.Path(command["file"])
+          if not compiled_path.is_absolute():
+              compiled_path=pathlib.Path(command["directory"])/compiled_path
+          assert compiled_path.resolve(strict=True)==consumer.resolve(strict=True)
           module=list((work/"build/mlt").rglob("libmltavformat.so"))
-          assert len(module)==1
           consumer_object=list((work/"build/mlt").rglob("consumer_avformat.c.o"))
-          assert len(consumer_object)==1
-          result={"schema":"motionwright.mlt-audio-observer-source-check/1",
-                  "source_sha":os.environ["GITHUB_SHA"],
-                  "tree":inputs["tree"],
+          assert len(module)==1 and len(consumer_object)==1
+          tools={}
+          for name in ("cc","cmake","pkg-config","python3","ld"):
+              located=shutil.which(name)
+              assert located is not None,"missing observed build tool"
+              path=pathlib.Path(located).resolve(strict=True)
+              assert path.is_file()
+              tools[name]={"path":str(path),"sha256":sha(path)}
+          libraries={}
+          for name in ("constructor-loaded-libraries.txt","planar-loaded-libraries.txt","consumer-loaded-libraries.txt"):
+              text=(public/name).read_text()
+              assert "not found" not in text,"unresolved loaded library"
+              for line in text.splitlines():
+                  match=re.search(r"(?:=>\s+)?(/[^\s]+)\s+\(",line)
+                  if match:
+                      path=pathlib.Path(match.group(1)).resolve(strict=True)
+                      assert path.is_file()
+                      libraries[str(path)]=sha(path)
+          assert libraries,"no observed loaded-library paths"
+          evidence={p.name:sha(p) for p in public.iterdir() if p.is_file()}
+          result={"schema":"motionwright.mlt-planar-repair-source-check/1",
+                  "source_sha":os.environ["GITHUB_SHA"],"tree":inputs["tree"],
                   "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
-                  "sources":files,"evidence":evidence,"module_sha256":sha(module[0]),
-                  "consumer_object_sha256":sha(consumer_object[0]),
-                  "python_contract_tests":32,"python_skipped":0,
-                  "constructor_C_sanitizers":"PASS","consumer_sanitizers":"NOT_RUN",
-                  "physical_runtime":"NOT_RUN",
-                  "actual_instrumented_module_compile":"PASS",
-                  "original_distro_runtime_reproduced":False,
-                  "provider_admission":"NOT_ESTABLISHED","native_render":"NOT_RUN",
+                  "job_key":os.environ["GITHUB_JOB"],"workflow":inputs["workflow"],
+                  "sources":inputs["sources"],"source_blob_oids":inputs["source_blob_oids"],
+                  "evidence":evidence,"preparation_receipt_sha256":sha(public/"prepare-receipt.json"),
+                  "source_before_after_equal":True,"original_consumer_preserved":True,
+                  "combined_consumer_source_sha256":sha(consumer),
+                  "tested_planar_helper_sha256":sha(work/"build/repair-prepared/planar-helper-under-test.h"),
+                  "consumer_compile_command_sha256":sha(public/"combined-consumer-compile-command.json"),
+                  "compile_commands_sha256":sha(public/"compile_commands.json"),
+                  "module_sha256":sha(module[0]),"consumer_object_sha256":sha(consumer_object[0]),
+                  "constructor_binary_sha256":sha(work/"build/test_audio_tap"),
+                  "planar_test_binary_sha256":sha(work/"build/test_planar_padding"),
+                  "observed_tools":tools,"observed_loaded_libraries":libraries,
+                  "python_version":sys.version,"platform":sys.platform,
+                  "python_contract_tests":{"source_composition":19,"original_observer":32,"planar_repair":11},
+                  "python_skipped":0,"planar_C_layout_cases":12,
+                  "constructor_C_sanitizers":"PASS","planar_layout_C_sanitizers":"PASS",
+                  "actual_combined_consumer_module_compile":"PASS",
+                  "instrumented_original_module_compiled_in_this_run":False,
+                  "consumer_runtime_sanitizers":"NOT_RUN","physical_runtime":"NOT_RUN",
+                  "original_distro_runtime_reproduced":False,"provider_admission":"NOT_ESTABLISHED",
+                  "native_render":"NOT_RUN","native_dispatched":False,
                   "production_master_acceptance":False,"release_authorized":False}
-          (public/"receipt.json").write_text(json.dumps(result,indent=2)+"\n")
+          with (public/"planar-repair-verification-receipt.json").open("x") as out:
+              json.dump(result,out,indent=2)
+              out.write("\n")
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: mlt-audio-observer-source-${{ github.sha }}
-          path: verification/mlt-audio-observer-source/${{ github.sha }}/public
+          name: mlt-audio-observer-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_DIAG_WORK }}/public
           if-no-files-found: error
           retention-days: 14
